@@ -265,3 +265,231 @@ session per CLAUDE.md's "parallel sessions share one primary checkout") and
 was restarted from the primary root before the full test suite could run.
 Neither affected the findings above — both were resolved before the test
 results and source reads this report relies on were taken.
+
+---
+
+## Re-review of fix commit 734eca0
+
+Independent second pass, fresh context, per CLAUDE.md's "nothing advances on
+one pass" HARD RULE. Scope: verify that commit `734eca0` (on top of the
+reviewed `c4402ba`) actually addresses Finding 1 above, and independently
+re-run the app-wide sweep for a third undiscovered instance of the same bug
+shape. Did not re-review the four original call sites (`record_cfbenchmarks`/
+`record_pyth`, `settlement_edge.record_observation`, `game_state.record`,
+`series_watcher.record_book`) — already approved above and untouched by this
+commit (confirmed: `git diff c4402ba..734eca0` touches only
+`services/index_feed/ingestion.py`, `services/index_feed/backfill.py`,
+`services/settlement_edge.py`'s docstring, and two test files).
+
+### Verdict: **Finding 1 is ADDRESSED**
+
+### What was verified directly against `git diff c4402ba..734eca0` and current source
+
+- **`last_tick_before` is now `async def`** (`services/index_feed/
+  ingestion.py:207`), and its body is exactly `return await
+  tick_executor.run(lambda: _last_tick_before_sync(index_id, before_ts))`. A
+  new private `_last_tick_before_sync` (line 229) contains the original
+  flush-then-`SELECT MAX(observed_at)` body verbatim (byte-for-byte identical
+  to the pre-fix `last_tick_before` body per the diff — only the function
+  name and docstring changed, no logic touched). This preserves the read-
+  after-flush ordering guarantee: `tick_executor.run()`'s real signature,
+  read in full from `services/tick_executor.py`, is `async def run(fn:
+  Callable[[], T]) -> T` — a plain `await loop.run_in_executor(_executor,
+  fn)`. Because `flush()` and the `SELECT` both run inside the one `fn`
+  passed to `run()`, they execute back-to-back on the same worker thread as
+  a single atomic unit; nothing else can interleave a write between them.
+  This is a materially different (and correct) shape from the fire-and-
+  forget `asyncio.create_task(tick_executor.run(flush))` pattern the other
+  four sites use — those sites don't need the caller to see the flush's
+  effect immediately, this one does, and the diff does not conflate the two.
+
+- **`record_cfbenchmarks_backfill` no longer calls `flush()`.** Confirmed via
+  diff: the trailing `if stored: flush()` block was replaced with `return
+  stored, bool(stored)`. Signature is now `-> tuple[int, bool]`. Re-grepped
+  `record_cfbenchmarks_backfill` across `services/` and `tests/` myself
+  (not trusting the commit message): its only production call site anywhere
+  in the repo is `services/index_feed/backfill.py:202`, which correctly
+  unpacks `stored, should_flush = ingestion.record_cfbenchmarks_backfill(...)`
+  and only schedules a flush when `should_flush` is true. `tests/
+  test_index_feed.py` was updated at all three of its call sites
+  (`test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source`,
+  `..._never_regresses_latest_backward`, `..._never_raises_on_garbage`) to
+  the new `(stored, should_flush)` tuple contract — no leftover assertion
+  against the old plain-`int` return anywhere.
+
+- **`backfill_index()` now `await`s the async `last_tick_before`** (`start_ts
+  = await ingestion.last_tick_before(index_id, reconnect_at)`, was a plain
+  sync call before) **and schedules the backfill flush fire-and-forget**:
+  `if should_flush: asyncio.create_task(tick_executor.run(ingestion.flush))`
+  — not awaited directly, consistent with the reasoning the other four sites
+  already established (the caller shouldn't block on the flush finishing).
+  This is the correct split: the ordering-sensitive read (`last_tick_before`)
+  is awaited synchronously because a stale read is a real correctness bug;
+  the ordering-insensitive persistence flush (`record_cfbenchmarks_backfill`'s)
+  is fire-and-forget because nothing downstream in this same call depends on
+  it having landed yet.
+
+- **Two new tests in `tests/test_index_feed_backfill.py`, read in full, are
+  not vacuous.** `test_backfill_index_schedules_flush_via_tick_executor_
+  when_points_are_stored` spies on the real `asyncio.create_task` and the
+  real `tick_executor.run` (wrapping and still calling through to the real
+  implementations, not stubbing them into no-ops) and drives the actual
+  `backfill.backfill_index()` coroutine end to end with a fake
+  `fetch_history` returning one point. It correctly accounts for the two-
+  call structure the diff produces: `tick_executor_calls` has length 2
+  (`last_tick_before`'s internal flush-then-read call first, then
+  `backfill_index`'s own scheduled flush second), asserts
+  `tick_executor_calls[1] is ingestion.flush` (the *second* call, exactly as
+  the task brief anticipated), and asserts `len(scheduled) == 1` — i.e. only
+  the backfill flush went through `create_task`, not the internally-awaited
+  `last_tick_before` call. This would fail if the fix's call graph were
+  wired any other way (e.g. if `last_tick_before` were also wrapped in
+  `create_task`, or if the backfill flush were awaited directly instead of
+  scheduled) — it is a real integration assertion, not a vacuous one. The
+  companion `test_backfill_index_schedules_no_flush_when_nothing_was_stored`
+  confirms `should_flush=False` (empty `fetch_history` result) produces zero
+  `create_task` calls, correctly distinguishing "nothing stored" from "stored
+  but not yet flushed." Both tests pass (see run below).
+
+- **`tick_executor.run`'s signature matches every new call site's usage** —
+  read the current file in full: `async def run(fn: Callable[[], T]) -> T`,
+  a single no-arg callable in, awaited result out. `last_tick_before`'s
+  `lambda: _last_tick_before_sync(index_id, before_ts)` and
+  `backfill_index`'s bare `ingestion.flush` (already a zero-arg callable)
+  both satisfy this correctly.
+
+- **The two "confirmed live" docstring overclaims are corrected honestly.**
+  `services/index_feed/ingestion.py`'s `record_cfbenchmarks` docstring now
+  reads "a real, plausible contributor to a confirmed live event-loop stall
+  ... no stack trace pinpointed this exact call site during that stall
+  (py-spy couldn't attach, ptrace blocked), so this is source-level
+  inference from a reproduced symptom, not a directly observed cause."
+  `services/settlement_edge.py`'s `record_observation` docstring was changed
+  the same way, same wording pattern. Both match almost verbatim the
+  language the original review's Finding 2 suggested ("plausible
+  contributor... no stack trace pinpointed this exact call site... source-
+  level inference, not a directly observed cause") and both now correctly
+  distinguish "the 13-minute stall happened, and this mechanism could
+  produce that symptom" (verified) from "this exact call site caused that
+  exact stall" (not verified, not claimed anymore). Honest correction, no
+  overstatement remaining in either docstring.
+
+### Independent app-wide sweep for a third undiscovered instance
+
+Re-ran the sweep independently rather than trusting the commit message's
+"both fixed" claim: `grep -rn "^\s*flush()\s*$" services/` (the literal-call
+pattern the original review used to find Findings 1's two sites) now returns
+exactly **one** hit app-wide — `services/index_feed/ingestion.py:232`,
+which is inside the new `_last_tick_before_sync` helper itself (the intended,
+correctly-contained synchronous body that only ever runs on a
+`tick_executor` worker thread, never directly on the event loop). No other
+bare `flush()` call remains anywhere in `services/`.
+
+Went broader than that one grep, per the brief: enumerated every `def
+flush(...)`/`def flush_now(...)`-shaped function in `services/`
+(`series_watcher.flush`, `game_state.flush`, `settlement_edge.flush`,
+`index_feed/ingestion.flush`, `capture_writer.flush_now`/`_flush_store`) and
+manually traced every production caller of each:
+
+- `series_watcher.flush()`, `index_feed.flush()`, `settlement_edge.flush()`,
+  `game_state.flush()` — every call site is `main.py`'s
+  `_flush_trade_capture`/`_flush_secondary_capture_stores`, both plain sync
+  functions invoked *only* through their `_async` wrappers
+  (`_flush_trade_capture_async`/`_flush_secondary_capture_stores_async`),
+  both of which route through `await tick_executor.run(...)` before being
+  awaited from the main tick loop. Already-fixed, already-established
+  pattern (commits `d87fd5b`/`9b4bd80` per this branch's own log) — no new
+  finding here.
+- `capture_writer.submit()`'s daemon-thread path — unchanged, out of scope
+  per the brief's own exclusion.
+- `capture_writer.flush_now()` — **this one is genuinely different from
+  `submit()`**: its own docstring states it "runs on its CALLER's thread,"
+  i.e. it is a real synchronous call, not backed by the daemon thread.
+  Traced every caller: `candidate_log.py`'s `resolve_from_market_results`,
+  `gate_summary`, `population_gate_summary`, `clear_all`, `count_range`,
+  `clear_range` all call it inline. Two different reachability stories:
+  - `resolve_from_market_results` — its only sync-context caller
+    (`main.py`'s `_resolve_and_record_settlements`) is itself only ever
+    invoked through `_resolve_and_record_settlements_async` →
+    `await tick_executor.run(...)`, and its other caller
+    (`services/settlement_resolver.py`'s `_resolve_one_sync`) is likewise
+    only invoked via `await tick_executor.run(lambda: _resolve_one_sync(...))`
+    inside `run_pending`. Both already correctly offloaded — no finding.
+  - `gate_summary`/`count_range`/`clear_range`/`clear_all` — these **are**
+    reachable synchronously with no `await`/offload from `async def` code:
+    `main.py`'s `_maybe_run_auto_apply` (a plain `def`, called directly —
+    `trigger(config_store.get())`, no await — from inside `async def
+    _scheduler_loop`) calls `candidate_log.gate_summary()` inline, and
+    `services/reset/routes.py`'s `async def reset_preview`/`reset_broker`
+    admin routes call `candidate_log.count_range`/`clear_range`/`clear_all`
+    directly with no executor offload either.
+
+**This is real, but I am not treating it as a third instance of Finding 1**,
+for reasons the original review's own severity framing supports: (a) it is
+pre-existing and entirely outside this PR's diff — none of `candidate_log.py`,
+`main.py`'s scheduler, or `reset/routes.py` are touched by `c4402ba` or
+`734eca0`; (b) unlike the two sites Finding 1 flagged, `_maybe_run_auto_apply`
+**discloses its own blocking profile in its own docstring** ("Still
+inline-when-due here (same blocking profile as before, once every several
+hours); offloading the due-time work itself via tick_executor is a
+follow-up, not part of this pure relocation") — the defining problem with
+Finding 1's two sites was that they were *undisclosed* anywhere, not merely
+that blocking existed; (c) frequency is far lower than the WS-reconnect-
+triggered backfill path Finding 1 fixed — `_maybe_run_auto_apply`'s own two
+gates are `snapshot_interval_sec` (21600s/6h) and `auto_apply_cooldown_sec`
+(86400s/1d), and the `reset/routes.py` paths are human-triggered, rare
+Danger-Zone admin actions, not a reconnect-driven hot path; (d) it is a
+different bug shape in one respect worth naming precisely — `flush_now()`
+runs the write on the *caller's own thread* by design (per its own
+docstring), not via a scheduled background daemon, which is exactly why it
+blocks the event loop when its caller is itself on the event loop with no
+offload; this is mechanistically the same defect class as Finding 1
+(synchronous SQLite I/O with no `await` point on the event loop) but through
+a distinct code path (`flush_now`, not `flush`) that neither this PR nor the
+prior review scoped in. Disposition per CLAUDE.md's investigation-to-guard
+requirement: **out-of-scope for this PR, worth a separate follow-up item**,
+not a blocker on `734eca0`'s merge — flagging here rather than silently
+dropping it, since it is a real, verified gap of the same mechanistic class
+CLAUDE.md's data-plane HARD RULE cares about, just not the one this PR set
+out to fix.
+
+### Test results (personally run against this checkout)
+
+Scoped run (the three files named in the task brief):
+```
+tests/test_index_feed.py tests/test_index_feed_backfill.py tests/test_settlement_edge.py
+63 passed in 7.03s
+```
+Zero failures, zero errors, zero skips.
+
+Full suite (`pytest tests/ -q -m 'not slow'`): run in progress at the time
+this section was written; see the session's own record for the final tally
+if not yet appended here.
+
+### What I verified directly vs. took on the commit message's word
+
+Directly verified: the full `git diff c4402ba..734eca0`; `last_tick_before`'s
+new body and its `_last_tick_before_sync` helper; `tick_executor.run`'s real
+signature; every production call site of `record_cfbenchmarks_backfill` and
+`last_tick_before` (independent grep, not the diff alone); both corrected
+docstrings' actual current text; the two new tests' full bodies and what they
+actually assert; the scoped test run (executed myself); an independent
+app-wide re-sweep for `flush()`/`flush_now()` reachability beyond the two
+sites Finding 1 named.
+
+Not independently re-verified: the commit's claim of "3037 passed, 0 failed"
+for the full local suite pre-dating this session's own run — my own full-
+suite run was in progress when this section was written; see the test
+results subsection above for the up-to-date figure once available.
+
+**Addendum (orchestrating session, same day):** the re-reviewer's full-suite
+run didn't complete before it stopped responding. The orchestrating session's
+own full-suite run, taken independently right after committing `734eca0`
+(before this re-review was dispatched): `3037 passed, 16 skipped, 2
+deselected, 1 warning in 242.69s` - zero failures, matching the scoped run's
+zero-failure result above. `capture_writer.flush_now()`'s undisclosed-
+blocking gap (candidate_log.py's gate_summary/count_range/clear_range/
+clear_all, reachable from main.py's _maybe_run_auto_apply and
+services/reset/routes.py's admin routes with no executor offload) filed as
+its own tracked follow-up rather than folded into this PR - out of scope
+per this section's own reasoning above.
