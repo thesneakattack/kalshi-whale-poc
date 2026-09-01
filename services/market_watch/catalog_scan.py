@@ -158,6 +158,33 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             # this same loop. One get_markets_by_tickers call now covers
             # every related ticker across every such event this tick,
             # regardless of how many events have a winner to map.
+            #
+            # PRE-EXISTING GAP, found and live-verified during the final
+            # whole-branch review of kalshi-category-data-completeness
+            # (2026-08-31, predates this entire plan - git blame traces
+            # this exact shape to commit eeab71a): `related` above
+            # (ms.get("related_event_tickers")) is documented as a list of
+            # EVENT tickers (docs/kalshi/get-events.md:352-356: "List of
+            # event tickers related to this milestone"), but
+            # get_markets_by_tickers/get_markets' own `tickers` filter is
+            # documented as MARKET tickers (docs/kalshi/get-markets.md:
+            # 227-231: "Filter by specific market tickers"). Live-verified
+            # against 710 real related_event_tickers across Sports/
+            # Elections/Economics milestones: 0 markets returned; a control
+            # call with real market tickers returned markets correctly -
+            # confirming this call structurally cannot resolve `all_related`
+            # to real markets as currently written, so
+            # `related_market_by_ticker` is effectively always empty and
+            # everything below that reads it (Task 9's structured-target
+            # resolution, the yes_sub_title/no_sub_title/title fallback)
+            # does not currently run against real winners in production.
+            # Fixing this needs resolving each related event ticker to its
+            # own child markets first (e.g. get_events(with_nested_markets)
+            # or a per-event get_markets(event_ticker=...) call) - a
+            # separate, non-trivial change to this function's data-fetching
+            # shape, out of scope for a fix folded into this already-large
+            # PR's final review round. Logged as a real, tracked, undecided
+            # item in docs/open-decisions.md rather than left silent.
             related_market_by_ticker = await client.get_markets_by_tickers(all_related) if all_related else {}
 
             # Structured-target UUID resolution (kalshi-category-data-
@@ -306,11 +333,18 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                             # (structured_targets_cache, populated above) -
                             # not the raw UUID itself, which a substring
                             # match against `winner` can never hit (the
-                            # original bug this replaces: 134/149 sampled
-                            # real markets are strike_type: "structured",
-                            # so this was silently falling through to the
-                            # weaker yes_sub_title/title match below for
-                            # nearly every one of them). An id this tick's
+                            # original bug this replaces - a census of real
+                            # markets, independent of THIS call site's own
+                            # data-fetching path, found 134/149 sampled real
+                            # markets are strike_type: "structured". NOTE
+                            # (final whole-branch review): `related_market_
+                            # by_ticker` above is populated via a
+                            # pre-existing, separate gap - see that
+                            # variable's own comment - so this whole match
+                            # block does not currently receive real markets
+                            # in production; the reasoning here describes
+                            # the intended behavior once that gap is closed,
+                            # not verified current behavior). An id this tick's
                             # get_structured_targets call didn't resolve
                             # (fetch failure, or Kalshi not returning it)
                             # simply isn't in the cache and is skipped here
@@ -376,8 +410,10 @@ _SERIES_CACHE_FULL_RESYNC_SEC = 86400  # final whole-branch review finding, kals
 # "when this series' metadata was last updated") - trading volume moving
 # is NOT documented as a metadata update, and a live, read-only probe of
 # this app's own data/series_cache.db confirmed the two are decoupled in
-# practice: KXNCAAMBGAME carries $5.9B lifetime volume_fp (a top-10 series
-# by volume) with last_updated_ts 147 days stale, while series with
+# practice: KXNCAAMBGAME carries 5.9 billion lifetime volume_fp CONTRACTS
+# (get-series-list.md:223-226: "the total number of contracts traded" -
+# not dollars, dimensional-analysis-checked) - a top-10 series by volume -
+# with last_updated_ts 147 days stale, while series with
 # actively-moving last_updated_ts sit 1-12 days old. Once a delta refresh
 # ever fires (which, given series_cache.load() seeds state["series_cache"]
 # from the persisted DB at every process start - app_state.py's own

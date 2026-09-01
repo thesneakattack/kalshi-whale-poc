@@ -219,88 +219,65 @@ def test_series_ticker_for_returns_none_when_event_series_ticker_is_null(tmp_pat
     assert cache.series_ticker_for("MKT-B") is None
 
 
-# --- series_ticker_for() in-process memoization ------------------------------
-# (kalshi-category-data-completeness Task 3, PR review fix, 2026-08-31 CRITICAL
-# finding: series_of() -> series_ticker_for() reintroduced the exact per-trade
-# fresh-_connect()-plus-schema-check cost shape that froze the app for several
-# minutes on 2026-08-11 (services/whalewatchers/kalshi_trade_tape.py's own
-# incident note) - series_of() is now unconditionally on that exchange-wide hot
-# path (min_contracts_for, trades_observed_by_series). Memoized in-process:
-# a market's event_ticker and an event's series_ticker are immutable once the
-# exchange assigns them, so a resolved (non-None) mapping is cached for the
-# life of the process - free after the first real lookup. An unresolved (None)
-# result is cached too, but only within _NEGATIVE_TTL_SEC (same idiom/window
-# as kalshi_trade_tape.py's own _market_cache) - a market genuinely uncached
-# today can become cached later (this app fetches title data continuously),
-# so a permanent negative cache would silently freeze a ticker onto the wrong
-# prefix-fallback answer forever, trading accuracy for speed exactly the way
-# CLAUDE.md's data-plane HARD RULE forbids doing silently.)
+# --- series_ticker_for() in-memory index, zero DB access -------------------
+# (kalshi-category-data-completeness Task 3, fix-round 1 2026-08-31 CRITICAL
+# finding, then a SECOND fix round on the same finding via the final whole-
+# branch review's independent adversarial pass: fix-round 1's DB-backed
+# memoization still put a measured 548us round trip on the exchange-wide
+# trade-tape hot path once per distinct off-watchlist ticker per 5-minute
+# negative-TTL window (config/settings.yaml's trade_stream_exchange_wide:
+# true means most tickers seen are genuinely off this app's watchlist-scoped
+# title_cache and never resolve) - the exact per-trade-DB-round-trip shape
+# behind the 2026-08-11 incident, just paced at 5-minute intervals instead
+# of every trade. Replaced with a plain in-memory dict index
+# (_MARKET_EVENT_INDEX/_EVENT_SERIES_INDEX), populated as a free side effect
+# of load_market_titles()/load_event_titles()/save_market_titles()/
+# save_event_titles() - functions this module already has to call anyway -
+# so series_ticker_for() itself never touches the DB at all, not even once.)
 
 
-def test_series_ticker_for_memoizes_a_resolved_ticker_after_the_first_db_hit(tmp_path, monkeypatch):
+def test_series_ticker_for_never_touches_the_db_not_even_once(tmp_path, monkeypatch):
+    # The core claim of the second fix round: unlike fix-round 1's memoize-
+    # after-first-hit design, series_ticker_for() must make ZERO _connect()
+    # calls, for a resolved ticker, an unresolved one, or a repeat lookup -
+    # there is nothing left to memoize because there was never a query.
     cache = _tc(tmp_path, monkeypatch)
-    cache.save_market_titles({"MKT-MEMO": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
-                                             "event_ticker": "EVT-MEMO"}})
-    cache.save_event_titles({"EVT-MEMO": {"series_ticker": "REAL-SERIES"}})
-    real_connect = cache._connect
+    cache.save_market_titles({"MKT-NODB": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
+                                             "event_ticker": "EVT-NODB"}})
+    cache.save_event_titles({"EVT-NODB": {"series_ticker": "REAL-SERIES"}})
     calls = []
-
-    def _counting_connect():
-        calls.append(1)
-        return real_connect()
-
-    monkeypatch.setattr(cache, "_connect", _counting_connect)
-    assert cache.series_ticker_for("MKT-MEMO") == "REAL-SERIES"
-    assert cache.series_ticker_for("MKT-MEMO") == "REAL-SERIES"
-    assert cache.series_ticker_for("MKT-MEMO") == "REAL-SERIES"
-    assert len(calls) == 1  # only the first call actually touched the DB
-
-
-def test_series_ticker_for_memoizes_an_unresolved_ticker_within_the_negative_ttl(tmp_path, monkeypatch):
-    cache = _tc(tmp_path, monkeypatch)
-    real_connect = cache._connect
-    calls = []
-
-    def _counting_connect():
-        calls.append(1)
-        return real_connect()
-
-    monkeypatch.setattr(cache, "_connect", _counting_connect)
-    assert cache.series_ticker_for("UNSEEN-MEMO") is None
-    assert cache.series_ticker_for("UNSEEN-MEMO") is None
-    assert len(calls) == 1  # the negative result is cached too (bounded TTL)
-
-
-def test_series_ticker_for_re_checks_a_negative_result_once_the_ttl_expires(tmp_path, monkeypatch):
-    # A market genuinely uncached at first can become cached later (this app
-    # fetches title data continuously) - the negative cache must not freeze a
-    # ticker onto a wrong fallback answer forever once the real data arrives.
-    cache = _tc(tmp_path, monkeypatch)
-    fake_now = [1000.0]
-    monkeypatch.setattr(cache.time, "monotonic", lambda: fake_now[0])
-    assert cache.series_ticker_for("LATE-RESOLVED") is None
-    cache.save_market_titles({"LATE-RESOLVED": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
-                                                   "event_ticker": "EVT-LATE"}})
-    cache.save_event_titles({"EVT-LATE": {"series_ticker": "REAL-LATE-SERIES"}})
-    fake_now[0] += cache._SERIES_TICKER_NEGATIVE_TTL_SEC + 1
-    assert cache.series_ticker_for("LATE-RESOLVED") == "REAL-LATE-SERIES"
-
-
-def test_series_ticker_for_degrades_to_none_on_a_db_error_rather_than_raising(tmp_path, monkeypatch):
-    # 2026-08-31 review, Important finding: before this fix series_of() could
-    # never raise (pure .split()); callers like strategy_engine's core entry
-    # gate and the trade-tape prescan gate were never written expecting a DB
-    # failure from this function, so a lock/disk/corruption condition must
-    # degrade to the same fallback series_of() already uses for an uncached
-    # ticker, never propagate.
-    import sqlite3
-    cache = _tc(tmp_path, monkeypatch)
 
     def _boom():
-        raise sqlite3.OperationalError("database is locked")
+        calls.append(1)
+        raise AssertionError("series_ticker_for() must never call _connect()")
 
     monkeypatch.setattr(cache, "_connect", _boom)
-    assert cache.series_ticker_for("ANY-TICKER") is None
+    assert cache.series_ticker_for("MKT-NODB") == "REAL-SERIES"
+    assert cache.series_ticker_for("MKT-NODB") == "REAL-SERIES"
+    assert cache.series_ticker_for("UNSEEN-NODB") is None
+    assert cache.series_ticker_for("UNSEEN-NODB") is None
+    assert calls == []
+
+
+def test_series_ticker_for_index_survives_a_cold_start_via_load_functions(tmp_path, monkeypatch):
+    # The cold-start property the old DB-backed cache also had: a ticker
+    # resolved in a PRIOR process run (persisted to the DB, then this
+    # "process" restarts and calls load_market_titles()/load_event_titles()
+    # the way services/app_state.py does at startup, not save_*) must still
+    # resolve - the index has to be seeded by load, not only by save.
+    cache = _tc(tmp_path, monkeypatch)
+    cache.save_market_titles({"MKT-COLD": {"title": "T", "yes_sub_title": "", "no_sub_title": "",
+                                             "event_ticker": "EVT-COLD"}})
+    cache.save_event_titles({"EVT-COLD": {"series_ticker": "COLD-SERIES"}})
+    # Simulate a fresh process: wipe the in-memory index (a real restart
+    # would start with empty dicts) but keep the same on-disk DB_PATH.
+    monkeypatch.setattr(cache, "_MARKET_EVENT_INDEX", {})
+    monkeypatch.setattr(cache, "_EVENT_SERIES_INDEX", {})
+    assert cache.series_ticker_for("MKT-COLD") is None  # not yet reloaded
+
+    cache.load_market_titles()
+    cache.load_event_titles()
+    assert cache.series_ticker_for("MKT-COLD") == "COLD-SERIES"
 
 
 def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, monkeypatch):

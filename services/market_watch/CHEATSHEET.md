@@ -355,6 +355,24 @@ not milestone `type` — the wrapper only exposes `category`, so
 
 ## `catalog_scan.py`'s `custom_strike` match now resolves structured-target UUIDs (2026-08-31, Task 9 of kalshi-category-data-completeness)
 
+**Correction, final whole-branch review (2026-08-31), read before trusting anything
+below:** this whole block currently does not run against real winners in production.
+`related_market_by_ticker` (`catalog_scan.py`, populated a few lines above the
+`custom_strike` block this section describes) is built from `ms.get(
+"related_event_tickers")` fed into `get_markets_by_tickers` - but `related_event_tickers`
+is documented as EVENT tickers (`docs/kalshi/get-events.md:352-356`) while
+`get_markets_by_tickers`/`get_markets`'s own `tickers` filter is documented as MARKET
+tickers (`docs/kalshi/get-markets.md:227-231`). Live-verified against 710 real
+related_event_tickers: 0 markets returned (a control call with real market tickers
+worked correctly). This is a PRE-EXISTING gap - `git blame` traces the exact line shape
+to commit `eeab71a`, before this whole plan - not something Tasks 9/14 introduced, but
+their new logic (this section's own `custom_strike` block, Task 14's `candidate_id_
+mapping` widening) currently sits on top of it and cannot execute against real data
+until it's fixed separately. See `related_market_by_ticker`'s own comment in
+`catalog_scan.py` and `docs/open-decisions.md` for the tracked follow-up. The rest of
+this section describes the code's intended behavior once that gap is closed, not
+verified current production behavior.
+
 `propagate_milestone_winners`'s `custom_strike` block (previously
 `catalog_scan.py:154-160`, referenced above by the `esports_match` entry)
 used to substring-match the raw `winner` string against `custom_strike`'s
@@ -536,8 +554,9 @@ and `Series.last_updated_ts` is explicitly "when this series' **metadata**
 was last updated" (`:228-231`) — trading volume moving is not documented
 as a metadata update, and a live, read-only probe of this app's own
 `data/series_cache.db` confirmed the two are decoupled in practice
-(`KXNCAAMBGAME`: $5.9B lifetime `volume_fp`, a top-10 series by volume,
-with `last_updated_ts` 147 days stale). Since `state["series_cache"]` is
+(`KXNCAAMBGAME`: 5.9 billion lifetime `volume_fp` **contracts** —
+get-series-list.md's own field description, not dollars — a top-10 series
+by volume, with `last_updated_ts` 147 days stale). Since `state["series_cache"]` is
 seeded from the persisted DB at every process start
 (`services/app_state.py`'s own comment), a delta refresh fires on
 effectively every restart once the DB has any history — meaning, without
@@ -553,6 +572,15 @@ least once per this interval regardless of the watermark, bounding the
 staleness window instead of leaving it unbounded.
 
 ## `political_race` candidate resolution via `candidate_id_mapping` (2026-08-31, Task 14 of kalshi-category-data-completeness)
+
+**Correction, final whole-branch review (2026-08-31):** same caveat as the Task 9
+section above - this widens the UUID pool fed into `structured_targets_cache`, but the
+actual winner-matching loop it feeds (`catalog_scan.py`'s `custom_strike` block)
+currently never receives real markets to match against, due to a pre-existing,
+separate gap in `related_market_by_ticker`'s own data-fetching (see that entry). This
+task's own contribution (`candidate_id_mapping` reaching the resolution batch, and the
+UUID-vs-name comparison fix noted below) is correct and tested in isolation; it is
+blocked from mattering in production until the separate gap is fixed.
 
 Extends Task 9's `structured_targets_cache` mechanism to a second UUID
 source specific to `political_race` milestones: `candidate_id_mapping`, a

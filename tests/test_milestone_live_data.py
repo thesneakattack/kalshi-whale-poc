@@ -360,16 +360,21 @@ def test_political_race_status_is_none_when_pre_race():
     assert result == {"status": "none", "winner": None}
 
 
-def test_political_race_status_is_none_signal_when_race_call_status_absent():
+def test_political_race_status_is_none_string_when_race_call_status_absent():
     # votehub-only payload (real shape: provider/status/votehub, no
-    # race-call field at all) - no status signal exists this tick, so
-    # `status` stays the honest None rather than guessing "none".
+    # race-call field at all). Final whole-branch review fix round: this
+    # used to stay Python None ("honest no-signal, not a guess"), but a
+    # falsy None here silently reproduced the same is_live entry-gate-
+    # bypass the "Runoff"/unmapped-value fixes above close (see
+    # _political_race's own comment for the full mechanism) - now the
+    # same safe "none" STRING every other genuinely-uncertain case in
+    # this extractor uses.
     result = mld.extract("political_race", {"provider": "votehub", "status": "created", "votehub": {}})
-    assert result["status"] is None
+    assert result["status"] == "none"
 
 
 def test_political_race_never_raises_on_empty_details():
-    assert mld.extract("political_race", {}) == {"status": None, "winner": None}
+    assert mld.extract("political_race", {}) == {"status": "none", "winner": None}
 
 
 def test_political_race_unmapped_status_value_defaults_to_safe_none_not_python_none(monkeypatch):
@@ -402,12 +407,21 @@ def test_political_race_unmapped_status_value_is_fault_logged_once_per_process(m
     assert len(faults) == 1
 
 
-def test_political_race_missing_key_stays_python_none_not_the_unmapped_value_default():
-    # The genuinely-missing-key case (votehub-only payload) must NOT be
-    # treated as an unmapped value - it's already this module's own
-    # documented "honest no-signal" convention, distinct from "a real
-    # value we don't have a mapping for yet".
-    assert mld.extract("political_race", {"provider": "votehub"})["status"] is None
+def test_political_race_missing_key_does_not_fault_log_unlike_the_unmapped_value_case(monkeypatch):
+    # The genuinely-missing-key case (votehub-only payload, ~13/410
+    # sampled - a known, designed-for shape) and the unmapped-value case
+    # (a real value this module has never observed) now both map to the
+    # same "none" string (final whole-branch review fix round - both
+    # would otherwise reach the same is_live entry-gate bypass), but they
+    # remain distinct in one way: the missing-key case is expected,
+    # ordinary behavior and must NOT fault-log the way a genuinely
+    # unexpected, unmapped value does.
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault",
+                         lambda *a, **k: faults.append(a) or True)
+    result = mld.extract("political_race", {"provider": "votehub"})
+    assert result["status"] == "none"
+    assert faults == []
 
 
 def test_has_no_live_status_false_for_political_race():

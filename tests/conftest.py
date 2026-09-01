@@ -109,20 +109,23 @@ def _fresh_loop_watchdog_window(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_title_cache_series_ticker_cache(monkeypatch):
-    """services/title_cache.py's series_ticker_for() memoization (2026-08-31
-    PR review fix, kalshi-category-data-completeness Task 3 - a per-call
-    fresh-_connect() there reintroduced the exact per-trade hot-path DB cost
-    the 2026-08-11 incident closed) is process-global mutable state keyed by
-    ticker string. Same leak shape as every other fixture in this file: two
-    different tests that happen to reuse the same ticker literal (common in
-    this suite - "TICK-A", "MKT-A", etc.) against two different per-test
-    tmp_path DB_PATH values would otherwise have one test's cached
-    resolution (positive or negative) leak into another's unrelated
-    database, silently returning a stale/wrong answer instead of querying
-    the fresh per-test DB."""
+    """services/title_cache.py's series_ticker_for() in-memory index
+    (_MARKET_EVENT_INDEX/_EVENT_SERIES_INDEX - final whole-branch review
+    fix round, kalshi-category-data-completeness Task 3: replaced fix-round
+    1's DB-backed memoization, which still put a 548us round trip on the
+    exchange-wide trade-tape hot path once per distinct off-watchlist
+    ticker per 5-minute negative-TTL window - see that module's own
+    module-level comment) is process-global mutable state keyed by ticker/
+    event_ticker string. Same leak shape as every other fixture in this
+    file: two different tests that happen to reuse the same ticker literal
+    (common in this suite - "TICK-A", "MKT-A", etc.) against two different
+    per-test tmp_path DB_PATH values would otherwise have one test's
+    indexed resolution leak into another's unrelated database, silently
+    returning a stale/wrong answer instead of reflecting the fresh
+    per-test DB's own load_market_titles()/load_event_titles() calls."""
     from services import title_cache
-    monkeypatch.setattr(title_cache, "_SERIES_TICKER_CACHE", {})
-    monkeypatch.setattr(title_cache, "_SERIES_TICKER_NEGATIVE_CHECKED_AT", {})
+    monkeypatch.setattr(title_cache, "_MARKET_EVENT_INDEX", {})
+    monkeypatch.setattr(title_cache, "_EVENT_SERIES_INDEX", {})
 
 
 @pytest.fixture(autouse=True)

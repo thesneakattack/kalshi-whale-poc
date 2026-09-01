@@ -246,9 +246,23 @@ def _record_unmapped_political_race_status(race_call_status: str) -> None:
 def _political_race(details: dict) -> dict:
     race_call_status = details.get("race_call_status")
     if race_call_status is None:
-        # Genuinely missing key (the votehub-only shape) - honest None,
-        # not a guess, matching this module's own documented convention.
-        status = None
+        # Genuinely missing key (the votehub-only shape, ~13/410 sampled -
+        # a known, designed-for shape, not an anomaly, so no fault-log
+        # here unlike the unmapped-value branch below). Final whole-branch
+        # review, independent adversarial-review finding: this branch
+        # previously returned Python None as "honest no-signal, not a
+        # guess" - but Python None is falsy, and live_status.py's
+        # `confirmed[et]` check only routes a TRUTHY status; a falsy value
+        # here silently falls through to the SAME schedule fallback that
+        # re-derives "live" for any event past its occurrence_datetime -
+        # the identical is_live entry-gate-bypass shape the "Runoff" and
+        # unmapped-value fixes above both close, just reached through this
+        # branch instead. "none" (the same safe, truthy default used
+        # everywhere else in this extractor for genuine uncertainty) is
+        # equally honest about "no race-call signal this tick" while
+        # actually closing the bypass, and stays out of
+        # _LIVE_STATUS_TERMINAL so polling completeness is unaffected.
+        status = "none"
     elif race_call_status in _POLITICAL_RACE_STATUS:
         status = _POLITICAL_RACE_STATUS[race_call_status]
     else:
