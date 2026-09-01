@@ -556,3 +556,57 @@ def test_resolved_signals_with_factors_since_ts_scopes_the_window(tmp_path, monk
         log.mark_resolved(row_id, correct=True)
     assert len(log.resolved_signals_with_factors()) == 2  # default: unscoped, unchanged
     assert len(log.resolved_signals_with_factors(since_ts=300)) == 1  # only NEW
+
+
+# --- write-path capacity fix Task 2: scoring reads use the cached connection
+# pool (services/whalewatchers/_scoring_pool.py), not a fresh _connect() per
+# call - per-trade connection churn on recent_sides_for_ticker/cluster_factor
+# was a measured contributor to a live write-path capacity incident.
+
+def test_recent_sides_for_ticker_uses_the_scoring_cache(tmp_path, monkeypatch):
+    # Two deviations from the task's literal snippet, both verified against
+    # the real source rather than assumed:
+    #
+    # 1. That version took only `monkeypatch` and asserted against the real,
+    #    unpatched module-level DB_PATH (data/signal_log.db) - which
+    #    CLAUDE.md's live-db rule says tests must never touch ("tests always
+    #    monkeypatch DB_PATH to a tmp path"). Using this file's own
+    #    _log(tmp_path, monkeypatch) helper keeps the same assertion (the
+    #    cache is called with whatever DB_PATH currently is) while staying
+    #    isolated from the live file.
+    #
+    # 2. signal_log.py cannot bind `_scoring_pool` as a module-level
+    #    attribute (see _scoring_read_connection's docstring: services/
+    #    whalewatchers/__init__.py eagerly imports kalshi_trade_tape.py,
+    #    which needs services.signal_log.series_of at ITS OWN module top
+    #    level - a top-level import the other way would be a genuine
+    #    circular import, not a style choice). _scoring_read_connection
+    #    imports services.whalewatchers._scoring_pool lazily at call time
+    #    instead, so this test patches that real, single canonical module
+    #    object directly rather than a `log._scoring_pool` attribute that
+    #    doesn't exist - same behavior verified (the scoring-read path goes
+    #    through cached_read_connection with the right db_path), just
+    #    patched at its actual location.
+    from services.whalewatchers import _scoring_pool
+
+    log = _log(tmp_path, monkeypatch)
+    calls = []
+    real = _scoring_pool.cached_read_connection
+
+    def spy(db_path, schema_init):
+        calls.append(db_path)
+        return real(db_path, schema_init)
+
+    monkeypatch.setattr(_scoring_pool, "cached_read_connection", spy)
+    log.recent_sides_for_ticker("KXTEST-25", since_ts=0)
+    assert calls == [log.DB_PATH]
+
+
+def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    # A row written via the plain, event-loop-side _connect() path must be
+    # immediately visible through the cached scoring-read path - same file,
+    # same WAL, no staleness introduced by caching.
+    log.log_signal("KXTEST-VIS", "yes", 100, 0.9, "test", 12345.0)
+    sides = log.recent_sides_for_ticker("KXTEST-VIS", since_ts=0)
+    assert "yes" in sides
