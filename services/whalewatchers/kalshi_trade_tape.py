@@ -36,6 +36,7 @@ from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi.contracts import trade as trade_contract
 from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
+from services.whalewatchers import _scoring_pool
 from services.whalewatchers.base import WhaleWatcherProvider
 
 _DEFAULT_MIN_CONTRACTS = 5000.0
@@ -322,8 +323,8 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         submitted = time.monotonic()
         perf.record_stage("resolve", submitted - resolve_started)
         perf.record_count("to_thread_entries")
-        signals, started, finished = await asyncio.to_thread(
-            self._process_trades_timed, trade_tape, markets, markets_by_ticker, cfg, now, counts,
+        signals, started, finished = await _scoring_pool.run(
+            lambda: self._process_trades_timed(trade_tape, markets, markets_by_ticker, cfg, now, counts),
         )
         perf.record_stage("thread_wait", started - submitted)
         perf.record_stage("sync", finished - started)
@@ -338,7 +339,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         signals = self._process_trades_sync(trade_tape, markets, markets_by_ticker, cfg, now, counts=counts)
         return signals, started, time.monotonic()
 
-    def score_recovered_trade(
+    async def score_recovered_trade(
         self, trade: dict, market: dict, cfg: dict, now: float,
     ) -> list[WhaleSignal]:
         """See WhaleWatcherProvider.score_recovered_trade. Delegates
@@ -358,7 +359,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         ticker = trade.get("ticker")
         if not ticker:
             return []
-        return self._process_trades_sync([trade], [market], {ticker: market}, cfg, now)
+        return await _scoring_pool.run(
+            lambda: self._process_trades_sync([trade], [market], {ticker: market}, cfg, now)
+        )
 
     @http_client.classify("critical_whale")
     async def _resolve_unknown_markets(

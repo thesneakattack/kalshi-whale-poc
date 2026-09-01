@@ -43,16 +43,13 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_schema(conn: sqlite3.Connection) -> None:
+    """Every CREATE TABLE / CREATE INDEX / _add_column_if_missing call this
+    module needs, extracted out of _connect() (write-path capacity fix Task
+    2) so the cached scoring-read connection (_scoring_read_connection
+    below, via services/whalewatchers/_scoring_pool.py) can run the exact
+    same schema init on its own first connect, without also going through
+    _connect()'s per-call sqlite3.connect()/WAL-pragma path."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS signals (
@@ -148,7 +145,43 @@ def _connect() -> sqlite3.Connection:
     # before - this is opt-in exclusion, never opt-out inclusion.
     _add_column_if_missing(conn, "signals", "excluded", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_excluded ON signals (excluded, seen_at)")
+
+
+def _connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect.
+    conn.execute("PRAGMA journal_mode=WAL")
+    _init_schema(conn)
     return conn
+
+
+def _scoring_read_connection() -> sqlite3.Connection:
+    """Cached connection for the two whale-scoring read functions only
+    (recent_sides_for_ticker, cluster_factor) - write-path capacity fix Task
+    2. services/whalewatchers/kalshi_trade_tape.py calls these once per
+    incoming whale trade; a fresh sqlite3.connect() per call was a measured
+    contributor to a live write-path capacity incident. Every other caller
+    of this module keeps using _connect() unchanged - this cache is scoped
+    to just these two read paths, not a general replacement.
+
+    Import deferred to call time, not module load time: services/
+    whalewatchers/__init__.py unconditionally imports kalshi_trade_tape.py,
+    which (via market_history.py) does `from services.signal_log import
+    series_of` at ITS OWN module top level - so a top-level `from
+    services.whalewatchers import _scoring_pool` here would be a genuine,
+    unavoidable circular import (whichever module starts loading first,
+    the other needs a name that doesn't exist yet mid-import). By the time
+    this function actually runs, both modules are already fully loaded, so
+    the import is a cheap sys.modules lookup with no cycle."""
+    from services.whalewatchers import _scoring_pool
+    DB_PATH.parent.mkdir(exist_ok=True)
+    return _scoring_pool.cached_read_connection(DB_PATH, _init_schema)
 
 
 def series_of(ticker: str) -> str:
@@ -247,10 +280,10 @@ def recent_sides_for_ticker(ticker: str, since_ts: float) -> list[str]:
     series_stats - "did whales agree on THIS market" is a narrower, more
     literal question than "how do whales usually do on this type of
     market."""
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT side FROM signals WHERE ticker = ? AND seen_at >= ?", (ticker, since_ts),
-        ).fetchall()
+    conn = _scoring_read_connection()
+    rows = conn.execute(
+        "SELECT side FROM signals WHERE ticker = ? AND seen_at >= ?", (ticker, since_ts),
+    ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -277,11 +310,11 @@ def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_siz
     real accumulation" intuition without trying to reproduce its full
     sequential-run algorithm here - this is a cheaper, real-time proxy for
     one trade, not a retrospective full-history scan)."""
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT size FROM signals WHERE ticker = ? AND side = ? AND seen_at >= ?",
-            (ticker, side, since_ts),
-        ).fetchall()
+    conn = _scoring_read_connection()
+    rows = conn.execute(
+        "SELECT size FROM signals WHERE ticker = ? AND side = ? AND seen_at >= ?",
+        (ticker, side, since_ts),
+    ).fetchall()
     matches = sum(1 for (s,) in rows if _size_ratio_ok(s, size, max_size_ratio))
     return min(matches / 3, 1.0)
 

@@ -60,7 +60,7 @@ class _NoSignalProvider:
     finds nothing worth evaluating (WhaleWatcherProvider's own default) -
     used by the tests below that only care about the retry/backoff/
     abandonment machinery, not evaluation itself."""
-    def score_recovered_trade(self, trade, market, cfg, now):
+    async def score_recovered_trade(self, trade, market, cfg, now):
         return []
 
 
@@ -141,7 +141,7 @@ def test_recovery_routes_a_producible_signal_through_real_handle_signal(monkeypa
     monkeypatch.setattr(decision_bridge, "strategy", fake_strategy)
 
     class _ScoringProvider:
-        def score_recovered_trade(self, trade, market, cfg, now):
+        async def score_recovered_trade(self, trade, market, cfg, now):
             return [WhaleSignal(
                 id=trade["trade_id"], ticker=trade["ticker"], side="yes",
                 size=5000, price=0.6, confidence=0.8, timestamp=now,
@@ -189,6 +189,40 @@ def test_recovery_with_no_producible_signal_still_counts_as_recovered_but_claims
     # Nothing ever claimed this trade_id - run_pending itself must not
     # claim on a bare successful resolution with no signal to evaluate.
     assert candidate_ledger.claim("t2b") is True
+
+
+def test_run_pending_awaits_score_recovered_trade():
+    """Regression for the write-path capacity fix (Task 6): score_recovered_trade
+    became a coroutine function (Task 5, so it can run its scoring work on the
+    dedicated whale-scoring pool instead of the event loop) - run_pending must
+    await it, not iterate its return value directly. A provider whose
+    score_recovered_trade is async but never actually awaited would raise
+    TypeError before this fix (confirmed: this exact failure was reproduced
+    while implementing this task, before the `await` was added)."""
+    from services import candidate_retry
+
+    called = []
+
+    class _AsyncScoringProvider:
+        async def score_recovered_trade(self, trade, market, cfg, now):
+            called.append(True)
+            return [WhaleSignal(
+                id=trade["trade_id"], ticker=trade["ticker"], side="yes",
+                size=5000, price=0.6, confidence=0.8, timestamp=now,
+            )]
+
+    class _RecoversImmediately:
+        async def get_markets_by_tickers(self, tickers):
+            return {t: {"ticker": t, "status": "active"} for t in tickers}
+
+    candidate_retry.enqueue(_trade("t_async", "K_ASYNC"), failure=Exception("first failure"))
+    result = asyncio.run(candidate_retry.run_pending(
+        _RecoversImmediately(), _AsyncScoringProvider(), _noop_handle_signal,
+        _base_cfg(), {}, "", 0.0, now=time.time() + 1.0,
+    ))
+
+    assert called == [True]
+    assert result["recovered"] == 1
 
 
 def test_abandonment_after_the_retry_budget_is_exhausted():
