@@ -7,7 +7,7 @@ Split out of market_watch.py (2026-08-22 modularization Phase 9/9).
 import asyncio
 import time
 
-from services import game_state
+from services import game_state, tick_executor
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
@@ -212,9 +212,11 @@ async def _fetch_event_live_data(client: KalshiPublicGateway, markets: list[dict
             # tick already and both were living only in memory. Rate-limited
             # and deduplicated inside game_state.record.
             if live_data and (live_data.get("details") or {}):
-                game_state.record(
+                _, should_flush = game_state.record(
                     et, live_data["details"],
                     sport=_sport_for_event(state["event_titles"].get(et) or {}),
                     event_type=live_data.get("type"),
                 )
+                if should_flush:
+                    asyncio.create_task(tick_executor.run(game_state.flush))
     return {et: cache[et]["data"] for et in event_tickers if cache.get(et, {}).get("data") is not None}

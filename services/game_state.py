@@ -224,10 +224,13 @@ _last_flush_error: str | None = None
 
 
 def record(event_ticker: str, details: dict, sport: str | None = None,
-           event_type: str | None = None, now: float | None = None) -> bool:
-    """Persist one live-data observation. Returns whether a row was buffered
-    - False for an unchanged payload (deduplicated), one inside the
-    per-event minimum interval, a missing event ticker, or any error.
+           event_type: str | None = None, now: float | None = None) -> tuple[bool, bool]:
+    """Persist one live-data observation. Returns (accepted, should_flush) -
+    accepted is False for an unchanged payload (deduplicated), one inside
+    the per-event minimum interval, a missing event ticker, or any error;
+    should_flush tells the caller a buffer-full flush is now due, to be
+    scheduled off the event loop rather than called inline here -
+    event-loop-blocking elimination Fix 1, 2026-09-01.
 
     Handles ANY live-data shape, not just games: Kalshi's `type` field
     distinguishes `football_game` from `crypto`, and the crypto payload
@@ -241,7 +244,7 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
     cost the tick."""
     try:
         if not event_ticker or not details:
-            return False
+            return False, False
         # Real live bloat found 2026-08-23: crypto's OHLC-candlesticks-plus-
         # price-timeseries payload (see this function's own docstring) gets
         # re-stored in FULL on every write, and the array only grows over a
@@ -263,11 +266,11 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
         # path. Sports/commodity event types are unaffected (commodity's
         # own footprint measured negligible - 576 rows, 30MB total).
         if (event_type or details.get("type")) == "crypto":
-            return False
+            return False, False
         now = now if now is not None else time.time()
         last = _last_write_at.get(event_ticker)
         if last is not None and (now - last) < _MIN_INTERVAL_SEC:
-            return False
+            return False, False
         fields = extract(details, sport)
         fp = _fingerprint(fields)
         if fp == "None|None|None|None|None|None|None|None":
@@ -277,7 +280,7 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
             # identical repeats still don't.
             fp = str(hash(json.dumps(details, sort_keys=True, default=str)))
         if _last_fingerprint.get(event_ticker) == fp:
-            return False
+            return False, False
         _last_fingerprint[event_ticker] = fp
         _last_write_at[event_ticker] = now
         row = (
@@ -291,12 +294,10 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
         with _buffer_lock:
             _buffer.append(row)
             should_flush = len(_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
-        return True
+        return True, should_flush
     except Exception as exc:
         fault_log.record("game_state", "record", exc)
-        return False
+        return False, False
 
 
 def flush() -> dict:
