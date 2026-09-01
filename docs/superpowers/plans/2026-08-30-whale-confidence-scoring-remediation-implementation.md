@@ -78,9 +78,12 @@ section of that document; this plan does not re-derive its reasoning, only seque
 - **Cite a task from this plan as `whale-confidence-scoring-remediation Task N`**, never
   bare `Task N` — `docs/superpowers/plans/README.md`'s own standing warning: eight other
   plans number their own tasks from 1.
-- **Run per-task tests** via `ddev exec -s fastapi sh -c "cd /app/.claude/worktrees/agent-
-  a5110e2d3016b26a8 && python3 -m pytest -q -p no:testmon <files>"` from the primary
-  root (this worktree's own `ddev exec` restriction — CLAUDE.md's dev-workflow section).
+- **Run per-task tests** via `ddev exec -s fastapi bash -c "cd /app/.claude/worktrees/
+  impl-whale-confidence-scoring && python3 -m pytest -q -p no:testmon <files>"` from the
+  primary root (corrected 2026-08-31, post-PR#374 review — this plan's earlier draft
+  cited a different, now-gone worktree path from before this implementation's own
+  worktree was created; `ddev exec` refuses to run from inside a linked worktree
+  directly, per CLAUDE.md's dev-workflow section).
 - **No task changes any `strategy.*` gate value** (`entry_threshold`, `min_unit_cost`,
   `max_unit_cost`, `min_contracts`) — both new scores are reported, never wired into a
   live entry gate (design §2's explicit non-goal).
@@ -255,7 +258,11 @@ def _factor_report(rows: list[dict], factor_name: str) -> dict:
 ### Task 2: `resolved_signals_with_factors()` gets deterministic order and optional date scoping
 
 **Files:**
-- Modify: `services/signal_log.py` (`resolved_signals_with_factors` at `:600-630`)
+- Modify: `services/signal_log.py` (`resolved_signals_with_factors` at `:628-658` —
+  corrected 2026-08-31 post-PR#374 review; was `:600-630` before PR #374 ("kalshi-
+  category-data-completeness") added a `from services import title_cache` import and
+  rewrote `series_of()`'s body, shifting everything from `log_signal` onward by +28
+  lines — the function's own body is byte-for-byte unchanged, only its position moved)
 - Test: `tests/test_signal_log.py`
 
 **Interfaces:**
@@ -546,7 +553,9 @@ def test_bucket_win_rates_excludes_rows_with_an_explicit_none_value():
 - Not a scored factor — `raw_spread` never entered `ConfidenceBreakdown`; this is
   confined to `kalshi_trade_tape.py`'s `raw_context` dict, which `signal_log.log_signal`
   already writes straight into the existing nullable `raw_spread REAL` column
-  (`signal_log.py:184`) — no `signal_log.py` change needed (design §5.1).
+  (`signal_log.py:212` — corrected 2026-08-31 post-PR#374 review, was `:184`; same
+  +28-line shift as Task 2's citation above) — no `signal_log.py` change needed
+  (design §5.1).
 
 - [ ] **Step 1: Write the failing test.** Append to `tests/test_whalewatchers_kalshi_
   trade_tape.py` (matching its `_market`/`_trade` helpers):
@@ -755,7 +764,10 @@ def test_agreement_factor_still_computed_when_recent_prints_exist(monkeypatch):
   "score_fallback_pct": ...}` (design §6.1's exact shape), computed from the same `rows`
   the function already receives — no new query.
 - `raw_spread` reads from `r["raw_spread"]` (already one of `resolved_signals_with_
-  factors()`'s selected columns, `signal_log.py:612`), not from `r["factors"]`.
+  factors()`'s selected columns, `signal_log.py:642` — corrected 2026-08-31 post-PR#374
+  review, was `:612`; the SELECT's actual `raw_spread` column is line 642 in the current
+  file, confirmed by direct read, not a bare +28 offset from a citation that was already
+  2 lines short of the real SELECT line before PR #374), not from `r["factors"]`.
 - `score_fallback_pct` needs a way to tell "the degenerate-all-absent §5.2 fallback
   fired for this row" from "this row's real score is coincidentally 0.5" — Task 3's
   fallback and a genuine 0.5 composite are indistinguishable from `confidence` alone.
@@ -792,7 +804,8 @@ def test_input_coverage_raw_spread_reads_the_row_level_column_not_factors():
 (`_row`'s current fixture shape doesn't set `raw_spread` at all — confirm/add it as a
 top-level key alongside `"confidence"`/`"correct"`/`"factors"` in `_row()` or the test's
 own row-construction, matching `resolved_signals_with_factors()`'s real returned dict
-shape from `services/signal_log.py:621-629`, which this task's implementation reads.)
+shape from `services/signal_log.py:649-657` (corrected 2026-08-31 post-PR#374 review,
+was `:621-629` — same +28-line shift), which this task's implementation reads.)
 
 - [ ] **Step 2: Run to verify FAIL** (`KeyError: 'input_coverage'`).
 - [ ] **Step 3: Implement.** In `generate_calibration_report`, before the final `return`:
@@ -1141,11 +1154,19 @@ whale_edge_weights:
      after this step — it should return nothing outside comments/docstrings referencing
      the old name historically, which don't need editing).
 
-  f. `tests/test_trading_gate.py:1325,1387,1404,1411`: update `DEFAULT_WEIGHTS` →
+  f. `tests/test_trading_gate.py:118,1413,1475,1492,1496,1499` (corrected 2026-08-31,
+     post-PR#374 review: the plan's own prior citation, `:1325,1387,1404,1411`, was
+     already wrong before PR #374 merged - it matched no real `DEFAULT_WEIGHTS`/
+     `whale_confidence_weights` content in either the pre- or post-PR#374 file; these
+     are the actual 6 occurrences, confirmed unaffected by PR #374's own line-shift
+     since they sit above/outside its insertions): update `DEFAULT_WEIGHTS` →
      `DEFAULT_ACCURACY_WEIGHTS` and `"whale_confidence_weights"` → `"whale_accuracy_
-     weights"` in the fixture/assertions this task's rename affects — leave the
-     auto-apply *behavior* assertions (which Task 12 changes) alone for now if they
-     don't reference the config key by name directly.
+     weights"` at all 6 - each one references the config key or constant by name
+     directly (confirmed by reading all 6: an import, a fixture dict key, two
+     assertions reading `config_store.get()["whale_confidence_weights"]`/
+     `DEFAULT_WEIGHTS[...]`, and a `config_path == "whale_confidence_weights"`
+     match), so per this step's own stated rule none of them qualify as a
+     name-free auto-apply *behavior* assertion left for Task 12.
 
 - [ ] **Step 4: Run to verify PASS.**
 - [ ] **Step 5: Run `tests/test_confidence_scoring.py`, `tests/test_confidence_
@@ -1159,10 +1180,14 @@ whale_edge_weights:
 **Files:**
 - Modify: `services/whale_calibration/confidence_calibration.py` (new
   `measurement_is_valid` function)
-- Modify: `main.py` (`_maybe_run_auto_apply` — corrected 2026-08-31 catch-up review, now
-  starting `:405`, not `:420-493`: retarget `whale_confidence_weights` reads/writes at
-  `:432,460,466,489` (not `:427,453,459,482`) to `whale_accuracy_weights`; add the gate
-  check before the write; `fault_log` import already present at `:46`)
+- Modify: `main.py` (`_maybe_run_auto_apply` — corrected 2026-08-31 post-PR#374 review,
+  now starting `:431`, not `:405` (that was itself already corrected from `:420-493` by
+  the pre-PR#374 catch-up review): PR #374 ("kalshi-category-data-completeness") inserted
+  a ~26-line `_SERIES_TAGS_CACHE`/`_build_series_tags_cache()` block at line 150, shifting
+  everything below it by +26; retarget `whale_confidence_weights` reads/writes at
+  `:458,486,492,515` (not `:432,460,466,489`, which were themselves corrected from
+  `:427,453,459,482` pre-PR#374) to `whale_accuracy_weights`; add the gate check before
+  the write; `fault_log` import unaffected, still at `:46` (above the insertion point))
 - Modify: `services/whale_calibration/routes.py` (`apply_confidence_calibration_
   suggestion` — corrected 2026-08-31 catch-up review: retarget reads/writes at
   `:109,144,162,165` (not `:104,137,155,158`) to `whale_accuracy_weights`; add the gate
@@ -1196,7 +1221,9 @@ whale_edge_weights:
   reinterpretation of the design's architecture or values — flagged here for review
   since the design's own phase table doesn't spell out this exact sub-sequencing.
 - **GitNexus impact-check item (d)** (§11, brought forward with this task): "both
-  `measurement_valid` call sites — `main.py:453-459` and `services/whale_calibration/
+  `measurement_valid` call sites — `main.py:479-485` (corrected 2026-08-31 post-PR#374
+  review, was `:453-459` — the `auto_apply_floor`/cooldown `if (...):` conditional block,
+  verified by direct read; same +26 shift) and `services/whale_calibration/
   routes.py`'s `/apply` route." Run `mcp__gitnexus__impact` on `blended_weights_for_
   auto_apply` before Step 3 — confirm these are still the only two real write paths (no
   third call site introduced since the design's own verification).
@@ -1302,11 +1329,13 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
     return True
 ```
 
-  In `main.py`'s `_maybe_run_auto_apply` (starting `:405`, corrected 2026-08-31
-  adversarial review): change `cfg.get("whale_confidence_
-  weights")` (`:432`) and `cfg.get("whale_confidence_weights") or {}` (`:460`) to `cfg.
+  In `main.py`'s `_maybe_run_auto_apply` (starting `:431`, corrected 2026-08-31
+  post-PR#374 review — was `:405` before PR #374's `_build_series_tags_cache` insertion
+  at line 150 shifted everything below it by +26): change `cfg.get("whale_confidence_
+  weights")` (`:458`, was `:432`) and `cfg.get("whale_confidence_weights") or {}`
+  (`:486`, was `:460`) to `cfg.
   get("whale_accuracy_weights")`/`... or {}`; before the `if blended is not None and
-  blended != current_weights:` block (`:464`), add:
+  blended != current_weights:` block (`:490`, was `:464`), add:
 
 ```python
                     if not confidence_calibration.measurement_is_valid(cc_result["report"]["per_factor"]):
@@ -1319,7 +1348,11 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
                         fp_before = config_performance.fingerprint(cfg)
                         config_store.update({"whale_accuracy_weights": blended})
                         # ... rest of the existing block unchanged, its own
-                        # config_path="whale_confidence_weights" at :482
+                        # config_path="whale_confidence_weights" at :515 (corrected
+                        # 2026-08-31 post-PR#374 review - the plan previously cited
+                        # :482 here, which was already wrong pre-PR#374 too; the real
+                        # line was :489 before the merge, now :515 after the +26 shift,
+                        # verified by direct read of the current file)
                         # becomes config_path="whale_accuracy_weights"
 ```
 
@@ -1356,8 +1389,12 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
 ### Task 13: `edge_score` persistence — additive column, one new field on the one real writer
 
 **Files:**
-- Modify: `services/signal_log.py` (`_connect` migrations at `:33-149`; `log_signal` at
-  `:164-187`)
+- Modify: `services/signal_log.py` (`_connect` migrations at `:35-151`; `log_signal` at
+  `:192-215` — corrected 2026-08-31 post-PR#374 review, was `:33-149`/`:164-187`; PR #374
+  added a `title_cache` import above `_connect` (+2 lines, confirmed byte-identical
+  `_connect` body via direct diff) and rewrote `series_of()`'s body between `_connect`
+  and `log_signal` (+26 more lines), so `log_signal` and everything below it shifted +28
+  total while `_connect`'s own citation only shifts +2)
 - Modify: `services/whale_stream/decision_bridge.py` (`log_signal(...)` call at
   `:79-84`)
 - Test: `tests/test_signal_log.py`
@@ -1666,7 +1703,9 @@ def _bucket_mean_edge(rows: list[dict], factor_name: str) -> tuple[dict, str]:
   "measurement_valid": bool}` per design §7.5's exact JSON shape. `measurement_valid` is
   Task 12's `measurement_is_valid(accuracy["per_factor"], edge["per_factor"])` — the
   extension this task's own docstring promised.
-- Every caller updates in the same commit: `main.py:431` (corrected 2026-08-31 adversarial review; the snapshot/auto-apply
+- Every caller updates in the same commit: `main.py:457` (corrected 2026-08-31
+  post-PR#374 review, was `:431` — PR #374's `_build_series_tags_cache` insertion shifted
+  the `generate_calibration_report(...)` call by +26; the snapshot/auto-apply
   block), `services/whale_calibration/routes.py:113,148` (corrected 2026-08-31 adversarial review) (the report route and
   the apply route's own internal `_build_report` closures), `services/research/
   research.py:157-159`.
@@ -1817,7 +1856,8 @@ regression guard test is already added to
   `services/whale_calibration/calibration_history.py`'s `record_snapshot` (see Files
   above) — a second real consumer of the old flat shape, not just the frontend.
 
-  Update the four callers: `main.py:431` (corrected 2026-08-31 adversarial review) → `confidence_calibration.generate_calibration_
+  Update the four callers: `main.py:457` (corrected 2026-08-31 post-PR#374 review, was
+  `:431` — same +26 shift) → `confidence_calibration.generate_calibration_
   report(cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_accuracy_weights"),
   cfg.get("whale_edge_weights"))`; and read `cc_result["report"]["accuracy"]["per_
   factor"]`/`["suggested_weights"]` wherever Task 12's code reads the old flat `per_
