@@ -903,7 +903,8 @@ def test_rest_fill_slims_with_both_documented_identity_spellings():
 def test_cfbenchmarks_value_records_settlement_average_and_spot():
     from services import index_feed
     msg = _payload("cfbenchmarks_value.json")
-    assert index_feed.record_cfbenchmarks(msg, now=1755990000.2) is True
+    accepted, _ = index_feed.record_cfbenchmarks(msg, now=1755990000.2)
+    assert accepted is True
     latest = index_feed.latest("BRTI")
     assert latest is not None
     assert latest["value"] == 65001.23  # upstream index level from the nested data frame
@@ -914,7 +915,8 @@ def test_cfbenchmarks_value_records_settlement_average_and_spot():
 def test_pyth_value_records_a_straight_underlying_price():
     from services import index_feed
     msg = _payload("pyth_value.json")
-    assert index_feed.record_pyth(msg, now=1755990000.2) is True
+    accepted, _ = index_feed.record_pyth(msg, now=1755990000.2)
+    assert accepted is True
     latest = index_feed.latest("Crypto.BTC/USD")
     assert latest is not None
     assert latest["value"] == 65002.41

@@ -91,12 +91,13 @@ not a parsing bug here.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import time
 from urllib.parse import urlencode, urlparse
 
-from services import fault_log
+from services import fault_log, tick_executor
 from services.http_client import call_with_backoff, caller_class, get_client
 from services.index_feed import ingestion
 from services.kalshi import signing
@@ -171,10 +172,18 @@ async def backfill_index(index_id: str, gap: dict, fetch_history, now: float | N
     `reconnect_at - gap_sec` (the WS-level disconnect->reconnect duration,
     which can be a little wider than the actual data gap). Falls back to
     the WS-level figure only when this index has no recorded tick at all
-    yet (e.g. backfill running before the very first live tick)."""
+    yet (e.g. backfill running before the very first live tick).
+
+    Awaits ingestion.last_tick_before (async since event-loop-blocking
+    elimination Fix 1, 2026-09-01 - it used to call flush() synchronously
+    on this coroutine's own thread) and schedules record_cfbenchmarks_
+    backfill's flush off the event loop rather than letting it run inline,
+    the same fix already applied to this module's other four record_*()
+    functions - found by adversarial review of the PR that shipped those
+    four, a second, lower-frequency instance of the identical bug."""
     now = now if now is not None else time.time()
     reconnect_at = gap["reconnect_at"]
-    start_ts = ingestion.last_tick_before(index_id, reconnect_at)
+    start_ts = await ingestion.last_tick_before(index_id, reconnect_at)
     if start_ts is None:
         start_ts = reconnect_at - gap["gap_sec"]
     result = {"index_id": index_id, "start_ts": start_ts, "end_ts": reconnect_at, "rows": 0, "error": None}
@@ -190,7 +199,9 @@ async def backfill_index(index_id: str, gap: dict, fetch_history, now: float | N
         result["at"] = now
         _stats["last_result"] = dict(result)
         return result
-    stored = ingestion.record_cfbenchmarks_backfill(index_id, points, now=now)
+    stored, should_flush = ingestion.record_cfbenchmarks_backfill(index_id, points, now=now)
+    if should_flush:
+        asyncio.create_task(tick_executor.run(ingestion.flush))
     result["rows"] = stored
     _stats["successes"] += 1
     _stats["rows_backfilled"] += stored

@@ -13,6 +13,7 @@ _tick_buffer/_dropped_rows - see services/index_feed/__init__.py's
 docstring for why the package-level names aren't the ones ingestion.py's
 own functions actually read/write.
 """
+import asyncio
 import json
 import sqlite3
 
@@ -113,7 +114,8 @@ def test_projection_is_unknown_before_any_tick_arrives():
 # ---------------------------------------------------------------- capture
 
 def test_cfbenchmarks_tick_parses_the_nested_raw_frame():
-    assert ifd.record_cfbenchmarks(_cf_msg(spot="63512.25"), now=1000.0) is True
+    accepted, _ = ifd.record_cfbenchmarks(_cf_msg(spot="63512.25"), now=1000.0)
+    assert accepted is True
     latest = ifd.latest("BRTI")
     assert latest["value"] == pytest.approx(63512.25)
     assert latest["avg_60s_value"] == pytest.approx(63498.0)
@@ -127,17 +129,55 @@ def test_cfbenchmarks_tick_parses_the_nested_raw_frame():
 
 
 def test_pyth_tick_records_a_bare_price():
-    assert ifd.record_pyth({"underlying_ticker": "Metal.XAU/USD", "value_usd": "2365.12345000",
-                            "source_ts_ms": 1, "received_at": 2}, now=1000.0) is True
+    accepted, _ = ifd.record_pyth({"underlying_ticker": "Metal.XAU/USD", "value_usd": "2365.12345000",
+                                   "source_ts_ms": 1, "received_at": 2}, now=1000.0)
+    assert accepted is True
     latest = ifd.latest("Metal.XAU/USD")
     assert latest["value"] == pytest.approx(2365.12345)
     assert latest["q15_window_size"] is None
 
 
 def test_capture_never_raises_on_garbage():
-    assert ifd.record_cfbenchmarks({}) is False
-    assert ifd.record_pyth({}) is False
-    assert ifd.record_cfbenchmarks({"index_id": "BRTI", "data": "not json"}) is True
+    assert ifd.record_cfbenchmarks({})[0] is False
+    assert ifd.record_pyth({})[0] is False
+    assert ifd.record_cfbenchmarks({"index_id": "BRTI", "data": "not json"})[0] is True
+
+
+def test_record_cfbenchmarks_returns_should_flush_without_flushing(monkeypatch):
+    """Event-loop-blocking fix 1 (2026-09-01): record_cfbenchmarks used to
+    call flush() inline once the buffer hit _FLUSH_BATCH - real synchronous
+    disk I/O with no await point, blocking the whole asyncio event loop for
+    the write's duration (confirmed live: a 13-minute app-wide stall). It
+    now only reports that a flush is due; the caller (services/whale_stream/
+    index_stream_handlers.py's _process_stream_index) schedules it off the
+    loop via tick_executor."""
+    flush_calls = []
+    monkeypatch.setattr(_ingestion, "flush", lambda: flush_calls.append(1) or {"ticks": 0})
+    for i in range(_ingestion._FLUSH_BATCH - 1):
+        accepted, should_flush = ifd.record_cfbenchmarks(_cf_msg(), now=1000.0 + i)
+        assert accepted is True
+        assert should_flush is False
+    accepted, should_flush = ifd.record_cfbenchmarks(_cf_msg(), now=2000.0)
+    assert accepted is True
+    assert should_flush is True  # crossed _FLUSH_BATCH
+    assert flush_calls == []  # never called internally - the caller's job now
+
+
+def test_record_pyth_returns_should_flush_without_flushing(monkeypatch):
+    flush_calls = []
+    monkeypatch.setattr(_ingestion, "flush", lambda: flush_calls.append(1) or {"ticks": 0})
+    for i in range(_ingestion._FLUSH_BATCH - 1):
+        accepted, should_flush = ifd.record_pyth(
+            {"underlying_ticker": "BTC", "value_usd": "50000"}, now=1000.0 + i,
+        )
+        assert accepted is True
+        assert should_flush is False
+    accepted, should_flush = ifd.record_pyth(
+        {"underlying_ticker": "BTC", "value_usd": "50000"}, now=2000.0,
+    )
+    assert accepted is True
+    assert should_flush is True
+    assert flush_calls == []
 
 
 # --------------------------------------------- no-assumption spec guards
@@ -241,7 +281,7 @@ def test_last_tick_before_ignores_ticks_at_or_after_the_cutoff():
     _ingestion.record_cfbenchmarks(_cf_msg(spot="2"), now=105.0)
     _ingestion.record_cfbenchmarks(_cf_msg(spot="3"), now=110.0)  # at/after cutoff - excluded
 
-    assert _ingestion.last_tick_before("BRTI", 110.0) == pytest.approx(105.0)
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 110.0)) == pytest.approx(105.0)
 
 
 def test_last_tick_before_flushes_the_buffer_first():
@@ -251,12 +291,12 @@ def test_last_tick_before_flushes_the_buffer_first():
     _ingestion.record_cfbenchmarks(_cf_msg(), now=50.0)
     assert _ingestion._tick_buffer  # still buffered, not yet flushed
 
-    assert _ingestion.last_tick_before("BRTI", 60.0) == pytest.approx(50.0)
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 60.0)) == pytest.approx(50.0)
     assert _ingestion._tick_buffer == []
 
 
 def test_last_tick_before_returns_none_when_index_never_seen():
-    assert _ingestion.last_tick_before("BRTI", 100.0) is None
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 100.0)) is None
 
 
 def test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source():
@@ -264,8 +304,10 @@ def test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source():
         {"type": "value", "id": "BRTI", "time": 1_755_000_000_000, "value": "63500.00"},
         {"type": "value", "id": "BRTI", "time": 1_755_000_001_000, "value": "63501.50"},
     ]
-    stored = _ingestion.record_cfbenchmarks_backfill("BRTI", points, now=1000.0)
+    stored, should_flush = _ingestion.record_cfbenchmarks_backfill("BRTI", points, now=1000.0)
     assert stored == 2
+    assert should_flush is True
+    _ingestion.flush()  # caller's job now (event-loop-blocking elimination Fix 1) - do it explicitly here to check persistence
 
     with sqlite3.connect(_ingestion.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -292,5 +334,5 @@ def test_record_cfbenchmarks_backfill_never_regresses_latest_backward():
 
 
 def test_record_cfbenchmarks_backfill_never_raises_on_garbage():
-    assert _ingestion.record_cfbenchmarks_backfill("BRTI", [None, "not a dict", {}]) == 1
-    assert _ingestion.record_cfbenchmarks_backfill("BRTI", None) == 0
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", [None, "not a dict", {}]) == (1, True)
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", None) == (0, False)

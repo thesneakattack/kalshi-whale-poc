@@ -300,27 +300,34 @@ def record_trade(trade: dict, cfg: dict | None = None, now: float | None = None)
         return False
 
 
-def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = None) -> bool:
+def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = None) -> tuple[bool, bool]:
     """Persist one `ticker`-channel book snapshot in full — every field
     docs/kalshi/market-ticker.md documents, not just the two prices
     _process_stream_ticker keeps.
 
     Throttled per ticker (series_watcher.book_snapshot_interval_sec) since
     the channel fires on every field change. Same never-raises contract as
-    record_trade."""
+    record_trade.
+
+    Returns (accepted, should_flush) - accepted is the original "was this
+    row buffered" signal; should_flush tells the caller a buffer-full flush
+    is now due, to be scheduled off the event loop rather than called
+    inline here - event-loop-blocking elimination Fix 1, 2026-09-01. This
+    function fires on every ticker-channel field change, making it plausibly
+    the highest-frequency of the four functions this fix touches."""
     try:
         ticker = ticker_msg.get("market_ticker") or ticker_msg.get("ticker")
         if not ticker or not capture_enabled(cfg):
-            return False
+            return False, False
         series = signal_log.series_of(ticker)
         if series not in watched_series(cfg):
-            return False
+            return False, False
 
         now = now if now is not None else time.time()
         interval = float(_cfg_section(cfg).get("book_snapshot_interval_sec", _DEFAULT_BOOK_INTERVAL_SEC))
         last = _last_book_write.get(ticker)
         if last is not None and (now - last) < interval:
-            return False
+            return False, False
         _last_book_write[ticker] = now
 
         row = (
@@ -336,12 +343,10 @@ def record_book(ticker_msg: dict, cfg: dict | None = None, now: float | None = N
         with _buffer_lock:
             _book_buffer.append(row)
             should_flush = len(_book_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
-        return True
+        return True, should_flush
     except Exception as exc:
         fault_log.record("series_watcher", "record_book", exc)
-        return False
+        return False, False
 
 
 def _quarantine_active() -> bool:

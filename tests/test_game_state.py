@@ -89,16 +89,16 @@ def test_stores_the_whole_payload_including_unmapped_fields():
 def test_unchanged_state_is_not_rewritten_every_poll():
     """A finished game keeps being polled for hours; without this it would
     dominate the table with identical rows."""
-    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1000.0) is True
-    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1060.0) is False
-    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1120.0) is False
+    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1000.0)[0] is True
+    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1060.0)[0] is False
+    assert gs.record("EVT-1", _FOOTBALL, sport="football", now=1120.0)[0] is False
 
 
 def test_a_real_state_change_does_write():
     gs.record("EVT-1", _BASEBALL, sport="baseball", now=1000.0)
     scored = {**_BASEBALL, "home_runs": 6,
               "last_play": {"description": "Home run", "occurence_ts": 1786836100}}
-    assert gs.record("EVT-1", scored, sport="baseball", now=1060.0) is True
+    assert gs.record("EVT-1", scored, sport="baseball", now=1060.0)[0] is True
     gs.flush()
     rows = gs.timeline("EVT-1")
     assert [r["home_score"] for r in rows] == [5, 6]
@@ -109,13 +109,13 @@ def test_a_ticking_clock_alone_is_not_a_state_change():
     """source_updated_ts moves constantly; that is not news."""
     gs.record("EVT-1", _BASEBALL, sport="baseball", now=1000.0)
     same_but_later = {**_BASEBALL, "last_updated_ts": 1786899999}
-    assert gs.record("EVT-1", same_but_later, sport="baseball", now=1060.0) is False
+    assert gs.record("EVT-1", same_but_later, sport="baseball", now=1060.0)[0] is False
 
 
 def test_record_never_raises_on_garbage():
-    assert gs.record("", {"a": 1}) is False
-    assert gs.record("EVT-1", {}) is False
-    assert gs.record("EVT-1", {"last_play": "not-a-dict", "home_points": "x"}) is True
+    assert gs.record("", {"a": 1})[0] is False
+    assert gs.record("EVT-1", {})[0] is False
+    assert gs.record("EVT-1", {"last_play": "not-a-dict", "home_points": "x"})[0] is True
 
 
 def test_concurrent_record_and_flush_never_silently_lose_a_row(monkeypatch):
@@ -160,7 +160,8 @@ def test_concurrent_record_and_flush_never_silently_lose_a_row(monkeypatch):
         recorded = 0
         for i in range(n_per_thread):
             payload = dict(_FOOTBALL)
-            if gs.record(f"TICK-{worker_id}-{i}", payload, sport="football", now=1000.0 + i):
+            accepted, _ = gs.record(f"TICK-{worker_id}-{i}", payload, sport="football", now=1000.0 + i)
+            if accepted:
                 recorded += 1
         with recorded_lock:
             recorded_counts.append(recorded)
@@ -266,7 +267,7 @@ _CRYPTO = {
 
 
 def test_a_crypto_payload_is_never_stored_via_the_event_type_kwarg():
-    assert gs.record("KXBTCD-26AUG1717", _CRYPTO, event_type="crypto", now=1000.0) is False
+    assert gs.record("KXBTCD-26AUG1717", _CRYPTO, event_type="crypto", now=1000.0)[0] is False
     assert gs._buffer == []  # never even queued - no DB table gets touched at all
 
 
@@ -276,7 +277,7 @@ def test_a_crypto_payload_is_never_stored_via_the_payloads_own_type_field():
     # (see its own "event_type or details.get('type')" line), so the guard
     # has to catch this path too, not just the explicit-kwarg one above.
     payload = {**_CRYPTO, "type": "crypto"}
-    assert gs.record("KXBTCD-26AUG1717", payload, now=1000.0) is False
+    assert gs.record("KXBTCD-26AUG1717", payload, now=1000.0)[0] is False
     assert gs._buffer == []
 
 
@@ -309,10 +310,31 @@ def test_a_commodity_payload_is_still_stored_whole():
     # stored" (its own docstring) - narrowing that further than the one
     # measured, confirmed offender would be an unjustified behavior change.
     payload = {"coin": "GOLD", "spot_price": 2000.0}
-    assert gs.record("KXGOLD-26AUG17", payload, event_type="commodity", now=1000.0) is True
+    assert gs.record("KXGOLD-26AUG17", payload, event_type="commodity", now=1000.0)[0] is True
     gs.flush()
     with sqlite3.connect(gs.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM game_states").fetchone()
     assert row["event_type"] == "commodity"
     assert json.loads(row["raw_json"])["spot_price"] == 2000.0
+
+
+def test_record_returns_should_flush_without_flushing(monkeypatch):
+    """event-loop-blocking elimination Fix 1 (2026-09-01): record() must
+    never call flush() itself - that's a synchronous disk write with no
+    await point, and calling it inline from record() blocked the whole
+    event loop for the write's duration (confirmed live: a 13-minute
+    app-wide stall). record() now only reports should_flush; its async
+    callers are responsible for scheduling the actual flush off the event
+    loop (see services/market_watch/event_metadata.py and live_status.py)."""
+    flush_calls = []
+    monkeypatch.setattr(gs, "flush", lambda: flush_calls.append(1) or {})
+    details = {"type": "football_game", "status": "in_progress", "home_score": 7, "away_score": 3}
+    for i in range(gs._FLUSH_BATCH - 1):
+        accepted, should_flush = gs.record(f"EVT-{i}", details)
+        assert accepted is True
+        assert should_flush is False
+    accepted, should_flush = gs.record(f"EVT-{gs._FLUSH_BATCH}", details)
+    assert accepted is True
+    assert should_flush is True
+    assert flush_calls == []

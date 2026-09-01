@@ -142,7 +142,7 @@ def test_record_book_keeps_the_fields_process_stream_ticker_throws_away():
         "dollar_volume": 16948, "dollar_open_interest": 10211,
         "last_trade_size_fp": "25.00", "ts_ms": 1_755_000_000_000,
     }
-    assert sw.record_book(msg, CFG, now=1000.0) is True
+    assert sw.record_book(msg, CFG, now=1000.0) == (True, False)
     sw.flush()
     with sqlite3.connect(sw.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -158,17 +158,39 @@ def test_record_book_keeps_the_fields_process_stream_ticker_throws_away():
 
 def test_record_book_throttles_per_ticker():
     msg = {"market_ticker": "KXBTC15M-26AUG17-B1", "yes_bid_dollars": "0.45"}
-    assert sw.record_book(msg, CFG, now=1000.0) is True
-    assert sw.record_book(msg, CFG, now=1002.0) is False   # inside the 5s interval
-    assert sw.record_book(msg, CFG, now=1006.0) is True
+    assert sw.record_book(msg, CFG, now=1000.0) == (True, False)
+    assert sw.record_book(msg, CFG, now=1002.0) == (False, False)   # inside the 5s interval
+    assert sw.record_book(msg, CFG, now=1006.0) == (True, False)
     other = {"market_ticker": "KXBTC15M-26AUG17-B2", "yes_bid_dollars": "0.45"}
-    assert sw.record_book(other, CFG, now=1002.0) is True  # throttle is per ticker
+    assert sw.record_book(other, CFG, now=1002.0) == (True, False)  # throttle is per ticker
+
+
+def test_record_book_returns_should_flush_without_flushing(monkeypatch):
+    """Event-loop-blocking elimination Fix 1 (2026-09-01): record_book must
+    hand should_flush back to its caller instead of calling flush() inline
+    - the caller (whale_stream_handlers._process_stream_ticker) schedules
+    the real flush off the event loop via tick_executor.run instead."""
+    flush_calls = []
+    monkeypatch.setattr(sw, "flush", lambda: flush_calls.append(1) or {})
+    ticker_msg_base = {"market_ticker": "KXBTC15M-25", "price_dollars": "0.55"}
+    for i in range(sw._FLUSH_BATCH - 1):
+        # book_snapshot_interval_sec throttles per-ticker - pass an
+        # explicit, increasing `now` so each call clears the interval.
+        accepted, should_flush = sw.record_book(ticker_msg_base, CFG, now=1000.0 + i * 100)
+        assert accepted is True
+        assert should_flush is False
+    accepted, should_flush = sw.record_book(
+        ticker_msg_base, CFG, now=1000.0 + sw._FLUSH_BATCH * 100,
+    )
+    assert accepted is True
+    assert should_flush is True
+    assert flush_calls == []
 
 
 def test_capture_disabled_writes_nothing():
     cfg = {"series_watcher": {"enabled": False, "series": ["KXBTC15M"]}}
     assert sw.record_trade(_trade("t1"), cfg) is False
-    assert sw.record_book({"market_ticker": "KXBTC15M-A"}, cfg) is False
+    assert sw.record_book({"market_ticker": "KXBTC15M-A"}, cfg) == (False, False)
 
 
 def test_prune_drops_old_book_snapshots_but_never_trades():
@@ -320,11 +342,11 @@ def test_concurrent_record_and_flush_loses_no_rows_and_creates_no_duplicates(mon
         def _writer() -> None:
             try:
                 for i in range(n_records):
-                    ok = sw.record_book(
+                    accepted, _ = sw.record_book(
                         {"market_ticker": f"KXBTC15M-RACE-{i}", "price_dollars": "0.50"},
                         CFG, now=1000.0 + i,
                     )
-                    assert ok is True
+                    assert accepted is True
             except Exception as exc:  # pragma: no cover - surfaced via errors list
                 errors.append(exc)
 
@@ -368,10 +390,11 @@ def test_concurrent_two_flushers_never_double_write_the_same_buffered_rows():
     sys.setswitchinterval(0.00001)
     try:
         for i in range(n_records):
-            assert sw.record_book(
+            accepted, _ = sw.record_book(
                 {"market_ticker": f"KXBTC15M-DBLFLUSH-{i}", "price_dollars": "0.50"},
                 CFG, now=1000.0 + i,
-            ) is True
+            )
+            assert accepted is True
 
         errors: list[Exception] = []
         barrier = threading.Barrier(2)

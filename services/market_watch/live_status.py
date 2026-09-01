@@ -3,10 +3,11 @@ Real live/scheduled/finished status per event, via Kalshi's milestone/
 live-data system, plus exchange status. Split out of market_watch.py
 (2026-08-22 modularization Phase 9/9).
 """
+import asyncio
 import time
 from datetime import datetime
 
-from services import game_state
+from services import game_state, tick_executor
 from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
@@ -293,8 +294,10 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
                 # questions like "did this whale print land right after a
                 # scoring play" answerable later. Deduplicated on real state
                 # change, so a finished game polled for hours writes once.
-                game_state.record(et, details, sport=_sport_for_event(
+                _, should_flush = game_state.record(et, details, sport=_sport_for_event(
                     state["event_titles"].get(et) or {}))
+                if should_flush:
+                    asyncio.create_task(tick_executor.run(game_state.flush))
 
     # Schedule fallback, direct request: "otherwise use the schedule and
     # its previous live status to operate" - but a direct correction right
