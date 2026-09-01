@@ -50,6 +50,15 @@ kalshi-python-async==3.27.0
 # directly by its configuration.py - a real packaging gap on Kalshi's side.
 urllib3==2.7.0
 websockets==17.0.1
+# aiosqlite - services/diagnostics/diagnostics.py + services/series_watcher.py's
+# read-only functions run through this now (event-loop-blocking-elimination
+# Fix 2, 2026-09-01) instead of raw sqlite3 + a hand-rolled ThreadPoolExecutor,
+# so the asyncio event loop is never blocked by their disk I/O. 0.22.1 is the
+# current latest stable (confirmed via `pip index versions aiosqlite` inside
+# the fastapi container, not assumed) - not previously a dependency of this
+# repo (confirmed: absent from this file and from a direct `import aiosqlite`
+# probe inside the running container, which raised ModuleNotFoundError).
+aiosqlite==0.22.1
 # services/market_analyst_agent.py - optional, only imported/used when
 # ANTHROPIC_API_KEY is set and market_analyst.enabled is true (see that
 # module's docstring). Version confirmed directly via `pip index versions`
