@@ -97,6 +97,38 @@ it runs as the host user.
 
 ## Recently resolved (2026-09-01, this session)
 
+- **PR #417 merged** (`loop_watchdog` fault visibility) **+ PR #418** (a
+  base-branch correction PR #417 itself needed). `services/loop_watchdog.py`
+  has sampled the event loop for stalls every 0.1s since I13 P0 Task 1, but
+  its snapshot was read-only - live investigation the same night found
+  severe stalls (up to 130s over 24h, 56.6s in a 15-minute window) sitting
+  in `observability.db` entirely unsurfaced, with no `fault_log` entry and
+  no automated `soak_analyzer`/`quality_audit` check ever reading it.
+  `maybe_capture` now logs one `fault_log` row per persisted window that saw
+  a stall (`severity="error"` at `stall_max_ms >= 1000ms`, else `"warn"`);
+  `tools/soak_analyzer.py` gains `check_event_loop_stalls` (DATA_PLANE
+  layer). Full review cycle: self-review, then a fresh independent
+  adversarial review (GO, 6 minor findings, none blocking -
+  `docs/superpowers/specs/2026-09-01-loop-watchdog-fault-visibility-pr417-*.md`),
+  consolidation, 3 mechanical fixes applied (exact-1000ms boundary test, a
+  misleading docstring, a README update); 2 real design questions deferred
+  to `docs/open-decisions.md` rather than reflexively patched (the check can
+  never report PASS from a genuinely healthy window - a pre-existing SQL
+  `GROUP BY` shape shared with `check_exit_engine_faults`; severity is keyed
+  on peak stall magnitude only, never frequency). **Process mistake, caught
+  and fixed same session:** PR #417 was opened against
+  `feat/realtime-data-plane-remediation` instead of `main` - a wrong
+  inference from reading that branch's own `git log` (it contained PR #414's
+  merge commit only because it had separately merged `origin/main` into
+  itself earlier; the local `main` ref was actually 176 commits stale,
+  never pulled). PR #414/#409/#415 all correctly targeted `main` directly
+  the whole time - only this session's own docs commit and PR #417 drifted.
+  Fixed via PR #418 (`feat/realtime-data-plane-remediation` → `main`, clean
+  fast-forward, all 5 stray commits now in `main`); primary checkout moved
+  onto `main` directly and the now-fully-redundant
+  `feat/realtime-data-plane-remediation` branch deleted (local + remote) to
+  prevent recurrence. See the `never-infer-integration-branch-from-local-log`
+  memory for the full lesson.
 - **PR #414 merged and deployed** (event-loop-blocking elimination Fix 1,
   merge commit `9e26af7`): 6 functions across `services/index_feed/ingestion.py`,
   `services/settlement_edge.py`, `services/game_state.py`,
