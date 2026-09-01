@@ -362,7 +362,7 @@ def composite_confidence_breakdown(
 
 def composite_confidence(
     market: dict, markets: list[dict], size: float, price: float, now: float,
-    agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
+    agreement_factor: float | None = 0.5, cluster_factor: float = 0.0, trend_factor: float | None = 0.5,
     analyst_factor: float = 0.5, block_trade_factor: float = 0.0,
     weights: dict | None = None, side: str = "yes",
 ) -> float:

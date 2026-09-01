@@ -634,9 +634,13 @@ def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     naturally excludes every simulator-sourced row without needing a second,
     possibly-drifting definition of "real" to maintain. No limit scoping,
     and date scoping is optional (see since_ts below) rather than default -
-    the calibration gate cares about total resolved count, not recency, and
-    this table is small enough (one row per signal, not per tick) that a
-    full scan is cheap even unscoped. `series` is already a stored, indexed
+    the calibration gate cares about total resolved count, not recency.
+    An unscoped scan is NOT cheap at real production volume - measured at
+    ~1s against 103k+ rows (2026-09-01, whale-confidence-scoring-remediation
+    final review) - a caller on a tight polling budget (e.g. a route hit
+    every few seconds) should pass since_ts to bound it; the calibration
+    gate itself stays unscoped by design since it cares about total
+    resolved count, not recency. `series` is already a stored, indexed
     column (issue #60 - it existed but was never selected here, so every
     consumer of this function was blind to it).
 

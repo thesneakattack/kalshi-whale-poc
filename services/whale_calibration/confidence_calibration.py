@@ -88,8 +88,11 @@ def _tied_run_size(sorted_vals: list[float], cut_idx: int) -> int:
 def _bucket_win_rates(rows: list[dict], factor_name: str) -> tuple[dict, str]:
     """Splits resolved signals into low/mid/high thirds by this factor's
     logged value (index-based tertiles on the sorted rows, not a value
-    comparison - avoids tie/duplicate-value edge cases entirely) and
-    returns each third's win rate. Same confidence-bucket idiom advisory_
+    comparison - avoids relying on the factor's own numeric spread, but a
+    tie AT a cut boundary is its own edge case, not avoided by this choice -
+    see the materiality-floored boundary-in-tie predicate a few lines below,
+    added specifically because ties at a cut can and do occur in real data)
+    and returns each third's win rate. Same confidence-bucket idiom advisory_
     engine._entry_threshold_recommendation already uses for strategy.
     entry_threshold, applied here per-factor instead of per-trade.
 
