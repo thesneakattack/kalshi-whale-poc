@@ -1,43 +1,26 @@
 # Next action
 
-**Root-cause why the trade/candidate write path (capture_writer/candidate_log)
-degrades under legitimate high trade volume instead of sustaining it - a live
-incident today proved it does, and the data-plane HARD RULE says it must
-not.** 2026-09-01: raising `whale_watcher_kalshi.min_contracts_by_series`
-overrides for `KXBTC15M`/`KXBTCD`/`KXETH15M` (dropping BTC15M's effective
-threshold 3000→173) produced a real, measured spike - 8322 `min_contracts`
-rejection_events in 15 minutes (5046 from KXBTC15M alone) - that overwhelmed
-`capture_writer`/`candidate_log`'s write path: tick duration climbed
-6.63s→32.41s→241.63s peak, `kalshi_websocket` hit repeated
-`consumer_stalled_forced_reconnect`, the ingest queue approached its 20000
-capacity (17451, real risk of message loss), and signal generation stopped
-for ~6 minutes. Reverted those 3 series' overrides as an immediate stopgap
-(confirmed recovery: queue 17451→0, tick duration back to 5-31s within ~5
-min) - **but per direct correction, that revert is a patch, not the fix:
-"the amount of trades shouldn't slow things down EVER."** Gold/silver/
-commodities' own overrides stayed (only ~9.5% of the spike, and the actual
-original fix - see below).
-
-Use `superpowers:systematic-debugging`. Candidate mechanisms worth checking
-first (not yet verified, don't assume): whether `capture_writer`'s daemon-
-thread batching (1s cadence, `_FLUSH_BATCH` size) itself scales with burst
-rate or has a fixed-cost bottleneck per flush; whether `candidate_log`'s
-per-print `record_rejection`/`record_signal` calls do anything synchronous
-on the hot path beyond the already-batched `capture_writer.submit()`; and
-whether the `kalshi_trade_tape.py` prescan/resolve pipeline itself (not just
-the DB layer) has a per-message cost that doesn't stay flat as message rate
-grows. This is squarely "the data plane is the product" territory - measure
-the actual bottleneck and its mechanism before touching any capacity/rate/
-batch-size value (HARD RULE), and note this is now urgent for a second
-reason: a peer session's WS-push plan (`feat/frontend-realtime-push`) adds
-new real DB-backed work onto the same hot path handlers
-(`_process_stream_trade`/`_process_stream_fill`), so this capacity ceiling
-is a live constraint on other in-flight work, not just today's incident.
-
-**Once that's genuinely fixed** (not just reverted around), re-attempt
-raising KXBTC15M/KXBTCD/KXETH15M's `min_contracts_by_series` to their real
-P90 (173/248/50 - already computed, see PR #397's history) under a write
-path that can actually sustain the resulting volume.
+**Investigate WS reconnect churn + slow background REST calls as the
+residual cause of tick slowness now that the write-path capacity fix (PR
+#409, below) is deployed** (issue #412). Post-deploy measurement still shows
+`last_tick_duration_sec: 113s` (down 2x from 228s pre-fix, but not healthy)
+and a directly-observed 45-second full request-silence gap
+(2026-09-01 16:17:49-16:18:34, zero requests served or logged). This is a
+*different* mechanism than PR #409 touched - `GET /api/health/pipeline`
+shows 3 WS reconnects in the first 13 minutes post-deploy
+(`ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout`,
+one ~90s before the observed gap) and some REST calls
+(`background_catalog`/`background_resolution` classes) taking up to 55.8s.
+Use `superpowers:systematic-debugging` and the same observability-first
+methodology as PR #409 - measure before touching anything, per the
+data-plane HARD RULE. Two other follow-ups from the same investigation,
+lower priority: issue #410 (two routes - `analytics/routes.py`'s
+`population_gate_summary`, `whale_calibration/routes.py`'s `_build_report` -
+still share `tick_executor`'s pool the way `run_offline()` used to, unmeasured)
+and issue #411 (a CI `push/tests-pytest` failure that didn't reproduce
+locally or on the `pr/tests-pytest` context for the same commit - needs a
+valid Woodpecker token to read the actual log, since the stored one was
+stale).
 
 ---
 
@@ -97,6 +80,37 @@ it runs as the host user.
 
 ## Recently resolved (2026-09-01, this session)
 
+- **PR #409 merged and deployed** (write-path capacity fix, milestone issue
+  #400/8 tasks, all closed): two root causes fixed under one architectural
+  principle - nothing non-critical shares `services.tick_executor`'s
+  2-worker pool (or Python's shared default executor) with trading-critical
+  writes. (1) `kalshi_trade_tape.py`'s per-trade whale-scoring pipeline
+  opened a fresh SQLite connection per trade across 3 db files - fixed with
+  a dedicated 4-worker pool + thread-local connection cache
+  (`services/whalewatchers/_scoring_pool.py`), also bringing
+  `candidate_retry.py`'s synchronous-on-the-event-loop
+  `score_recovered_trade` path into scope (made async). (2)
+  `GET /api/quality/summary`'s `diagnostics.run_offline()` shared
+  `tick_executor`'s pool with `capture_writer`/`candidate_log` writes,
+  confirmed live starving them (both workers pinned 5h10m+, recurring lock
+  faults) - fixed with a dedicated 2-worker isolation pool
+  (`services/diagnostics/_diagnostics_pool.py`). Full review cycle both at
+  spec/plan stage (2 independent adversarial-review rounds, fresh Agent
+  calls) and at PR stage (self-review + adversarial review + consolidation,
+  `docs/superpowers/specs/2026-09-01-write-path-capacity-fix-pr-review*.md`)
+  - the adversarial review found a wrong circular-import claim in
+  `market_history.py`'s docstring (fixed, corrected to the real mechanism)
+  and a stale comment, both fixed and rechecked before merge. Measured
+  before/after on live production (issue #407): `handler_total`'s worst case
+  267,468ms→8,709ms (30.7x), `provider` (whale-scoring) 11,488ms→5,026ms,
+  `signals` 255,980ms→8,685ms (29.5x) - a clean, unambiguous win on every
+  stage this fix targets. Tick duration improved but not fully healthy
+  (228s→113s) - a real, separate residual mechanism (WS reconnect churn +
+  slow REST calls) is now this file's top item (issue #412). Two other
+  follow-ups filed, not folded into this fix per the data-plane HARD RULE
+  (measure before touching capacity/isolation): issue #410 (two sibling
+  routes with the same tick_executor-sharing shape, unmeasured), issue #411
+  (an unreproduced CI push-context pytest failure, not a required check).
 - **PR #394 merged** (2026-09-01T07:53Z): root-caused and fixed the
   `capture_writer_health`/`exit_engine_faults` recurrence via
   `superpowers:systematic-debugging`, not a guess. Started from a different
