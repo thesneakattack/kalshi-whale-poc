@@ -321,6 +321,13 @@ def test_get_series_cache_derives_min_updated_ts_from_the_cached_last_updated_ts
     monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
     state["series_cache"] = {
         "fetched_at": 0.0,
+        # last_full_sync_at recent (final whole-branch review fix-round):
+        # otherwise this fresh dict's missing key defaults to 0.0 in
+        # _get_series_cache, which is always "due" for the periodic full
+        # resync and would take the unfiltered get_series_list() branch
+        # this test isn't exercising - seeding it recent keeps this test on
+        # the delta/min_updated_ts path it specifically tests.
+        "last_full_sync_at": time.time(),
         "series": [{"ticker": "K1", "category": "Sports", "volume_fp": "100",
                      "last_updated_ts": "2026-08-01T00:00:00+00:00"}],  # epoch 1785542400
     }
@@ -366,3 +373,50 @@ def test_get_series_cache_first_sync_omits_min_updated_ts_entirely(tmp_path, mon
 
     assert calls == [()]
     assert [s["ticker"] for s in result] == ["FIRST"]
+
+
+def test_get_series_cache_forces_a_full_resync_once_last_full_sync_at_is_overdue(tmp_path, monkeypatch):
+    # Final whole-branch review finding: min_updated_ts filters on Kalshi's
+    # own "metadata updated" definition, confirmed live to be decoupled
+    # from trading volume (KXNCAAMBGAME: $5.9B lifetime volume_fp, 147-day-
+    # stale last_updated_ts). Once a delta ever fires - which
+    # series_cache.load() seeding state["series_cache"] at every process
+    # start means happens on effectively every restart in production - a
+    # series whose metadata stops changing would have its volume_fp frozen
+    # forever with no path back to a full fetch, and a series that starts
+    # at zero volume could never re-enter the cache at all. This test
+    # proves the periodic full-resync trigger actually fires: even with a
+    # non-empty, non-stale cache (the delta path's own precondition), an
+    # overdue last_full_sync_at forces the unfiltered get_series_list()
+    # call - the same shape a genuine first-ever sync uses - not a
+    # min_updated_ts-filtered one.
+    monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
+    state["series_cache"] = {
+        "fetched_at": 0.0,
+        "last_full_sync_at": time.time() - catalog_scan._SERIES_CACHE_FULL_RESYNC_SEC - 1,
+        "series": [{"ticker": "OLD", "category": "Sports", "volume_fp": "100",
+                     "last_updated_ts": "2026-08-01T00:00:00+00:00"}],
+    }
+    calls = []
+
+    class _FakeFullResyncClient:
+        async def get_series_list(self, min_updated_ts=None, include_product_metadata=False):
+            calls.append((min_updated_ts, include_product_metadata))
+            return [{"ticker": "OLD", "category": "Sports", "volume_fp": "999"}]  # a real refreshed volume_fp
+
+        async def get_series_fee_changes(self, show_historical=True):
+            return []
+
+    monkeypatch.setattr(catalog_scan, "_SERIES_CACHE_TTL_SEC", 0)
+
+    result = asyncio.run(catalog_scan._get_series_cache(_FakeFullResyncClient()))
+
+    # Unfiltered call - no min_updated_ts, matching the first-sync shape
+    # exactly (not a delta-shaped {"min_updated_ts": ..., "include_product_
+    # metadata": True} call).
+    assert calls == [(None, False)]
+    assert [s["ticker"] for s in result] == ["OLD"]
+    assert result[0]["volume_fp"] == "999"  # the frozen-forever value this fix exists to prevent
+    # last_full_sync_at re-stamped so the next refresh goes back to the
+    # cheaper delta path, not another full fetch immediately after.
+    assert state["series_cache"]["last_full_sync_at"] > time.time() - 5

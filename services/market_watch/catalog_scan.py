@@ -178,7 +178,29 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             custom_strike_ids: list[str] = []
             seen_custom_strike_ids = set()
             for rm in related_market_by_ticker.values():
-                cs = rm.get("custom_strike") if isinstance(rm, dict) else None
+                # strike_type == "structured" only (final whole-branch
+                # review finding): the plan's own Task 9 Step 3 said "for
+                # each related_market whose strike_type == 'structured'",
+                # but this loop was collecting from EVERY related market's
+                # custom_strike regardless - for a strike_type: "custom"
+                # market, custom_strike holds a plain display-name STRING
+                # (e.g. {"Candidate": "Lewis Evangelidis"}, live-verified
+                # against real KXSENATEMAR-26 markets), not a UUID, and
+                # docs/kalshi/get-structured-targets.md types `ids` as a
+                # bare string with no documented behavior for a non-UUID
+                # value - sending one risked call_with_backoff burning
+                # retries on an undocumented response, which would raise
+                # into this function's own blanket except below and skip
+                # the cached-winner reapplication loop too. Filtering here
+                # also matches the plan exactly and is a pure efficiency
+                # win (fewer wasted ids in the batch) with zero behavior
+                # loss - a "custom" market was never going to resolve via
+                # this UUID-keyed cache anyway; it still falls through to
+                # the yes_sub_title/no_sub_title/title match below,
+                # unchanged.
+                if not isinstance(rm, dict) or rm.get("strike_type") != "structured":
+                    continue
+                cs = rm.get("custom_strike")
                 if not isinstance(cs, dict) or not cs:
                     continue
                 for v in cs.values():
@@ -258,7 +280,28 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                     cs = rm.get("custom_strike") or {}
                     try:
                         if isinstance(cs, dict) and cs and isinstance(winner, str) and winner:
-                            wlow_cs = winner.lower()
+                            # winner itself can ALSO be a structured-target
+                            # UUID, not just an already-resolved display
+                            # name (final whole-branch review finding,
+                            # kalshi-category-data-completeness Task 14):
+                            # political_race's `details.winner` is a
+                            # candidate-ID string (Task 8's own finding),
+                            # never a name, so comparing it raw against a
+                            # resolved *name* below could never match for
+                            # any political_race - the exact Task 14 gap
+                            # (widening the UUID pool fed into
+                            # structured_targets_cache) was never load-
+                            # bearing without this. Resolve winner through
+                            # the SAME cache first when it's itself a
+                            # cached UUID; Sports' original case (Task 9 -
+                            # winner already a plain name, e.g. "Team
+                            # Alpha") is unaffected, since a plain name is
+                            # never a key in structured_targets_cache and
+                            # winner_name stays None, falling back to
+                            # winner itself unchanged.
+                            winner_target = structured_targets_cache.get(winner)
+                            winner_name = winner_target.get("name") if isinstance(winner_target, dict) else None
+                            wlow_cs = (winner_name or winner).lower()
                             # Match against each UUID's *resolved* name
                             # (structured_targets_cache, populated above) -
                             # not the raw UUID itself, which a substring
@@ -325,6 +368,34 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
 
 _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
 # change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
+
+_SERIES_CACHE_FULL_RESYNC_SEC = 86400  # final whole-branch review finding, kalshi-category-
+# data-completeness Task 11: min_updated_ts filters on METADATA updates
+# (docs/kalshi/get-series-list.md:100-108: "Filter series with metadata
+# updated after this Unix timestamp"; Series.last_updated_ts:228-231 is
+# "when this series' metadata was last updated") - trading volume moving
+# is NOT documented as a metadata update, and a live, read-only probe of
+# this app's own data/series_cache.db confirmed the two are decoupled in
+# practice: KXNCAAMBGAME carries $5.9B lifetime volume_fp (a top-10 series
+# by volume) with last_updated_ts 147 days stale, while series with
+# actively-moving last_updated_ts sit 1-12 days old. Once a delta refresh
+# ever fires (which, given series_cache.load() seeds state["series_cache"]
+# from the persisted DB at every process start - app_state.py's own
+# comment above that call - happens on effectively every restart once the
+# DB has any history, i.e. always in production), a series whose metadata
+# stops changing has its volume_fp frozen FOREVER, and a series that starts
+# at zero volume and later becomes active can never re-enter the cache at
+# all (min_updated_ts wouldn't surface it, and there is no other path back
+# to a full fetch) - a silent, permanent data-plane completeness/accuracy
+# regression on the exact key _get_top_series ranks the whole automatic
+# watchlist by. Bounding the staleness window to a full, unfiltered
+# get_series_list() call at least once per this interval (24h - the same
+# order of magnitude as _SERIES_CACHE_TTL_SEC's own hourly cadence, just
+# wide enough that the ~1s full-fetch cost is amortized to a rare event)
+# keeps the REST-call-reduction Task 11 was built for on every other
+# refresh while guaranteeing every series' volume_fp and existence in the
+# cache reflects reality within a bounded, known window instead of
+# potentially never again.
 
 
 def _utcnow() -> datetime:
@@ -440,8 +511,20 @@ async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     scoping this resolution to the delta alone would silently miss it."""
     cache = state["series_cache"]
     if time.time() - cache["fetched_at"] > _SERIES_CACHE_TTL_SEC or not cache["series"]:
-        if not cache["series"]:
-            raw = await client.get_series_list()  # first-ever sync - full fetch, exactly as today
+        # last_full_sync_at deliberately lives only in this in-memory dict,
+        # not persisted via series_cache.save()/load() - a process restart
+        # missing it just means it defaults to 0.0 (via .get() below),
+        # which is always "due" and forces a full sync on the first refresh
+        # after every restart. That's the same safe direction as a genuine
+        # first-ever sync, not a new risk: erring toward more freshness,
+        # never less, and needs no DB schema change for a Task-11-fix-round
+        # addition made right before this branch's PR review.
+        due_for_full_resync = (
+            time.time() - cache.get("last_full_sync_at", 0.0) > _SERIES_CACHE_FULL_RESYNC_SEC
+        )
+        if not cache["series"] or due_for_full_resync:
+            raw = await client.get_series_list()  # first-ever sync, or the periodic full resync above
+            cache["last_full_sync_at"] = time.time()
         else:
             min_updated_ts = _series_watermark(cache["series"])
             if min_updated_ts is not None:

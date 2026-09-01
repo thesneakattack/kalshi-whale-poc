@@ -316,7 +316,7 @@ class KalshiPublicGateway:
         False, so every pre-existing caller keeps sending exactly today's
         request (with_milestones is always explicitly passed, never
         conditionally omitted - confirmed by
-        test_get_events_default_omits_with_milestones_for_existing_callers
+        test_get_events_default_sends_with_milestones_false_for_existing_callers
         in tests/test_kalshi_client.py) and gets back exactly today's
         return shape, unchanged.
 

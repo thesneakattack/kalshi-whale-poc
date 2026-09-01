@@ -55,9 +55,16 @@ def _connect() -> sqlite3.Connection:
     # Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several competitions,
     # one sport), so "Baseball" is the real match for the user's own
     # "baseball, football" examples, not the finer per-league string alone.
-    # NOT category_tags (that field is the same full facet-filter
-    # vocabulary on every event in a category, e.g. every Sports event
-    # lists all 20 sports; it carries no per-event information at all).
+    # NOT category_tags: that field's semantics changed under this same
+    # branch (kalshi-category-data-completeness Task 4) - it used to be
+    # the same full facet-filter vocabulary on every event in a category
+    # (no per-event information), but a task-review round found real
+    # frontend consumers depending on it and rewired it to real per-SERIES
+    # tags (main.py's _build_series_tags_cache/state["series_cache"]) -
+    # still not the finer sport/competition granularity this function
+    # needs (two events of the same series still share identical tags),
+    # so the reasoning above still holds, just via a different, now-
+    # accurate justification than the original "carries nothing" claim.
     # Same "needs its own capture at entry time" reasoning as category
     # itself (this module's own docstring) - market_catalog/event_titles
     # are watchlist-scoped and rotate, so a historical trade can't be

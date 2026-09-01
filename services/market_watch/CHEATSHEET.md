@@ -363,14 +363,28 @@ market those values are structured-target UUIDs, not display strings, so
 that match could never succeed (`docs/kalshi/CHEATSHEET.md`'s new
 `custom_strike`/structured-targets entry: 134/149 sampled real markets are
 this type — the majority of real winner-propagation traffic, not an edge
-case). Fixed by resolving every distinct UUID seen across all related
-markets this tick, once, via the new `KalshiPublicGateway.
+case). Fixed by resolving every distinct UUID seen across all
+`strike_type: "structured"` related markets this tick (final whole-branch
+review fix round: the original shipped code collected from every related
+market regardless of `strike_type` - a `"custom"` market's `custom_strike`
+holds a plain display-name string, not a UUID, live-verified against real
+markets; the plan's own Task 9 Step 3 said `strike_type == "structured"`
+from the start), once, via the new `KalshiPublicGateway.
 get_structured_targets()` (`services/kalshi/public.py`), cached in
 `state["structured_targets_cache"]` (flat, no-TTL, incrementally grown —
 a structured target's id→name mapping is permanent reference data once
 learned, unlike `category_metadata`'s TTL'd tags/filters, which Kalshi
 actively revises), and matching `winner` against each resolved target's
-real `name` instead of the raw UUID. The pre-existing
+real `name` instead of the raw UUID. `winner` itself can also BE a UUID
+(fix round: `political_race`'s `details.winner` is a candidate-ID string
+per the Task 8 entry above, never an already-resolved name the way
+Sports' team-name `winner` is - comparing that raw UUID against a
+resolved *name* could never match, so Task 14 below was silently not
+load-bearing until this fix) - resolved through the same
+`structured_targets_cache` first when it's itself a cached UUID; Sports'
+original case is unaffected (a plain name like `"Team Alpha"` is never a
+cache key, so the lookup returns nothing and the comparison falls back to
+`winner` unchanged). The pre-existing
 `yes_sub_title`/`no_sub_title`/`title` fallback beneath this block is
 unchanged — an id `get_structured_targets` doesn't resolve (not yet
 fetched, or Kalshi doesn't return it) is skipped, same skip-not-crash
@@ -414,8 +428,8 @@ guarded with `resp.milestones or []` from the start.
 
 **Additive, not a breaking change:** `with_milestones` defaults to
 `False`, but `get_events` always sends it explicitly (never omits the
-kwarg) — `test_get_events_default_omits_with_milestones_for_existing_
-callers` (`tests/test_kalshi_client.py`) pins this. When `False`, no
+kwarg) — `test_get_events_default_sends_with_milestones_false_for_
+existing_callers` (`tests/test_kalshi_client.py`) pins this. When `False`, no
 `milestones` key is added to the returned dicts at all — every
 pre-existing caller (`services/market_watch/event_metadata.py`'s
 `_fetch_event_titles`, and every other pre-Task-10 test) sees byte-for-
@@ -514,3 +528,95 @@ get_series_list(self)` takes zero args, so `_get_series_cache` must call
 the first-sync path — not just an equivalent default value — confirmed by
 running the pre-existing suite unchanged. `test_kalshi_client.py`,
 `test_catalog_scan_pacing.py`, `test_series_cache.py`: 54 passed.
+
+**Periodic full resync, a real gap found in the final whole-branch review
+(fix round, not in the original task):** `min_updated_ts` filters on
+Kalshi's own "metadata updated" definition (`get-series-list.md:100-108`),
+and `Series.last_updated_ts` is explicitly "when this series' **metadata**
+was last updated" (`:228-231`) — trading volume moving is not documented
+as a metadata update, and a live, read-only probe of this app's own
+`data/series_cache.db` confirmed the two are decoupled in practice
+(`KXNCAAMBGAME`: $5.9B lifetime `volume_fp`, a top-10 series by volume,
+with `last_updated_ts` 147 days stale). Since `state["series_cache"]` is
+seeded from the persisted DB at every process start
+(`services/app_state.py`'s own comment), a delta refresh fires on
+effectively every restart once the DB has any history — meaning, without
+a fix, a series whose metadata stops changing would have its `volume_fp`
+frozen FOREVER, and a series that starts at zero volume could never
+re-enter the cache at all: a silent, permanent completeness/accuracy
+regression on the exact key `_get_top_series` ranks the whole automatic
+watchlist by. Fixed with `_SERIES_CACHE_FULL_RESYNC_SEC` (24h, an
+in-memory-only `cache["last_full_sync_at"]`, not persisted — a restart
+just means it defaults to due, the same safe direction as a genuine
+first-ever sync): a full, unfiltered `get_series_list()` call fires at
+least once per this interval regardless of the watermark, bounding the
+staleness window instead of leaving it unbounded.
+
+## `political_race` candidate resolution via `candidate_id_mapping` (2026-08-31, Task 14 of kalshi-category-data-completeness)
+
+Extends Task 9's `structured_targets_cache` mechanism to a second UUID
+source specific to `political_race` milestones: `candidate_id_mapping`, a
+field on the MILESTONE's own `details` (from `get_events(...,
+with_milestones=True)`'s join, Task 10 — not the separate live-data
+`details` fetched via `get_live_datas`, where `winner`/`race_call_status`
+live). Not documented anywhere in `docs/kalshi/` (`grep -rn
+"candidate_id_mapping" docs/kalshi/*.md` returns zero hits) — the plan's
+own Step 1 test sketch guessed the wrong shape (`{candidate_uuid: market_
+ticker}`, and a `custom_strike` key of `"candidate"`), corrected by a
+real, live, read-only pull against Kalshi's production API before this
+task's implementer was dispatched.
+
+**Real, live-verified shape** (a real, currently-open Massachusetts Senate
+primary, milestone id `2967c0f7-57f5-47ee-be41-f92df9dc699a`, event
+`KXSENATEMAR-26`): `candidate_id_mapping` is `{pol_id: candidate_
+structured_target_uuid}` — Kalshi's own internal numeric politician id
+mapped to that candidate's structured-target UUID, the SAME UUID space
+`get_structured_targets` resolves. That candidate's own market's
+`custom_strike` carries the identical UUID under the key `"politician"`
+(not `"candidate"`) — confirmed by direct comparison. **A confirmed,
+permanent, out-of-scope limitation:** 3 of that same real race's 4
+candidates have `strike_type: "custom"` markets with a plain-name
+`custom_strike` (e.g. `{"Candidate": "Lewis Evangelidis"}`) and are absent
+from `candidate_id_mapping`/`candidate_ids`/`pol_ids` entirely — Kalshi
+itself hasn't assigned them a structured target, so there is no UUID
+anywhere in this milestone's data to resolve them with. This task cannot
+fix that and does not attempt to; those candidates keep falling through
+to the pre-existing `yes_sub_title`/`no_sub_title`/`title` fallback,
+unchanged.
+
+**The genuine, if modest, value added:** for every `political_race`
+milestone in scope this tick, `candidate_id_mapping`'s VALUES (never the
+`pol_id` KEYS, which aren't resolvable via `get_structured_targets` at
+all) are folded into the SAME `custom_strike_ids`/`get_structured_targets`
+batch Task 9 built — zero extra REST calls (the milestone dict is already
+in scope; `details` is a required field on the SDK's `Milestone` schema).
+Widens `structured_targets_cache` for a race where a candidate is
+registered in `candidate_id_mapping` but their own market doesn't yet
+carry a resolvable `custom_strike` UUID this particular tick (a
+data-population lag) — worst case redundant with what the market-level
+scan already found, best case pre-warms a name the market-level scan
+alone would have missed.
+
+**Fix round, final whole-branch review:** the originally shipped code only
+widened the UUID pool; it never fixed the fact that `winner` itself is a
+UUID for `political_race` (see the Task 9 entry above's "winner itself can
+also BE a UUID" addendum) — so the pool-widening this task adds was never
+actually load-bearing until that companion fix landed in the same round.
+
+## Unmapped `race_call_status` values default to `"none"`, not Python `None` (2026-08-31, fix round on Task 8 of kalshi-category-data-completeness)
+
+`_POLITICAL_RACE_STATUS`'s 4 known values (see the Task 8 entry above)
+came from one 500-milestone pull on one day — an unobserved real value
+(e.g. Kalshi introducing `"Contested"`) would otherwise fall through
+`.get()`'s dict-default to Python `None`, which is falsy and silently
+reproduces the exact `is_live` entry-gate-bypass bug Task 8's two fix
+rounds closed for `"Runoff"` specifically (`live_status.py`'s `confirmed
+[et]` check only routes a truthy value; a falsy `None` falls to the
+schedule fallback, which re-derives `"live"` for any event past its
+`occurrence_datetime`). `_political_race` now distinguishes this case
+from the genuinely-missing-`race_call_status`-key case (still honest
+`None`, unchanged): an unmapped-but-present value gets the same `"none"`
+string default `"Runoff"` uses, fault-logged once per distinct value per
+process (`_record_unmapped_political_race_status`, mirroring
+`_record_default_path_type`'s existing shape exactly) rather than a
+silent, unbounded-vocabulary guess.

@@ -236,12 +236,16 @@ state = {
     # start than the ~9,400-series catalog series_cache below justifies a
     # dedicated file for). NOT series_metadata/series_tags (services/
     # series_cache.py, Task 1 of this same plan) - fix-round 1, task
-    # review, corrected: that cache actually lives inside
+    # review, corrected (Task 9): at the time, that cache lived inside
     # _get_series_cache's own _SERIES_CACHE_TTL_SEC-gated WHOLE-set
-    # refresh (catalog_scan.py:294 - re-fetches and re-upserts every one
-    # of Kalshi's ~9,400 volumed series on each TTL expiry), the same
-    # TTL+whole-refresh shape as category_metadata, not this cache's
-    # incremental one - see propagate_milestone_winners' own resolution
+    # refresh, the same TTL+whole-refresh shape as category_metadata, not
+    # this cache's incremental one. Task 11 (later in this same plan)
+    # changed _get_series_cache itself to a min_updated_ts delta-merge
+    # model, further amended by the final whole-branch review's fix round
+    # to also force a periodic (24h) full resync - so the comparison point
+    # this paragraph originally made no longer describes a pure whole-set
+    # refresh either; see _get_series_cache's own docstring for its
+    # current, real shape - see propagate_milestone_winners' own resolution
     # step for the real fetch-only-the-missing-ids logic this cache uses.
     "structured_targets_cache": {},
     # Decouples _check_signal_resolutions from the main poll_interval_sec

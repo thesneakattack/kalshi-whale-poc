@@ -372,6 +372,44 @@ def test_political_race_never_raises_on_empty_details():
     assert mld.extract("political_race", {}) == {"status": None, "winner": None}
 
 
+def test_political_race_unmapped_status_value_defaults_to_safe_none_not_python_none(monkeypatch):
+    # Final whole-branch review finding: _POLITICAL_RACE_STATUS's 4 known
+    # values came from one 500-milestone pull on one day - an unobserved
+    # real value (e.g. Kalshi introducing "Contested") would otherwise fall
+    # through .get()'s default to Python None, which is falsy and silently
+    # reproduces the exact is_live entry-gate-bypass bug Task 8's two fix
+    # rounds closed for "Runoff" specifically. The safe default is the
+    # "none" STRING (same fix-round-2 reasoning as "Runoff"), not Python
+    # None - distinct from the genuinely-missing-key case just above,
+    # which correctly stays None (honest no-signal, not a guess).
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault",
+                         lambda *a, **k: faults.append(a) or True)
+    result = mld.extract("political_race", {
+        "race_call_status": "Contested", "winner": "",
+    })
+    assert result == {"status": "none", "winner": None}
+    assert len(faults) == 1
+    assert faults[0][:2] == ("milestone_live_data", "unmapped_political_race_status")
+
+
+def test_political_race_unmapped_status_value_is_fault_logged_once_per_process(monkeypatch):
+    faults = []
+    monkeypatch.setattr("services.fault_log.record_fault",
+                         lambda *a, **k: faults.append(a) or True)
+    mld.extract("political_race", {"race_call_status": "Contested"})
+    mld.extract("political_race", {"race_call_status": "Contested"})  # same process, same value
+    assert len(faults) == 1
+
+
+def test_political_race_missing_key_stays_python_none_not_the_unmapped_value_default():
+    # The genuinely-missing-key case (votehub-only payload) must NOT be
+    # treated as an unmapped value - it's already this module's own
+    # documented "honest no-signal" convention, distinct from "a real
+    # value we don't have a mapping for yet".
+    assert mld.extract("political_race", {"provider": "votehub"})["status"] is None
+
+
 def test_has_no_live_status_false_for_political_race():
     # Its status IS real derived data (unlike company_report/truflation/
     # etc.'s structural always-None) - the schedule fallback still means

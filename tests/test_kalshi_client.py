@@ -99,7 +99,14 @@ def test_get_events_passes_with_milestones_when_requested(monkeypatch):
     assert result == [{"event_ticker": "EVT-A", "milestones": []}]
 
 
-def test_get_events_default_omits_with_milestones_for_existing_callers(monkeypatch):
+def test_get_events_default_sends_with_milestones_false_for_existing_callers(monkeypatch):
+    # Final whole-branch review finding: the original test name said
+    # "omits" but the assertion proves the opposite - with_milestones is
+    # ALWAYS sent explicitly (as False when a caller doesn't ask for it),
+    # never conditionally left out of the kwarg. That's still the right
+    # behavior (every existing caller's real request/response shape is
+    # unaffected either way), the name just contradicted its own
+    # assertion and services/market_watch/CHEATSHEET.md's citation of it.
     client = _client()
     calls = []
 

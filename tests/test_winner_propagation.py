@@ -551,9 +551,69 @@ def test_propagate_milestone_winner_political_race_custom_strike_type_stays_unre
     market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
 
     assert market_results["EVT1-CTHR"] == "yes"
-    # No candidate_id_mapping UUIDs to widen the pool with here - only the
-    # pre-existing generic custom_strike scan (Task 9, untouched by this
-    # task) runs, sending the plain-name value itself. Harmless (same
-    # skip-not-crash convention as an unresolvable uuid) and unaffected by
-    # this task's addition.
-    assert fake.structured_targets_calls == ["Christopher Thrasher"]
+    # No candidate_id_mapping UUIDs to widen the pool with here, and (final
+    # whole-branch review fix-round) the generic custom_strike scan now
+    # only collects from strike_type: "structured" markets, matching the
+    # plan's own Task 9 Step 3 exactly - this market's strike_type:
+    # "custom" plain-name value never reaches get_structured_targets at
+    # all. Resolution instead comes entirely from the pre-existing
+    # yes_sub_title/no_sub_title/title fallback below, which the
+    # market_results assertion above already confirms works.
+    assert fake.structured_targets_calls == []
+
+
+def test_propagate_milestone_winner_political_race_uuid_winner_resolves_via_structured_target(monkeypatch):
+    # Final whole-branch review finding: political_race's `details.winner`
+    # is a candidate-ID UUID string (Task 8's own finding), never an
+    # already-resolved display name like Sports' `winner` - Task 14's
+    # original shipped code compared this raw UUID against a resolved
+    # NAME (structured_targets_cache.get(v).get("name")), which a UUID
+    # substring can never match, so Task 14's whole stated goal ("political
+    # race candidate_id_mapping resolves via structured_targets, same
+    # mechanism as X6") was never actually load-bearing until this fix:
+    # winner itself must ALSO be resolved through structured_targets_cache
+    # before the comparison. This is the real, end-to-end regression test
+    # neither of the two original Task 14 tests provided (both used an
+    # empty structured_targets_map, so neither exercised a genuine
+    # UUID -> name -> match chain).
+    markets = [{"ticker": "EVT1-JDEA", "event_ticker": "EVT1", "result": ""}]
+    milestones_map = {
+        "EVT1": [{
+            "id": "ms1", "type": "political_race",
+            "related_event_tickers": ["EVT1-JDEA"],
+            "details": {"candidate_id_mapping": {}, "candidate_ids": [], "pol_ids": []},
+        }]
+    }
+    live_map = {
+        "ms1": {"details": {
+            # The real shape: winner is the WINNING candidate's own UUID,
+            # not their name - live-verified against a real called race
+            # (Task 8's report).
+            "winner": "uuid-deaton",
+            "related_event_tickers": ["EVT1-JDEA"],
+        }}
+    }
+    market_map = {
+        "EVT1-JDEA": {
+            "ticker": "EVT1-JDEA", "strike_type": "structured",
+            # Real shape: key is "politician", not "candidate" (live-
+            # verified against KXSENATEMAR-26-JDEA).
+            "custom_strike": {"political_party": "uuid-party", "politician": "uuid-deaton"},
+        },
+    }
+    structured_targets_map = {
+        "uuid-deaton": {"id": "uuid-deaton", "name": "John Deaton", "type": "candidate"},
+    }
+    fake = FakeClient(milestones_map, live_map, market_map, structured_targets_map=structured_targets_map)
+    monkeypatch.setattr(market_history, "record_outcome", lambda *a, **k: None)
+
+    main.state["milestone_cache"].clear()
+    main.state["structured_targets_cache"].clear()
+    market_results = asyncio.run(main.propagate_milestone_winners(fake, markets))
+
+    # winner ("uuid-deaton") resolves to "John Deaton" via
+    # structured_targets_cache; the SAME cache resolves custom_strike's
+    # "politician" UUID to the same name - the match succeeds on names,
+    # not raw UUIDs, closing the gap the pre-fix code silently couldn't.
+    assert market_results["EVT1-JDEA"] == "yes"
+    assert "uuid-deaton" in fake.structured_targets_calls

@@ -141,6 +141,11 @@ def _fresh_milestone_live_data_default_path_types(monkeypatch):
     the snapshot tests below them in this same file)."""
     from services.market_watch import milestone_live_data
     monkeypatch.setattr(milestone_live_data, "_default_path_types_seen", set())
+    # Same class of module-global fire-once-per-process gate (final whole-
+    # branch review fix-round, kalshi-category-data-completeness Task 8's
+    # unmapped-race_call_status-value fault log) - identical leak risk
+    # across tests in the same collection.
+    monkeypatch.setattr(milestone_live_data, "_political_race_unmapped_status_seen", set())
 
 
 @pytest.fixture(autouse=True)

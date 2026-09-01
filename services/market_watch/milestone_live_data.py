@@ -212,9 +212,52 @@ _POLITICAL_RACE_STATUS = {
 }
 
 
+_political_race_unmapped_status_seen: set[str] = set()
+
+
+def _record_unmapped_political_race_status(race_call_status: str) -> None:
+    # Mirrors _record_default_path_type's shape exactly (once per distinct
+    # value per process - fault_log.py already dedupes by message but a
+    # write still costs a connection open per call without this gate).
+    # Final whole-branch review finding: _POLITICAL_RACE_STATUS's 4 known
+    # values came from ONE 500-milestone pull on one day - an unobserved
+    # value (e.g. "Contested"/"Recount") would otherwise fall through
+    # .get()'s default to Python None, which is falsy and silently
+    # reproduces the EXACT is_live entry-gate-bypass bug Task 8's two fix
+    # rounds closed for "Runoff" specifically (live_status.py's
+    # confirmed[et] check only routes a truthy value; a falsy None falls
+    # to the schedule fallback, which re-derives "live" for any event past
+    # its occurrence_datetime).
+    if race_call_status in _political_race_unmapped_status_seen:
+        return
+    _political_race_unmapped_status_seen.add(race_call_status)
+    fault_log.record_fault(
+        "milestone_live_data", "unmapped_political_race_status",
+        f"{race_call_status!r}: not in _POLITICAL_RACE_STATUS's observed vocabulary - "
+        "defaulting to the safe 'none' string (truthy, non-terminal, is_live=False) "
+        "rather than a guessed live/finished mapping",
+        severity="warning",
+    )
+
+
 def _political_race(details: dict) -> dict:
+    race_call_status = details.get("race_call_status")
+    if race_call_status is None:
+        # Genuinely missing key (the votehub-only shape) - honest None,
+        # not a guess, matching this module's own documented convention.
+        status = None
+    elif race_call_status in _POLITICAL_RACE_STATUS:
+        status = _POLITICAL_RACE_STATUS[race_call_status]
+    else:
+        # A real signal Kalshi sent, just not one this module's mapping
+        # has observed yet - "none" is the safe default (see
+        # _record_unmapped_political_race_status's own docstring for why
+        # this specifically avoids reproducing the is_live bypass), not a
+        # guessed live/finished value.
+        _record_unmapped_political_race_status(race_call_status)
+        status = "none"
     return {
-        "status": _POLITICAL_RACE_STATUS.get(details.get("race_call_status")),
+        "status": status,
         "winner": details.get("winner") or None,
     }
 
