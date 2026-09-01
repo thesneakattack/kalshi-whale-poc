@@ -2,18 +2,14 @@ mode: paper
 kalshi:
   base_url: https://external-api.kalshi.com/trade-api/v2
   markets_watchlist:
-  - KXBTCW
   - KXSILVERW
   - KXGOLDW
-  - KXETHW
   - KXBTCD
   - KXGOLDD
   - KXSILVERD
   - KXETHD
-  - KXBTCH
   - KXGOLDH
   - KXSILVERH
-  - KXETHH
   - KXBTC15M
   - KXGOLD15M
   - KXSILVER15M
