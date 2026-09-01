@@ -313,7 +313,7 @@ def test_block_trade_factor_is_zero_when_not_a_block_trade():
     assert signals[0].factors["block_trade_factor"] == 0.0
 
 
-def test_agreement_factor_is_neutral_with_no_recent_history():
+def test_agreement_factor_is_none_with_no_recent_history():
     provider = KalshiTradeTapeProvider()
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
@@ -367,7 +367,7 @@ def test_cluster_factor_reflects_recent_size_compatible_prints_on_the_same_ticke
 
 # ---- trend_factor wiring (docs/prediction-market-strategy-alignment-plan.md Part 2.4) ----
 
-def test_trend_factor_is_neutral_with_no_real_price_history():
+def test_trend_factor_is_none_with_no_real_price_history():
     provider = KalshiTradeTapeProvider()
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}

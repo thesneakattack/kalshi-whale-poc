@@ -173,12 +173,18 @@ def composite_confidence_breakdown(
     all the caller's responsibility to compute (this function has no access
     to signal history, price history, or market_analyst_agent's own DB):
 
-    - agreement_factor defaults to 0.5 (neutral: neither agreement nor
-      disagreement) when the caller has no real signal-agreement concept to
-      offer, e.g. the simulator, or a real provider scoring a market with no
-      recent prior prints to compare against - same "missing data isn't
-      scored as agreement or disagreement" idiom already used elsewhere in
-      this app (e.g. auto_exit_confidence).
+    - agreement_factor's *parameter* default is 0.5 (neutral: neither
+      agreement nor disagreement) - what a caller with no real
+      signal-agreement concept at all gets automatically, e.g. the
+      simulator, which never passes this argument. A real provider that
+      does have the concept but finds no recent prior prints to compare
+      against instead passes an explicit agreement_factor=None (Task 5/6,
+      2026-08-31) - preserved as honest absence (see ConfidenceBreakdown's
+      own docstring above), never coerced back to 0.5 here. Same "missing
+      data isn't scored as agreement or disagreement" idiom already used
+      elsewhere in this app (e.g. auto_exit_confidence), just now expressed
+      as None instead of a fabricated neutral float for the real-provider
+      case.
     - cluster_factor defaults to 0.0, NOT 0.5 - unlike agreement_factor,
       "no similar-sized recent prints nearby" is itself informative here,
       not merely unknown (see services/signal_log.py's cluster_factor()).
@@ -186,11 +192,15 @@ def composite_confidence_breakdown(
       the profile Barclay & Warner's stealth-trading research found real
       informed traders avoid presenting - see
       docs/prediction-market-strategy-alignment-plan.md Part 2.1.
-    - trend_factor defaults to 0.5 (neutral), same reasoning as
-      agreement_factor - no real price-trend data, or a flat trend, reads
-      the same as "can't judge fighting-the-trend risk either way," not as
-      evidence of anything (see services/whalewatchers/kalshi_trade_tape.py's
-      _trend_factor())."""
+    - trend_factor's *parameter* default is 0.5 (neutral), same split as
+      agreement_factor: a caller with no real price-trend concept at all
+      gets 0.5 automatically. A real provider (services/whalewatchers/
+      kalshi_trade_tape.py's _trend_factor()) that has the concept but no
+      real price-trend data to compute from instead passes an explicit
+      trend_factor=None (Task 5, 2026-08-31) - honest absence, not
+      coerced to 0.5. A genuinely flat/zero momentum delta is different
+      from either case: that's a real *computed* 0.5 from actual price
+      data, not a missing-data default, and stays a plain float."""
     market_volume = float(market.get("volume_24h_fp") or 0)
 
     # (1) Size relative to THIS market's own activity - a 20,000-contract

@@ -267,11 +267,12 @@ def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_siz
     print that's part of such a run is a stronger signal than an equally
     large one with nothing else like it nearby, not a weaker one.
 
-    Unlike recent_sides_for_ticker/agreement_factor's "no history = neutral"
-    idiom, "no similar-sized recent prints" is itself informative here (an
-    isolated print, exactly the profile a pure notional-size threshold
-    already treats as its only signal) - so this returns 0.0, not 0.5, when
-    nothing qualifies. Scales toward 1.0 as more size-compatible prints pile
+    Unlike agreement_factor's "no history = None" honest-absence idiom
+    (services/confidence_scoring.py, Task 5/6), "no similar-sized recent
+    prints" is itself informative here (an isolated print, exactly the
+    profile a pure notional-size threshold already treats as its only
+    signal) - so this returns 0.0, not 0.5, when nothing qualifies. Scales
+    toward 1.0 as more size-compatible prints pile
     up, capped at 3 (matching find_clusters' own "more prints = more likely
     real accumulation" intuition without trying to reproduce its full
     sequential-run algorithm here - this is a cheaper, real-time proxy for
@@ -631,10 +632,11 @@ def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     NULL is the filter, not a source string match - only real providers
     (services/whalewatchers/kalshi_trade_tape.py) ever populate it, so this
     naturally excludes every simulator-sourced row without needing a second,
-    possibly-drifting definition of "real" to maintain. No date/limit
-    scoping - the calibration gate cares about total resolved count, not
-    recency, and this table is small enough (one row per signal, not per
-    tick) that a full scan is cheap. `series` is already a stored, indexed
+    possibly-drifting definition of "real" to maintain. No limit scoping,
+    and date scoping is optional (see since_ts below) rather than default -
+    the calibration gate cares about total resolved count, not recency, and
+    this table is small enough (one row per signal, not per tick) that a
+    full scan is cheap even unscoped. `series` is already a stored, indexed
     column (issue #60 - it existed but was never selected here, so every
     consumer of this function was blind to it).
 
