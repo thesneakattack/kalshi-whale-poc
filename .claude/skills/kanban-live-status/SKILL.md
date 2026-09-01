@@ -7,7 +7,8 @@ description: This skill should be used immediately after claiming, reporting a r
 
 The installed `github-issues-kanban` plugin updates an issue's `status:*`
 label in real time on claim/report-result/block (see that plugin's own
-`references/*.md`), but it never touches the GitHub Projects V2 "Status"
+`prompts/claim-issue.md`/`prompts/report-result.md` and
+`references/worker-protocol.md`), but it never touches the GitHub Projects V2 "Status"
 field — that field is the only mechanism that drives the board's visible
 columns (`tools/kanban_sync/project_status.py`). Without this skill, the
 board looks stale until someone runs the full batch `kanban-board-sync`
