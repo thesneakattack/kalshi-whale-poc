@@ -1,10 +1,19 @@
 # Next action
 
-**Run `python -m tools.soak_analyzer` after a real ~24h soak window (earliest
-useful check ~2026-09-02T08:00Z, 24h past PR #394's merge), then confirm via
-fault recency (not just verdict text) that `capture_writer_health`/
-`exit_engine_faults` have genuinely stopped recurring before revisiting the
-`realtime_data_plane.two_consumer_mode` permanence decision.** PR #394
+**Run `python -m tools.soak_analyzer` no earlier than ~2026-09-01T10:53Z
+(~3h past PR #394's merge/deploy), then confirm via fault recency (not just
+verdict text) that `capture_writer_health`/`exit_engine_faults` have
+genuinely stopped recurring before revisiting the `realtime_data_plane.
+two_consumer_mode` permanence decision.** The window isn't a round guess:
+two direct corrections 2026-09-01 (see `soak-check-derive-window-from-logs`
+memory) established that soak windows should be derived from the fault's
+own measured pre-fix occurrence gaps, not assumed. Measured via
+`/api/health/faults?component=exit_engine&limit=500&hours=24` (500 distinct-
+ticker rows, 34.6h span, sorted+diffed): the worst gap between consecutive
+pre-fix occurrences was 92.7 minutes - `capture_writer`'s own lock fault
+collapses to one aggregate row (no per-instance timestamps to diff), but it
+fires from the same tick-stall events, so the same cadence applies. ~3h
+gives ~2x margin over that worst observed gap. PR #394
 (merged 2026-09-01T07:53Z) root-caused and fixed the actual mechanism, not a
 guess: `candidate_log.resolve_from_market_results`'s unbatched per-row UPDATE
 loop held `candidate_log.db`'s write lock long enough to collide with
@@ -31,8 +40,9 @@ sustained, simultaneous mass staleness (`/api/health/pipeline`'s live
 snapshot showed 0 stale-over-300s positions, versus 7 of 12 before the fix)
 — this may be the expected baseline rate for illiquid tickers (the
 corroboration mechanism is designed to fail open for exactly this case), not
-a remaining defect, but that's not yet confirmed over a real 24h window.
-Don't treat the immediate post-merge read as the soak boundary itself.
+a remaining defect, but that's not yet confirmed over the full ~3h window
+derived above. Don't treat the immediate post-merge read as the soak
+boundary itself — it's well short of the 92.7min worst pre-fix gap.
 
 Full evidence and the 2 non-blocking follow-ups PR #394's own adversarial
 review surfaced (a weaker-than-claimed regression test; `config_performance.
