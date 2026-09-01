@@ -296,6 +296,57 @@ def _series_win_rates(rows: list[dict]) -> list[dict]:
     return out
 
 
+def compute_input_coverage(rows: list[dict], resolved_count: int) -> dict:
+    """Per-fabrication-site absence rates - depth_factor/trend_factor/
+    agreement_factor/raw_spread's honest-None coverage, plus an
+    approximate score_fallback_pct (design §6.1's exact shape). Split out
+    of generate_calibration_report() (2026-09-01 perf fix, final
+    whole-branch review): a caller that only wants this -
+    services/diagnostics/diagnostics.py's check_confidence_input_coverage(),
+    polled by the dashboard every 5s via GET /api/quality/summary on the
+    same tick_executor pool the trading loop uses - was paying the full
+    nine-factor tertile report's cost (measured 1.661s of a 2.549s total
+    against 103,098 real rows) just to read these five counters out of it
+    and discard everything else."""
+    def _coverage(factor_name):
+        # n/absent are dimensionless row counts (not contracts, not
+        # dollars); absent_pct = absent/n*100 rounded to 1 decimal, same
+        # shape as overall_win_rate/gap_pts in generate_calibration_report.
+        # The `if n else 0.0` guard is defensive only: callers gate on
+        # resolved_count < min_resolved_signals before reaching here, so
+        # resolved_count == 0 is unreachable at this point in practice.
+        n = resolved_count
+        absent = sum(1 for r in rows if r["factors"].get(factor_name) is None)
+        return {"n": n, "absent_pct": round(absent / n * 100, 1) if n else 0.0}
+
+    return {
+        "depth_factor": _coverage("depth_factor"),
+        "trend_factor": _coverage("trend_factor"),
+        "agreement_factor": _coverage("agreement_factor"),
+        # Row-level column (services/signal_log.py's
+        # resolved_signals_with_factors() selects it alongside "factors",
+        # not inside it) - read from r["raw_spread"], never r["factors"].
+        "raw_spread": {
+            "n": resolved_count,
+            "absent_pct": round(
+                sum(1 for r in rows if r.get("raw_spread") is None) / resolved_count * 100, 1,
+            ) if resolved_count else 0.0,
+        },
+        # Observational approximation, not an exact flag (design doc §6.1;
+        # no persisted fallback marker exists to check instead): a row
+        # counts as a Task 3 degenerate-fallback candidate when its three
+        # sampled factors are all None AND confidence is exactly the
+        # fallback's 0.5, since a genuine 0.5 composite from real factor
+        # data is otherwise indistinguishable from the fallback firing.
+        "score_fallback_pct": round(
+            sum(1 for r in rows if r["factors"].get("depth_factor") is None
+                and r["factors"].get("trend_factor") is None
+                and r["factors"].get("agreement_factor") is None
+                and r["confidence"] == 0.5) / resolved_count * 100, 1,
+        ) if resolved_count else 0.0,
+    }
+
+
 def generate_calibration_report(rows: list[dict], min_resolved_signals: int, current_weights: dict | None = None) -> dict:
     """rows: services.signal_log.resolved_signals_with_factors()'s output -
     already scoped to real (not simulated) signals that carry a factor
@@ -328,44 +379,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
         key=lambda f: f["gap_pts"], reverse=True,
     )
 
-    def _coverage(factor_name):
-        # n/absent are dimensionless row counts (not contracts, not
-        # dollars); absent_pct = absent/n*100 rounded to 1 decimal, same
-        # shape as overall_win_rate/gap_pts above. The `if n else 0.0`
-        # guard is defensive only: n is always resolved_count here, and
-        # the gate above (resolved_count < min_resolved_signals) plus the
-        # unguarded resolved_count division at overall_win_rate already
-        # make resolved_count == 0 unreachable at this point in practice.
-        n = resolved_count
-        absent = sum(1 for r in rows if r["factors"].get(factor_name) is None)
-        return {"n": n, "absent_pct": round(absent / n * 100, 1) if n else 0.0}
-
-    input_coverage = {
-        "depth_factor": _coverage("depth_factor"),
-        "trend_factor": _coverage("trend_factor"),
-        "agreement_factor": _coverage("agreement_factor"),
-        # Row-level column (services/signal_log.py's
-        # resolved_signals_with_factors() selects it alongside "factors",
-        # not inside it) - read from r["raw_spread"], never r["factors"].
-        "raw_spread": {
-            "n": resolved_count,
-            "absent_pct": round(
-                sum(1 for r in rows if r.get("raw_spread") is None) / resolved_count * 100, 1,
-            ) if resolved_count else 0.0,
-        },
-        # Observational approximation, not an exact flag (design doc §6.1;
-        # no persisted fallback marker exists to check instead): a row
-        # counts as a Task 3 degenerate-fallback candidate when its three
-        # sampled factors are all None AND confidence is exactly the
-        # fallback's 0.5, since a genuine 0.5 composite from real factor
-        # data is otherwise indistinguishable from the fallback firing.
-        "score_fallback_pct": round(
-            sum(1 for r in rows if r["factors"].get("depth_factor") is None
-                and r["factors"].get("trend_factor") is None
-                and r["factors"].get("agreement_factor") is None
-                and r["confidence"] == 0.5) / resolved_count * 100, 1,
-        ) if resolved_count else 0.0,
-    }
+    input_coverage = compute_input_coverage(rows, resolved_count)
 
     return {
         "report": {

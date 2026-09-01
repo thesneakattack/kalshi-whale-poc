@@ -706,22 +706,32 @@ def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, no
     need to know to poll the calibration-specific route. Observational,
     not pass/fail (design §6.1) - a structural absence rate (a 15-minute
     market has no 24h volume) isn't itself a defect; the value is
-    visibility and trend, not a threshold."""
+    visibility and trend, not a threshold.
+
+    Calls confidence_calibration.compute_input_coverage() directly, not
+    generate_calibration_report() - this route is polled every 5s by the
+    dashboard on the same tick_executor pool the trading loop uses, and the
+    full nine-factor tertile report this check doesn't need cost 1.661s of
+    a measured 2.549s total against real production history (2026-09-01
+    final-review fix)."""
     from services.whale_calibration import confidence_calibration
 
     cc_cfg = cfg.get("confidence_calibration") or {}
+    min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
     rows = signal_log.resolved_signals_with_factors(since_ts=since_ts)
-    result = confidence_calibration.generate_calibration_report(
-        rows, cc_cfg.get("min_resolved_signals", 50), cfg.get("whale_confidence_weights"),
-    )
-    if result["report"] is None:
-        return Check("confidence_input_coverage", _UNKNOWN, result["gated_reason"])
-    coverage = result["report"]["input_coverage"]
+    resolved_count = len(rows)
+    if resolved_count < min_resolved_signals:
+        return Check(
+            "confidence_input_coverage", _UNKNOWN,
+            f"{resolved_count}/{min_resolved_signals} resolved real signals with a factor "
+            "breakdown - calibration activates once that's reached",
+        )
+    coverage = confidence_calibration.compute_input_coverage(rows, resolved_count)
     return Check(
         "confidence_input_coverage", _OK,
         f"depth {coverage['depth_factor']['absent_pct']}%, trend {coverage['trend_factor']['absent_pct']}%, "
         f"agreement {coverage['agreement_factor']['absent_pct']}%, spread {coverage['raw_spread']['absent_pct']}% "
-        f"absent (n={result['report']['resolved_count']})",
+        f"absent (n={resolved_count})",
         detail={"input_coverage": coverage},
     )
 
