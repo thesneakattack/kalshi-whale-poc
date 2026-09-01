@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import GithubClient
+from tools.kanban_sync.live_status import resolve_project_status
 from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync.plan_tasks import decompose_plan
@@ -196,6 +197,29 @@ def _cmd_backfill_status(args: argparse.Namespace) -> None:
         print(f"  + {line}")
 
 
+def _cmd_push_status(args: argparse.Namespace) -> None:
+    """Pushes one issue's current open/closed state + status:* label onto
+    the Project's Status field right now - the one-issue counterpart to
+    the batch `sync` command's per-item _sync_project_status, for the
+    kanban-live-status skill to call immediately after a claim/report-
+    result/block transition instead of waiting for the next batch run."""
+    _check_project_scope()
+    client = GithubClient(REPO)
+    issue = client.get_issue(args.issue)
+    if issue is None:
+        print(f"error: issue #{args.issue} not found", file=sys.stderr)
+        sys.exit(1)
+    try:
+        status = resolve_project_status(issue)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not args.dry_run:
+        item_id = client.ensure_on_project(issue.number)
+        client.set_project_status(item_id, status)
+    print(f"#{issue.number} -> {status}")
+
+
 def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
     for path in list_plan_candidates(PLANS_DIR, ACTIVE_TRACKS_BOARD_PATH.read_text()):
         print(path)
@@ -259,6 +283,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     backfill_status_parser.add_argument("--dry-run", action="store_true")
     backfill_status_parser.set_defaults(func=_cmd_backfill_status)
+
+    push_status_parser = sub.add_parser(
+        "push-status",
+        help="push one issue's current status onto the Project board right now",
+    )
+    push_status_parser.add_argument("--issue", type=int, required=True)
+    push_status_parser.add_argument("--dry-run", action="store_true")
+    push_status_parser.set_defaults(func=_cmd_push_status)
 
     candidates_parser = sub.add_parser("plan-candidates", help="list plan docs needing classification")
     candidates_parser.set_defaults(func=_cmd_plan_candidates)

@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from tools.kanban_sync import __main__ as cli
+from tools.kanban_sync import labels
 
 
 def test_check_project_scope_exits_when_scope_missing(monkeypatch):
@@ -411,3 +412,81 @@ def test_cmd_sync_skips_stale_roadmap_check_when_roadmap_not_in_sources(monkeypa
     cli._cmd_sync(argparse.Namespace(sources="track", dry_run=False, plan_classifications=None))
 
     assert calls == []
+
+
+class _FakeNoGetIssueClient:
+    def get_issue(self, number):
+        return None
+
+
+def test_push_status_subcommand_errors_when_issue_not_found(monkeypatch):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeNoGetIssueClient())
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["push-status", "--issue", "5"])
+
+    assert exc.value.code == 1
+
+
+class _FakeSingleIssueClient:
+    def __init__(self, issue):
+        self._issue = issue
+        self.ensure_on_project_calls: list[int] = []
+        self.set_project_status_calls: list[tuple[str, str]] = []
+
+    def get_issue(self, number):
+        return self._issue
+
+    def ensure_on_project(self, issue_number):
+        self.ensure_on_project_calls.append(issue_number)
+        return "PVTI_xyz"
+
+    def set_project_status(self, item_id, status):
+        self.set_project_status_calls.append((item_id, status))
+
+
+def test_push_status_subcommand_pushes_resolved_status_to_project(monkeypatch):
+    from tools.kanban_sync.github_client import IssueState
+
+    issue = IssueState(number=42, open=True, labels=frozenset({labels.STATUS_READY_FOR_REVIEW}))
+    client = _FakeSingleIssueClient(issue)
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: client)
+
+    cli.main(["push-status", "--issue", "42"])
+
+    assert client.ensure_on_project_calls == [42]
+    assert client.set_project_status_calls == [("PVTI_xyz", "Waiting")]
+
+
+def test_push_status_subcommand_dry_run_does_not_touch_the_project(monkeypatch):
+    from tools.kanban_sync.github_client import IssueState
+
+    issue = IssueState(number=42, open=True, labels=frozenset({labels.STATUS_CLAIMABLE}))
+    client = _FakeSingleIssueClient(issue)
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: client)
+
+    cli.main(["push-status", "--issue", "42", "--dry-run"])
+
+    assert client.ensure_on_project_calls == []
+    assert client.set_project_status_calls == []
+
+
+def test_push_status_subcommand_errors_when_status_labels_are_ambiguous(monkeypatch):
+    from tools.kanban_sync.github_client import IssueState
+
+    issue = IssueState(
+        number=9, open=True,
+        labels=frozenset({labels.STATUS_CLAIMED, labels.STATUS_BLOCKED}),
+    )
+    client = _FakeSingleIssueClient(issue)
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: client)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["push-status", "--issue", "9"])
+
+    assert exc.value.code == 1
+    assert client.ensure_on_project_calls == []
