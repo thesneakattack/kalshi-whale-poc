@@ -19,6 +19,23 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: "no"
+    # Run as the host user/group, not the image default (root). Without
+    # this, every write this process makes onto the "../:/app" bind mount
+    # below - config/settings.yaml on a Controls-panel save or an advisory/
+    # confidence-calibration auto-apply (services/config/config_store.py's
+    # update()), data/*.db files, __pycache__, .mypy_cache - lands owned by
+    # root on the host, since Docker/WSL2 doesn't remap container UIDs.
+    # That silently blocked the host user from editing those files without
+    # sudo (confirmed 2026-09-01: config/settings.yaml and 3,161 other
+    # paths, including several live data/*.db files, were root:root).
+    # ddev's own bundled images (web, db) already run as the host user this
+    # way automatically; DDEV_UID/DDEV_GID are ddev's documented mechanism
+    # for giving a custom additional service the same behavior (https://
+    # docs.ddev.com/en/stable/users/extend/custom-compose-files/) - resolved
+    # as compose-file interpolation when ddev generates the merged compose
+    # config, so no Dockerfile change or explicit `environment:` entry is
+    # needed for this to reach the container's `user:` field.
+    user: "${DDEV_UID}:${DDEV_GID}"
     volumes:
       - "../:/app"
       - ".:/mnt/ddev_config:ro"
