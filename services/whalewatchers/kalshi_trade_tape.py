@@ -692,9 +692,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 continue
 
             # Do recent real prints on this exact market agree with this
-            # one? No recent history at all is neutral (0.5) - not scored as
-            # either agreement or disagreement, same idiom composite_
-            # confidence_breakdown's other missing-data cases already use.
+            # one? No recent history at all is None - not scored as either
+            # agreement or disagreement, honest absence rather than a
+            # fabricated neutral, same idiom depth_factor/raw_spread already use.
             recent_sides = signal_log.recent_sides_for_ticker(ticker, since_ts=now - _AGREEMENT_LOOKBACK_SEC)
             agreement_factor = (
                 sum(1 for s in recent_sides if s == side) / len(recent_sides)
