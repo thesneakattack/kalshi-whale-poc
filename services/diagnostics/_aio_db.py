@@ -13,7 +13,7 @@ concurrent-caller queueing is ever measured as a real problem, the same
 2-per-file escape hatch is available there, not guessed preemptively here
 (CLAUDE.md's data-plane HARD RULE).
 
-Keyed by (id(event loop), db_path), not db_path alone: services/research/
+Keyed by (event loop object, db_path), not db_path alone: services/research/
 research.py's build_report() calls into this module from a plain sync
 function that itself runs via asyncio.to_thread(run_and_store, cfg) - a
 worker thread with no running event loop of its own - and reaches
@@ -22,8 +22,11 @@ An aiosqlite.Connection is bound to the event loop that created it; handing
 a connection opened under the main app's long-lived loop to code running
 under a different, temporary loop (or vice versa) is a real correctness
 hazard, not a hypothetical - aiosqlite's internal read/write queue is
-loop-bound. Keying by loop identity means research.py's throwaway loop
-always gets its own fresh connections, never the main loop's.
+loop-bound. Keying by the loop object itself (not id()) means research.py's
+throwaway loop always gets its own fresh connections, never the main loop's,
+and is collision-proof: holding the loop object as a dict key keeps a strong
+reference to it, structurally preventing CPython from reusing its address
+for an unrelated new loop.
 
 The lock guarding first-open-per-key is ALSO scoped per loop (a dict of
 locks, not one shared asyncio.Lock) for the identical reason: asyncio's own
@@ -39,19 +42,19 @@ from typing import Awaitable, Callable
 
 import aiosqlite
 
-_connections: dict[tuple[int, Path], aiosqlite.Connection] = {}
-_locks: dict[int, asyncio.Lock] = {}
+_connections: dict[tuple[asyncio.AbstractEventLoop, Path], aiosqlite.Connection] = {}
+_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
-def _key(db_path: Path) -> tuple[int, Path]:
-    return (id(asyncio.get_running_loop()), db_path)
+def _key(db_path: Path) -> tuple[asyncio.AbstractEventLoop, Path]:
+    return (asyncio.get_running_loop(), db_path)
 
 
 def _lock_for_current_loop() -> asyncio.Lock:
-    loop_id = id(asyncio.get_running_loop())
-    lock = _locks.get(loop_id)
+    loop = asyncio.get_running_loop()
+    lock = _locks.get(loop)
     if lock is None:
-        lock = _locks[loop_id] = asyncio.Lock()
+        lock = _locks[loop] = asyncio.Lock()
     return lock
 
 
@@ -94,11 +97,11 @@ async def close_for_current_loop() -> None:
     report generated over the process's lifetime would leak one connection
     per DB file touched (a new throwaway loop, and therefore a new cache
     key, every single call)."""
-    loop_id = id(asyncio.get_running_loop())
-    stale = [key for key in _connections if key[0] == loop_id]
+    loop = asyncio.get_running_loop()
+    stale = [key for key in _connections if key[0] is loop]
     for key in stale:
         await _connections.pop(key).close()
-    _locks.pop(loop_id, None)
+    _locks.pop(loop, None)
 
 
 async def reset() -> None:

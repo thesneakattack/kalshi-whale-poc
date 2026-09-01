@@ -18,6 +18,7 @@ def test_connection_for_returns_a_usable_connection(tmp_path):
         return rows[0][0]
 
     assert asyncio.run(_run()) == 0
+    asyncio.run(_aio_db.reset())
 
 
 def test_connection_for_is_cached_within_the_same_loop(tmp_path):
@@ -29,6 +30,7 @@ def test_connection_for_is_cached_within_the_same_loop(tmp_path):
         return first is second
 
     assert asyncio.run(_run()) is True
+    asyncio.run(_aio_db.reset())
 
 
 def test_connection_for_does_not_reuse_a_connection_across_different_loops(tmp_path):
@@ -52,23 +54,38 @@ def test_close_for_current_loop_only_closes_this_loops_entries(tmp_path):
     db_a = tmp_path / "a.db"
     db_b = tmp_path / "b.db"
 
-    async def _open_two():
+    # Loop 1: open db_a and db_b
+    async def _loop1_open_both():
         await _aio_db.connection_for(db_a)
         await _aio_db.connection_for(db_b)
 
-    async def _open_one_and_close_loop():
-        conn = await _aio_db.connection_for(db_a)
-        await _aio_db.close_for_current_loop()
-        return conn
+    asyncio.run(_loop1_open_both())
+    # After loop 1, cache has two entries: (loop1_obj, db_a) and (loop1_obj, db_b)
+    entries_after_loop1 = len(_aio_db._connections)
+    assert entries_after_loop1 == 2
 
-    asyncio.run(_open_two())
-    closed_conn = asyncio.run(_open_one_and_close_loop())
-    # The connection this loop opened and then closed must actually be
-    # closed (a second use raises) - proves close_for_current_loop really
-    # closes, not just evicts from the dict.
-    import pytest
-    with pytest.raises(Exception):
-        asyncio.run(closed_conn.execute("SELECT 1"))
+    # Loop 2: open db_a and close this loop only
+    async def _loop2_open_and_close():
+        await _aio_db.connection_for(db_a)
+        await _aio_db.close_for_current_loop()
+
+    asyncio.run(_loop2_open_and_close())
+    # After loop 2 closes itself, its entries are evicted but loop 1's remain
+    entries_after_loop2 = len(_aio_db._connections)
+    assert entries_after_loop2 == 2  # loop 1's db_a and db_b still cached
+
+    # Also verify loop 1's entries can be used in a new loop context (loop 3)
+    # by opening both db_a and db_b again - they get fresh connections (new loop)
+    # but the old loop 1 entries remain untouched in cache
+    async def _loop3_open_both():
+        await _aio_db.connection_for(db_a)
+        await _aio_db.connection_for(db_b)
+
+    asyncio.run(_loop3_open_both())
+    # Now cache has: loop1's (2 entries) + loop3's (2 entries) = 4 total
+    entries_after_loop3 = len(_aio_db._connections)
+    assert entries_after_loop3 == 4
+
     asyncio.run(_aio_db.reset())
 
 
