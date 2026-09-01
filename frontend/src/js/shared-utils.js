@@ -1,4 +1,4 @@
-import { renderMarketCards } from './equity-and-cards.js';
+import { eventGroupCardHTML, renderMarketCards } from './equity-and-cards.js';
 import { categoryMetadata, liveStatus, refresh, seriesMeta, terminalLatestPrices } from './polling-and-websocket.js';
 import { marketDetailTicker, refreshMarketDetail, renderScreenerTable } from './screener-and-header.js';
 
@@ -53,7 +53,7 @@ async function fetchJSON(url, opts) {
 }
 
 let marketTitles = {};
-let eventTitles = {};  // event_ticker -> {title, subtitle, category} — see renderMarketCards' grouping
+let eventTitles = {};  // event_ticker -> {title, subtitle, category} — see renderMarkets'/renderMarketCards' event-grouping
 let eventLiveData = {};
 let marketPanelState = {
   markets: { markets: [], prices: {}, signals: [], includeWhale: false, seriesTrackRecord: {} },
@@ -254,40 +254,6 @@ function seriesOf(ticker) {
 function seriesLabel(seriesTicker) {
   const meta = seriesMeta[seriesTicker];
   return (meta && meta.title) ? meta.title : seriesTicker;
-}
-
-// A 2-sibling *mutually exclusive* event (event.mutually_exclusive, real
-// Kalshi field - see main.py's _fetch_event_titles) is a real inversion
-// pair, not two independent pieces of information - confirmed live, direct
-// report: "they are just inversions of each other" ("Toronto vs
-// Philadelphia Winner"'s two sibling markets' yes_bid prices sum to
-// ~1.0). Drops the lower-probability half, keeping the higher one (its own
-// Yes/No pair already implies the other side's odds by complement) -
-// shared with eventGroupCardHTML's own version of this same rule for the
-// Markets/Whale card view. Does NOT touch a genuine multi-outcome market
-// (more than 2 siblings - each row is real, independent information) or
-// sibling markets that merely share an event without being mutually
-// exclusive at all (independent props - confirmed live, "Max Scherzer 15+
-// outs" and "Aaron Nola 18+ outs" do NOT sum to 1.0). Order-preserving
-// otherwise - only ever removes an item, never reorders the rest, so
-// callers relying on markets' existing series/volume ordering
-// (round_robin_select) keep working unchanged.
-function dedupeInversionPairs(markets, prices) {
-  const byEvent = new Map();
-  markets.forEach(m => {
-    if (!m.event_ticker) return;
-    if (!byEvent.has(m.event_ticker)) byEvent.set(m.event_ticker, []);
-    byEvent.get(m.event_ticker).push(m);
-  });
-  const drop = new Set();
-  byEvent.forEach((group, eventTicker) => {
-    const info = eventTitles[eventTicker];
-    if (group.length === 2 && info && info.mutually_exclusive) {
-      const lower = (prices[group[0].ticker] ?? -1) >= (prices[group[1].ticker] ?? -1) ? group[1] : group[0];
-      drop.add(lower.ticker);
-    }
-  });
-  return markets.filter(m => !drop.has(m.ticker));
 }
 
 // What sport/category this is, the actual matchup (from the event, not the
@@ -591,12 +557,11 @@ function marketRowHTML(m, prices) {
 function renderMarkets(markets, prices) {
   const el = $('markets-list');
   // Badge stays the real total (matches state.markets.length/watchlist_size
-  // exactly) even though dedupeInversionPairs below may render fewer rows -
-  // same "honest counts, simplified display" split eventGroupCardHTML uses.
+  // exactly) even though the event-grouping below renders fewer HTML blocks
+  // than there are markets - same "honest counts, simplified display" split
+  // eventGroupCardHTML itself uses for its own per-event "N markets" line.
   $('market-count').textContent = markets.length ? `(${markets.length})` : '';
   if (!markets.length) { el.innerHTML = '<div class="empty">No markets loaded</div>'; return; }
-
-  const visibleTickers = new Set(dedupeInversionPairs(markets, prices).map(m => m.ticker));
 
   // markets arrives already grouped consecutively by parent series (see
   // KalshiClient.round_robin_select - every market under a selected series
@@ -605,8 +570,24 @@ function renderMarkets(markets, prices) {
   // re-sorting or re-bucketing anything client-side. A header only shows
   // for a series with more than one market - a lone market renders exactly
   // as a plain row, same as before this grouping existed. Header counts
-  // stay the real per-series total, same reasoning as the badge above -
-  // only which rows actually render gets deduped.
+  // stay the real per-series total.
+  //
+  // Within one series, further grouped by event_ticker and rendered via
+  // eventGroupCardHTML - the same Markets-tab event-card renderer
+  // renderMarketCards uses (equity-and-cards.js), not a second
+  // reimplementation of the same "these tickers are outcomes of one
+  // decision" logic. Direct report, 2026-09-01: this sidebar (both its
+  // Simple and Advanced views) was the one market list in the app that
+  // never got that treatment - every individual yes/no outcome market
+  // showed as its own disconnected row with no indication several of them
+  // were really just options on the same underlying event. Map-based (not
+  // assumed-contiguous) for the same non-adjacency reason
+  // renderMarketCards' own series grouping already documents. A genuine
+  // 2-outcome mutually-exclusive pair collapses to one row automatically
+  // via eventGroupCardHTML's own isInversionPair logic - this used to be a
+  // separate dedupeInversionPairs pass here; removed as fully redundant
+  // once this function calls eventGroupCardHTML directly for every
+  // multi-sibling group, ME pairs included.
   let html = '';
   let currentSeries = null;
   let group = [];
@@ -616,7 +597,17 @@ function renderMarkets(markets, prices) {
       const vol = group.reduce((sum, m) => sum + (parseFloat(m.volume_24h_fp) || 0), 0);
       html += `<div class="series-header"><span>${esc(seriesLabel(currentSeries))}</span><span class="count">${group.length} markets · vol ${Math.round(vol).toLocaleString()}</span></div>`;
     }
-    html += group.filter(m => visibleTickers.has(m.ticker)).map(m => marketRowHTML(m, prices)).join('');
+    const eventGroups = new Map();  // event_ticker (or a per-market unique key) -> markets[]
+    group.forEach(m => {
+      const key = m.event_ticker || ('__solo__' + m.ticker);
+      if (!eventGroups.has(key)) eventGroups.set(key, []);
+      eventGroups.get(key).push(m);
+    });
+    html += Array.from(eventGroups.entries()).map(([key, evGroup]) => {
+      return evGroup.length === 1
+        ? marketRowHTML(evGroup[0], prices)
+        : eventGroupCardHTML(evGroup, eventTitles[key], prices);
+    }).join('');
   };
   markets.forEach(m => {
     const s = seriesOf(m.ticker);
@@ -647,7 +638,7 @@ function renderMarkets(markets, prices) {
 // are visible or their order, and forcing a "smooth" diff onto that would
 // just be wrong, not smoother.
 
-export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, dedupeInversionPairs, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sideAdjustedPrice, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
+export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sideAdjustedPrice, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
@@ -662,7 +653,6 @@ window.compactLiveValue = compactLiveValue;
 window.contextLineHTML = contextLineHTML;
 window.costHTML = costHTML;
 window.cryptoLiveSummary = cryptoLiveSummary;
-window.dedupeInversionPairs = dedupeInversionPairs;
 window.esc = esc;
 window.eventLiveDataForTicker = eventLiveDataForTicker;
 window.eventLiveDataLineHTML = eventLiveDataLineHTML;

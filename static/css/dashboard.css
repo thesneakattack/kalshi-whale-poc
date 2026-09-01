@@ -738,7 +738,7 @@
   .price-btn.no .val { color: var(--no); }
   .prob-bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--no); }
   .prob-bar .fill { height: 100%; background: var(--yes); }
-  .market-card .meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; justify-content: space-between; }
+  .market-card .meta, .event-card .meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; justify-content: space-between; }
 
   .whale-lean { border-top: 1px solid var(--panel-border); padding-top: 10px; }
   .whale-lean .headline { font-size: 12px; font-weight: 700; }
