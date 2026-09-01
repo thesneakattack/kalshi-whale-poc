@@ -109,8 +109,11 @@ def test_small_incidental_tie_at_a_cut_boundary_is_not_contaminated():
     # n=1000, materiality floor is max(30, 0.005*1000)=30. A 5-row tie
     # straddling the low cut (index 1000//3=333) mirrors depth_factor's
     # real 2-6-row float ties (audit table row 1, design §2) - must NOT trip.
+    # Replace indices 330-334 (original values 0.330-0.334) with tied constant
+    # 0.332, keeping the run at sorted positions 330-334 which straddles
+    # cut_idx=333 (5 < materiality_floor=30, so "ok").
     values = [i / 1000 for i in range(1000)]
-    values[330:335] = [0.5] * 5
+    values[330:335] = [0.332] * 5
     buckets, status = cc._bucket_win_rates(_tie_dataset(values), "depth_factor")
     assert status == "ok"
     assert buckets  # a real split happened
