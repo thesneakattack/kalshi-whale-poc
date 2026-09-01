@@ -11,7 +11,11 @@ nothing here edits a repo file (`docs/superpowers/specs/2026-08-26-kanban-board-
 judgment call it can't: which numbered plan docs are still open. The installed
 `github-issues-kanban` plugin owns claiming/working/reporting on an issue (same
 `status:*` / `depends-on:#N` labels; `sync_pass_one` leaves a live
-`claimed-by:*` claim alone) — don't duplicate it here.
+`claimed-by:*` claim alone) — don't duplicate it here. For pushing one
+issue's Status onto the Project board immediately after a claim/report-
+result/block, use the sibling `kanban-live-status` skill instead of running
+this whole batch — this skill stays the full-reconciliation, one-writer-at-
+a-time pass.
 
 **One writer at a time.** `ListAgents` first; if a peer session is live, ask
 which session syncs. Two runs classify the same plan differently and turn the
