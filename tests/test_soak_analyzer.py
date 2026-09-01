@@ -31,7 +31,7 @@ def _payload(**over):
                                      "dropped_after_max_attempts": 0,
                                      "skipped_non_binary_result": 0}}
     sched.update(over.pop("schedulers", {}))
-    faults = {"by_component": {"capture_writer": 0, "exit_engine": 0},
+    faults = {"by_component": {"capture_writer": 0, "exit_engine": 0, "loop_watchdog": 0},
               "most_frequent": []}
     faults.update(over.pop("faults_last_24h", {}))
     # services/capture_writer.loss_snapshot(), as /api/health/pipeline
@@ -322,6 +322,43 @@ def test_incomplete_per_operation_figure_is_labelled_a_floor():
     assert "floor" in c.detail
 
 
+def test_event_loop_stalls_fails_on_any_recorded_fault():
+    """services/observability/observability.py's maybe_capture logs one
+    loop_watchdog/event_loop_stall fault per persisted window that saw a
+    stall - any nonzero count here means the event loop itself failed to
+    run on schedule at least once, a direct data-plane timeliness threat,
+    not a downstream analysis question."""
+    p = _payload(faults_last_24h={
+        "by_component": {"capture_writer": 0, "exit_engine": 0, "loop_watchdog": 4}})
+    c = _by_id(sa.run_checks(p))["event_loop_stalls"]
+    assert c.layer == sa.DATA_PLANE
+    assert c.status == sa.FAIL
+    assert c.measured["event_loop_stall_faults_24h"] == 4
+    assert "4" in c.detail
+
+
+def test_event_loop_stalls_passes_on_zero():
+    p = _payload(faults_last_24h={
+        "by_component": {"capture_writer": 0, "exit_engine": 0, "loop_watchdog": 0}})
+    c = _by_id(sa.run_checks(p))["event_loop_stalls"]
+    assert c.status == sa.PASS
+
+
+def test_event_loop_stalls_unknown_when_component_absent():
+    """`by_component` comes from a SQL GROUP BY (fault_log.summary()), so a
+    component with zero matching rows in the window is ABSENT from the
+    dict, not present with a 0 - in practice this is the normal shape of a
+    genuinely healthy zero-stall window, not just an app predating this
+    check. Either way: UNKNOWN, never a silent PASS, same discipline as
+    check_exit_engine_faults (PR #417 adversarial review finding 4/5c -
+    this means check_event_loop_stalls can't report PASS from real healthy
+    data either, a pre-existing shape shared with check_exit_engine_faults,
+    tracked as a follow-up rather than fixed here)."""
+    p = _payload(faults_last_24h={"by_component": {"capture_writer": 0, "exit_engine": 0}})
+    c = _by_id(sa.run_checks(p))["event_loop_stalls"]
+    assert c.status == sa.UNKNOWN
+
+
 def test_capture_writer_gates_on_lost_rows_not_on_fault_count():
     """Issue #211: a `database is locked` fault no longer discards its batch
     (capture_writer retains and retries), so the fault count says how often
@@ -439,7 +476,7 @@ def test_json_mode_emits_parseable_output_with_every_check(tmp_path, capsys):
     sa.main(["--from-file", str(f), "--json"])
     d = json.loads(capsys.readouterr().out)
     assert d["verdict"] == sa.PASS
-    assert len(d["checks"]) == 10
+    assert len(d["checks"]) == 11
 
 
 # --- fetch hardening ------------------------------------------------------

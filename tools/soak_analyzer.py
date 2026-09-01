@@ -508,6 +508,38 @@ def check_capture_writer_health(faults: dict, cw: dict | None) -> Check:
     )
 
 
+def check_event_loop_stalls(faults: dict) -> Check:
+    """Gates on services/loop_watchdog.py's fault_log visibility (added
+    2026-09-01 after a live investigation found severe stalls - up to 130s
+    measured - sitting in observability.db entirely unsurfaced; nothing
+    read them without a manual /api/observability/summary query).
+
+    DATA_PLANE, not ANALYSIS_READINESS: a stalled event loop is a direct
+    threat to the data-plane HARD RULE's timeliness/flow-rate properties
+    themselves (the WS consumer, the tick loop, every in-flight request
+    share the one loop), not a downstream trade-analysis correctness
+    question the way exit_engine's stale-price fault is.
+
+    Same complete-count-from-by_component discipline as
+    check_exit_engine_faults - by_component is the total, most_frequent is
+    a truncated top-N.
+    """
+    by_comp = (faults or {}).get("by_component") or {}
+    if "loop_watchdog" not in by_comp:
+        return Check("event_loop_stalls", DATA_PLANE, UNKNOWN,
+                     "faults_last_24h.by_component absent - cannot count")
+    n = by_comp["loop_watchdog"]
+    return Check(
+        "event_loop_stalls", DATA_PLANE,
+        PASS if n == 0 else FAIL,
+        f"{n} loop_watchdog event_loop_stall fault(s) in the last 24h "
+        "(each fault_log row already aggregates one persisted observability "
+        "window's stall_count/stall_max_ms - see /api/observability/summary "
+        "for the underlying magnitude)",
+        {"event_loop_stall_faults_24h": n},
+    )
+
+
 def check_exit_engine_faults(faults: dict) -> Check:
     """Gate on the COMPLETE per-component fault count.
 
@@ -564,6 +596,7 @@ def run_checks(payload: dict) -> list[Check]:
         check_resolver_accounting(sched),
         check_settlement_completeness(sched),
         check_price_completeness(qh),
+        check_event_loop_stalls(faults),
         check_capture_writer_health(faults, capture),
         check_exit_engine_faults(faults),
     ]

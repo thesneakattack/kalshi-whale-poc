@@ -366,6 +366,24 @@ durably persisted; `capture_from_runtime`/`snapshot()` never reset.
 tick executor, the reader gate, the two-consumer split) actually reduce
 loop stalls rather than only moving where the same blocking work runs.
 
+**Fault visibility (2026-09-01, PR #417).** The fields above were
+read-only for months - a live investigation found severe stalls (up to
+130s measured) sitting in `observability.db` with nothing ever alerting on
+them. `maybe_capture` now reads `loop_watchdog.snapshot()` immediately
+before calling `reset_window()` and, if `stall_count > 0`, logs one
+`fault_log.record_fault("loop_watchdog", "event_loop_stall", ...)` row per
+persisted window (`severity="error"` when that window's `stall_max_ms >=
+1000.0`, else `"warn"` - keyed on peak magnitude only, not stall
+frequency; see `docs/open-decisions.md` for the tracked follow-up on
+frequency-based severity). `tools/soak_analyzer.py`'s
+`check_event_loop_stalls` gates on the resulting
+`faults_last_24h.by_component.loop_watchdog` count (DATA_PLANE layer) -
+same "faults_last_24h.by_component absent -> UNKNOWN, not a silent PASS"
+discipline as `check_exit_engine_faults`, including that check's own
+known gap: a genuinely healthy zero-stall window reports UNKNOWN rather
+than PASS, since a SQL `GROUP BY` never emits a zero-valued key (also
+tracked in `docs/open-decisions.md`).
+
 
 ### `candidate_retry.*` — H4-recovery retry queue (realtime data-plane remediation P2 Task 12, 2026-08-26)
 
