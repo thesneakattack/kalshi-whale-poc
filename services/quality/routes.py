@@ -19,12 +19,12 @@ import time
 
 from fastapi import APIRouter
 
-from services import fault_log, tick_executor
+from services import fault_log
 from services.alerting import alerting
 from services.app_state import index_stream, state, trade_stream
 from services.backup import backup
 from services.config.config_store import config_store
-from services.diagnostics import diagnostics
+from services.diagnostics import _diagnostics_pool, diagnostics
 from services.observability import observability
 from services.quality import evidence_provenance
 from services.quality.models import QualityReport
@@ -78,7 +78,7 @@ async def get_quality_summary():
         # refreshIntervalMs (default 5s) while the Terminal tab is open -
         # proven live via py-spy: caught holding the loop for a continuous
         # ~15s stretch, recurring every ~30-45s.
-        "diagnostics": await tick_executor.run(lambda: diagnostics.run_offline(cfg)),
+        "diagnostics": await _diagnostics_pool.run(lambda: diagnostics.run_offline(cfg)),
         "alerts": {"active": active_alerts},
         "faults": fault_log.summary(),
         "storage": {"databases": storage_entries},
