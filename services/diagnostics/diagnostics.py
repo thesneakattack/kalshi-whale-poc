@@ -44,6 +44,7 @@ from services import signal_log
 from services.config import config_performance
 from services import paper_broker as pb_module
 from services.config.config_paths import _config_value_at_path
+from services.diagnostics import _aio_db
 
 _OK = "ok"
 _WARN = "warn"
@@ -71,7 +72,7 @@ class Check:
         }
 
 
-def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
+async def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     """ticker -> close_ts, from market_catalog (the one store that persists a
     close time per market beyond the rotating watchlist). Deliberately NOT
     reconstructed from the ticker string: the YYMMMDDHHMM convention is a
@@ -85,31 +86,30 @@ def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     if not unique:
         return {}
     try:
-        with closing(sqlite3.connect(market_catalog.DB_PATH)) as conn:
-            placeholders = ",".join("?" for _ in unique)
-            rows = conn.execute(
-                f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
-                "AND close_ts IS NOT NULL",
-                unique,
-            ).fetchall()
+        conn = await _aio_db.connection_for(market_catalog.DB_PATH)
+        placeholders = ",".join("?" for _ in unique)
+        rows = await conn.execute_fetchall(
+            f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
+            "AND close_ts IS NOT NULL",
+            unique,
+        )
     except sqlite3.Error:
         return {}
     return {t: ts for t, ts in rows}
 
 
-def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
+async def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
     """Every config_performance.applied_changes row for these exact
     config_path values, recorded after since_ts - the raw material
     _historical_value rewinds. One query per check (not one per row)."""
     try:
-        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            placeholders = ",".join("?" for _ in paths)
-            rows = conn.execute(
-                f"SELECT applied_at, config_path, old_value FROM applied_changes "
-                f"WHERE applied_at > ? AND config_path IN ({placeholders})",
-                (since_ts, *paths),
-            ).fetchall()
+        conn = await _aio_db.connection_for(config_performance.DB_PATH)
+        placeholders = ",".join("?" for _ in paths)
+        rows = await conn.execute_fetchall(
+            f"SELECT applied_at, config_path, old_value FROM applied_changes "
+            f"WHERE applied_at > ? AND config_path IN ({placeholders})",
+            (since_ts, *paths),
+        )
     except sqlite3.Error:
         return []
     return [{"applied_at": r["applied_at"], "config_path": r["config_path"],
@@ -144,7 +144,7 @@ _MIN_CONTRACTS_PATH = "whale_watcher_kalshi.min_contracts"
 _MIN_CONTRACTS_BY_SERIES_PATH = "whale_watcher_kalshi.min_contracts_by_series"
 
 
-def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """Do the signals actually in signal_log respect the contract-count
     whale gate that was actually LIVE when each one was recorded - not the
     gate config declares today. History outlives config: a row recorded
@@ -169,16 +169,15 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
     real whale_watcher row" filter here."""
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    changes = _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
+    changes = await _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
 
     try:
-        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT series, ticker, size, seen_at FROM signals "
-                "WHERE seen_at > ? AND factors_json IS NOT NULL",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(signal_log.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT series, ticker, size, seen_at FROM signals "
+            "WHERE seen_at > ? AND factors_json IS NOT NULL",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("threshold_integrity", _UNKNOWN, f"signal_log unreadable: {exc}")
 
@@ -223,7 +222,7 @@ _OVERRIDES_BY_CATEGORY_PATH = "strategy_overrides.by_category"
 _OVERRIDES_BY_SERIES_PATH = "strategy_overrides.by_series"
 
 
-def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """Did entries respect min_unit_cost/max_unit_cost as they actually
     stood at ENTRY TIME - not as they stand today? Judging a historical
     entry against today's band is the same epoch-blindness
@@ -239,30 +238,30 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
     category/series override chain the strategy itself uses, with every
     layer (base band + both override tiers) individually rewound to its
     entry-time value, not just the base."""
+    import asyncio
     from services import trade_category
     from services.config import config_overrides
 
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    changes = _fetch_path_changes(
+    changes = await _fetch_path_changes(
         [_MIN_UNIT_COST_PATH, _MAX_UNIT_COST_PATH, _OVERRIDES_BY_CATEGORY_PATH, _OVERRIDES_BY_SERIES_PATH],
         since_ts,
     )
 
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT ticker, side, price, size, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'whale print%'",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT ticker, side, price, size, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'whale print%'",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("price_band_adherence", _UNKNOWN, f"paper_broker unreadable: {exc}")
     if not rows:
         return Check("price_band_adherence", _UNKNOWN, "no whale-follow entries in this window")
 
-    cats = trade_category.categories_for_tickers([r["ticker"] for r in rows])
+    cats = await asyncio.to_thread(trade_category.categories_for_tickers, [r["ticker"] for r in rows])
     above, below, inside, offenders = 0, 0, 0, []
     for r in rows:
         base_hist = {

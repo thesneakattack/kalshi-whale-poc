@@ -6,6 +6,7 @@ convention throughout tests/*.py, and a hard requirement per CLAUDE.md:
 accumulated history in data/*.db is a first-class asset and must never be
 touched by a test run).
 """
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
@@ -32,6 +33,13 @@ def dbs(tmp_path, monkeypatch):
     # (services/series_watcher.py), which opens its own store.
     monkeypatch.setattr(sw_module, "DB_PATH", tmp_path / "series_watcher.db")
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
 
 
 def _cfg(**over):
@@ -80,7 +88,7 @@ def test_threshold_integrity_flags_signals_below_the_configured_floor(dbs):
         ("A-2", "KXA", 12.0, now - 90),      # residue from a looser epoch
         ("A-3", "KXA", 3.0, now - 80),
     ])
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "fail"
     assert c.detail["violations"] == 2
     assert c.detail["total"] == 3
@@ -96,7 +104,7 @@ def test_threshold_integrity_respects_per_series_overrides(dbs):
     cfg = _cfg(whale_watcher_kalshi={
         "min_contracts": 5000, "min_contracts_by_series": {"KXBTC15M": 2500},
     })
-    c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(cfg, since_ts=now - 3600, now=now))
     assert c.status == "ok"
     assert c.detail["violations"] == 0
 
@@ -104,7 +112,7 @@ def test_threshold_integrity_respects_per_series_overrides(dbs):
 def test_threshold_integrity_unknown_when_no_data(dbs):
     now = time.time()
     sl_module._connect().close()
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
 
 
@@ -125,7 +133,7 @@ def test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config(dbs
             (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
     cfg = _cfg()  # today's live min_contracts is 5000
-    c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now))
     assert c.status == "ok"
     assert c.detail["violations"] == 0
     assert c.detail["epoch_aware"] is True
@@ -145,7 +153,7 @@ def test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_ra
             "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
             (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now))
     assert c.status == "fail"
     assert c.detail["violations"] == 1
     assert c.evidence[0]["floor_at_the_time"] == 100.0
@@ -160,7 +168,7 @@ def test_price_band_flags_entries_above_max_unit_cost(dbs):
         ("C-2", "yes", 0.65, "whale print 5000 @ 0.65 (conf 0.6)", now - 90),   # inside
         ("C-3", "no", 0.05, "whale print 6000 @ 0.05 (conf 0.6)", now - 80),    # uc 0.95 > 0.8
     ])
-    c = diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "fail"
     assert c.detail["above"] == 2
     assert c.detail["inside"] == 1
@@ -172,7 +180,7 @@ def test_price_band_uses_side_aware_unit_cost_not_raw_price(dbs):
     # exact no-side dollar-math bug class CLAUDE.md documents.
     now = time.time()
     _seed_trades([("D-1", "no", 0.05, "whale print 6000 @ 0.05 (conf 0.6)", now - 10)])
-    c = diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now))
     assert c.detail["above"] == 1
     assert c.evidence[0]["unit_cost"] == pytest.approx(0.95)
     assert c.evidence[0]["max_gain_per_contract"] == pytest.approx(0.05)
@@ -193,7 +201,7 @@ def test_price_band_is_epoch_aware_not_judged_against_todays_band(dbs):
             (now - 3600, "strategy.max_unit_cost", "0.95", "0.8", "test", 0, "fp0", "fp1"),
         )
     cfg = _cfg()  # today's live max_unit_cost is 0.8
-    c = diagnostics.check_price_band_adherence(cfg, since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(cfg, since_ts=now - 10800, now=now))
     assert c.status == "ok"
     assert c.detail["above"] == 0
     assert c.detail["inside"] == 1
