@@ -133,6 +133,56 @@ def test_fetch_signals_below_contract_threshold_logs_a_rejected_candidate():
     assert gates[0]["rejected_count"] == 1
 
 
+def test_fetch_signals_runs_scoring_on_the_dedicated_scoring_pool(monkeypatch):
+    from services.whalewatchers import kalshi_trade_tape
+
+    pool_calls = []
+    real_run = kalshi_trade_tape._scoring_pool.run
+
+    async def spy(fn):
+        pool_calls.append(fn)
+        return await real_run(fn)
+
+    monkeypatch.setattr(kalshi_trade_tape._scoring_pool, "run", spy)
+    provider = KalshiTradeTapeProvider()
+    trade = _trade(count_fp="100.00", yes_price_dollars="0.60", taker_side="yes")
+    ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
+    asyncio.run(provider.fetch_signals(market_context=ctx))
+    assert len(pool_calls) == 1
+
+
+def test_score_recovered_trade_is_now_a_coroutine_function():
+    import inspect
+
+    provider = KalshiTradeTapeProvider()
+    assert inspect.iscoroutinefunction(provider.score_recovered_trade)
+
+
+def test_score_recovered_trade_runs_on_the_dedicated_scoring_pool_and_scores_the_trade():
+    from services.whalewatchers import kalshi_trade_tape
+
+    pool_calls = []
+    real_run = kalshi_trade_tape._scoring_pool.run
+
+    async def spy(fn):
+        pool_calls.append(fn)
+        return await real_run(fn)
+
+    import services.whalewatchers.kalshi_trade_tape as ktt_module
+    orig_run = ktt_module._scoring_pool.run
+    ktt_module._scoring_pool.run = spy
+    try:
+        provider = KalshiTradeTapeProvider()
+        trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+        market = _market()
+        signals = asyncio.run(provider.score_recovered_trade(trade, market, {}, time.time()))
+    finally:
+        ktt_module._scoring_pool.run = orig_run
+    assert len(pool_calls) == 1
+    assert len(signals) == 1
+    assert signals[0].ticker == market["ticker"]
+
+
 def test_fetch_signals_below_contract_threshold_logs_unit_cost_too():
     """2026-08-23, ROADMAP.md's "entry gates select a worse subset" item:
     record_rejection() used to capture nothing but the gate's own

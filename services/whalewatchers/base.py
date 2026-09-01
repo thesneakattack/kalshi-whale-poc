@@ -29,7 +29,7 @@ class WhaleWatcherProvider(ABC):
         services/whalewatchers/kalshi_trade_tape.py). Providers that fetch
         from an independent external API (generic_rest, template) ignore it."""
 
-    def score_recovered_trade(
+    async def score_recovered_trade(
         self, trade: dict, market: dict, cfg: dict, now: float,
     ) -> list[WhaleSignal]:
         """Score a single already-resolved trade+market pair through this
@@ -47,5 +47,12 @@ class WhaleWatcherProvider(ABC):
         never happened. Only KalshiTradeTapeProvider overrides this today —
         it is the only provider services.candidate_retry.enqueue() is ever
         called from (see services/whalewatchers/kalshi_trade_tape.py's own
-        _resolve_unknown_markets)."""
+        _resolve_unknown_markets).
+
+        async (not a plain method) so candidate_retry.run_pending can
+        `await provider.score_recovered_trade(...)` uniformly regardless of
+        which provider is active - KalshiTradeTapeProvider's own override
+        runs its scoring work on a dedicated thread pool (see
+        kalshi_trade_tape.py), so the interface itself has to be async even
+        though this default has nothing to await."""
         return []
