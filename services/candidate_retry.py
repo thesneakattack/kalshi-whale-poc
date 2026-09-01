@@ -164,7 +164,7 @@ async def run_pending(
         # retry/abandon counters instead of the fault log.
         recovered += 1
         del _pending[trade_id]
-        for signal in provider.score_recovered_trade(trade, market, cfg, now):
+        for signal in await provider.score_recovered_trade(trade, market, cfg, now):
             await handle_signal(signal, cfg, market_results, config_fp, tick_now)
     _window_retried += retried
     _window_recovered += recovered
