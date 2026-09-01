@@ -571,3 +571,51 @@ def test_add_markets_requests_an_initial_snapshot_on_the_ticker_sid_only():
     by_sid = {m["params"]["sid"]: m["params"] for m in client._ws.sent if m["params"].get("action") == "add_markets"}
     assert by_sid[4].get("send_initial_snapshot") is True
     assert "send_initial_snapshot" not in by_sid[3]
+
+
+# --- Pyth value feed (Commodities category, kalshi-category-data-
+# completeness Task 12): underlying_tickers seeded with gold/silver
+# (docs/kalshi/pyth-value.md's own documented examples), plus
+# request_underlying_list() mirroring request_index_list()'s CF Benchmarks
+# discovery call but keyed to the pyth_value sid and the underlying_list
+# action. -----------------------------------------------------------------
+
+def _pyth_client():
+    return KalshiStreamGateway(
+        "https://external-api.kalshi.com/trade-api/v2",
+        underlying_tickers=["Metal.XAU/USD", "Metal.XAG/USD"],
+    )
+
+
+def test_pyth_subscribe_fires_once_underlying_tickers_are_configured():
+    # Pins existing, already-correct behavior: websocket.py's
+    # `if self.underlying_tickers:` gate already sends the pyth_value
+    # subscribe once the constructor is given tickers - this is a
+    # regression guard, not new functionality.
+    client = _pyth_client()
+    client._ws = _FakeWebSocket()
+
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+
+    pyth_subs = [m for m in client._ws.sent if m["params"].get("channels") == ["pyth_value"]]
+    assert len(pyth_subs) == 1
+    assert pyth_subs[0]["params"]["underlying_tickers"] == ["Metal.XAU/USD", "Metal.XAG/USD"]
+
+
+def test_request_underlying_list_is_a_noop_before_any_subscription():
+    client = _pyth_client()
+    client._ws = _FakeWebSocket()
+    asyncio.run(client.request_underlying_list())  # no pyth_value sid yet
+    assert client._ws.sent == []
+
+
+def test_request_underlying_list_sends_the_documented_action():
+    client = _pyth_client()
+    client._ws = _FakeWebSocket()
+    asyncio.run(client._sync_subscriptions(force_subscribe=True))
+    client._subscription_sids["pyth_value"] = "sid-123"  # simulate a confirmed subscription
+
+    asyncio.run(client.request_underlying_list())
+
+    update_msgs = [m for m in client._ws.sent if m.get("cmd") == "update_subscription"]
+    assert update_msgs[-1]["params"] == {"sid": "sid-123", "action": "underlying_list"}

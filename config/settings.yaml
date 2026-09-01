@@ -200,7 +200,9 @@ index_feed:
   index_ids:
   - BRTI
   - ETHUSD_RTI
-  underlying_tickers: []
+  underlying_tickers:
+  - Metal.XAU/USD
+  - Metal.XAG/USD
 settlement_edge_entry:
   # Acts on the edge services/settlement_edge.py measured (2026-08-23:
   # 27,534 scored observations, projection Brier 0.0171 vs market Brier
