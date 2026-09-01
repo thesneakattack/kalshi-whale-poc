@@ -218,34 +218,53 @@ def resolve_from_market_results(market_results: dict) -> int:
     flushes within ~1s on its own cadence, well inside typical
     poll_interval_sec tick spacing - this only does real work in the rare
     case a rejection landed in the last <1s before this tick's resolve
-    call."""
+    call.
+
+    Both UPDATE passes below batch via executemany rather than issuing one
+    execute() per resolved row (2026-09-01 fix, capture_writer-adjacent
+    lock contention): this function runs once per tick against
+    candidate_log.db, the same file capture_writer's own daemon thread
+    flushes rejected_candidates/rejection_events into on its own ~1s
+    cadence - a Python loop of individual UPDATEs held the write
+    transaction open for the whole loop, and capture_writer's daemon only
+    waits 1s before giving up, so it lost that race with real, measured
+    frequency (91 'rejected_candidates: N row(s) retained on lock' faults
+    in one recent window, /api/health/faults, 2026-09-01). Batching keeps
+    the write phase to at most two statements regardless of how many rows
+    resolve in a given tick, shrinking the window a collision can happen
+    in - the actual mechanism, not a busy_timeout/retry tune."""
     capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
+    now = time.time()
     with _connect() as conn:
         rows = conn.execute(
             "SELECT rowid, ticker FROM rejected_candidates WHERE resolved = 0",
         ).fetchall()
-        resolved_count = 0
-        now = time.time()
+        to_resolve = []
         for rowid, ticker in rows:
             result = (market_results.get(ticker) or "").strip().lower()
             if result not in ("yes", "no"):
                 continue
-            conn.execute(
+            to_resolve.append((result, now, rowid))
+        if to_resolve:
+            conn.executemany(
                 "UPDATE rejected_candidates SET resolved = 1, result = ?, resolved_at = ? WHERE rowid = ?",
-                (result, now, rowid),
+                to_resolve,
             )
-            resolved_count += 1
+
+        events_to_resolve = []
         for ticker, result in market_results.items():
             result = (result or "").strip().lower()
             if result not in ("yes", "no"):
                 continue
-            conn.execute(
+            events_to_resolve.append((result, now, ticker))
+        if events_to_resolve:
+            conn.executemany(
                 "UPDATE rejection_events SET resolved = 1, result = ?, resolved_at = ? "
                 "WHERE ticker = ? AND resolved = 0",
-                (result, now, ticker),
+                events_to_resolve,
             )
-        return resolved_count
+        return len(to_resolve)
 
 
 def gate_summary() -> list[dict]:
