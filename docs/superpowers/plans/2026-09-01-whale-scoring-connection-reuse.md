@@ -1,26 +1,34 @@
-# Whale-Scoring Connection Reuse Implementation Plan
+# Write-Path Capacity Fixes Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix `docs/next-action.md`'s top item — the write path can't sustain full
-legitimate trade volume — by eliminating the per-trade fresh-SQLite-connection
-overhead in the whale-scoring pipeline, on a dedicated bounded worker pool instead of
-Python's shared default executor.
+legitimate trade volume — via two independently-revertible fixes under one
+architectural principle: nothing non-critical shares `services.tick_executor`'s
+2-worker pool (or Python's shared default executor) with trading-critical work.
+(1) Eliminate the per-trade fresh-SQLite-connection overhead in the whale-scoring
+pipeline, on its own dedicated pool. (2) Isolate `run_offline()`'s diagnostics work
+(currently sharing `tick_executor` with trading-critical writes) onto its own
+dedicated pool too. Both are needed together — see the spec's section 1b for why
+isolating diagnostics alone doesn't fully explain the broader event-loop-stall
+symptom without the whale-scoring fix too.
 
-**Architecture:** A new dedicated 4-worker pool (`services/whalewatchers/_scoring_pool.py`)
-replaces `asyncio.to_thread` for `kalshi_trade_tape.py`'s per-trade scoring work (both
-the WS-message path and the candidate-retry path). Each worker thread caches one
-open, WAL-mode SQLite connection per database file (`signal_log.db`,
-`market_history.db`, `market_analyst.db`) and reuses it across every trade that
-thread processes, instead of opening and tearing one down on every single call —
-cutting the real, measured cost (`CREATE TABLE IF NOT EXISTS` + index/column checks
-on every call) without changing what's queried or introducing staleness.
+**Architecture:** Fix 1 (Tasks 1-6): a dedicated 4-worker pool
+(`services/whalewatchers/_scoring_pool.py`) replaces `asyncio.to_thread` for
+`kalshi_trade_tape.py`'s per-trade scoring work (both the WS-message path and the
+candidate-retry path); each worker thread caches one open, WAL-mode SQLite
+connection per database file (`signal_log.db`, `market_history.db`,
+`market_analyst.db`) instead of opening and tearing one down on every call. Fix 2
+(Task 8): a dedicated 2-worker pool (`services/diagnostics/_diagnostics_pool.py`)
+replaces `tick_executor.run()` for `quality/routes.py`'s `run_offline()` call —
+isolation only, no connection caching or query changes.
 
 **Tech Stack:** Python 3, `sqlite3` (stdlib), `concurrent.futures.ThreadPoolExecutor`
 (stdlib) — no new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-whale-scoring-connection-reuse-design.md`
-(revision 2, self-reviewed, adversarially reviewed, NO-GO→revised cycle complete).
+(revision 3 — both fixes, both independently self-reviewed and adversarially
+reviewed through a full NO-GO→revised cycle each).
 
 ## Global Constraints
 
@@ -632,6 +640,149 @@ own standing rule that nothing that matters lives only in chat.
 
 ---
 
+## Task 8: `services/diagnostics/_diagnostics_pool.py` — isolate `run_offline()` from `tick_executor`
+
+**Files:**
+- Create: `services/diagnostics/_diagnostics_pool.py`
+- Modify: `services/quality/routes.py:81`
+- Test: `tests/test_diagnostics_pool.py` (new)
+
+**Interfaces:**
+- Produces: `async def run(fn: Callable[[], T]) -> T`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/test_diagnostics_pool.py
+import threading
+
+import pytest
+
+from services.diagnostics import _diagnostics_pool
+
+
+@pytest.mark.asyncio
+async def test_run_executes_on_a_dedicated_diagnostics_thread():
+    result_thread_name = {}
+
+    def _work():
+        result_thread_name["name"] = threading.current_thread().name
+
+    await _diagnostics_pool.run(_work)
+    assert result_thread_name["name"].startswith("diagnostics")
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_calls_do_not_serialize_on_one_worker():
+    import asyncio
+    import time
+
+    def _slow():
+        time.sleep(0.2)
+        return time.monotonic()
+
+    start = time.monotonic()
+    await asyncio.gather(_diagnostics_pool.run(_slow), _diagnostics_pool.run(_slow))
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.35  # both ran concurrently on the pool's 2 workers, not queued behind each other
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_diagnostics_pool.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'services.diagnostics._diagnostics_pool'`
+
+- [ ] **Step 3: Write the implementation**
+
+```python
+# services/diagnostics/_diagnostics_pool.py
+"""Dedicated worker pool for services/diagnostics/diagnostics.py's
+run_offline() - see docs/superpowers/specs/2026-09-01-whale-scoring-
+connection-reuse-design.md section 1b/4a for why this needs its own
+pool, not services.tick_executor's shared one: run_offline()'s
+per-series raw_trades aggregate queries (services/series_watcher.py's
+funnel()) plus check_confidence_input_coverage()'s unscoped signal_log
+fetch (docs/open-decisions.md, 2026-09-01) grew expensive enough to
+permanently occupy both of tick_executor's 2 workers - starving the
+trading-critical writes that pool exists to protect (confirmed live,
+2026-09-01: both workers in futex_do_wait for 5h10m+, capture_writer
+lock faults recurring, reproducing again within ~11 minutes of a fresh
+process restart).
+
+2 workers: sized for realistic known concurrent callers of
+GET /api/quality/summary - the dashboard's own 5s poll, plus this
+repo's own .claude/hooks/guard_workflow.py and CLAUDE.md routing
+sessions to this exact endpoint as their first investigation step,
+plus tools/quality_coordination.py. Not tick_executor's 2 (shared with
+trading-critical work, the problem being fixed) or the whale-scoring
+pool's 4 (a different, higher-frequency workload). If 2 isn't enough,
+that shows up as measurable backlog on this pool specifically, not a
+guess to get exactly right on the first try."""
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
+
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="diagnostics")
+
+
+async def run(fn: Callable[[], T]) -> T:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, fn)
+```
+
+In `services/quality/routes.py:81`, change:
+```python
+"diagnostics": await tick_executor.run(lambda: diagnostics.run_offline(cfg)),
+```
+to:
+```python
+"diagnostics": await _diagnostics_pool.run(lambda: diagnostics.run_offline(cfg)),
+```
+(add `from services.diagnostics import _diagnostics_pool` to this file's imports;
+confirm whether `tick_executor` is still imported/used elsewhere in this file before
+removing that import — `grep -n "tick_executor" services/quality/routes.py` first).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_diagnostics_pool.py -v`
+Expected: PASS (both tests)
+
+- [ ] **Step 5: Run the full quality-routes test suite for a regression check**
+
+Run: `ddev exec -s fastapi python -m pytest tests/test_quality*.py -v`
+Expected: PASS — pure call-site swap, `run_offline()`'s own behavior is unchanged
+(confirmed read-only by its own existing test, `test_diagnostics.py::test_run_offline_never_writes_to_any_db`).
+
+- [ ] **Step 6: Live validation (spec section 6's diagnostics bullets) — required, not optional**
+
+With the app running: probe `tick_executor`'s own worker availability (submit a
+cheap no-op via `tick_executor.run(lambda: None)` and time it) while a
+`run_offline()`-triggering `GET /api/quality/summary` call is in flight, before and
+after this change. Before: expect visible delay (this is the bug, reproducing it
+confirms the mechanism). After: the probe should return promptly regardless of
+`quality/summary`'s own state. This is the direct, mechanistic proof of isolation —
+not an inference from fewer faults alone.
+
+- [ ] **Step 7: Update the stale cross-reference**
+
+In `docs/open-decisions.md`, add a note to the 2026-09-01 Task 9 entry
+(`resolved_signals_with_factors()`'s unscoped fetch) that this fix resolves its
+"eats into tick_executor capacity" framing as a side effect — the underlying
+per-call cost is unchanged and the entry's own query-bounding question stays open,
+but the specific concern about shared-pool duty cycle no longer applies once
+`run_offline()` runs on its own pool.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/diagnostics/_diagnostics_pool.py services/quality/routes.py tests/test_diagnostics_pool.py docs/open-decisions.md
+git commit -m "fix: isolate run_offline() onto its own pool, stop it starving tick_executor's critical-path work"
+```
+
+---
+
 ## Plan self-review
 
 **Spec coverage:** Section 1/1a (root cause + the missed `score_recovered_trade`
@@ -692,3 +843,14 @@ imported and called identically in Tasks 2-5. `score_recovered_trade`'s
 site (verified directly against current source during the design phase, not
 assumed). Every module's new `_scoring_read_connection()` helper follows the same
 name and signature convention across Tasks 2-4.
+
+**Task 8 addendum (spec revision 3):** covers section 1b/4a — the diagnostics pool,
+2 workers (not 1, per that section's own adversarial review correcting an unverified
+concurrency assumption), isolation-only (no connection caching, deliberately
+different in shape from Tasks 1-6 since the underlying mechanism is pool-sharing,
+not connection overhead). Step 7's `docs/open-decisions.md` update closes the loop
+on a cross-reference the spec's own adversarial review found missing on first draft,
+rather than leaving that entry stale once this ships. Task 7 (measured validation)
+and Task 8 are independently gate-able — Task 8 doesn't depend on Task 7's outcome,
+and either fix can ship without the other, though the spec's section 1b explains why
+both are needed for the full symptom picture.
