@@ -1,170 +1,146 @@
 # Next action
 
-**Resume the 3-plan sequence (kalshi → whale-confidence → frontend) at
-whale-confidence-scoring-remediation Task 1's fix round.**
+**Root-cause why `capture_writer_health`/`exit_engine_faults` are still
+actively recurring, not aging out as previously hoped.** The 2026-08-30
+soak boundary assumed these would clear from the 24h fault window on their
+own; the 2026-09-01 re-run still VERDICT FAIL, and `/api/health/faults`
+confirms both are live (`capture_writer`'s "database is locked" — issue
+#211, already tracked — last occurred 2026-09-01T06:06:23Z; `exit_engine`'s
+`stale_price_uncorroborated` last occurred 2026-09-01T06:07:09Z, untracked
+so far). See `docs/open-decisions.md`'s newest line for the full evidence.
+Use `superpowers:systematic-debugging`. Only once both are actually clean
+(checked by fault recency, not just verdict text) does the
+`realtime_data_plane.two_consumer_mode` permanence decision become
+answerable.
 
-Original instruction (still governing, "do not ask me for input" is still in
-force): implement `docs/superpowers/plans/2026-08-30-kalshi-category-data-
-completeness-implementation.md`, then `docs/superpowers/plans/2026-08-30-
-whale-confidence-scoring-remediation-implementation.md`, then
-`docs/superpowers/plans/2026-08-25-frontend-modularization.md`, each through
-the full `subagent-driven-development` cycle to merge, using subagents,
-without stopping to ask — log anything genuinely requiring a human call in
-`docs/superpowers/research/2026-08-31-followups-from-3-plan-implementation.md`
-and keep going.
+**Also open, lower priority:** a one-time `sudo chown`/`rm -rf` cleanup pass
+is needed for pre-existing root-owned leftovers in other worktrees (see
+below) — `ddev exec -s fastapi` can no longer force through them now that
+it runs as the host user.
 
-## Plan 1 (kalshi-category-data-completeness): DONE, merged
+## Recently resolved (2026-09-01, this session)
 
-PR #374 merged to `main` 2026-09-01 (14 tasks + a whole-branch review round +
-a PR-level adversarial-review round, both with real Critical/Important
-findings found and fixed — see the PR's own comment thread for the full
-self-review/adversarial-review/consolidation history). Issues #318 and
-#341–354 closed. Worktree `.claude/worktrees/impl-kalshi-category-completeness`
-still exists on disk (branch already deleted, both locally-tracked-as-merged
-and on the remote) — safe for `scripts/cleanup-worktrees.sh` to reap, not
-done yet this session.
+- **PR #387 merged**: `fastapi` ddev container now runs as the host user
+  (`user: "${DDEV_UID}:${DDEV_GID}"` in `.ddev/docker-compose.fastapi.yaml`),
+  not root. Root cause of `config/settings.yaml` and 2,163 other paths
+  (including several live `data/*.db` files) silently going root-owned on
+  every write — `services/config/config_store.py`'s `update()` writes
+  straight onto the bind-mounted repo, and Docker/WSL2 doesn't remap
+  container UIDs. Verified live before/after (`ddev exec -s fastapi id`,
+  a real `POST /api/config` round-trip). Full review cycle run: independent
+  adversarial review confirmed the mechanism against ddev's own internal
+  compose templates (not just its docs page), and caught two comments
+  (`scripts/cleanup-worktrees.sh`, `.claude/hooks/check_py_syntax.py`) left
+  factually stale by the exact same change — fixed in the same PR before
+  merge. One-time remediation chown was done by David (sudo, host-side,
+  outside the diff).
+  **New, expected side effect** (flagged live by `autotrade-d4`): pre-fix
+  root-owned leftovers in *other* worktrees (e.g.
+  `.claude/worktrees/impl-whale-confidence-scoring` after PR #388) can no
+  longer be force-cleared by `ddev exec -s fastapi rm -rf` — it's no longer
+  root either. `cleanup-worktrees.sh`'s comment already documents this
+  (says "kept", never lies about success); the leftover directories
+  themselves still need a one-time host-level `sudo rm -rf` pass whenever
+  convenient. Not urgent, not blocking anything.
+- **PR #389 merged**: `config/settings.yaml` updated directly by David via
+  the dashboard — `markets_watchlist` widened from 1 ticker (`KXBTC15M`) to
+  16 across BTC/ETH/gold/silver weekly/daily/hourly series (addresses the
+  long-standing watchlist-coverage-bottleneck gap), `strategy.min_unit_cost`
+  0.35→0.25, `whale_watcher_kalshi.min_contracts` 10000→3000. The same save
+  also silently wiped `min_contracts_by_series` and
+  `strategy_overrides.by_category` (Sports `stop_loss_pct` override) to
+  `{}` — `config_store.py`'s `update()` shallow-merges, so a patch
+  resending a top-level key as a bare `{}` overwrites rather than
+  preserves. Flagged explicitly; David confirmed leaving both wiped. Only
+  the historical `whale_confidence_weights` calibration-audit comment
+  (pure documentation) was restored, since its deletion was pure collateral
+  loss rather than an intended edit. Also added
+  `docs/nothing-advances-diagram.png`.
+- **PR #388 merged** (by `autotrade-d4`, whale-confidence-scoring-remediation
+  Tasks 1-9): fixed 4 fabricated-default sites and a tie-blind bucketing bug
+  in the whale-confidence-scoring formula
+  (`services/confidence_scoring.py`, `services/whale_calibration/confidence_calibration.py`,
+  `services/whalewatchers/kalshi_trade_tape.py`,
+  `services/diagnostics/diagnostics.py`, `services/signal_log.py`,
+  `services/market_analyst_agent/per_market.py`,
+  `frontend/src/js/advisory-calibration.js`). No overlap confirmed with this
+  session's work. **Tasks 10-16 blocked on a soak-time gate** — see
+  `autotrade-d4` for status.
+- Confirmed (not assumed) that git is genuinely absent from the `fastapi`
+  container — already tracked at `docs/open-decisions.md` line 10, not a
+  new finding; a stale comment in `tools/project_manifest.py`'s
+  `_git_head()` claims otherwise (harmless — caught as `OSError`, not a
+  live bug) but was left alone as out-of-scope for the container-user PR.
+- Ran `docs/next-action.md`'s previously-pending soak_analyzer recheck (see
+  "Next action" above for what it found) and `tools/quality_coordination`'s
+  read-only scan — its `escalation_eligible` backlog (a dozen+ old plan
+  docs, `feat/candlestick-volatility`) is pre-existing, already-investigated
+  noise per `docs/open-decisions.md`'s 2026-08-30 entry (AQC's cleanup
+  action for this was retired after proving 0-value); nothing new added.
+  Skipped `kanban_sync`/board writes this session — `autotrade-d4` and
+  `autotrade-1f` were both live and mid-merge (PRs #388, #390) at checkpoint
+  time; confirmed with `autotrade-d4` the board was clear for them
+  afterward.
 
-## Plan 2 (whale-confidence-scoring-remediation): IN PROGRESS
+## Leave alone — active peer-session work
 
-**Worktree: `.claude/worktrees/impl-whale-confidence-scoring`, branch
-`feat/whale-confidence-scoring-remediation` (pushed to origin, no PR yet).
-Resume IN THIS EXACT WORKTREE** — its `.superpowers/sdd/2026-08-30-whale-
-confidence-scoring-remediation-implementation/progress.md` ledger is
-gitignored (workspace scratch, per the `subagent-driven-development` skill's
-own convention) and holds real, not-yet-committed-anywhere context: the
-citation-drift review findings, the pre-flight scan, and Task 1's two open
-review findings. Starting a fresh worktree instead of resuming this one loses
-that ledger entirely and will cause exactly the "re-dispatched a completed
-task sequence" failure mode the skill's own docs warn about — read the
-ledger first, trust it and `git log` over conversational memory.
+- `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`).
+- `.claude/worktrees/impl-whale-confidence-scoring` — PR #388 merged by
+  `autotrade-d4`, git-level cleanup done, but an inert leftover directory
+  with root-owned cache files remains (see "Also open" above).
+- `feat/watchlist-event-grouping` (`autotrade-1f`, PR #390) — frontend-only
+  (watchlist sidebar event-grouping), confirmed no file overlap with this
+  session's work.
 
-**Before Task 1: this plan's own catch-up review (2026-08-31, done, GO
-verdict) predates PR #374's merge.** This session already ran a focused
-post-merge citation-drift review (see the ledger's Setup section) — 11 stale
-line-number citations into `services/signal_log.py`/`main.py` corrected, one
-pre-existing citation defect in Task 11 resolved, a stale worktree path in
-Global Constraints fixed. Committed as `433c606`. No semantic conflict found;
-the plan's own catch-up-review verdict (GO) still stands.
+## whale-confidence-scoring-remediation open items (PR #388, autotrade-d4)
 
-**Task 1 (`_bucket_win_rates` materiality-floored tie predicate): implemented
-but NOT YET fix-rounded.** Commit `51ead87`. The task-reviewer (dispatched,
-verdict "Needs fixes") found two real problems, independently confirmed
-against the diff before dispatch by the controller for the first one:
+- **Task 10 (real-data re-measurement gate) — not startable yet.** Needs this
+  fix running in production for a real soak period first (design §10) —
+  check back after real elapsed time. When ready: pull a live report,
+  confirm no factor reads `data_status: "contaminated"`
+  (`"insufficient_variance"` is fine/expected), record the real observed
+  per-factor gaps, then Tasks 11-16 can start (plan:
+  `docs/superpowers/plans/2026-08-30-whale-confidence-scoring-remediation-implementation.md`).
+- **Do not click "Apply suggested weights" on the whale-confidence-calibration
+  dashboard panel right now.** The tie-safe re-measurement correctly flags
+  5/9 factors unreliable on real data, which concentrates `suggested_weights`
+  onto 2 factors (measured: `context_factor` 0.34→0.54 if applied).
+  `auto_apply_enabled` stays `false` so nothing writes this automatically,
+  but the manual route has no guard yet — Task 12 is the fix, blocked
+  behind Task 10 by design. Full detail: `docs/open-decisions.md`.
+- **Two algorithm-precision follow-ups from PR #388's own adversarial
+  review**, not fixed in that PR on purpose (design work, not a same-PR
+  patch): `_tied_run_size` flags contamination on a tied run's full length
+  rather than the minority side actually crossing the cut (real example: a
+  1,662-row run where only 1.1% is on the minority side trips the same flag
+  as a fully-tied bucket); the materiality floor `max(30, 0.005*n)` has a
+  blind band below n≈6000 (not reachable at today's real ~103k-row volume,
+  latent at `min_resolved_signals: 50`). Worth a design call before Task 10
+  treats today's algorithm as final. Full detail: `docs/open-decisions.md`.
 
-1. **Critical — documentation lost, not preserved.** The brief's Step 3 code
-   showed `_bucket_win_rates`'s docstring as `"""... (existing docstring,
-   extended:) Returns (buckets, data_status) - ..."""` — an editing
-   placeholder meaning "keep the real docstring, append this." The
-   implementer pasted the literal `...` into shipped code, deleting three
-   real paragraphs (the 2026-08-10 KeyError-on-9000-already-logged-signals
-   production incident behind the missing-factor-key filter; the
-   near-constant-factor bug behind the distinct-values guard; the
-   tertile-vs-value-comparison design rationale) plus a separate 6-line
-   inline comment explaining the 2026-08-14 float-jitter dedup fix. Fix:
-   restore all of it, append the new `data_status` explanation to it rather
-   than replacing it, remove the literal placeholder text.
-2. **Important — a vacuous test.**
-   `test_small_incidental_tie_at_a_cut_boundary_is_not_contaminated` inserts
-   a tied value of `0.5` into a 1000-row fixture, but that value sorts to
-   positions ~495-500 — nowhere near either real cut (333, 667) — so the
-   test passes regardless of whether the materiality-floor logic is even
-   correct. This is the primary positive-path case for the whole feature
-   and currently has zero real coverage. Fix: use a tied value that actually
-   sorts to a cut boundary (e.g. near `333/1000`), per the reviewer's own
-   suggestion.
+## Also still open, unrelated
 
-**Exact next steps, in order:**
-1. Resume the fix round for Task 1 — either resume the original implementer
-   subagent (name `ada25b94140d8b034` — likely no longer addressable across
-   a session boundary; if so, apply the fix directly or dispatch a fresh
-   implementer with the two findings above as its brief) — this is fix round
-   1 of the skill's 5-round budget.
-2. Independently verify the fix yourself (read the diff, don't just trust a
-   report) before dispatching a scoped re-review.
-3. Once Task 1 is clean, continue Tasks 2–16 via the same
-   implementer → controller-verify → task-reviewer → (fix rounds as needed)
-   → re-review cycle used throughout — see `.claude/worktrees/
-   impl-whale-confidence-scoring/.superpowers/sdd/2026-08-30-whale-
-   confidence-scoring-remediation-implementation/progress.md` for the full
-   ledger of what's already verified (Global Constraints, pre-flight scan,
-   Task 1's state).
-4. **Task 10 is a hard, PROCESS-only (not code/CI-enforced) prerequisite for
-   Tasks 11–16** — the plan's own Global Constraints section is explicit
-   that nothing will stop an implementer from starting Task 11 early; honor
-   the ordering manually.
-5. After Task 16: final whole-branch review (most capable model), push, PR,
-   the PR-level "nothing advances on one pass" cycle (self-review →
-   independent adversarial review → consolidation, each its own PR comment),
-   confirm CI, merge, close the plan's tracking issue (#320) and its 16
-   sub-issues, run `/kanban-board-sync` (see below — don't skip this again).
-   Delete the SDD workspace once merged.
+- **Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`'s
+  implementation plan is now ready (`docs/superpowers/plans/2026-08-31-weather-index-ingestion*.md`,
+  full review cycle complete) — give the go-ahead on Task 1, or decline and
+  close (`docs/open-decisions.md`).
+- **Needs your go-ahead, not a session's:** the claudesuperpower.com
+  plugin-pilot plan (`docs/superpowers/plans/2026-08-31-claudesuperpower-plugin-pilot*.md`)
+  is ready — Task 1 (3 plain-install plugins) and Task 5 (codspeed, needs an
+  external account) are separate go-aheads (`docs/open-decisions.md`).
+- kalshi-category-data-completeness Task 12's 2-underlying Pyth Commodities
+  scope (gold/silver only vs `["all"]`) was never an explicit go/no-go —
+  confirm or widen (`docs/open-decisions.md`).
+- `propagate_milestone_winners`'s `related_event_tickers`-vs-market-tickers
+  mismatch (0 markets returned for 710 real event tickers, pre-existing,
+  found 2026-08-31) — decide priority/approach (`docs/open-decisions.md`).
+- `scripts/cleanup-worktrees.sh`'s `git branch -d` vs `-D` bug (spurious
+  abort when the primary isn't on `main` and the remote branch is already
+  gone) — small fix, needs its own review cycle (`docs/open-decisions.md`).
+- `/api/quality/summary`'s `series_funnel` pricing/edge gap at entry
+  (KXBTC15M/KXMLBGAME/KXATPMATCH underwater after fees) — already-documented,
+  open (CLAUDE.md's "Standing goal" section), not a new finding.
 
-## Plan 3 (frontend-modularization): NOT STARTED
-
-Worktree not yet created. Its own catch-up review (2026-08-25 plan +
-2026-08-25 design, both done 2026-08-31, GO verdict — see
-`docs/superpowers/plans/2026-08-25-frontend-modularization-catchup-
-consolidation.md`) predates PR #374 too — **the same post-merge citation-
-drift review that plan 2 needed will be needed here too** before Task/Step 1
-dispatch (check whether PR #374's 32 changed files overlap any of this
-plan's citations the same way `signal_log.py`/`main.py` did for plan 2 —
-`frontend/` files are unlikely to overlap, but the backend pieces this plan
-touches might). Create a fresh worktree (`git worktree add .claude/worktrees/
-impl-frontend-modularization -b feat/frontend-modularization origin/main`,
-`EnterWorktree`) once plan 2 merges, matching the pattern used for plan 2.
-
-## Also this session: kanban board sync gap found and fixed
-
-The user asked mid-session why completed plans weren't reflecting on the
-kanban board — the honest answer was `/kanban-board-sync` was never run
-during any of this session's implementation/review/merge work. Ran it fully
-(mechanical sources + a 30-plan-doc backlog classification going back to
-2026-08-24, not just this session's own plans) — 8 new issues created, 1
-closed (an explicitly-retired plan), several stale/already-correct states
-confirmed. One real correction made along the way: almost closed issue #74
-(Autonomous Quality Coordination workflow-health) as done based on an
-earlier session's own summary claim, but `ROADMAP.md`'s actual checkbox is
-correctly still unchecked (10 of 11 tasks done, 1 genuinely gated on a live
-human approval per the plan's own text) — left it open, don't re-attempt
-closing it without that approval happening first. **Don't forget this step
-again at plan 2 and plan 3's own close-out.**
-
-## New MCP servers noted, not yet usable this session
-
-The user mentioned installing a prediction-market MCP server with
-potentially useful skills for this work, and reminded to use the Wolfram
-MCP server (`mcp__claude_ai_Wolfram__WolframAlpha`/`WolframLanguageEvaluator`)
-for dimensional-analysis arithmetic. Checked `ListMcpResourcesTool` — the
-prediction-market server isn't showing up in this session's tool config
-(only `gitnexus`/`github` have resources); it likely needs a fresh session
-to load. **Check for it early in the new session** (`ToolSearch`/
-`ListMcpResourcesTool`) and use it where relevant. Wolfram's tools are
-confirmed available and should be used for any non-trivial arithmetic in
-this plan's dimensional-analysis passes (per CLAUDE.md's HARD RULE) —
-none of Task 1's own arithmetic (`max(30, 0.005 * n)`) needed it, it's
-simple enough to hand-verify, but later tasks may not be.
-
-## Also still open, unrelated (carried over from before this session, not re-verified)
-
-- PR #303 mentioned here previously — check `gh pr list` for its current
-  state before assuming it's still open; this note predates the current
-  session's work and may already be stale.
-- `.claude/worktrees/candlestick-volatility` (`feat/candlestick-
-  volatility`) — check `ListAgents`/`gh pr list` before touching, may
-  still be another session's active work or may be stale by now.
-- Re-run `python -m tools.soak_analyzer` to confirm `capture_writer_health`/
-  `exit_engine_faults` fault-log FAILs aged out with zero new occurrences;
-  if clean, close `docs/open-decisions.md`'s `two_consumer_mode` permanence
-  item.
-- **Parked, needs a human read:** `docs/superpowers/specs/2026-08-30-
-  weather-index-ingestion-design.md` — already has a full design+plan+review
-  cycle done (GO, see `docs/open-decisions.md`), waiting on a go-ahead.
-- `docs/superpowers/plans/2026-08-31-claudesuperpower-plugin-pilot.md` —
-  same: full pipeline done, waiting on a go-ahead (also in
-  `docs/open-decisions.md`).
-- `services/market_watch/catalog_scan.py`'s `related_event_tickers`-vs-
-  `get_markets_by_tickers` mismatch (found during plan 1's PR-level
-  adversarial review, `docs/open-decisions.md`) — pre-existing, predates all
-  3 plans, blocks Tasks 9/14's structured-target resolution from executing
-  against real markets. Tracked, not fixed. A real, separate, non-trivial
-  fix someone should prioritize.
+Layer contract behind the tool: `docs/data-layer-analysis-layer-contract.md`.
+Full audit history if picking this up cold:
+`docs/superpowers/research/2026-08-30-test-coverage-audit-handoff.md`.
