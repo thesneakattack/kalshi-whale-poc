@@ -139,8 +139,9 @@ def _subcategory_by_ticker() -> dict:
     # direct request for a series -> subcategory -> category fallback
     # chain in whale-confidence win-rate segmentation (see
     # services/trade_category.py's own subcategory docstring for why this
-    # isn't category_tags - that field is the same full facet-filter
-    # vocabulary on every event in a category, not per-event data).
+    # isn't category_tags - that field now carries real per-SERIES tags
+    # since kalshi-category-data-completeness Task 4 rewired it, but still
+    # not the finer sport/competition granularity this needs).
     return {
         ticker: _sport_for_event(state["event_titles"].get(info.get("event_ticker")) or {})
         for ticker, info in state["market_titles"].items()

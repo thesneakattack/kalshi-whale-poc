@@ -5,7 +5,9 @@
 Approved design (2026-08-25). Evidence:
 `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`. Execution plan:
 `docs/superpowers/plans/2026-08-25-frontend-modularization.md`, orchestrated by
-`.claude/skills/frontend-modularization-task/SKILL.md`.
+`superpowers:executing-plans` (corrected 2026-08-31 catch-up review — the bespoke
+`frontend-modularization-task` skill this line named no longer exists; see the plan
+doc's own header for the full chain of what replaced it and when).
 
 ## Goal
 
@@ -185,12 +187,15 @@ config save ─────► POST /api/config ──► loadConfig() ──►
 
 ### 2.2 Dynamic bounds
 
-`build_schema(cfg)` merges from `services/config_bounds.py` per request:
+`build_schema(cfg)` merges from `services/config/config_bounds.py` (corrected 2026-08-31
+catch-up review — moved from bare `services/config_bounds.py` by commit `6e4338f`,
+2026-08-27, two days after this design was written) per request:
 `strategy.take_profit_pct.max = take_profit_ceiling(strat)`, `partial_above =
 take_profit_universal(strat)`; `strategy.stop_loss_pct.max = STOP_LOSS_CEILING` (new public
 constant `= 1.0 + _FEE_HEADROOM`); `min/max_unit_cost` exclusive bounds with a hint naming
 `MIN/MAX_TRADEABLE_UNIT_COST`; `kelly_fraction_of_cap` static `0..1`. This makes the
-`config_bounds.py:43` docstring ("`/api/config` warns") true.
+`services/config/config_bounds.py:43` docstring ("`/api/config` warns") true — same line
+number at the new path, only the path itself moved.
 
 ### 2.3 Locked fields
 
@@ -318,7 +323,7 @@ final-verification "committed bundle" wording, `ROADMAP.md:206` (6 views). At T9
 |---|---|
 | half-migrated frontend worse than either end | every task strangler-safe and revertible alone; five mergeable PR groups; `main` deployable at each |
 | silently blinded CI guard | rglob fix + scanner test land in T1a *before* any file move; ownership guard in T2; console-error allowlist stays empty |
-| validation blocks legitimate saves | patch-scoped bounds rejection; `/validate` surfaces warnings without changing the save contract; TDD list in the plan; existing `test_trading_gate.py` kept green |
+| validation blocks legitimate saves | patch-scoped bounds rejection; `/validate` surfaces warnings without changing the save contract; the plan's T4a/T4b spell out their 14 tests directly (corrected 2026-08-31 catch-up review — no separate numbered list exists elsewhere); existing `test_trading_gate.py` kept green |
 | weakened trading/auto-apply refusals | locked paths are data with unchanged messages and unchanged tests |
 | financial-display regression during rewrites | backend-named fields only; render tests with backend-shaped fixtures; dimensional-analysis on T8b |
 | runtime template errors (htm has no build-time markup check) | render tests per branch; E2E on every push |

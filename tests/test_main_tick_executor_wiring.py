@@ -197,3 +197,30 @@ def test_candidate_retry_runs_from_its_own_supervised_loop_not_the_tick():
     assert "_streaming_trade_tape_enabled()" in loop_src  # the stream-mode gate moved with the call
     assert inspect.getsource(main).count("candidate_retry.run_pending(") == 1  # single mutator, still
     assert "_candidate_retry_loop" in inspect.getsource(main.lifespan)
+
+
+def test_trading_loop_stamps_category_tags_from_in_memory_series_cache():
+    """X1 (2026-08-30 design spec + 2026-08-31 fix): category_tags now
+    contains real per-series tags from series_metadata/series_tags (Task 1),
+    sourced from the in-memory state["series_cache"]["series"] index built
+    each tick. Structural check on the real source: verifies the code reads
+    from _build_series_tags_cache() and stamps all events in
+    state["event_titles"], not just the fetch delta (completeness fix)."""
+    import inspect
+    source = inspect.getsource(main.trading_loop)
+
+    # Must call _build_series_tags_cache() to get in-memory index
+    assert "_build_series_tags_cache" in source, \
+        "trading_loop must call _build_series_tags_cache() for in-memory tag index"
+
+    # Must read from that index, not call a DB-opening function
+    assert "tags_by_series_ticker.get(" in source or "tags_by_series_ticker.get" in source, \
+        "trading_loop must read from in-memory tags_by_series_ticker dict, not DB"
+
+    # Must stamp ALL state["event_titles"], not just the fetch delta
+    assert 'state["event_titles"].items()' in source, \
+        "trading_loop must stamp ALL events in state cache, not just fetch delta, for backlog completeness"
+
+    # Must check for series_ticker existence before looking it up
+    assert 'event_meta.get("series_ticker")' in source or "series_ticker = event_meta.get" in source, \
+        "trading_loop must safely check for series_ticker before lookup"

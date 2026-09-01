@@ -63,6 +63,8 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     "get_filters_for_sports": ("docs/kalshi/get-filters-for-sports.md",),
     "get_multivariate_events": ("docs/kalshi/get-multivariate-events.md",),
     "get_multivariate_event_collections": ("docs/kalshi/get-multivariate-event-collections.md",),
+    "get_series_fee_changes": ("docs/kalshi/get-series-fee-changes.md",),
+    "get_structured_targets": ("docs/kalshi/get-structured-targets.md",),
 }
 
 
@@ -113,7 +115,12 @@ class KalshiPublicGateway:
         resp = await call_with_backoff(self._client.get_markets, **kwargs)
         return [m.model_dump(mode="json") for m in resp.markets]
 
-    async def get_series_list(self, category: str | None = None) -> list[dict]:
+    async def get_series_list(
+        self,
+        category: str | None = None,
+        min_updated_ts: int | None = None,
+        include_product_metadata: bool = False,
+    ) -> list[dict]:
         """All of Kalshi's series (~12,500 as of 2026-08-08) with each one's
         own lifetime volume_fp and category - a series is a template for
         recurring events ("Pro Basketball Game", "Bitcoin price up/down"),
@@ -130,8 +137,32 @@ class KalshiPublicGateway:
         single bad series and fails the ENTIRE ~12,500-series response,
         every call, with no way to skip just the offending item short of
         reaching into SDK internals. Raw JSON has no such enum to
-        validate against and needs no SDK version to catch up."""
-        data = await self._get_json("/series", endpoint="get_series_list", params={"include_volume": True})
+        validate against and needs no SDK version to catch up.
+
+        min_updated_ts/include_product_metadata (kalshi-category-data-
+        completeness Task 11, docs/kalshi/get-series-list.md:100-108): only
+        added to the request params dict when actually given - same
+        omit-when-unset convention get_markets already uses above (an
+        explicit default reaching the wire can silently change Kalshi's
+        result set) - so every existing caller's request shape
+        ({"include_volume": True} alone) is unchanged.
+        min_updated_ts is `type: integer, format: int64` (Unix seconds) on
+        the REQUEST side; the response's own Series.last_updated_ts is
+        `type: string, format: date-time` (ISO-8601, get-series-list.md:
+        228-231) - genuinely different units, confirmed directly (not the
+        same field re-echoed). A caller deriving a watermark from a
+        previously-fetched last_updated_ts must convert to epoch seconds
+        AND truncate to int - docs/kalshi/CHEATSHEET.md's "Can a
+        min_updated_ts watermark be a float" entry live-verified a bare
+        HTTP 400 ("strconv.ParseInt: parsing ...: invalid syntax") for a
+        fractional value, with no local exception, on every endpoint that
+        takes this same filter."""
+        params: dict[str, Any] = {"include_volume": True}
+        if min_updated_ts is not None:
+            params["min_updated_ts"] = min_updated_ts
+        if include_product_metadata:
+            params["include_product_metadata"] = include_product_metadata
+        data = await self._get_json("/series", endpoint="get_series_list", params=params)
         series = data.get("series", [])
         if category:
             series = [s for s in series if (s.get("category") or "").lower() == category.lower()]
@@ -181,6 +212,69 @@ class KalshiPublicGateway:
                     out[d["ticker"]] = d
         return out
 
+    _STRUCTURED_TARGETS_BATCH_SIZE = 2000  # docs/kalshi/get-structured-targets.md's own
+    # documented cap on the `ids` filter (`maxItems: 2000`, `style: form, explode: true`
+    # -> repeated `?ids=uuid1&ids=uuid2...` query params - confirmed directly against the
+    # installed SDK's StructuredTargetsApi._get_structured_targets_serialize, which sets
+    # collection_formats={'ids': 'multi'} and appends the raw list as a single query-param
+    # tuple, exploded by param_serialize). Deliberately NOT
+    # _MARKETS_BY_TICKERS_BATCH_SIZE's 50 above - that number comes from get_markets'
+    # own documented 10-tokens-per-market cost against Kalshi's 600-token read-burst
+    # ceiling (see that constant's own comment); list-non-default-endpoint-costs.md
+    # (GET /account/endpoint_costs) is a live runtime listing, not a static table this
+    # doc mirror carries, and it names no non-default cost for structured_targets - so
+    # the only real, currently-known ceiling for this endpoint is its own stated ids cap.
+
+    async def get_structured_targets(self, ids: list[str]) -> dict[str, dict]:
+        """Batched structured-target lookup - resolves the UUIDs Kalshi puts in a
+        `strike_type: "structured"` market's `custom_strike` values to their real
+        name/type (targets_and_milestones.md:73-86: "For strike_type: 'structured', the
+        value inside custom_strike is a structured target ID. You can resolve it with the
+        Get Structured Target endpoint" - this is that lookup's batched form, GET
+        /structured_targets with a repeated `ids` filter, instead of N individual
+        GET /structured_targets/{id} calls).
+
+        page_size is passed explicitly as len(chunk): get-structured-targets.md documents
+        page_size's own default as 100 (max 2000) - same "an unset default silently
+        under-returns a bigger request" trap get_markets_by_tickers' own limit=len(chunk)
+        already guards against above, just for this endpoint's page_size instead of
+        get_markets' limit. Since every chunk is already <= the batch size above (which
+        equals page_size's own documented max), one page per chunk is always enough; no
+        cursor-following loop is needed the way get_multivariate_event_collections needs
+        one for its own open-ended, not-id-filtered listing.
+
+        Returns id -> structured target dict (mirrors get_markets_by_tickers' ticker-keyed
+        shape, just keyed by `id` - this endpoint's own response field per StructuredTarget's
+        schema, not `ticker`). An id Kalshi doesn't return just isn't in the result, same
+        skip-not-crash convention as get_markets_by_tickers/get_events above."""
+        if not ids:
+            return {}
+        out: dict[str, dict] = {}
+        for i in range(0, len(ids), self._STRUCTURED_TARGETS_BATCH_SIZE):
+            chunk = ids[i:i + self._STRUCTURED_TARGETS_BATCH_SIZE]
+            resp = await call_with_backoff(
+                self._client.get_structured_targets, ids=chunk, page_size=len(chunk),
+            )
+            # resp.structured_targets is genuinely Optional (fix-round 1,
+            # task review) - unlike get_markets_by_tickers'/get_live_datas'
+            # own response models (`markets`/`live_datas` are both
+            # `required=True`, confirmed via direct model_fields
+            # introspection), GetStructuredTargetsResponse.structured_targets
+            # is `Optional[List[StructuredTarget]]`, `required=False` - a
+            # chunk of ids Kalshi doesn't recognize (an all-miss chunk) can
+            # come back with this field null, and `for t in None:` would
+            # raise TypeError. That exception would propagate out of this
+            # call site's caller (catalog_scan.propagate_milestone_winners),
+            # landing in that function's own broad try/except - silently
+            # aborting the ENTIRE tick's winner propagation for every event
+            # being processed, not just structured-target resolution (the
+            # data-plane completeness HARD RULE's exact failure shape).
+            for t in (resp.structured_targets or []):
+                d = t.model_dump(mode="json")
+                if d.get("id"):
+                    out[d["id"]] = d
+        return out
+
     async def get_orderbook(self, ticker: str) -> dict:
         resp = await call_with_backoff(self._client.get_market_orderbook, ticker)
         return resp.model_dump(mode="json")
@@ -203,7 +297,7 @@ class KalshiPublicGateway:
     # call site has ever needed more than a typical watchlist's worth
     # (8-20 events) of not-yet-cached events in one tick.
 
-    async def get_events(self, event_tickers: list[str]) -> list[dict]:
+    async def get_events(self, event_tickers: list[str], with_milestones: bool = False) -> list[dict]:
         """Batched form of get_event - one call for a whole list of event
         tickers instead of N individual get_event() calls. Live-verified
         2026-08-15 (docs/kalshi/get-events.md, docs/next-steps-2026-08-15-
@@ -214,14 +308,84 @@ class KalshiPublicGateway:
         {...}} wrapper shape, so callers read result[i]["event_ticker"]
         rather than result[i]["event"]["event_ticker"]. A ticker Kalshi
         doesn't return (e.g. renamed/removed) simply isn't in the result,
-        same as a failed get_event() call being skipped by its own caller."""
+        same as a failed get_event() call being skipped by its own caller.
+
+        with_milestones (kalshi-category-data-completeness Task 10,
+        docs/kalshi/get-events.md:114-118: "If true, includes related
+        milestones as a field alongside events") - additive, default
+        False, so every pre-existing caller keeps sending exactly today's
+        request (with_milestones is always explicitly passed, never
+        conditionally omitted - confirmed by
+        test_get_events_default_sends_with_milestones_false_for_existing_callers
+        in tests/test_kalshi_client.py) and gets back exactly today's
+        return shape, unchanged.
+
+        When True, this replaces what two call sites
+        (catalog_scan.propagate_milestone_winners, live_status.
+        _fetch_live_status) used to do themselves via N individual
+        client.get_milestones_for_event(et) calls, one per event ticker
+        (still batched via asyncio.gather, but still N real REST round
+        trips) - one get_events(..., with_milestones=True) call now
+        covers the whole batch. Kalshi returns milestones as a TOP-LEVEL
+        array sibling to `events` (GetEventsResponse.milestones,
+        get-events.md:187-201) - NOT inline per event; EventData itself
+        has no milestones field at all (get-events.md:207-314) - so this
+        method builds the join itself before returning: each Milestone is
+        indexed under every ticker in its related_event_tickers PLUS
+        primary_event_tickers (get-events.md:315-386 - both arrays of
+        tickers, there is no singular event_ticker field to key off),
+        then the matched list is attached to each returned event dict as
+        event["milestones"] (empty list, not a missing key, when nothing
+        references that ticker). One pass to index milestones by ticker,
+        then one dict lookup per event - not a nested scan of every
+        ticker against every milestone's related lists.
+
+        GetEventsResponse.milestones is genuinely Optional[List[Milestone]]
+        (required=False - confirmed via the installed SDK's own
+        model_fields introspection), the exact same nullable-response-
+        field shape that caused a real bug in a sibling task of this same
+        plan (Task 9's get_structured_targets: `resp.structured_targets or
+        []`) - guarded here (`resp.milestones or []`) from the start
+        rather than repeating it; a chunk of events none of which have any
+        associated milestone would otherwise raise TypeError on
+        `for m in None:`.
+
+        Milestone ordering within one event's `milestones` list: this
+        doc's schema carries no ordering guarantee for the top-level
+        `milestones` array (verified directly - no "sorted"/"ordered by"
+        language anywhere in the Milestone or GetEventsResponse sections),
+        so this method makes no claim of matching the old per-event
+        get_milestones_for_event(et, limit=5) endpoint's own ordering (a
+        different endpoint/filter, with no documented relationship to this
+        array's order either) - both current callers only ever use
+        `milestones[0]`, and the deterministic tie-break used here is
+        simply Kalshi's own list order as returned, documented at each
+        call site rather than assumed to match byte-for-byte."""
         if not event_tickers:
             return []
         events: list[dict] = []
+        raw_milestones: list[dict] = []
         for i in range(0, len(event_tickers), self._EVENTS_BATCH_SIZE):
             chunk = event_tickers[i:i + self._EVENTS_BATCH_SIZE]
-            resp = await call_with_backoff(self._client.get_events, tickers=",".join(chunk), limit=len(chunk))
+            resp = await call_with_backoff(
+                self._client.get_events, tickers=",".join(chunk), limit=len(chunk),
+                with_milestones=with_milestones,
+            )
             events.extend(e.model_dump(mode="json") for e in resp.events)
+            if with_milestones:
+                raw_milestones.extend(m.model_dump(mode="json") for m in (resp.milestones or []))
+        if with_milestones:
+            milestones_by_ticker: dict[str, list[dict]] = {}
+            for ms in raw_milestones:
+                tickers = set((ms.get("related_event_tickers") or []) + (ms.get("primary_event_tickers") or []))
+                for et in tickers:
+                    milestones_by_ticker.setdefault(et, []).append(ms)
+            for e in events:
+                et = e.get("event_ticker")
+                # mypy (CI's quality-architecture-audit): milestones_by_ticker's
+                # keys are str, but a plain dict's .get() types event_ticker as
+                # Any | None - narrow explicitly rather than passing that through.
+                e["milestones"] = milestones_by_ticker.get(et, []) if isinstance(et, str) else []
         return events
 
     async def get_milestones_for_event(self, event_ticker: str, limit: int = 5) -> list[dict]:
@@ -465,3 +629,71 @@ class KalshiPublicGateway:
             if not cursor:
                 break
         return collections
+
+    async def get_series_fee_changes(self, show_historical: bool = True) -> list[dict]:
+        """Every scheduled series-level fee change (base + overrides), one
+        unpaginated call - GET /series/fee_changes (docs/kalshi/
+        get-series-fee-changes.md, kalshi-category-data-completeness Task
+        2). GetSeriesFeeChangesResponse carries only series_fee_change_arr -
+        no limit/cursor field on the response, unlike get_events/
+        get_live_datas/get_multivariate_event_collections above, so there is
+        nothing to page through. series_ticker (the doc's own optional
+        filter) is deliberately never passed - omitting it, per the doc's
+        `required: false`, returns the whole array in one shot, which is
+        what population needs to backfill every series at once rather than
+        one ticker at a time. show_historical defaults True (not the raw
+        API's own documented default of False) so the merge below always
+        sees every past scheduled change, not just ones still in the
+        future - a series whose most recent change already took effect
+        needs that past row to resolve its *current* fee, not just an
+        upcoming one.
+
+        A series that has never had a scheduled fee change simply does not
+        appear in this array at all - confirmed via changelog-index.md's
+        2025-09-21 "Scheduled Series Fees API Endpoint" entry ("Get a
+        series' fee changes... ALL fee changes previous and upcoming will
+        be shown"): this is a log of *changes*, not a full census of every
+        series' current fee, so "ticker absent" means "never had a change,
+        keep the raw Series.fee_type" rather than a malformed request (Step
+        0 of Task 2's kalshi-contract-review, since the schema itself does
+        not state this either way).
+
+        Fetched raw (via _get_json), not through the SDK's typed
+        get_series_fee_changes - code-review finding, 2026-08-31:
+        SeriesFeeChange.fee_type (get-series-fee-changes.md's schema:
+        `allOf: - $ref: '#/components/schemas/FeeType'`) uses the exact
+        same FeeType enum as get_series_list's Series.fee_type, and
+        get_series_list's own docstring above already documents that the
+        installed SDK's FeeType enum (3.27.0, and 3.28.0 latest-published)
+        is missing quadratic_with_combo_maker_fees even though a real live
+        series carries it. A scheduled fee CHANGE of that type would hit
+        the identical trap: the SDK's Pydantic-validated
+        get_series_fee_changes raises on that single bad entry and fails
+        the ENTIRE array, every call - and because this call sits inside
+        _get_series_cache() below, that failure would abort the whole
+        series-cache refresh (discarding the freshly-fetched series list
+        too, not just the fee merge), leaving cache["fetched_at"] stale so
+        every subsequent tick retries both REST calls instead of
+        respecting the 1-hour TTL - a bigger, silent blast radius than
+        just losing this task's own fee data. Raw JSON has no such enum to
+        validate against, matching get_series_list's precedent exactly; the
+        SDK's real, verified field names (id/series_ticker/fee_type/
+        fee_multiplier/scheduled_ts) are also the raw wire JSON's field
+        names (same equivalence this module's own top docstring already
+        relies on for every model_dump(mode="json") call site), so the raw
+        dicts returned here need no reshaping versus the typed path.
+
+        Confirmed via the installed SDK (3.27.0) that
+        ExchangeApi.get_series_fee_changes's real param is show_historical
+        (not e.g. include_historical) - this repo's own precedent
+        (get_series_list's docstring) shows the SDK has previously diverged
+        from docs, so guessing the name here would repeat that mistake.
+        scheduled_ts comes through as the wire's own ISO-8601 string, not
+        an epoch number - the doc types it `format: date-time`
+        (get-series-fee-changes.md:126-129), and raw JSON never converts a
+        string field to anything else."""
+        data = await self._get_json(
+            "/series/fee_changes", endpoint="get_series_fee_changes",
+            params={"show_historical": show_historical},
+        )
+        return data.get("series_fee_change_arr", [])

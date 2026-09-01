@@ -63,6 +63,7 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
         "docs/kalshi/cfbenchmarks-value.md",
         "docs/kalshi/pyth-value.md",
     ),
+    "request_underlying_list": ("docs/kalshi/pyth-value.md",),
     "enabled": ("docs/kalshi/websocket-connection.md",),
     "status": ("docs/kalshi/websocket-connection.md",),
     # I1 queue-health surface: classifies Kalshi's own server-side error
@@ -562,6 +563,28 @@ class KalshiStreamGateway:
             "id": self._next_message_id(),
             "cmd": "update_subscription",
             "params": {"sid": sid, "action": "indexlist"},
+        })
+
+    async def request_underlying_list(self) -> None:
+        """Ask the server which Pyth underlying tickers have actually been
+        streamed recently (docs/kalshi/pyth-value.md's `underlying_list`
+        action, documented alongside `subscribe_underlyings` and
+        `unsubscribe_underlyings` as one of update_subscription's supported
+        actions on this channel: "Supports `update_subscription` with
+        `subscribe_underlyings`, `unsubscribe_underlyings`, and
+        `underlying_list` actions"). The reply arrives as a
+        pyth_value_underlying_list message, whose msg.underlying_tickers is
+        described as "Underlying tickers observed on the Pyth stream in the
+        last two hours" - same discovery shape as request_index_list's CF
+        Benchmarks sibling, just keyed to this channel's own sid and
+        action name."""
+        sid = self._subscription_sids.get("pyth_value")
+        if sid is None:
+            return
+        await self._send({
+            "id": self._next_message_id(),
+            "cmd": "update_subscription",
+            "params": {"sid": sid, "action": "underlying_list"},
         })
 
     async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None,

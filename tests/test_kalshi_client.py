@@ -35,7 +35,12 @@ def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
     client = _client()
     calls = []
 
-    async def fake_get_events(tickers, limit):
+    # with_milestones=False (default) still needs a slot on the fake - the
+    # real gateway always passes it explicitly, never omits the kwarg (Task
+    # 10, kalshi-category-data-completeness); see
+    # test_get_events_default_sends_with_milestones_false_for_existing_callers
+    # below for the dedicated proof of the value actually sent.
+    async def fake_get_events(tickers, limit, with_milestones=False):
         calls.append((tickers, limit))
         return type("R", (), {"events": [
             _FakeModel({"event_ticker": "EVT-A", "title": "A"}),
@@ -51,7 +56,7 @@ def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
 def test_get_events_empty_list_makes_no_call(monkeypatch):
     client = _client()
 
-    async def fake_get_events(tickers, limit):
+    async def fake_get_events(tickers, limit, with_milestones=False):
         raise AssertionError("should not be called for an empty list")
 
     monkeypatch.setattr(client._client, "get_events", fake_get_events)
@@ -64,7 +69,7 @@ def test_get_events_chunks_above_the_batch_size(monkeypatch):
     client._EVENTS_BATCH_SIZE = 2  # shrink for a fast, deterministic test
     calls = []
 
-    async def fake_get_events(tickers, limit):
+    async def fake_get_events(tickers, limit, with_milestones=False):
         calls.append(tickers)
         return type("R", (), {"events": [_FakeModel({"event_ticker": t}) for t in tickers.split(",")]})()
 
@@ -72,6 +77,131 @@ def test_get_events_chunks_above_the_batch_size(monkeypatch):
     result = asyncio.run(client.get_events(["A", "B", "C"]))
     assert calls == ["A,B", "C"]  # 3 tickers / batch size 2 -> 2 chunked calls
     assert [e["event_ticker"] for e in result] == ["A", "B", "C"]
+
+
+# --- with_milestones (kalshi-category-data-completeness Task 10) - replaces
+# N per-event get_milestones_for_event() calls with milestones joined onto
+# get_events' own response. GetEventsResponse.milestones is a TOP-LEVEL
+# array sibling to `events` (docs/kalshi/get-events.md:187-201), not inline
+# per event, so get_events builds the ticker -> [milestones] join itself. --
+
+def test_get_events_passes_with_milestones_when_requested(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        calls.append(with_milestones)
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A"})], "milestones": []})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert calls == [True]
+    assert result == [{"event_ticker": "EVT-A", "milestones": []}]
+
+
+def test_get_events_default_sends_with_milestones_false_for_existing_callers(monkeypatch):
+    # Final whole-branch review finding: the original test name said
+    # "omits" but the assertion proves the opposite - with_milestones is
+    # ALWAYS sent explicitly (as False when a caller doesn't ask for it),
+    # never conditionally left out of the kwarg. That's still the right
+    # behavior (every existing caller's real request/response shape is
+    # unaffected either way), the name just contradicted its own
+    # assertion and services/market_watch/CHEATSHEET.md's citation of it.
+    client = _client()
+    calls = []
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        calls.append(with_milestones)
+        return type("R", (), {"events": []})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    asyncio.run(client.get_events(["EVT-A"]))
+    assert calls == [False]  # every existing call site keeps today's behavior exactly
+
+
+def test_get_events_with_milestones_false_does_not_add_a_milestones_key(monkeypatch):
+    # Additive-only guarantee: a caller that doesn't ask for with_milestones
+    # gets back exactly today's flat event dict shape, no extra key at all -
+    # not even an empty one - so an existing caller's `== {...}` assertions
+    # on the returned dict shape stay byte-for-byte identical.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A", "title": "A"})]})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"]))
+    assert result == [{"event_ticker": "EVT-A", "title": "A"}]
+    assert "milestones" not in result[0]
+
+
+def test_get_events_with_milestones_builds_the_ticker_join(monkeypatch):
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {
+            "events": [
+                _FakeModel({"event_ticker": "EVT-A"}),
+                _FakeModel({"event_ticker": "EVT-B"}),
+            ],
+            "milestones": [
+                _FakeModel({
+                    "id": "ms1", "type": "football_game",
+                    "related_event_tickers": ["EVT-A"], "primary_event_tickers": [],
+                }),
+            ],
+        })()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A", "EVT-B"], with_milestones=True))
+    by_ticker = {e["event_ticker"]: e for e in result}
+    assert by_ticker["EVT-A"]["milestones"] == [
+        {"id": "ms1", "type": "football_game", "related_event_tickers": ["EVT-A"], "primary_event_tickers": []},
+    ]
+    # EVT-B matches no milestone's related_event_tickers/primary_event_tickers
+    # - an empty list, not a KeyError or a missing key.
+    assert by_ticker["EVT-B"]["milestones"] == []
+
+
+def test_get_events_with_milestones_matches_on_primary_event_tickers_too(monkeypatch):
+    # Milestone.related_event_tickers and primary_event_tickers are both
+    # real, distinct arrays (docs/kalshi/get-events.md:315-386) - a ticker
+    # can be the milestone's primary outcome without being "related" in the
+    # narrower sense, so the join must check both.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {
+            "events": [_FakeModel({"event_ticker": "EVT-A"})],
+            "milestones": [
+                _FakeModel({
+                    "id": "ms1", "type": "football_game",
+                    "related_event_tickers": [], "primary_event_tickers": ["EVT-A"],
+                }),
+            ],
+        })()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert result[0]["milestones"] == [
+        {"id": "ms1", "type": "football_game", "related_event_tickers": [], "primary_event_tickers": ["EVT-A"]},
+    ]
+
+
+def test_get_events_tolerates_a_null_milestones_field(monkeypatch):
+    # GetEventsResponse.milestones is Optional[List[Milestone]], required=
+    # False (confirmed via the installed SDK's own model_fields) - the same
+    # nullable-response-field trap Task 9's get_structured_targets hit
+    # (`resp.structured_targets or []`). A chunk of events none of which
+    # have any associated milestone must not raise on `for m in None:`.
+    client = _client()
+
+    async def fake_get_events(tickers, limit, with_milestones):
+        return type("R", (), {"events": [_FakeModel({"event_ticker": "EVT-A"})], "milestones": None})()
+
+    monkeypatch.setattr(client._client, "get_events", fake_get_events)
+    result = asyncio.run(client.get_events(["EVT-A"], with_milestones=True))
+    assert result == [{"event_ticker": "EVT-A", "milestones": []}]
 
 
 def test_get_live_datas_returns_flat_shape_keyed_by_milestone_id(monkeypatch):
@@ -392,3 +522,193 @@ def test_get_markets_by_tickers_explicit_batch_size_overrides_the_default_chunk(
     calls.clear()
     asyncio.run(client.get_markets_by_tickers(tickers))  # default path unchanged: 50-ticker chunks
     assert calls == [(50, 50), (50, 50), (20, 20)]
+
+
+# ---- get_series_fee_changes (kalshi-category-data-completeness Task 2) -----
+# docs/kalshi/get-series-fee-changes.md: GetSeriesFeeChangesResponse carries
+# only series_fee_change_arr - no limit/cursor, so this is one unpaginated
+# call, unlike get_events/get_live_datas/get_markets_by_tickers above.
+# series_ticker is an optional filter the doc's own schema marks not
+# required - omitted here on purpose to fetch the whole array in one call.
+#
+# Fetched raw via _get_json, not through the typed SDK client (code-review
+# fix, 2026-08-31) - SeriesFeeChange.fee_type shares get_series_list's
+# Series.fee_type FeeType enum, and get_series_list's own docstring
+# documents that enum missing quadratic_with_combo_maker_fees in the
+# installed SDK even though a real live series carries it; the SDK's
+# Pydantic-validated get_series_fee_changes would raise on a single such
+# scheduled change and fail the entire array. So this is tested the same
+# way get_series_list's raw-fetch precedent would be: patch _get_json
+# directly, not client._client's typed method.
+
+
+def test_get_series_fee_changes_omits_series_ticker_for_the_full_array(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_json(path, endpoint, params=None):
+        calls.append((path, endpoint, params))
+        return {"series_fee_change_arr": [
+            {"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+             "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+        ]}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    result = asyncio.run(client.get_series_fee_changes())
+    # show_historical defaults True, no series_ticker filter passed at all
+    assert calls == [("/series/fee_changes", "get_series_fee_changes", {"show_historical": True})]
+    assert result == [{"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic",
+                        "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"}]
+
+
+# ---- get_structured_targets (kalshi-category-data-completeness Task 9) ----
+# docs/kalshi/get-structured-targets.md: `ids` is a repeated-param filter,
+# `style: form, explode: true`, capped at maxItems: 2000 - unlike
+# get_series_fee_changes above, StructuredTarget carries no FeeType-shaped
+# enum field anywhere on its schema (id/name/type/source_id are plain
+# Optional[str]; details/source_ids are plain dicts - confirmed directly by
+# introspecting the installed kalshi_python_async.models.structured_target.
+# StructuredTarget.model_fields), so this is fetched through the typed SDK
+# client (client._client.get_structured_targets), matching
+# get_markets_by_tickers' precedent above, not the raw _get_json path
+# get_series_fee_changes needed to route around its own real enum gap.
+
+
+def test_get_structured_targets_repeats_the_ids_param(monkeypatch):
+    client = _client()
+    calls = []
+
+    async def fake_get_structured_targets(ids, page_size):
+        calls.append((ids, page_size))
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": "uuid-1", "name": "Team Alpha", "type": "team"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-1"]))
+    assert result == {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
+    # ids passed straight through as a list (not comma-joined like tickers
+    # above) - the SDK's own collection_formats={'ids': 'multi'} explodes a
+    # plain list into repeated ?ids=... query params, confirmed directly
+    # against StructuredTargetsApi._get_structured_targets_serialize.
+    assert calls == [(["uuid-1"], 1)]
+
+
+def test_get_structured_targets_empty_list_makes_no_call(monkeypatch):
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        raise AssertionError("should not be called for an empty list")
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets([]))
+    assert result == {}
+
+
+def test_get_structured_targets_chunks_above_the_batch_size(monkeypatch):
+    client = _client()
+    client._STRUCTURED_TARGETS_BATCH_SIZE = 2
+    calls = []
+
+    async def fake_get_structured_targets(ids, page_size):
+        calls.append((list(ids), page_size))
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": uid, "name": uid, "type": "team"}) for uid in ids
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["u1", "u2", "u3"]))
+    assert calls == [(["u1", "u2"], 2), (["u3"], 1)]
+    assert set(result.keys()) == {"u1", "u2", "u3"}
+
+
+def test_get_structured_targets_skips_an_id_kalshi_does_not_return(monkeypatch):
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        return type("R", (), {"structured_targets": [
+            _FakeModel({"id": "uuid-1", "name": "Team Alpha", "type": "team"}),
+        ]})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-1", "uuid-missing"]))
+    assert result == {"uuid-1": {"id": "uuid-1", "name": "Team Alpha", "type": "team"}}
+
+
+def test_get_structured_targets_tolerates_a_null_response_field(monkeypatch):
+    # Regression (fix-round 1, task review): GetStructuredTargetsResponse.
+    # structured_targets is genuinely Optional (required=False), unlike
+    # GetMarketsResponse.markets/GetLiveDatasResponse.live_datas (both
+    # required=True) - confirmed via direct model_fields introspection. An
+    # all-miss chunk of ids Kalshi doesn't recognize can come back with
+    # this field null; `for t in None:` would raise TypeError, which
+    # propagates out of this call site's real caller
+    # (catalog_scan.propagate_milestone_winners) and lands in that
+    # function's own broad try/except - silently aborting the entire
+    # tick's winner propagation, not just this one chunk's resolution.
+    client = _client()
+
+    async def fake_get_structured_targets(ids, page_size):
+        return type("R", (), {"structured_targets": None})()
+
+    monkeypatch.setattr(client._client, "get_structured_targets", fake_get_structured_targets)
+    result = asyncio.run(client.get_structured_targets(["uuid-all-miss"]))
+    assert result == {}
+
+
+def test_get_series_fee_changes_recovers_every_entry_even_with_an_unmodeled_fee_type(monkeypatch):
+    # The concrete failure mode the raw-fetch fix above exists to avoid:
+    # a fee_type value the installed SDK's FeeType enum doesn't recognise
+    # (e.g. quadratic_with_combo_maker_fees, confirmed live 2026-08-21 on
+    # get_series_list) would raise inside the typed path and lose EVERY
+    # entry in the array, not just the offending one. Raw JSON has no enum
+    # to validate against, so an unrecognized string passes through like
+    # any other field - this is the completeness property the fix restores.
+    client = _client()
+
+    async def fake_get_json(path, endpoint, params=None):
+        return {"series_fee_change_arr": [
+            {"id": "1", "series_ticker": "KXNFLGAME", "fee_type": "quadratic_with_combo_maker_fees",
+             "fee_multiplier": 1.0, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+            {"id": "2", "series_ticker": "KXOTHER", "fee_type": "flat",
+             "fee_multiplier": 0.5, "scheduled_ts": "2023-11-14T22:13:20+00:00"},
+        ]}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    result = asyncio.run(client.get_series_fee_changes())
+    assert [r["series_ticker"] for r in result] == ["KXNFLGAME", "KXOTHER"]
+    assert result[0]["fee_type"] == "quadratic_with_combo_maker_fees"
+
+
+# ---- min_updated_ts/include_product_metadata on get_series_list
+# (kalshi-category-data-completeness Task 11, docs/kalshi/
+# get-series-list.md:100-108) - additive optional params, only added to the
+# request params dict when actually given (same omit-when-unset convention
+# get_markets' own mve_filter/series_ticker already use), so every existing
+# caller's request shape stays exactly {"include_volume": True}.
+
+def test_get_series_list_passes_min_updated_ts_and_product_metadata_when_given(monkeypatch):
+    client = _client()
+    captured = {}
+
+    async def fake_get_json(path, endpoint, params):
+        captured.update(params)
+        return {"series": []}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    asyncio.run(client.get_series_list(min_updated_ts=1700000000, include_product_metadata=True))
+    assert captured == {"include_volume": True, "min_updated_ts": 1700000000,
+                         "include_product_metadata": True}
+
+
+def test_get_series_list_omits_new_params_by_default(monkeypatch):
+    client = _client()
+    captured = {}
+
+    async def fake_get_json(path, endpoint, params):
+        captured.update(params)
+        return {"series": []}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    asyncio.run(client.get_series_list())
+    assert captured == {"include_volume": True}  # every existing caller unaffected

@@ -96,8 +96,9 @@ def by_subcategory(rows: list[dict]) -> list[dict]:
     a competition like "Pro Baseball" nests within a sport, several
     competitions per sport, so sport is the real match for "baseball,
     football" as this feature's own examples put it). NOT category_tags
-    (that field is the same full facet-filter vocabulary listed on every
-    event in a category, carrying no per-event information at all). Same
+    (that field now carries real per-SERIES tags since kalshi-category-
+    data-completeness Task 4 rewired it, but still not the finer sport/
+    competition granularity this middle tier needs). Same
     "excluded, not fabricated" convention as
     by_category: a trade whose ticker has no recorded subcategory (most
     non-Sports categories, or anything traded before this field existed)

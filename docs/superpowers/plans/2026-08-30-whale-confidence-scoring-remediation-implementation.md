@@ -280,12 +280,15 @@ def test_resolved_signals_with_factors_orders_by_seen_at_ascending(tmp_path, mon
     for row_id in (1, 2, 3):
         log.mark_resolved(row_id, correct=True)
     rows = log.resolved_signals_with_factors()
-    # seen_at isn't in the returned dict shape - assert via a side-channel
-    # (raw_notional_usd carries the ticker's ordinal via test setup) is
-    # brittle; assert count and that the call succeeds with real ordering
-    # is what this test actually needs to prove wiring, not value order -
-    # see Step 3 note on whether seen_at needs to be added to the return dict.
-    assert len(rows) == 3
+    # Tightened 2026-08-31 adversarial review: the prior "assert len(rows) == 3"
+    # passes identically with or without ORDER BY seen_at ASC - it doesn't test
+    # ordering despite the test's name. seen_at itself isn't in the returned
+    # dict shape, but `series` now is (this task's SELECT was corrected to
+    # keep it, see the query above) - tickers "A"/"B"/"C" have no hyphen, so
+    # today's series_of() (ticker.split("-")[0]) maps each straight through
+    # to its own name, giving a real per-row ordering probe with no schema
+    # change needed:
+    assert [r["series"] for r in rows] == ["A", "B", "C"]
 
 
 def test_resolved_signals_with_factors_since_ts_scopes_the_window(tmp_path, monkeypatch):
@@ -316,8 +319,13 @@ def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     facto row order (SQLite rowid order) an explicit, stated property
     instead of an accident a future VACUUM/migration could silently
     reorder history out from under."""
+    # `series` corrected into this SELECT during the 2026-08-31 catch-up review: a
+    # same-day but unrelated commit (5bb29be, "expose the series dimension") already
+    # added it to the real current query before this task's own commit ever landed -
+    # dropping it here would silently regress a column services/whale_calibration/
+    # README.md:97-101 documents as feeding the by_series report field.
     query = (
-        "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h "
+        "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
         "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL"
     )
     params: tuple = ()
@@ -738,7 +746,7 @@ def test_agreement_factor_still_computed_when_recent_prints_exist(monkeypatch):
 
 **Files:**
 - Modify: `services/whale_calibration/confidence_calibration.py`
-  (`generate_calibration_report` at `:230-285`)
+  (`generate_calibration_report` at `:254-310` -- corrected 2026-08-31 catch-up review)
 - Test: `tests/test_confidence_calibration.py`
 
 **Interfaces:**
@@ -967,7 +975,12 @@ own Global Constraints and design §1/§10's D4 dependency.
 ### Task 11: Config schema split + `confidence_scoring.py`'s accuracy/edge rename
 
 **Files:**
-- Modify: `config/settings.yaml` (`whale_confidence_weights` at `:131-139` → two new
+- Modify: `config/settings.yaml` (`whale_confidence_weights` at `:165-174` — corrected
+  2026-08-31 catch-up review; a same-day but unrelated commit (`7b91436`) inserted a
+  24-line "SUPERSEDED 2026-08-30" audit-note comment above the block, which itself
+  independently corroborates Task 1's tie-contamination finding and says "do not trust
+  this module's gap_pts output... until that measurement-instrument bug is fixed" — fold
+  this task's edit into/update that note rather than silently deleting it — → two new
   keys, via the `config-field-edit` skill)
 - Modify: `services/confidence_scoring.py` (`DEFAULT_WEIGHTS` at `:116-120` →
   `DEFAULT_ACCURACY_WEIGHTS` + new `DEFAULT_EDGE_WEIGHTS`; `composite_confidence_
@@ -991,7 +1004,8 @@ own Global Constraints and design §1/§10's D4 dependency.
   below confirms this rather than trusting this note alone.
 - Test: `tests/test_confidence_scoring.py`, `tests/test_confidence_calibration.py`,
   `tests/test_trading_gate.py` (references `DEFAULT_WEIGHTS`/`whale_confidence_weights`
-  at lines 1325/1387/1404/1411 — update to the new names; this file's tests are Task 12's
+  at lines 118, 1413, 1475, 1492, 1496, 1499 — corrected 2026-08-31 catch-up review, 6
+  occurrences today not the original 4; update all to the new names; this file's tests are Task 12's
   territory too, since several assert on the auto-apply write target, but the import
   rename itself belongs here)
 
@@ -1062,7 +1076,7 @@ def test_accuracy_weights_param_replaces_weights_param():
 
   a. `config/settings.yaml` — apply `.claude/skills/config-field-edit/SKILL.md`'s 7-step
      procedure: snapshot the live file, reset to `HEAD`, replace the `whale_confidence_
-     weights:` block (`:131-139`) with:
+     weights:` block (`:165-174`, corrected 2026-08-31 adversarial review) with:
 
 ```yaml
 whale_accuracy_weights:
@@ -1145,12 +1159,14 @@ whale_edge_weights:
 **Files:**
 - Modify: `services/whale_calibration/confidence_calibration.py` (new
   `measurement_is_valid` function)
-- Modify: `main.py` (`_maybe_run_auto_apply` at `:420-493`: retarget `whale_confidence_
-  weights` reads/writes at `:427,453,459,482` to `whale_accuracy_weights`; add the gate
-  check before the write)
+- Modify: `main.py` (`_maybe_run_auto_apply` — corrected 2026-08-31 catch-up review, now
+  starting `:405`, not `:420-493`: retarget `whale_confidence_weights` reads/writes at
+  `:432,460,466,489` (not `:427,453,459,482`) to `whale_accuracy_weights`; add the gate
+  check before the write; `fault_log` import already present at `:46`)
 - Modify: `services/whale_calibration/routes.py` (`apply_confidence_calibration_
-  suggestion` at `:115-167`: retarget reads/writes at `:104,137,155,158` to `whale_
-  accuracy_weights`; add the gate check before the write; add a `fault_log` import)
+  suggestion` — corrected 2026-08-31 catch-up review: retarget reads/writes at
+  `:109,144,162,165` (not `:104,137,155,158`) to `whale_accuracy_weights`; add the gate
+  check before the write; add a `fault_log` import — this file does not import it today)
 - Test: `tests/test_main_scheduler_loops.py`, `tests/test_trading_gate.py`
 
 **Interfaces:**
@@ -1286,10 +1302,11 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
     return True
 ```
 
-  In `main.py`'s `_maybe_run_auto_apply` (`:420-493`): change `cfg.get("whale_confidence_
-  weights")` (`:427`) and `cfg.get("whale_confidence_weights") or {}` (`:453`) to `cfg.
+  In `main.py`'s `_maybe_run_auto_apply` (starting `:405`, corrected 2026-08-31
+  adversarial review): change `cfg.get("whale_confidence_
+  weights")` (`:432`) and `cfg.get("whale_confidence_weights") or {}` (`:460`) to `cfg.
   get("whale_accuracy_weights")`/`... or {}`; before the `if blended is not None and
-  blended != current_weights:` block (`:457`), add:
+  blended != current_weights:` block (`:464`), add:
 
 ```python
                     if not confidence_calibration.measurement_is_valid(cc_result["report"]["per_factor"]):
@@ -1310,8 +1327,9 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
 
   In `services/whale_calibration/routes.py`'s `apply_confidence_calibration_suggestion`
   (`:115-167`): add `from services import fault_log` to the imports; change `cfg.
-  get("whale_confidence_weights")` (`:104,137`) to `cfg.get("whale_accuracy_weights")`;
-  before the `config_store.update({"whale_confidence_weights": blended})` line (`:155`),
+  get("whale_confidence_weights")` (`:109,144`, corrected 2026-08-31 adversarial review)
+  to `cfg.get("whale_accuracy_weights")`;
+  before the `config_store.update({"whale_confidence_weights": blended})` line (`:162`),
   add:
 
 ```python
@@ -1325,8 +1343,8 @@ def measurement_is_valid(*per_factor_lists: list[dict]) -> bool:
     config_store.update({"whale_accuracy_weights": blended})
 ```
 
-  (and its own `config_path="whale_confidence_weights"` at `:158` becomes
-  `"whale_accuracy_weights"`.)
+  (and its own `config_path="whale_confidence_weights"` at `:165` (corrected 2026-08-31
+  adversarial review) becomes `"whale_accuracy_weights"`.)
 
 - [ ] **Step 4: Run to verify PASS.**
 - [ ] **Step 5: Run `tests/test_main_scheduler_loops.py`, `tests/test_trading_gate.py`,
@@ -1562,8 +1580,10 @@ def test_bucket_mean_edge_excludes_rows_with_no_price():
 - [ ] **Step 2: Run to verify FAIL.**
 - [ ] **Step 3: Implement.** `services/signal_log.py`'s `resolved_signals_with_
   factors`: extend the `SELECT` to `"SELECT confidence, correct, factors_json, raw_
-  notional_usd, raw_spread, raw_volume_24h, side, price FROM signals WHERE ..."`, the
-  tuple-unpack loop to match, and the appended dict to add `"side": side, "price":
+  notional_usd, raw_spread, raw_volume_24h, series, side, price FROM signals WHERE ..."`
+  — **`series` included here too, corrected during the 2026-08-31 catch-up review, same
+  reason as Task 2's SELECT: dropping it would regress the by_series report field** —
+  the tuple-unpack loop to match, and the appended dict to add `"side": side, "price":
   price`.
 
   `services/whale_calibration/confidence_calibration.py`:
@@ -1618,12 +1638,26 @@ def _bucket_mean_edge(rows: list[dict], factor_name: str) -> tuple[dict, str]:
 
 **Files:**
 - Modify: `services/whale_calibration/confidence_calibration.py`
-  (`generate_calibration_report` at `:230-285`, full restructuring)
+  (`generate_calibration_report` at `:254-310` -- corrected 2026-08-31 catch-up review, full restructuring)
 - Modify: `main.py`, `services/whale_calibration/routes.py`, `services/research/
   research.py` (the four callers of `generate_calibration_report` — signature now
   needs both weight dicts, and Task 12's gate call site extends its coverage)
+- **Modify, added 2026-08-31 adversarial review (real regressions, not hypothetical
+  — confirmed against current source, not caught by the earlier catch-up pass):**
+  `services/whale_calibration/calibration_history.py:66-82`'s `record_snapshot(report,
+  ...)` reads `report["per_factor"]`/`report["current_weights"]` directly — these keys
+  move under `report["accuracy"]` in this task's new shape; without this fix,
+  `_maybe_run_auto_apply`'s next scheduled snapshot raises `KeyError`, not a silent
+  degradation. `frontend/src/js/advisory-calibration.js:229-292`'s `loadCalibrationReport()`
+  (reads `r.per_factor`, `r.current_weights`, `r.overall_win_rate`, `r.confidence_label`,
+  `r.suggested_weights`, `r.confidence_calibration` at top level) and
+  `loadCalibrationHistory()` (reads `s.per_factor.depth_factor` from history snapshots) —
+  without this fix, the entire whale-confidence dashboard panel breaks on the next
+  deploy, live.
 - Test: `tests/test_confidence_calibration.py`, `tests/test_trading_gate.py`,
-  `tests/test_main_scheduler_loops.py`
+  `tests/test_main_scheduler_loops.py`, and a new test for `calibration_history.
+  record_snapshot` against the new nested shape (none of this plan's existing tests
+  exercise that function)
 
 **Interfaces:**
 - Produces: `generate_calibration_report(rows, min_resolved_signals, current_accuracy_
@@ -1632,8 +1666,8 @@ def _bucket_mean_edge(rows: list[dict], factor_name: str) -> tuple[dict, str]:
   "measurement_valid": bool}` per design §7.5's exact JSON shape. `measurement_valid` is
   Task 12's `measurement_is_valid(accuracy["per_factor"], edge["per_factor"])` — the
   extension this task's own docstring promised.
-- Every caller updates in the same commit: `main.py:427` (the snapshot/auto-apply
-  block), `services/whale_calibration/routes.py:108-110,141-143` (the report route and
+- Every caller updates in the same commit: `main.py:431` (corrected 2026-08-31 adversarial review; the snapshot/auto-apply
+  block), `services/whale_calibration/routes.py:113,148` (corrected 2026-08-31 adversarial review) (the report route and
   the apply route's own internal `_build_report` closures), `services/research/
   research.py:157-159`.
 - The integration test proving **both** write paths refuse independently (design §12's
@@ -1650,11 +1684,16 @@ def test_report_splits_into_accuracy_edge_and_populations():
         r["side"], r["price"] = "yes", 0.5
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
     report = result["report"]
-    assert set(report) >= {"resolved_count", "accuracy", "edge", "populations", "measurement_valid"}
+    assert set(report) >= {"resolved_count", "accuracy", "edge", "populations", "by_series", "measurement_valid"}
     assert "per_factor" in report["accuracy"]
     assert "per_factor" in report["edge"]
     assert "brier_skill_vs_market" in report["accuracy"]
     assert report["populations"]["accuracy_n"] == report["resolved_count"]
+    # regression guard added 2026-08-31 catch-up review: by_series (commit 5bb29be,
+    # a same-day but unrelated plan) must survive this task's restructuring, not be
+    # silently dropped - covered separately from the set() membership check above so
+    # a future refactor that removes just this key still fails loudly here.
+    assert report["by_series"] == cc._series_win_rates(rows)
 
 
 def test_measurement_valid_true_when_only_insufficient_variance_factors_exist():
@@ -1745,21 +1784,40 @@ def generate_calibration_report(
         "report": {
             "resolved_count": resolved_count, "accuracy": accuracy, "edge": edge,
             "populations": populations,
+            "by_series": _series_win_rates(rows),
             "measurement_valid": measurement_is_valid(accuracy_per_factor, edge_per_factor),
         },
         "gated_reason": None, "resolved_count": resolved_count,
     }
 ```
 
+**`by_series` added above — corrected 2026-08-31 catch-up review.** The pre-existing
+`generate_calibration_report` (as of a same-day but unrelated commit, `5bb29be`, "expose
+the series dimension") already returns `"by_series": _series_win_rates(rows)` at the
+report's top level, documented at `services/whale_calibration/README.md:100` and
+directly asserted by `tests/test_confidence_calibration.py:93`
+(`result["report"]["by_series"]`). This task's original rewrite had no field for it
+anywhere in the new `accuracy`/`edge`/`populations` shape — a real, silent regression of
+a currently-shipped field the plan's own test suite would not have caught, since none of
+Task 16's new tests asserted on it. Kept at the top level (not nested under `accuracy`)
+to preserve the exact access path `report["by_series"]` every existing reader uses. The
+regression guard test is already added to
+`test_report_splits_into_accuracy_edge_and_populations` above.
+
   (`_edge_of(r)` factors out the same `payoff - unit_cost - taker_fee_per_contract`
   formula `_bucket_mean_edge` already computes per row — extract it as a tiny shared
   helper both functions call, rather than a third inline copy.) Note `per_factor`'s old
-  flat key on the top-level report is gone — every reader (this report's own dashboard
-  consumer, if any exists in `static/`/`frontend/`) needs the same grep-and-fix pass Task
-  7 already established the pattern for; check `static/`/`frontend/` for `report.per_
-  factor`/`report["per_factor"]` reads and update to `report.accuracy.per_factor`.
+  flat key on the top-level report is gone — **the dashboard consumer is real and
+  confirmed, not hypothetical (2026-08-31 adversarial review)**: `frontend/src/js/
+  advisory-calibration.js:229-292` reads `r.per_factor`/`r.current_weights`/
+  `r.overall_win_rate`/`r.confidence_label`/`r.suggested_weights`/
+  `r.confidence_calibration` at the top level, and `s.per_factor.<name>` from history
+  snapshots — update every one of those to the new `r.accuracy.*`/`r.edge.*` paths, same
+  grep-and-fix pass Task 7 already established the pattern for. Also update
+  `services/whale_calibration/calibration_history.py`'s `record_snapshot` (see Files
+  above) — a second real consumer of the old flat shape, not just the frontend.
 
-  Update the four callers: `main.py:427` → `confidence_calibration.generate_calibration_
+  Update the four callers: `main.py:431` (corrected 2026-08-31 adversarial review) → `confidence_calibration.generate_calibration_
   report(cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_accuracy_weights"),
   cfg.get("whale_edge_weights"))`; and read `cc_result["report"]["accuracy"]["per_
   factor"]`/`["suggested_weights"]` wherever Task 12's code reads the old flat `per_

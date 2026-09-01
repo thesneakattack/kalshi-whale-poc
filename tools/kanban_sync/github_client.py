@@ -164,6 +164,27 @@ class GithubClient:
             for item in results
         ]
 
+    def list_closed_issues(self) -> list[IssueState]:
+        """Bulk-lists every CLOSED issue on the repo, unscoped by label -
+        the backfill_closed_status one-time pass (root cause A: 3 of 4 close
+        paths in sync.py never wrote the Project's Status field) needs every
+        closed issue regardless of its type:* label, unlike
+        list_open_by_label's per-family scoping."""
+        stdout = self._run([
+            "issue", "list", "--state", "closed",
+            "--json", "number,state,labels,body", "--limit", "1000",
+        ])
+        results = json.loads(stdout)
+        return [
+            IssueState(
+                number=item["number"],
+                open=item["state"] == "OPEN",
+                labels=frozenset(l["name"] for l in item["labels"]),
+                body=item["body"],
+            )
+            for item in results
+        ]
+
     def create_issue(
         self, title: str, body: str, labels: Sequence[str],
         *, parent: int | None = None, milestone: str | None = None,

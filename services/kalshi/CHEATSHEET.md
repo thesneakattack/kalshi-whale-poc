@@ -323,3 +323,30 @@ pipeline staleness (`trade_stream.ingest_metrics()`), riding alongside the
 exchange's own `as_of_age_sec` so the two - genuinely different
 measurements, per issue #266's "do not confuse with" - are comparable from
 one response without ever merging into a single number.
+
+## Pyth Commodities feed seeded, underlying_list discovery added (kalshi-category-data-completeness Task 12, 2026-08-31)
+
+`config/settings.yaml`'s `index_feed.underlying_tickers` was `[]` since the
+Pyth subscribe path (`websocket.py`'s `if self.underlying_tickers:` gate,
+present since A11) was first written - the wiring worked but had nothing to
+subscribe to, so the whole Commodities-category price feed was silently
+dormant. Seeded with `["Metal.XAU/USD", "Metal.XAG/USD"]` (gold/silver),
+the two example underlyings `docs/kalshi/pyth-value.md` itself documents
+(line 164's `pythValue` example payload uses `Metal.XAU/USD`; lines
+289-291's `pyth_value_underlying_list` example lists both). `app_state.py`
+already wired `cfg["index_feed"]["underlying_tickers"]` into the
+`KalshiStreamGateway` constructor - no plumbing changes needed, only the
+config value.
+
+Added `KalshiStreamGateway.request_underlying_list()`, mirroring
+`request_index_list()`'s CF Benchmarks discovery call but keyed to the
+`pyth_value` sid and the `underlying_list` action - `docs/kalshi/
+pyth-value.md`'s AsyncAPI spec documents `update_subscription` on this
+channel as supporting `subscribe_underlyings`, `unsubscribe_underlyings`,
+and `underlying_list`; the reply arrives as a `pyth_value_underlying_list`
+message whose `msg.underlying_tickers` is "Underlying tickers observed on
+the Pyth stream in the last two hours" - not parsed/handled by this task,
+same as `request_index_list`'s own reply. Deliberately did NOT seed
+`underlying_tickers: ["all"]` (also documented, receives every available
+underlying) - Task 12's scope is a small deliberate list, not exchange-wide
+Pyth discovery.

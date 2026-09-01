@@ -7,12 +7,14 @@ Phase 7 extraction left as the largest file in the tree).
 """
 import asyncio
 import time
+from datetime import datetime, timezone
 
 from services import market_history, series_cache, task_supervisor
 from services.app_state import bump_generation, state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
 from services.market_catalog import market_catalog
+from services.market_watch import milestone_live_data
 
 _MILESTONE_REPOLL_SEC = 60  # Repoll-cached (2026-08-15 tick_duration fix) -
 # this used to call get_milestones_for_event() for every unique event on the
@@ -77,19 +79,34 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             )
         ]
         if to_poll:
-            milestone_tasks = await asyncio.gather(
-                *(client.get_milestones_for_event(et) for et in to_poll), return_exceptions=True
-            )
+            # Batched (kalshi-category-data-completeness Task 10,
+            # docs/kalshi/get-events.md:114-118) - one get_events(...,
+            # with_milestones=True) call replaces what used to be N
+            # individual client.get_milestones_for_event(et) calls (still
+            # batched via asyncio.gather, but still N real REST round
+            # trips). services/kalshi/public.py's get_events already builds
+            # the event_ticker -> [milestones] join (Kalshi returns
+            # milestones as a top-level array, not inline per event), so
+            # this just reads event["milestones"] off each returned event -
+            # same `ms = ms_list[0]` first-entry convention the old
+            # per-event endpoint's own `limit=5` response used (see
+            # get_events' own docstring for why this array's ordering isn't
+            # assumed to match that endpoint's byte-for-byte).
+            events_by_ticker = {
+                e["event_ticker"]: e for e in await client.get_events(to_poll, with_milestones=True)
+                if e.get("event_ticker")
+            }
             # First pass: default every polled event to "no winner found
             # this tick" (recorded before any further fetch so a transient
             # failure below still throttles the retry to the next repoll
             # window), then collect the events that actually have a real
             # milestone id/type to check live-data for.
             milestone_by_event = {}
-            for et, ms_result in zip(to_poll, milestone_tasks):
+            for et in to_poll:
                 cache[et] = {"checked_at": now, "winner_found": False, "related": None, "mapped_winner_ticker": None}
-                if isinstance(ms_result, list) and ms_result:
-                    ms = ms_result[0]
+                ms_list = events_by_ticker.get(et, {}).get("milestones") or []
+                if ms_list:
+                    ms = ms_list[0]
                     if ms.get("id") and ms.get("type"):
                         milestone_by_event[et] = ms
 
@@ -114,7 +131,17 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                 if not ld:
                     continue
                 details = ld.get("details") or {}
-                winner = details.get("winner")
+                # milestone_live_data.extract() (Task 5, kalshi-category-
+                # data-completeness) routes the ~9 deviant milestone types
+                # (e.g. company_report, truflation - index series/reports,
+                # not resolution events) away from a raw `winner` read that
+                # would otherwise surface a non-outcome value as a market
+                # result. `ms["type"]` is already in hand here (gated on
+                # `ms.get("id") and ms.get("type")` above, when
+                # `milestone_by_event[et] = ms` was populated) - unlike
+                # live_status.py's sibling call site, this function has no
+                # broad-cache path, so the milestone dict is always fresh.
+                winner = milestone_live_data.extract(ms["type"], details)["winner"]
                 related = ms.get("related_event_tickers") or details.get("related_event_tickers") or []
                 if not winner or not related:
                     continue
@@ -131,7 +158,145 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
             # this same loop. One get_markets_by_tickers call now covers
             # every related ticker across every such event this tick,
             # regardless of how many events have a winner to map.
+            #
+            # PRE-EXISTING GAP, found and live-verified during the final
+            # whole-branch review of kalshi-category-data-completeness
+            # (2026-08-31, predates this entire plan - git blame traces
+            # this exact shape to commit eeab71a): `related` above
+            # (ms.get("related_event_tickers")) is documented as a list of
+            # EVENT tickers (docs/kalshi/get-events.md:352-356: "List of
+            # event tickers related to this milestone"), but
+            # get_markets_by_tickers/get_markets' own `tickers` filter is
+            # documented as MARKET tickers (docs/kalshi/get-markets.md:
+            # 227-231: "Filter by specific market tickers"). Live-verified
+            # against 710 real related_event_tickers across Sports/
+            # Elections/Economics milestones: 0 markets returned; a control
+            # call with real market tickers returned markets correctly -
+            # confirming this call structurally cannot resolve `all_related`
+            # to real markets as currently written, so
+            # `related_market_by_ticker` is effectively always empty and
+            # everything below that reads it (Task 9's structured-target
+            # resolution, the yes_sub_title/no_sub_title/title fallback)
+            # does not currently run against real winners in production.
+            # Fixing this needs resolving each related event ticker to its
+            # own child markets first (e.g. get_events(with_nested_markets)
+            # or a per-event get_markets(event_ticker=...) call) - a
+            # separate, non-trivial change to this function's data-fetching
+            # shape, out of scope for a fix folded into this already-large
+            # PR's final review round. Logged as a real, tracked, undecided
+            # item in docs/open-decisions.md rather than left silent.
             related_market_by_ticker = await client.get_markets_by_tickers(all_related) if all_related else {}
+
+            # Structured-target UUID resolution (kalshi-category-data-
+            # completeness Task 9, targets_and_milestones.md:73-86: "For
+            # strike_type: 'structured', the value inside custom_strike is
+            # a structured target ID. You can resolve it with the Get
+            # Structured Target endpoint"). Collected across every related
+            # market this tick (not per-event) - same batching shape as
+            # all_related/related_market_by_ticker immediately above.
+            # Iterates every value in custom_strike generically, not a
+            # hardcoded key (Kalshi's own example uses "basketball_team";
+            # the doc names no fixed key), matching this function's
+            # existing loose `cs.values()` iteration below. See
+            # state["structured_targets_cache"]'s own comment (app_state.py)
+            # for why this is a flat, no-TTL, learn-once cache rather than
+            # category_metadata's fetched_at+TTL shape.
+            structured_targets_cache = state["structured_targets_cache"]
+            custom_strike_ids: list[str] = []
+            seen_custom_strike_ids = set()
+            for rm in related_market_by_ticker.values():
+                # strike_type == "structured" only (final whole-branch
+                # review finding): the plan's own Task 9 Step 3 said "for
+                # each related_market whose strike_type == 'structured'",
+                # but this loop was collecting from EVERY related market's
+                # custom_strike regardless - for a strike_type: "custom"
+                # market, custom_strike holds a plain display-name STRING
+                # (e.g. {"Candidate": "Lewis Evangelidis"}, live-verified
+                # against real KXSENATEMAR-26 markets), not a UUID, and
+                # docs/kalshi/get-structured-targets.md types `ids` as a
+                # bare string with no documented behavior for a non-UUID
+                # value - sending one risked call_with_backoff burning
+                # retries on an undocumented response, which would raise
+                # into this function's own blanket except below and skip
+                # the cached-winner reapplication loop too. Filtering here
+                # also matches the plan exactly and is a pure efficiency
+                # win (fewer wasted ids in the batch) with zero behavior
+                # loss - a "custom" market was never going to resolve via
+                # this UUID-keyed cache anyway; it still falls through to
+                # the yes_sub_title/no_sub_title/title match below,
+                # unchanged.
+                if not isinstance(rm, dict) or rm.get("strike_type") != "structured":
+                    continue
+                cs = rm.get("custom_strike")
+                if not isinstance(cs, dict) or not cs:
+                    continue
+                for v in cs.values():
+                    cs_id = str(v) if v else ""
+                    if cs_id and cs_id not in seen_custom_strike_ids:
+                        seen_custom_strike_ids.add(cs_id)
+                        custom_strike_ids.append(cs_id)
+
+            # political_race candidate_id_mapping (kalshi-category-data-
+            # completeness Task 14) - a SEPARATE, no-extra-REST-call UUID
+            # source feeding the SAME get_structured_targets() batch above,
+            # not a new resolution mechanism. Live-verified 2026-08-31
+            # against a real, currently-open Massachusetts Senate primary
+            # (milestone id 2967c0f7-57f5-47ee-be41-f92df9dc699a, event
+            # KXSENATEMAR-26, via get_milestones_bulk(category="Elections")
+            # + get_markets(event_ticker=..., status="open")): the
+            # MILESTONE object's own `details.candidate_id_mapping` is
+            # {pol_id: candidate_structured_target_uuid} - Kalshi's internal
+            # numeric politician id mapped to that politician's structured-
+            # target UUID, the same UUID space get_structured_targets
+            # resolves. Confirmed by direct comparison: John Deaton's UUID
+            # (de224459-c787-4c8b-8e58-59b817528ec4) appeared BOTH as a
+            # candidate_id_mapping VALUE and as that same candidate's own
+            # market's custom_strike.politician value (ticker
+            # KXSENATEMAR-26-JDEA, strike_type: "structured") - so this is
+            # already fully covered by the loop just above for a candidate
+            # whose own market resolves cleanly this tick. The genuine
+            # value here: `ms` (this loop's milestone dict) comes from
+            # get_events(..., with_milestones=True)'s join (Task 10,
+            # services/kalshi/public.py get_events()), which calls
+            # .model_dump(mode="json") on the SDK's Milestone response
+            # objects - and docs/kalshi/get-events.md's Milestone schema
+            # (lines 315-333, 372-375) lists `details` as a REQUIRED field
+            # (`type: object, additionalProperties: true`), so it's already
+            # present on `ms` with zero new REST call; reading it here just
+            # widens the UUID pool for a race where a candidate is
+            # registered in candidate_id_mapping but that candidate's own
+            # market doesn't yet carry a resolvable custom_strike UUID this
+            # tick (a data-population lag) - worst case redundant with the
+            # loop above, best case pre-warms structured_targets_cache with
+            # a candidate the market-level scan alone would have missed.
+            # Only VALUES matter (the UUIDs) - the keys (pol_ids, Kalshi's
+            # own internal numeric politician ids) are never resolvable via
+            # get_structured_targets and are never added here.
+            #
+            # Confirmed, permanent, OUT OF SCOPE for this task: 3 of this
+            # exact real race's 4 candidates (Evangelidis, Thrasher, Baker)
+            # have strike_type: "custom" markets with a plain-name
+            # custom_strike (e.g. {"Candidate": "Lewis Evangelidis"}) and
+            # are absent from candidate_id_mapping/candidate_ids/pol_ids
+            # entirely - Kalshi itself has not assigned them a structured
+            # target, so there is no UUID anywhere in this milestone's data
+            # to resolve them with. This loop cannot fix that, and does not
+            # attempt to - those candidates keep falling through to the
+            # existing yes_sub_title/no_sub_title/title match below,
+            # unchanged.
+            for ms in milestone_by_event.values():
+                if ms.get("type") != "political_race":
+                    continue
+                candidate_id_mapping = (ms.get("details") or {}).get("candidate_id_mapping") or {}
+                for v in candidate_id_mapping.values():
+                    cs_id = str(v) if v else ""
+                    if cs_id and cs_id not in seen_custom_strike_ids:
+                        seen_custom_strike_ids.add(cs_id)
+                        custom_strike_ids.append(cs_id)
+
+            missing_target_ids = [i for i in custom_strike_ids if i not in structured_targets_cache]
+            if missing_target_ids:
+                structured_targets_cache.update(await client.get_structured_targets(missing_target_ids))
 
             for et, ms, winner, related in events_with_winner:
                 related_markets = [related_market_by_ticker[t] for t in related if t in related_market_by_ticker]
@@ -141,9 +306,60 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                         continue
                     cs = rm.get("custom_strike") or {}
                     try:
-                        if isinstance(cs, dict) and any(str(winner).lower() in str(v).lower() for v in cs.values()):
-                            mapped_winner_ticker = rm.get("ticker")
-                            break
+                        if isinstance(cs, dict) and cs and isinstance(winner, str) and winner:
+                            # winner itself can ALSO be a structured-target
+                            # UUID, not just an already-resolved display
+                            # name (final whole-branch review finding,
+                            # kalshi-category-data-completeness Task 14):
+                            # political_race's `details.winner` is a
+                            # candidate-ID string (Task 8's own finding),
+                            # never a name, so comparing it raw against a
+                            # resolved *name* below could never match for
+                            # any political_race - the exact Task 14 gap
+                            # (widening the UUID pool fed into
+                            # structured_targets_cache) was never load-
+                            # bearing without this. Resolve winner through
+                            # the SAME cache first when it's itself a
+                            # cached UUID; Sports' original case (Task 9 -
+                            # winner already a plain name, e.g. "Team
+                            # Alpha") is unaffected, since a plain name is
+                            # never a key in structured_targets_cache and
+                            # winner_name stays None, falling back to
+                            # winner itself unchanged.
+                            winner_target = structured_targets_cache.get(winner)
+                            winner_name = winner_target.get("name") if isinstance(winner_target, dict) else None
+                            wlow_cs = (winner_name or winner).lower()
+                            # Match against each UUID's *resolved* name
+                            # (structured_targets_cache, populated above) -
+                            # not the raw UUID itself, which a substring
+                            # match against `winner` can never hit (the
+                            # original bug this replaces - a census of real
+                            # markets, independent of THIS call site's own
+                            # data-fetching path, found 134/149 sampled real
+                            # markets are strike_type: "structured". NOTE
+                            # (final whole-branch review): `related_market_
+                            # by_ticker` above is populated via a
+                            # pre-existing, separate gap - see that
+                            # variable's own comment - so this whole match
+                            # block does not currently receive real markets
+                            # in production; the reasoning here describes
+                            # the intended behavior once that gap is closed,
+                            # not verified current behavior). An id this tick's
+                            # get_structured_targets call didn't resolve
+                            # (fetch failure, or Kalshi not returning it)
+                            # simply isn't in the cache and is skipped here
+                            # - same skip-not-crash convention as the
+                            # ticker-keyed caches above - falling through
+                            # to the yes_sub_title/no_sub_title/title match
+                            # beneath, unchanged.
+                            for v in cs.values():
+                                target = structured_targets_cache.get(str(v)) if v else None
+                                name = target.get("name") if isinstance(target, dict) else None
+                                if name and wlow_cs in str(name).lower():
+                                    mapped_winner_ticker = rm.get("ticker")
+                                    break
+                            if mapped_winner_ticker:
+                                break
                     except Exception:
                         pass
                     yst = (rm.get("yes_sub_title") or "")
@@ -187,6 +403,91 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
 _SERIES_CACHE_TTL_SEC = 3600  # series (a recurring-event template - "Pro Basketball Game") don't
 # change often enough to justify get_series_list's ~1s cost (12,500+ entries) every 15s poll tick
 
+_SERIES_CACHE_FULL_RESYNC_SEC = 86400  # final whole-branch review finding, kalshi-category-
+# data-completeness Task 11: min_updated_ts filters on METADATA updates
+# (docs/kalshi/get-series-list.md:100-108: "Filter series with metadata
+# updated after this Unix timestamp"; Series.last_updated_ts:228-231 is
+# "when this series' metadata was last updated") - trading volume moving
+# is NOT documented as a metadata update, and a live, read-only probe of
+# this app's own data/series_cache.db confirmed the two are decoupled in
+# practice: KXNCAAMBGAME carries 5.9 billion lifetime volume_fp CONTRACTS
+# (get-series-list.md:223-226: "the total number of contracts traded" -
+# not dollars, dimensional-analysis-checked) - a top-10 series by volume -
+# with last_updated_ts 147 days stale, while series with
+# actively-moving last_updated_ts sit 1-12 days old. Once a delta refresh
+# ever fires (which, given series_cache.load() seeds state["series_cache"]
+# from the persisted DB at every process start - app_state.py's own
+# comment above that call - happens on effectively every restart once the
+# DB has any history, i.e. always in production), a series whose metadata
+# stops changing has its volume_fp frozen FOREVER, and a series that starts
+# at zero volume and later becomes active can never re-enter the cache at
+# all (min_updated_ts wouldn't surface it, and there is no other path back
+# to a full fetch) - a silent, permanent data-plane completeness/accuracy
+# regression on the exact key _get_top_series ranks the whole automatic
+# watchlist by. Bounding the staleness window to a full, unfiltered
+# get_series_list() call at least once per this interval (24h - the same
+# order of magnitude as _SERIES_CACHE_TTL_SEC's own hourly cadence, just
+# wide enough that the ~1s full-fetch cost is amortized to a rare event)
+# keeps the REST-call-reduction Task 11 was built for on every other
+# refresh while guaranteeing every series' volume_fp and existence in the
+# cache reflects reality within a bounded, known window instead of
+# potentially never again.
+
+
+def _utcnow() -> datetime:
+    """Thin, monkeypatchable wrapper (kalshi-category-data-completeness Task
+    2) so tests can fix "now" for the scheduled_ts comparison below without
+    patching the stdlib clock. Not time.time(): SeriesFeeChange.scheduled_ts
+    (docs/kalshi/get-series-fee-changes.md:126-129) is `type: string,
+    format: date-time` - an ISO-8601 timestamp - not an epoch number, so the
+    comparison needs a real datetime, not a float."""
+    return datetime.now(timezone.utc)
+
+
+_SERIES_WATERMARK_OVERLAP_SEC = 5  # get-series-list.md:103-105 documents
+# min_updated_ts as "Filter series with metadata updated after this Unix
+# timestamp" - exclusive (strictly greater than), not "at or after" - same
+# semantic milestone_scan.py's own _WATERMARK_OVERLAP_SEC already guards
+# against for the same request-parameter family (get-milestones.md, docs/
+# kalshi/CHEATSHEET.md's min_updated_ts entry: "the same int64 typing
+# appears on every other endpoint that takes this filter"). Two series
+# metadata updates landing in the same integer second could split across
+# "already visible to this fetch" vs "not yet visible" - once the watermark
+# advances past that second, the not-yet-visible one would never be asked
+# for again, a silent completeness hole. Re-fetching a few seconds of
+# overlap every refresh is free here: it lands in the merge below, which
+# upserts an already-known, unchanged series as a harmless no-op.
+
+
+def _series_watermark(series: list[dict]) -> int | None:
+    """Unix-seconds high-water mark for get_series_list's min_updated_ts
+    (kalshi-category-data-completeness Task 11) - the max of the cache's
+    own Series.last_updated_ts values. last_updated_ts is `type: string,
+    format: date-time` (ISO-8601, get-series-list.md:228-231) on the
+    RESPONSE side but min_updated_ts is `type: integer, format: int64`
+    (Unix seconds) on the REQUEST side - genuinely different units, so this
+    converts before returning. int(), not the raw float .timestamp()
+    returns: docs/kalshi/CHEATSHEET.md's "Can a min_updated_ts watermark be
+    a float" entry live-verified a bare HTTP 400 for a fractional value on
+    this same parameter family. Returns None when no cached series carries
+    a usable timestamp (e.g. a cache seeded before this field was tracked)
+    - the caller falls back to an unfiltered fetch rather than risk
+    narrowing the request off a watermark that was never really known, the
+    same "when in doubt, ask for everything" posture _get_series_cache
+    already takes on a genuine first-ever sync."""
+    watermarks = []
+    for s in series:
+        raw_ts = s.get("last_updated_ts")
+        if not raw_ts:
+            continue
+        try:
+            watermarks.append(datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp())
+        except (ValueError, AttributeError):
+            continue
+    if not watermarks:
+        return None
+    return max(0, int(max(watermarks)) - _SERIES_WATERMARK_OVERLAP_SEC)
+
 
 async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     """All series with nonzero lifetime volume (~9,400 of Kalshi's ~12,500
@@ -198,12 +499,113 @@ async def _get_series_cache(client: KalshiPublicGateway) -> list[dict]:
     markets even across tens of thousands of entries, confirmed directly,
     repeatedly. Shared by both the automatic watchlist (_get_top_series,
     just the top N) and market search (search_markets, which also needs
-    the long tail to text-match against)."""
+    the long tail to text-match against).
+
+    Merges, never replaces (kalshi-category-data-completeness Task 11): a
+    genuine first-ever sync (cache["series"] empty) still calls
+    get_series_list() with zero args - a full fetch, byte-identical to
+    this function's pre-Task-11 behavior. Every later refresh instead
+    watermarks on _series_watermark(cache["series"]) and, when that's
+    computable, calls get_series_list(min_updated_ts=..., include_product_
+    metadata=True) - Kalshi then legitimately returns only the series whose
+    metadata changed since the watermark, not the whole catalog. Naively
+    assigning that partial response to cache["series"] would silently drop
+    every unchanged series out of _get_top_series/_scan_catalog_batch/
+    search_markets - the exact completeness regression CLAUDE.md's
+    data-plane HARD RULE forbids - so the response is instead merged into a
+    ticker-keyed dict seeded from the existing cache, and the full,
+    re-sorted dict is what gets assigned back and persisted.
+
+    A series whose raw (pre-filter) volume_fp has genuinely dropped to zero
+    since the last fetch is treated as a removal from the merged cache,
+    not a silent no-op: before Task 11, a full refresh naturally
+    self-corrected this every cycle (the whole list was rebuilt from
+    scratch, so a now-zero-volume series was simply excluded again); under
+    the delta model a series that dropped to zero volume would otherwise
+    never be re-filtered out once merged in, leaving a stale, now-wrong
+    higher-volume entry in the cache forever.
+
+    Also folds in get_series_fee_changes' bulk call (kalshi-category-
+    data-completeness Task 2) on every refresh: each series' raw fee_type/
+    fee_multiplier (as returned by get_series_list) is only the fee it
+    launched with, not necessarily its CURRENT fee if Kalshi has since
+    scheduled a change - get-series-fee-changes.md's own SeriesFeeChange
+    entries are the authoritative log of those changes. For each
+    series_ticker, the most recently scheduled entry whose scheduled_ts is
+    already <= now (ties broken by id, spec Sec1.8) overwrites that
+    series' fee_type/fee_multiplier in place before series_cache.save() so
+    Task 1's _series_metadata_row() persists the resolved current fee, not
+    the stale launch-time one. A ticker absent from the fee-changes array
+    never had a scheduled change (confirmed via changelog-index.md's
+    2025-09-21 entry - see get_series_fee_changes' own docstring) and keeps
+    whatever fee_type/fee_multiplier its raw Series object already
+    carried. This resolution runs over the FULL merged list every refresh,
+    not just this cycle's delta batch - a scheduled fee change can cross
+    "now" (get-series-fee-changes.md's own scheduled_ts) without the
+    series' own last_updated_ts moving at all, so a series absent from this
+    cycle's delta could still have a fee change newly come into effect;
+    scoping this resolution to the delta alone would silently miss it."""
     cache = state["series_cache"]
     if time.time() - cache["fetched_at"] > _SERIES_CACHE_TTL_SEC or not cache["series"]:
-        series = await client.get_series_list()
-        series = [s for s in series if float(s.get("volume_fp") or 0) > 0]
-        series.sort(key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
+        # last_full_sync_at deliberately lives only in this in-memory dict,
+        # not persisted via series_cache.save()/load() - a process restart
+        # missing it just means it defaults to 0.0 (via .get() below),
+        # which is always "due" and forces a full sync on the first refresh
+        # after every restart. That's the same safe direction as a genuine
+        # first-ever sync, not a new risk: erring toward more freshness,
+        # never less, and needs no DB schema change for a Task-11-fix-round
+        # addition made right before this branch's PR review.
+        due_for_full_resync = (
+            time.time() - cache.get("last_full_sync_at", 0.0) > _SERIES_CACHE_FULL_RESYNC_SEC
+        )
+        if not cache["series"] or due_for_full_resync:
+            raw = await client.get_series_list()  # first-ever sync, or the periodic full resync above
+            cache["last_full_sync_at"] = time.time()
+        else:
+            min_updated_ts = _series_watermark(cache["series"])
+            if min_updated_ts is not None:
+                raw = await client.get_series_list(min_updated_ts=min_updated_ts, include_product_metadata=True)
+            else:
+                raw = await client.get_series_list(min_updated_ts=min_updated_ts)
+
+        merged = {s["ticker"]: s for s in cache["series"] if s.get("ticker")}
+        for s in raw:
+            ticker = s.get("ticker")
+            if not ticker:
+                continue
+            if float(s.get("volume_fp") or 0) > 0:
+                merged[ticker] = s
+            else:
+                merged.pop(ticker, None)  # dropped to zero volume - remove, don't leave a stale entry
+        series = sorted(merged.values(), key=lambda s: float(s.get("volume_fp") or 0), reverse=True)
+
+        fee_changes = await client.get_series_fee_changes()
+        now = _utcnow()
+        effective_fee: dict[str, tuple[str, float, datetime, object]] = {}
+        for fc in fee_changes:
+            ticker = fc.get("series_ticker")
+            if not ticker:
+                continue
+            scheduled_ts = fc.get("scheduled_ts")
+            if not scheduled_ts:
+                continue
+            scheduled_at = datetime.fromisoformat(scheduled_ts.replace("Z", "+00:00"))
+            if scheduled_at > now:
+                continue  # not yet in effect
+            fc_id = fc.get("id") or ""  # tie-break key only (spec Sec1.8) - a
+            # missing id shouldn't crash the whole refresh on a
+            # same-scheduled_ts tie (str/None aren't mutually orderable in a
+            # tuple comparison); "" is a safe stand-in since which side wins
+            # a tie is arbitrary either way, per the spec's own admission.
+            current = effective_fee.get(ticker)
+            if current is None or (scheduled_at, fc_id) >= (current[2], current[3]):
+                effective_fee[ticker] = (fc.get("fee_type"), fc.get("fee_multiplier"), scheduled_at, fc_id)
+
+        for s in series:
+            resolved = effective_fee.get(s.get("ticker"))
+            if resolved is not None:
+                s["fee_type"], s["fee_multiplier"] = resolved[0], resolved[1]
+
         cache["series"] = series
         cache["fetched_at"] = time.time()
         series_cache.save(cache["fetched_at"], cache["series"])

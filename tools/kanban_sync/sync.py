@@ -24,6 +24,7 @@ class SyncGithubClient(Protocol):
     def close_issue(self, number: int) -> None: ...
     def post_comment(self, number: int, body: str) -> None: ...
     def list_open_by_label(self, label: str): ...
+    def list_closed_issues(self): ...
     def ensure_on_project(self, issue_number: int) -> str: ...
     def set_project_status(self, item_id: str, status: str) -> None: ...
     def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]: ...
@@ -102,6 +103,23 @@ def _stale_worktree_comment(branch: str) -> str:
     )
 
 
+def _mark_project_status_done(number: int, client: SyncGithubClient, *, dry_run: bool) -> None:
+    """Shared by every close path in this module other than sync_pass_one's
+    own item.done transition (which already calls _sync_project_status via
+    a full SyncItem). Each of the mechanical closers below (stale worktree,
+    stale roadmap, completed plan parent) previously called
+    client.close_issue() directly and never touched the Project's Status
+    field - root cause A of the board showing "Closed" issues outside the
+    Done column (confirmed live 2026-08-31: 122 of 130 closed issues had a
+    stale, missing, or absent Status). The target is always STATUS_DONE
+    here - every caller reaches this only once it has decided to close the
+    issue."""
+    if dry_run:
+        return
+    item_id = client.ensure_on_project(number)
+    client.set_project_status(item_id, project_status.STATUS_DONE)
+
+
 def close_stale_worktree_issues(
     live_branches: set[str],
     client: SyncGithubClient,
@@ -136,6 +154,7 @@ def close_stale_worktree_issues(
         if not dry_run:
             client.post_comment(issue.number, _stale_worktree_comment(key))
             client.close_issue(issue.number)
+        _mark_project_status_done(issue.number, client, dry_run=dry_run)
         report.closed.append(f"#{issue.number} worktree:{key} (branch no longer live)")
     return report
 
@@ -192,6 +211,7 @@ def close_stale_roadmap_issues(
         if not dry_run:
             client.post_comment(issue.number, _stale_roadmap_comment(key))
             client.close_issue(issue.number)
+        _mark_project_status_done(issue.number, client, dry_run=dry_run)
         report.closed.append(f"#{issue.number} roadmap:{key} (bullet no longer in ROADMAP.md)")
     return report
 
@@ -218,7 +238,28 @@ def close_completed_plan_parents(client: SyncGithubClient, *, dry_run: bool) -> 
             continue
         if not dry_run:
             client.close_issue(issue.number)
+        _mark_project_status_done(issue.number, client, dry_run=dry_run)
         report.closed.append(f"#{issue.number} all {total} sub-issues complete")
+    return report
+
+
+def backfill_closed_status(client: SyncGithubClient, *, dry_run: bool) -> SyncReport:
+    """One-time pass (root cause A, confirmed live 2026-08-31: 122 of 130
+    closed issues had a stale, missing, or absent board Status) to repair
+    every closed issue that predates the fix to close_stale_worktree_issues/
+    close_stale_roadmap_issues/close_completed_plan_parents above - those
+    three used to call client.close_issue() without ever touching the
+    Project's Status field. Sets Status=Done unconditionally for every
+    currently-closed issue rather than reading the current value first,
+    matching _sync_project_status's own "runs every time, self-healing"
+    convention - idempotent, so re-running (or running after the fix is
+    already in place) is always safe and a no-op in effect."""
+    report = SyncReport(dry_run=dry_run)
+    for issue in client.list_closed_issues():
+        if not dry_run:
+            item_id = client.ensure_on_project(issue.number)
+            client.set_project_status(item_id, project_status.STATUS_DONE)
+        report.updated.append(f"#{issue.number} backfilled Status=Done")
     return report
 
 

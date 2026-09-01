@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tools.kanban_sync import labels
 from tools.kanban_sync.github_client import GithubClient
+from tools.kanban_sync.live_status import resolve_project_status
 from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync.plan_tasks import decompose_plan
@@ -27,7 +28,7 @@ from tools.kanban_sync.sources_worktree import (
     collect_worktree_items, live_worktree_branches, parse_worktree_list,
 )
 from tools.kanban_sync.sync import (
-    close_completed_plan_parents, close_stale_roadmap_issues,
+    backfill_closed_status, close_completed_plan_parents, close_stale_roadmap_issues,
     close_stale_worktree_issues, reconcile,
 )
 
@@ -160,9 +161,17 @@ def _cmd_sync(args: argparse.Namespace) -> None:
         )
         report.closed += stale_roadmap_report.closed
 
-    if "plan" in sources:
-        plan_close_report = close_completed_plan_parents(client, dry_run=args.dry_run)
-        report.closed += plan_close_report.closed
+    # Unconditional, unlike the "plan" source above: this is a purely
+    # mechanical sub-issue-count check with no dependency on `items` or on
+    # --plan-classifications, so it must not be gated behind the
+    # judgment-assisted plan-doc classification path that "plan" also
+    # requires - see close_completed_plan_parents's own docstring, and
+    # test_cmd_sync_runs_close_completed_plan_parents_even_when_plan_not_in_sources
+    # (root cause B, confirmed live 2026-08-31: the routine /checkpoint-wired
+    # invocation never included "plan", so a plan whose sub-issues all
+    # finished sat open indefinitely).
+    plan_close_report = close_completed_plan_parents(client, dry_run=args.dry_run)
+    report.closed += plan_close_report.closed
 
     print(f"created: {len(report.created)}")
     for line in report.created:
@@ -172,6 +181,43 @@ def _cmd_sync(args: argparse.Namespace) -> None:
     print(f"flagged mismatches: {len(report.flagged_mismatches)}")
     for line in report.flagged_mismatches:
         print(f"  ! {line}")
+
+
+def _cmd_backfill_status(args: argparse.Namespace) -> None:
+    """One-time repair (root cause A, confirmed live 2026-08-31): sets
+    Status=Done on every already-closed issue that predates the fix to the
+    three mechanical close paths, which used to close an issue without
+    ever touching the Project's Status field. Safe to re-run - idempotent,
+    same as the fix itself."""
+    _check_project_scope()
+    client = GithubClient(REPO)
+    report = backfill_closed_status(client, dry_run=args.dry_run)
+    print(f"backfilled: {len(report.updated)}")
+    for line in report.updated:
+        print(f"  + {line}")
+
+
+def _cmd_push_status(args: argparse.Namespace) -> None:
+    """Pushes one issue's current open/closed state + status:* label onto
+    the Project's Status field right now - the one-issue counterpart to
+    the batch `sync` command's per-item _sync_project_status, for the
+    kanban-live-status skill to call immediately after a claim/report-
+    result/block transition instead of waiting for the next batch run."""
+    _check_project_scope()
+    client = GithubClient(REPO)
+    issue = client.get_issue(args.issue)
+    if issue is None:
+        print(f"error: issue #{args.issue} not found", file=sys.stderr)
+        sys.exit(1)
+    try:
+        status = resolve_project_status(issue)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not args.dry_run:
+        item_id = client.ensure_on_project(issue.number)
+        client.set_project_status(item_id, status)
+    print(f"#{issue.number} -> {status}")
 
 
 def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
@@ -230,6 +276,21 @@ def main(argv: list[str] | None = None) -> int:
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--plan-classifications", type=Path, default=None)
     sync_parser.set_defaults(func=_cmd_sync)
+
+    backfill_status_parser = sub.add_parser(
+        "backfill-status",
+        help="one-time: set Project Status=Done on every already-closed issue",
+    )
+    backfill_status_parser.add_argument("--dry-run", action="store_true")
+    backfill_status_parser.set_defaults(func=_cmd_backfill_status)
+
+    push_status_parser = sub.add_parser(
+        "push-status",
+        help="push one issue's current status onto the Project board right now",
+    )
+    push_status_parser.add_argument("--issue", type=int, required=True)
+    push_status_parser.add_argument("--dry-run", action="store_true")
+    push_status_parser.set_defaults(func=_cmd_push_status)
 
     candidates_parser = sub.add_parser("plan-candidates", help="list plan docs needing classification")
     candidates_parser.set_defaults(func=_cmd_plan_candidates)
