@@ -44,7 +44,65 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS series_metadata (
+            ticker TEXT PRIMARY KEY,
+            category TEXT,
+            frequency TEXT,
+            tags_json TEXT,
+            settlement_sources_json TEXT,
+            contract_url TEXT,
+            contract_terms_url TEXT,
+            fee_type TEXT,
+            fee_multiplier REAL,
+            additional_prohibitions_json TEXT,
+            exchange_index INTEGER,
+            volume_fp TEXT,
+            last_updated_ts TEXT,
+            fetched_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS series_tags (
+            ticker TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (ticker, tag)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_series_metadata_category ON series_metadata (category)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_series_tags_tag ON series_tags (tag)")
     return conn
+
+
+def _series_metadata_row(s: dict, fetched_at: float) -> tuple:
+    """Defensive .get() throughout, matching _get_series_cache's own style
+    (float(s.get("volume_fp") or 0) in catalog_scan.py) - get-series.md marks
+    tags/settlement_sources/additional_prohibitions all nullable, so a bare
+    series dict from a live payload must not raise. The *_json columns are
+    always json.dumps(x or []), never None: series_tags' own population loop
+    below iterates s.get("tags") or [] the same way, and an empty-but-valid
+    JSON array is a cleaner contract than a nullable one for a column named
+    _json."""
+    return (
+        s["ticker"],
+        s.get("category"),
+        s.get("frequency"),
+        json.dumps(s.get("tags") or []),
+        json.dumps(s.get("settlement_sources") or []),
+        s.get("contract_url"),
+        s.get("contract_terms_url"),
+        s.get("fee_type"),
+        s.get("fee_multiplier"),
+        json.dumps(s.get("additional_prohibitions") or []),
+        s.get("exchange_index"),
+        s.get("volume_fp"),
+        s.get("last_updated_ts"),
+        fetched_at,
+    )
 
 
 def load() -> dict:
@@ -69,4 +127,35 @@ def save(fetched_at: float, series: list[dict]) -> None:
             ON CONFLICT(id) DO UPDATE SET fetched_at = excluded.fetched_at, series_json = excluded.series_json
             """,
             (fetched_at, json.dumps(series)),
+        )
+        conn.executemany(
+            """
+            INSERT INTO series_metadata (ticker, category, frequency, tags_json,
+                settlement_sources_json, contract_url, contract_terms_url, fee_type, fee_multiplier,
+                additional_prohibitions_json, exchange_index, volume_fp, last_updated_ts, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(ticker) DO UPDATE SET category=excluded.category, frequency=excluded.frequency,
+                tags_json=excluded.tags_json, settlement_sources_json=excluded.settlement_sources_json,
+                contract_url=excluded.contract_url, contract_terms_url=excluded.contract_terms_url,
+                fee_type=excluded.fee_type, fee_multiplier=excluded.fee_multiplier,
+                additional_prohibitions_json=excluded.additional_prohibitions_json,
+                exchange_index=excluded.exchange_index, volume_fp=excluded.volume_fp,
+                last_updated_ts=excluded.last_updated_ts, fetched_at=excluded.fetched_at
+            """,
+            [_series_metadata_row(s, fetched_at) for s in series],
+        )
+        # Delete-then-reinsert per ticker, not a diff: this batch's tag list
+        # for a series fully replaces last batch's, since get-series.md's
+        # tags array can shrink upstream and a stale series_tags row would
+        # otherwise never be cleaned up. `series` is always the full fetched
+        # batch (same as the blob write above), so tickers_this_batch covers
+        # every series this refresh touched - not a fetched_at-scoped delete.
+        tickers_this_batch = [s["ticker"] for s in series]
+        conn.executemany(
+            "DELETE FROM series_tags WHERE ticker = ?",
+            [(t,) for t in tickers_this_batch],
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO series_tags (ticker, tag) VALUES (?, ?)",
+            [(s["ticker"], tag) for s in series for tag in (s.get("tags") or [])],
         )

@@ -15,9 +15,13 @@ whatever's on the watchlist.
 This module does not fetch live data itself - only WHICH events have a
 milestone and what its id is, independent of markets. live_status.py's
 _fetch_live_status checks state["milestone_by_event"] first and only
-falls back to its existing per-event get_milestones_for_event call when
-this broad cache hasn't covered an event yet, so a cold cache is
-byte-identical to pre-existing behavior.
+falls back to a batched get_events(needs_fetch, with_milestones=True)
+call (kalshi-category-data-completeness Task 10 - was a per-event
+get_milestones_for_event call, one REST round trip per uncached event,
+until then) when this broad cache hasn't covered an event yet, so a
+cold cache reproduces the same logical fallback this module always
+had, just via fewer real REST calls now rather than byte-identically
+the same call.
 
 WHAT THIS DOES NOT DO YET (corrected 2026-08-30, final-review finding -
 the first version of this docstring, the design spec's Part 3, and the

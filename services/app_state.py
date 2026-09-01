@@ -219,6 +219,35 @@ state = {
     # event_ticker -> {"checked_at": ts, "winner_found": bool, "related":
     # [...]|None, "mapped_winner_ticker": str|None}.
     "milestone_cache": {},
+    # structured_target_id (uuid) -> the resolved StructuredTarget dict
+    # (kalshi-category-data-completeness Task 9, targets_and_milestones.md:
+    # 73-86). Deliberately NOT category_metadata's fetched_at+TTL shape
+    # despite the task brief's own suggestion to mirror it: a structured
+    # target (a team/player/entity's id -> name mapping) is Kalshi
+    # reference data that doesn't change once assigned - unlike
+    # category_metadata's tags/filters, which Kalshi actively revises, so
+    # re-fetching the WHOLE set on a TTL would be both wasted calls (the
+    # entries already resolved are still correct) and wrong-shaped (new
+    # UUIDs show up incrementally, as new structured markets appear, not in
+    # one wholesale refresh). Same flat, no-TTL, "learn once, keep forever,
+    # only fetch what's missing" pattern as market_titles/event_titles
+    # above (in-memory only here, not persisted to a *.db - the structured-
+    # target universe is far smaller and cheaper to re-learn from a cold
+    # start than the ~9,400-series catalog series_cache below justifies a
+    # dedicated file for). NOT series_metadata/series_tags (services/
+    # series_cache.py, Task 1 of this same plan) - fix-round 1, task
+    # review, corrected (Task 9): at the time, that cache lived inside
+    # _get_series_cache's own _SERIES_CACHE_TTL_SEC-gated WHOLE-set
+    # refresh, the same TTL+whole-refresh shape as category_metadata, not
+    # this cache's incremental one. Task 11 (later in this same plan)
+    # changed _get_series_cache itself to a min_updated_ts delta-merge
+    # model, further amended by the final whole-branch review's fix round
+    # to also force a periodic (24h) full resync - so the comparison point
+    # this paragraph originally made no longer describes a pure whole-set
+    # refresh either; see _get_series_cache's own docstring for its
+    # current, real shape - see propagate_milestone_winners' own resolution
+    # step for the real fetch-only-the-missing-ids logic this cache uses.
+    "structured_targets_cache": {},
     # Decouples _check_signal_resolutions from the main poll_interval_sec
     # trading-tick cadence (2026-08-15 direct instruction) - see that
     # function's own docstring for why. Memory-only, not persisted: worst

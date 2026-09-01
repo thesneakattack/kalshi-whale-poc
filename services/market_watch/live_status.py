@@ -3,7 +3,6 @@ Real live/scheduled/finished status per event, via Kalshi's milestone/
 live-data system, plus exchange status. Split out of market_watch.py
 (2026-08-22 modularization Phase 9/9).
 """
-import asyncio
 import time
 from datetime import datetime
 
@@ -12,6 +11,7 @@ from services.app_state import state
 from services.kalshi.public import KalshiPublicGateway
 from services import http_client
 from services.market_lookup import _sport_for_event
+from services.market_watch import milestone_live_data
 
 _LIVE_STATUS_LOOKBACK_SEC = 8 * 3600  # keep tracking an event up to 8h after its scheduled start
 # Widened 1h -> 12h on 2026-08-17. Measured live: 30 Sports events were on
@@ -144,9 +144,11 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
 
     # milestone_scan.py's broad cache first (entry-gate-me-pairing-and-
     # netting-remediation Part 3) - an event already covered there skips
-    # the per-event REST call entirely. A cache miss falls back to the
-    # exact pre-existing per-event get_milestones_for_event call, so a
-    # cold/not-yet-covered cache reproduces today's behavior byte for byte.
+    # the per-event REST call entirely. A cache miss falls back to a batched
+    # get_events(needs_fetch, with_milestones=True) call (kalshi-category-
+    # data-completeness Task 10 - was per-event get_milestones_for_event
+    # calls until then; see that call site's own comment below for why it
+    # is scoped to needs_fetch specifically, not the full to_poll list).
     #
     # SCOPE, precisely (corrected 2026-08-30, final-review finding): this
     # is a REST-call reduction, NOT a coverage broadening. `to_poll` above
@@ -172,22 +174,71 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
             needs_fetch.append(et)
 
     if needs_fetch:
-        # Batched (2026-08-16 API-doc audit finding B3.2, docs/kalshi/
-        # get-multiple-live-data.md) - was N individual get_live_data()
-        # calls via asyncio.gather, one per event with a milestone.
-        # Live-verified: 3 individual = 0.99s wall, 1 batched get_live_datas
-        # call = 0.02s wall.
-        milestone_results = await asyncio.gather(
-            *(client.get_milestones_for_event(et) for et in needs_fetch), return_exceptions=True
-        )
-        for et, ms_result in zip(needs_fetch, milestone_results):
-            if isinstance(ms_result, list) and ms_result:
-                ms = ms_result[0]
+        # Batched (kalshi-category-data-completeness Task 10, docs/kalshi/
+        # get-events.md:114-118) - one get_events(needs_fetch,
+        # with_milestones=True) call replaces what used to be N individual
+        # client.get_milestones_for_event(et) calls (still batched via
+        # asyncio.gather, but still N real REST round trips). Scoped to
+        # needs_fetch specifically, NOT the full to_poll list above - the
+        # broad_cache short-circuit right above this block (milestone_scan.py,
+        # entry-gate-me-pairing-and-netting-remediation commit 56ae320)
+        # already resolved the rest of to_poll with zero REST calls, and
+        # applying this batch call to the full to_poll list would re-fetch
+        # milestones for events that cache already answered - discarding
+        # that already-landed REST-call reduction, a hot-path efficiency
+        # regression the data-plane HARD RULE forbids without measurement.
+        # services/kalshi/public.py's get_events already builds the
+        # event_ticker -> [milestones] join (Kalshi returns milestones as a
+        # top-level array, not inline per event); this reads
+        # event["milestones"][0] off each returned event - same first-entry
+        # convention the old per-event endpoint's own `limit=5` response
+        # used (see get_events' own docstring for why this array's
+        # ordering isn't assumed to match that endpoint's byte-for-byte).
+        # Wrapped (fix-round 1, task review): the old per-event
+        # asyncio.gather(..., return_exceptions=True) meant a single
+        # event's milestone-fetch failure could never raise out of this
+        # function at all - it just meant that one event got no milestone
+        # this tick. The new single batched call has no such isolation by
+        # default, and unlike propagate_milestone_winners (which already
+        # has a broad try/except around its own equivalent call), this
+        # function has none - an unwrapped failure here would propagate
+        # through main.py's asyncio.gather (no return_exceptions there
+        # either) and be caught only by trading_loop's per-TICK
+        # try/except, aborting event_titles/event_live_data/trade_tape
+        # processing for the rest of that tick too, not just milestone
+        # discovery - a real widening of blast radius the data-plane HARD
+        # RULE requires being explicit and deliberate about, not silent.
+        # Same swallow-and-degrade idiom this module already uses for
+        # _fetch_exchange_status above ("a transient hiccup here shouldn't
+        # take down the whole poll tick") - an empty events_by_ticker here
+        # means every needs_fetch event just gets no milestone this tick,
+        # identical in effect to the old per-event isolation, and
+        # self-healing next tick since these events remain in to_poll.
+        try:
+            fetched_events = await client.get_events(needs_fetch, with_milestones=True)
+        except Exception:
+            fetched_events = []
+        events_by_ticker = {
+            e["event_ticker"]: e for e in fetched_events
+            if e.get("event_ticker")
+        }
+        for et in needs_fetch:
+            ms_list = events_by_ticker.get(et, {}).get("milestones") or []
+            if ms_list:
+                ms = ms_list[0]
                 if ms.get("id") and ms.get("type"):
                     has_milestone.add(et)
                     milestone_by_event[et] = ms["id"]
 
     confirmed = {}
+    # Populated below for any event whose confirmed milestone `type` maps to
+    # one of Task 5's always-status=None types (company_report, truflation,
+    # ...) - excluded from the schedule-fallback gate further down, since
+    # for these types a missing `confirmed[et]` means "structurally no live
+    # status, ever" rather than "not confirmed this particular tick" (see
+    # milestone_live_data.has_no_live_status' own docstring for why the
+    # schedule fallback can't tell these apart on its own).
+    no_live_status_type: set[str] = set()
     if milestone_by_event:
         live_datas = await client.get_live_datas(list(milestone_by_event.values()))
         for et, ms_id in milestone_by_event.items():
@@ -195,9 +246,35 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
             if not ld:
                 continue
             details = ld.get("details") or {}
-            status = details.get("widget_status")
+            # milestone_live_data.extract() (Task 5, kalshi-category-data-
+            # completeness) needs the milestone's own `type` (e.g.
+            # "football_game", "company_report") to route the ~9 deviant
+            # milestone types away from a raw widget_status/winner read.
+            # Sourced from `ld["type"]`, NOT a separately-tracked
+            # `ms["type"]` (what the design spec's own §2.2 literally
+            # sketches, and what catalog_scan.py's sibling call site below
+            # uses): an event resolved via the broad milestone_by_event
+            # cache above (entry-gate-me-pairing-and-netting-remediation,
+            # commit 56ae320) never has a milestone dict in hand at all -
+            # that cache only stores event_ticker -> milestone id
+            # (milestone_scan.py's own docstring), so no `ms` exists in this
+            # loop for a cache hit, only `ms_id`. `ld["type"]` is the
+            # identical value at zero extra cost either way: it's a
+            # `required` field on this SAME already-fetched get_live_datas
+            # response (docs/kalshi/get-multiple-live-data.md's LiveData
+            # schema - `type`, `details`, `milestone_id` all required), and
+            # this codebase already treats it as the milestone type -
+            # services/market_events/event_inspector.py:90's working
+            # `get_live_data(ms["type"], ms["id"])` call site passes a
+            # milestone's own `type` into the exact parameter name
+            # (`milestone_type`) the legacy single-milestone endpoint's URL
+            # path uses, confirming the two are the same field.
+            ms_type = ld.get("type")
+            status = milestone_live_data.extract(ms_type, details)["status"]
             if status:
                 confirmed[et] = status
+            elif milestone_live_data.has_no_live_status(ms_type):
+                no_live_status_type.add(et)
             # Real score/quarter/clock/down-distance/last_play (2026-08-16
             # audit finding B2, docs/kalshi/get-multiple-live-data.md) - the exact
             # same get_live_datas call above already fetches this full
@@ -238,12 +315,50 @@ async def _fetch_live_status(client: KalshiPublicGateway, markets: list[dict]) -
     # tick. Anything with no milestone at all is left out of the result
     # entirely (not cached, not "none", not "live" - genuinely unknown)
     # rather than guessed at either way.
+    #
+    # `et not in no_live_status_type` (Task 6, kalshi-category-data-
+    # completeness): the milestone-tracked-ness this fallback keys on used
+    # to mean only "some milestone with an id+type exists" - now that Task
+    # 5's extract() can definitively say a milestone TYPE never carries a
+    # live status at all (company_report, truflation, ...), an event
+    # confirmed to be exactly that type is excluded here too, the same way
+    # "no milestone at all" already is - guessing "live"/"none" for an index
+    # series would be exactly the fabrication this comment block already
+    # warns against, just via a type this function didn't used to
+    # distinguish.
     for et in to_poll:
         if et in confirmed:
             status, source = confirmed[et], "milestone"
-        elif et in has_milestone:
+        elif et in has_milestone and et not in no_live_status_type:
             status = "none" if now < event_occ_ts[et] else "live"
             source = "schedule"
+        elif et in no_live_status_type:
+            # Bug found in review (kalshi-category-data-completeness Task
+            # 6): this branch used to fall through to the bare `else:
+            # continue` below, which never writes `cache[et]` at all - and
+            # to_poll.sort() above (oldest-checked_at-first, missing
+            # defaults to 0.0) means a never-cached event always sorts to
+            # the very front. A milestone's `type` never changes, so a
+            # company_report/truflation/... event would win the front of
+            # _LIVE_STATUS_MAX_POLL_PER_TICK's batch on every single tick
+            # forever, permanently starving genuinely due-for-repoll live
+            # events out of the bounded per-tick budget - the exact
+            # tick_duration-plateau shape the 2026-08-15 incident (see this
+            # constant's own comment above) already happened once from an
+            # unrelated cause. `status=None` here is not "unknown" (that's
+            # the bare `else` below, for no-milestone-at-all events) - it's
+            # an explicit, already-part-of-this-dict's-documented-contract
+            # negative confirmation (services/app_state.py:192's own
+            # `"live_status": {}, # event_ticker -> "live" | "finished" |
+            # "none" | None` comment already lists `None` as a legitimate
+            # value, and every known reader - whale_simulator.py's `==
+            # "live"`, strategy_engine.py's own "None/False means not
+            # currently live" docstring - already treats it as "not live",
+            # not as a crash risk), written through the SAME cache/result
+            # path as every other branch here so it participates in the
+            # normal `_LIVE_STATUS_REPOLL_SEC` cadence instead of a new,
+            # unrequested caching tier.
+            status, source = None, "no_live_status_type"
         else:
             continue  # not a milestone-tracked event type - no basis to infer anything
         cache[et] = {"status": status, "checked_at": now, "source": source}

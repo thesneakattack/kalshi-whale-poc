@@ -140,10 +140,15 @@ def load_market_titles() -> dict[str, dict]:
         rows = conn.execute(
             "SELECT ticker, title, yes_sub_title, no_sub_title, event_ticker FROM market_titles"
         ).fetchall()
-    return {
-        ticker: {"title": title, "yes_sub_title": yes_sub, "no_sub_title": no_sub, "event_ticker": event_ticker}
-        for ticker, title, yes_sub, no_sub, event_ticker in rows
-    }
+    result = {}
+    for ticker, title, yes_sub, no_sub, event_ticker in rows:
+        result[ticker] = {"title": title, "yes_sub_title": yes_sub, "no_sub_title": no_sub, "event_ticker": event_ticker}
+        # series_ticker_for()'s in-memory index, seeded here from the same
+        # rows already read (no second query) - see that function's own
+        # module-level comment for why this replaced a per-call DB lookup.
+        if event_ticker:
+            _MARKET_EVENT_INDEX[ticker] = event_ticker
+    return result
 
 
 def save_market_titles(entries: dict[str, dict]) -> None:
@@ -165,6 +170,12 @@ def save_market_titles(entries: dict[str, dict]) -> None:
                 for ticker, v in entries.items()
             ],
         )
+    # series_ticker_for()'s in-memory index (see its own module-level
+    # comment) - updated incrementally from this same delta, no extra cost.
+    for ticker, v in entries.items():
+        event_ticker = v.get("event_ticker")
+        if event_ticker:
+            _MARKET_EVENT_INDEX[ticker] = event_ticker
 
 
 def load_event_titles() -> dict[str, dict]:
@@ -196,6 +207,10 @@ def load_event_titles() -> dict[str, dict]:
             "product_metadata": json.loads(product_metadata_json) if product_metadata_json else {},
             "settlement_sources": json.loads(settlement_sources_json) if settlement_sources_json else [],
         }
+        # series_ticker_for()'s in-memory index (see its own module-level
+        # comment) - seeded here from the same rows already read.
+        if series_ticker:
+            _EVENT_SERIES_INDEX[event_ticker] = series_ticker
     return result
 
 
@@ -241,6 +256,12 @@ def save_event_titles(entries: dict[str, dict]) -> None:
                 for event_ticker, v in entries.items()
             ],
         )
+    # series_ticker_for()'s in-memory index (see its own module-level
+    # comment) - updated incrementally from this same delta, no extra cost.
+    for event_ticker, v in entries.items():
+        series_ticker = v.get("series_ticker")
+        if series_ticker:
+            _EVENT_SERIES_INDEX[event_ticker] = series_ticker
 
 
 def fee_override_for_ticker(ticker: str) -> tuple[str | None, float | None]:
@@ -266,3 +287,84 @@ def fee_override_for_ticker(ticker: str) -> tuple[str | None, float | None]:
             (ticker,),
         ).fetchone()
     return (row[0], row[1]) if row else (None, None)
+
+
+# 2026-08-31 fix-round 2 (kalshi-category-data-completeness Task 3, PR-level
+# adversarial review CRITICAL finding): fix-round 1's DB-backed memoization
+# (a fresh _connect() on every cache miss, negative entries expiring after
+# _SERIES_TICKER_NEGATIVE_TTL_SEC=300) reduced but did not remove the
+# per-trade-DB-round-trip risk it was meant to close - series_ticker_for() is
+# called unconditionally on the EXCHANGE-WIDE trade-tape hot path
+# (services/whalewatchers/kalshi_trade_tape.py's min_contracts_for(), reached
+# from services/kalshi/websocket.py's _gate_check_and_maybe_filter BEFORE the
+# reader_gate_enabled check, i.e. even in shadow mode - config/settings.yaml's
+# trade_stream_exchange_wide: true means most tickers seen are genuinely off
+# this app's watchlist-scoped title_cache and never resolve). Measured
+# in-container: 548us per cache MISS (the fresh _connect()'s WAL pragma + 2
+# CREATE TABLE IF NOT EXISTS + 13 PRAGMA table_info/ALTER checks) vs the
+# whale_gate hot path's own ~20us documented ceiling - and since an
+# off-watchlist ticker's negative cache entry expires every 5 minutes, that
+# 548us repeats per distinct such ticker, forever, for as long as it keeps
+# trading. The exact per-trade-DB-round-trip shape behind the 2026-08-11
+# incident, just paced at 5-minute intervals instead of every trade.
+#
+# Real fix: market_titles.event_ticker -> event_titles.series_ticker is
+# ALREADY fully available in memory - state["market_titles"]/state[
+# "event_titles"] (services/app_state.py) are seeded from this exact DB at
+# process start (load_market_titles()/load_event_titles()) and kept current
+# by the tick loop's own save_market_titles()/save_event_titles() calls
+# (main.py:918,1022) every tick regardless of whether anything in this
+# module is ever called. Rather than importing state here (title_cache.py
+# has no dependency on services.app_state today, and app_state.py already
+# imports title_cache at its own module load time for the state dict's
+# initial values - importing app_state back into title_cache would be
+# circular), this module maintains its OWN plain in-memory mirror of the
+# two columns series_ticker_for() actually needs, updated as a free side
+# effect of the load_*/save_* functions it already has to call anyway - a
+# dict .get() on a value already in hand, zero DB access, zero connection
+# overhead, no TTL/negative-cache machinery needed at all (a miss costs
+# nothing to re-check, so there is nothing to avoid re-checking). Seeded
+# once at process start from the full persisted history (load_market_titles/
+# load_event_titles' own SELECT, no second query), then kept current
+# incrementally by every save_market_titles/save_event_titles call - so a
+# ticker resolved in a PRIOR process run stays resolved after a restart
+# (the cold-start property the old DB-backed cache also had), and a ticker
+# that becomes resolvable THIS run is picked up the moment the normal tick
+# loop's own save call reaches it, not after up to 300s of staleness.
+_MARKET_EVENT_INDEX: dict[str, str] = {}
+_EVENT_SERIES_INDEX: dict[str, str] = {}
+
+
+def series_ticker_for(ticker: str) -> str | None:
+    """The real series_ticker `ticker`'s market belongs to
+    (market_titles.event_ticker -> the matching event_titles row's
+    series_ticker column) - a single indexed join, same shape as
+    fee_override_for_ticker() above, one hop further. Reads the in-memory
+    _MARKET_EVENT_INDEX/_EVENT_SERIES_INDEX (see the module-level comment
+    above them for why this is no longer a DB-backed lookup) - a plain
+    dict .get() twice, zero DB access.
+
+    docs/kalshi/terms.md:29: "There are occasional exceptions [to the
+    Series -> Event -> Market ticker convention], so do not parse ticker
+    strings to infer relationships. Best practice is to use the series,
+    event, market, and search endpoints and rely on fields like
+    series_ticker, event_ticker...". docs/kalshi/get-market.md documents
+    a market's own event_ticker field; docs/kalshi/get-events.md documents
+    an event's own series_ticker field - this is exactly that chain,
+    already indexed by save_market_titles()/save_event_titles()/
+    load_market_titles()/load_event_titles() from every get_market()/
+    get_event() response, nothing new fetched here.
+
+    None when the market isn't indexed yet, its event isn't indexed yet, or
+    the event's series_ticker was empty/null when indexed (e.g. the event
+    row was saved before required_event_fields' series_ticker fetch
+    existed) - services/signal_log.py::series_of() falls back to its own
+    ticker-prefix heuristic in every one of these cases, never guessing a
+    series here. This function itself can no longer raise (no DB access),
+    but keeps returning None rather than raising for any of the above, the
+    same never-raises contract series_of()'s callers - strategy_engine.py's
+    core entry gate, the trade-tape prescan gate - were written against."""
+    event_ticker = _MARKET_EVENT_INDEX.get(ticker)
+    if event_ticker is None:
+        return None
+    return _EVENT_SERIES_INDEX.get(event_ticker)

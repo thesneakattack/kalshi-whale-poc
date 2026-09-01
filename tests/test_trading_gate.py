@@ -1578,7 +1578,16 @@ class _FakeLiveClient:
     the returned status looks right. get_live_datas (batched, 2026-08-16)
     replaces the old per-milestone get_live_data - returns milestone_id ->
     {"details": {...}} flat, matching KalshiClient.get_live_datas' own real
-    shape (not get_live_data()'s single-call {"live_data": {...}} wrapper)."""
+    shape (not get_live_data()'s single-call {"live_data": {...}} wrapper).
+
+    get_events(with_milestones=True) (kalshi-category-data-completeness
+    Task 10) replaces the old per-event get_milestones_for_event - stands
+    in for the real KalshiPublicGateway.get_events, which joins Kalshi's
+    top-level `milestones` array onto each returned event.
+    milestone_calls keeps recording the tickers actually fetched this tick
+    (now via one batched call instead of N individual ones) so every
+    pre-existing "was this event (re)polled" assertion below stays
+    unchanged."""
 
     def __init__(self, widget_status="live", has_milestone=True, live_data_fails=False):
         self.widget_status = widget_status
@@ -1587,15 +1596,46 @@ class _FakeLiveClient:
         self.milestone_calls = []
         self.live_datas_calls = []  # list of milestone_id batches requested
 
-    async def get_milestones_for_event(self, event_ticker):
-        self.milestone_calls.append(event_ticker)
-        return [{"id": "ms1", "type": "game"}] if self.has_milestone else []
+    async def get_events(self, event_tickers, with_milestones=False):
+        self.milestone_calls.extend(event_tickers)
+        ms_list = [{"id": "ms1", "type": "game"}] if self.has_milestone else []
+        return [{"event_ticker": et, "milestones": ms_list} for et in event_tickers]
 
     async def get_live_datas(self, milestone_ids):
         self.live_datas_calls.append(list(milestone_ids))
         if self.live_data_fails:
-            return {mid: {"details": {}} for mid in milestone_ids}  # no widget_status - a real, seen shape
-        return {mid: {"details": {"widget_status": self.widget_status}} for mid in milestone_ids}
+            return {mid: {"type": "game", "details": {}} for mid in milestone_ids}  # no widget_status - a real, seen shape
+        return {mid: {"type": "game", "details": {"widget_status": self.widget_status}} for mid in milestone_ids}
+
+
+# --- _fetch_live_status routes live-data through milestone_live_data.extract()
+# (Task 6, kalshi-category-data-completeness) - proves the wiring actually
+# dispatches on milestone `type` now, not still a raw details.get(
+# "widget_status") read (which would return "live" for the fixture below,
+# since the raw key IS present in it). ------------------------------------
+
+def test_fetch_live_status_returns_none_for_a_settlement_input_type():
+    # company_report is one of D2's named no-op types (Task 5,
+    # milestone_live_data.py's _EXTRACTORS) - an index/report series, not a
+    # real-world resolution event with a genuine live/finished state.
+    main.state["live_status_cache"].clear()
+
+    class _FakeReportClient:
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "company_report"}]} for et in event_tickers]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(_FakeReportClient(), markets))
+    # status=None (not "live") - explicit negative confirmation, not the
+    # bare-absent-key "no milestone at all" case (see
+    # services/app_state.py:192's own "live_status" dict contract, which
+    # already lists None alongside "live"/"finished"/"none" as a value every
+    # known reader treats as "not live", e.g. whale_simulator.py's `== "live"`).
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "no_live_status_type"
 
 
 def test_fetch_live_status_polls_a_new_event_with_no_cache():
@@ -1781,6 +1821,47 @@ def test_fetch_live_status_confirmed_milestone_status_wins_over_fallback():
     assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
 
 
+def test_fetch_live_status_political_race_runoff_does_not_fall_through_to_schedule_live():
+    # Regression for a real bug (kalshi-category-data-completeness Task 8,
+    # fix-round 1 -> re-review): a "Runoff" political_race extractor result
+    # of Python None is FALSY, so it was silently skipped by _fetch_live_
+    # status's own `if status: confirmed[et] = status` check (a few lines
+    # above the schedule fallback) and fell through to the schedule
+    # fallback instead - which, for any event past its scheduled
+    # occurrence_datetime (true here, started 5 min ago), re-derives
+    # "live" independent of what the extractor actually said, silently
+    # reproducing the exact is_live entry-gate-bypass bug the fix was
+    # meant to close. milestone_live_data.py's real _political_race
+    # extractor maps "Runoff" -> the "none" STRING specifically so this
+    # can't happen (a truthy value routes straight into confirmed[et] and
+    # never reaches the fallback) - this test proves that against the
+    # real _fetch_live_status/milestone_live_data.extract() wiring, not
+    # just the extractor in isolation.
+    main.state["live_status_cache"].clear()
+
+    class _FakePoliticalRaceClient:
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "political_race"}]} for et in event_tickers]
+
+        async def get_live_datas(self, milestone_ids):
+            return {
+                mid: {
+                    "type": "political_race",
+                    "details": {
+                        "race_call_status": "Runoff",
+                        "tabulation_status": "Vote Certified",
+                        "winner": "",
+                    },
+                }
+                for mid in milestone_ids
+            }
+
+    markets = [_market_at(offset_sec=-300)]  # started 5 min ago -> past occurrence, schedule fallback would say "live"
+    result = asyncio.run(main._fetch_live_status(_FakePoliticalRaceClient(), markets))
+    assert result == {"EVT-A": "none"}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "milestone"
+
+
 # --- _fetch_live_status: broad milestone cache (services/market_watch/
 # milestone_scan.py) consulted before the per-event REST call --------------
 
@@ -1823,6 +1904,152 @@ def test_fetch_live_status_broad_cache_mixed_hit_and_miss_in_one_tick():
     assert fake.live_datas_calls == [["ms-from-bulk-scan", "ms1"]]  # cached + freshly-fetched ids, batched together
 
 
+def test_fetch_live_status_broad_cache_hit_also_routes_through_the_extractor():
+    # test_fetch_live_status_returns_none_for_a_settlement_input_type above
+    # only exercises the needs_fetch path (a fresh get_events(with_milestones=
+    # True) call always returns a full milestone dict per event,
+    # `ms["type"]` included). An
+    # event resolved via the broad milestone_by_event cache instead
+    # (milestone_scan.py) never has that dict at all - the cache only maps
+    # event_ticker -> milestone id - so this proves the wiring's `ld["type"]`
+    # sourcing (not a separately-tracked `ms["type"]`) closes the same gap
+    # for THIS path too, not just the one the brief's own test happens to
+    # cover.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {"EVT-A": "ms-from-bulk-scan"}
+
+    class _FakeBroadCacheReportClient:
+        async def get_events(self, event_tickers, with_milestones=False):
+            raise AssertionError("broad cache hit - the batched get_events fallback call must not happen")
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(_FakeBroadCacheReportClient(), markets))
+    # Not "live" via extract(), and not "live" via the schedule fallback
+    # either - status=None, same explicit-negative-confirmation contract as
+    # the needs_fetch path's equivalent test above.
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["source"] == "no_live_status_type"
+
+
+# --- Task 10 (kalshi-category-data-completeness): get_events(with_milestones
+# =True) replaces get_milestones_for_event entirely - _fetch_live_status must
+# never call it, even indirectly. -------------------------------------------
+
+def test_fetch_live_status_never_calls_get_milestones_for_event():
+    # Deliberately has no get_milestones_for_event at all - if
+    # _fetch_live_status still called it (directly, or via any fallback
+    # path) this would raise AttributeError, proving the old per-event
+    # endpoint is genuinely gone from this call site, not just unused by
+    # coincidence in the other fixtures above.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # force the needs_fetch path, not the broad cache
+
+    class _FakeClientNoMilestoneEndpoint:
+        def __init__(self):
+            self.get_events_calls = []
+
+        async def get_events(self, event_tickers, with_milestones=False):
+            self.get_events_calls.append((list(event_tickers), with_milestones))
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "game"}]} for et in event_tickers]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "game", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    fake = _FakeClientNoMilestoneEndpoint()
+    markets = [_market_at(offset_sec=-300)]
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": "live"}
+    assert fake.get_events_calls == [(["EVT-A"], True)]
+
+
+def test_fetch_live_status_degrades_gracefully_when_get_events_raises():
+    # Regression (fix-round 1, task review): the old per-event
+    # asyncio.gather(..., return_exceptions=True) meant a milestone-fetch
+    # failure could never raise out of _fetch_live_status at all - one
+    # event's REST failure just meant that event got no milestone this
+    # tick. The new single batched get_events(needs_fetch,
+    # with_milestones=True) call has no such isolation by default, and
+    # (unlike propagate_milestone_winners, which already wraps its own
+    # equivalent call in a broad try/except) this function had none -
+    # an unwrapped failure would propagate through main.py's own
+    # asyncio.gather (no return_exceptions there either) and be caught
+    # only by trading_loop's per-TICK try/except, aborting event_titles/
+    # event_live_data/trade_tape processing for the rest of that tick
+    # too, not just milestone discovery. Proves the wrapped call degrades
+    # instead: the event just gets no milestone this tick (schedule
+    # fallback still applies, same as any other cache-miss-with-no-
+    # milestone-yet tick), and _fetch_live_status itself never raises.
+    main.state["live_status_cache"].clear()
+    main.state["milestone_by_event"] = {}  # force the needs_fetch path
+
+    class _FakeClientGetEventsRaises:
+        async def get_events(self, event_tickers, with_milestones=False):
+            raise RuntimeError("simulated backoff-exhausted REST failure")
+
+        async def get_live_datas(self, milestone_ids):
+            raise AssertionError("should not be called - no milestone was ever resolved")
+
+    markets = [_market_at(offset_sec=-300)]  # started 5 min ago -> past occurrence
+    result = asyncio.run(main._fetch_live_status(_FakeClientGetEventsRaises(), markets))
+    # No milestone resolved this tick (get_events raised) -> falls to the
+    # "no milestone at all" bare-else branch (live_status.py's own
+    # comment: "genuinely unknown... rather than guessed at either way"),
+    # not the schedule fallback (which requires has_milestone) and not a
+    # raised exception.
+    assert result == {}
+    assert "EVT-A" not in main.state["live_status_cache"]
+
+
+def test_fetch_live_status_no_live_status_type_does_not_permanently_starve_poll_budget():
+    # Bug found in review, before this fix: the no_live_status_type branch
+    # `continue`d without ever writing cache[et], so its checked_at stayed
+    # at to_poll.sort()'s 0.0 default forever. A milestone's `type` never
+    # changes, so a company_report/truflation/... event would win the front
+    # of _LIVE_STATUS_MAX_POLL_PER_TICK's bounded batch on EVERY tick,
+    # permanently starving genuinely due-for-repoll live events out of the
+    # per-tick budget - the same tick_duration-plateau shape the 2026-08-15
+    # incident this file's own _LIVE_STATUS_MAX_POLL_PER_TICK comment
+    # describes. Proves checked_at actually advances across ticks instead,
+    # participating in the normal _LIVE_STATUS_REPOLL_SEC cadence.
+    main.state["live_status_cache"].clear()
+
+    class _FakeReportClient:
+        async def get_events(self, event_tickers, with_milestones=False):
+            return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "company_report"}]} for et in event_tickers]
+
+        async def get_live_datas(self, milestone_ids):
+            return {mid: {"type": "company_report", "details": {"widget_status": "live"}} for mid in milestone_ids}
+
+    fake = _FakeReportClient()
+    markets = [_market_at(offset_sec=-300)]
+
+    asyncio.run(main._fetch_live_status(fake, markets))
+    entry = main.state["live_status_cache"]["EVT-A"]
+    assert entry["status"] is None
+    assert entry["source"] == "no_live_status_type"
+    first_checked_at = entry["checked_at"]
+
+    # Not yet due for repoll - the bare bug fix alone (writing SOME cache
+    # entry) isn't enough on its own to prove starvation is fixed; this
+    # confirms it's the SAME repoll-gated cadence as every other status,
+    # not a re-poll-every-tick regression in the other direction.
+    result = asyncio.run(main._fetch_live_status(fake, markets))
+    assert result == {"EVT-A": None}
+    assert main.state["live_status_cache"]["EVT-A"]["checked_at"] == first_checked_at
+
+    # Once stale (past _LIVE_STATUS_REPOLL_SEC), it must actually get
+    # re-polled and checked_at bumped forward - the real regression check:
+    # before the fix, checked_at would still read 0.0-derived/never-updated
+    # here, and to_poll.sort() would have kept placing this event first on
+    # every tick regardless of how long ago it was last (not) cached.
+    main.state["live_status_cache"]["EVT-A"]["checked_at"] = time.time() - main._LIVE_STATUS_REPOLL_SEC - 1
+    asyncio.run(main._fetch_live_status(fake, markets))
+    assert main.state["live_status_cache"]["EVT-A"]["checked_at"] > first_checked_at
+
+
 # --- live_game_state surfacing (2026-08-16 API-doc audit finding B2) - the
 # same get_live_datas call above already fetches the full real payload
 # (score/quarter/clock/down-distance/last_play), previously only ever read
@@ -1832,11 +2059,11 @@ class _FakeGameStateClient:
     def __init__(self, details):
         self._details = details
 
-    async def get_milestones_for_event(self, event_ticker):
-        return [{"id": "ms1", "type": "football_game"}]
+    async def get_events(self, event_tickers, with_milestones=False):
+        return [{"event_ticker": et, "milestones": [{"id": "ms1", "type": "football_game"}]} for et in event_tickers]
 
     async def get_live_datas(self, milestone_ids):
-        return {mid: {"details": self._details} for mid in milestone_ids}
+        return {mid: {"type": "football_game", "details": self._details} for mid in milestone_ids}
 
 
 def test_fetch_live_status_surfaces_real_game_state_details():

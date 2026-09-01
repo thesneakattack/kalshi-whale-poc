@@ -27,6 +27,43 @@ def test_series_extraction_uses_prefix_before_first_hyphen(tmp_path, monkeypatch
     assert stats["total_signals"] == 1  # same series prefix, counted together
 
 
+# --- series_of() resolves the real series_ticker via title_cache -----------
+# (kalshi-category-data-completeness Task 3, docs/kalshi/terms.md:29's
+# standing rule against parsing ticker strings: the naive
+# ticker.split("-")[0] fallback above still applies when title_cache
+# hasn't cached the market/event yet, but it's now the fallback, not the
+# only path - see services/title_cache.py::series_ticker_for().)
+
+
+def test_series_of_uses_title_cache_when_resolvable(tmp_path, monkeypatch):
+    from services import title_cache
+    monkeypatch.setattr(title_cache, "DB_PATH", tmp_path / "title_cache.db")
+    # Real-shape ticker from CHEATSHEET.md's KXMVECROSSCATEGORY0-SHARD1
+    # gotcha: the real series_ticker itself contains a hyphen. This is the
+    # discriminating case - ticker.split("-")[0] on the full 4-segment
+    # ticker below truncates to "KXMVECROSSCATEGORY0", silently dropping
+    # "-SHARD1", which is why this test (unlike a ticker with only one
+    # internal hyphen) actually fails pre-fix and passes post-fix.
+    ticker = "KXMVECROSSCATEGORY0-SHARD1-25NOV02-X"
+    title_cache.save_market_titles({ticker: {
+        "title": "T", "yes_sub_title": "", "no_sub_title": "", "event_ticker": "EVT-X"}})
+    title_cache.save_event_titles({"EVT-X": {"series_ticker": "KXMVECROSSCATEGORY0-SHARD1"}})
+    log = _log(tmp_path, monkeypatch)
+    assert log.series_of(ticker) == "KXMVECROSSCATEGORY0-SHARD1"
+
+
+def test_series_of_falls_back_to_prefix_when_unresolvable(tmp_path, monkeypatch):
+    from services import title_cache
+    monkeypatch.setattr(title_cache, "DB_PATH", tmp_path / "title_cache.db")
+    log = _log(tmp_path, monkeypatch)
+    assert log.series_of("KXBTC15M-26AUG29-B1") == "KXBTC15M"
+
+
+def test_series_of_empty_ticker_unchanged():
+    from services import signal_log
+    assert signal_log.series_of("") == ""
+
+
 def test_unresolved_batch_respects_older_than_sec(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     now = time.time()
