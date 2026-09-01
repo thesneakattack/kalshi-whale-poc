@@ -109,6 +109,27 @@ def test_recent_resolved_only_excludes_unresolved(tmp_path, monkeypatch):
     assert agent.total_count(resolved_only=True) == 1
 
 
+# ---- analyst_lean (scoring-hot-path read) -----------------------------------
+
+def test_analyst_lean_uses_the_scoring_cache(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.record_analysis("TICK-A", "TICK", 0.5, 0.75, 0.8, "r", "m")
+
+    calls = []
+    real = maa_db._scoring_pool.cached_read_connection
+
+    def spy(db_path, schema_init):
+        calls.append(db_path)
+        return real(db_path, schema_init)
+
+    monkeypatch.setattr(maa_db._scoring_pool, "cached_read_connection", spy)
+
+    result = agent.analyst_lean("TICK-A")
+
+    assert result == 0.75
+    assert len(calls) == 1
+
+
 # ---- build_prompt (pure function) -------------------------------------------
 
 def test_build_prompt_includes_market_title_and_rules():

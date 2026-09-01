@@ -10,19 +10,12 @@ __init__.py docstring for the full gotcha writeup.
 import sqlite3
 from pathlib import Path
 
+from services.whalewatchers import _scoring_pool
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "market_analyst.db"
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS analyses (
@@ -78,7 +71,31 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+
+
+def _connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect.
+    conn.execute("PRAGMA journal_mode=WAL")
+    _init_schema(conn)
     return conn
+
+
+def _scoring_read_connection() -> sqlite3.Connection:
+    """Same DB, but a thread-locally cached connection (never closed per-
+    call) instead of a fresh sqlite3.connect() every time - for
+    analyst_lean()'s call from the whale-scoring hot path only (Task 4,
+    2026-09-01 write-path capacity fix). See services/whalewatchers/
+    _scoring_pool.py's own module docstring for why this is a dedicated
+    pool rather than reusing services.tick_executor's."""
+    DB_PATH.parent.mkdir(exist_ok=True)
+    return _scoring_pool.cached_read_connection(DB_PATH, _init_schema)
 
 
 def clear_all():

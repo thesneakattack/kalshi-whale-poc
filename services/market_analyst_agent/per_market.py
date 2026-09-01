@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 
-from services.market_analyst_agent._db import _connect
+from services.market_analyst_agent._db import _connect, _scoring_read_connection
 
 logger = logging.getLogger(__name__)
 
@@ -182,13 +182,16 @@ def analyst_lean(ticker: str, max_age_sec: float = 86400) -> float | None:
     default freshness window: the event being estimated is far more stable
     than the market's own price, so this doesn't need to be as tight as
     reanalyze_cooldown_sec, just not stale enough to be estimating a
-    different market state entirely (e.g. post-news, near close)."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT estimated_probability, analyzed_at FROM analyses WHERE ticker = ? "
-            "ORDER BY analyzed_at DESC LIMIT 1",
-            (ticker,),
-        ).fetchone()
+    different market state entirely (e.g. post-news, near close). Uses the
+    cached scoring-read connection (Task 4, 2026-09-01 write-path capacity
+    fix), not a per-call _connect() - this runs on the trade-tape scoring
+    hot path, one call per incoming whale trade."""
+    conn = _scoring_read_connection()
+    row = conn.execute(
+        "SELECT estimated_probability, analyzed_at FROM analyses WHERE ticker = ? "
+        "ORDER BY analyzed_at DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
     if row is None:
         return None
     estimated_probability, analyzed_at = row
