@@ -18,8 +18,20 @@ function screenerRowData(m, prices, signals) {
   const yesAsk = m.yes_ask_dollars != null && m.yes_ask_dollars !== '' ? parseFloat(m.yes_ask_dollars) : null;
   const spread = (yesBid != null && yesAsk != null) ? Math.max(0, yesAsk - yesBid) : null;
   const lean = signals ? computeWhaleLean(m.ticker, signals) : null;
+  // Which real-world decision this market is one yes/no outcome of - same
+  // matchup/sub_title text contextLineHTML/marketTaxonomyHTML already show
+  // elsewhere, not a new lookup. This table intentionally keeps one row per
+  // market (unlike the Simple card view's eventGroupCardHTML, which nests
+  // siblings under one header) since sorting by price/volume/spread only
+  // makes sense per-market - this column is what lets two sibling rows
+  // still be recognized as the same event regardless of how the table is
+  // sorted. Falls back to the raw event_ticker (never blank) for a market
+  // whose event hasn't been fetched/cached yet, same fallback chain
+  // eventGroupCardHTML's own title uses.
+  const ctx = marketContext(m.ticker, null);
   return {
     ticker: m.ticker,
+    event: ctx.matchup || m.event_ticker || '',
     series: seriesLabel(seriesOf(m.ticker)),  // the real watchlist "parent" unit - see round_robin_select
     volume_24h_fp: parseFloat(m.volume_24h_fp) || 0,
     yesBid: yesBid ?? null,
@@ -64,6 +76,7 @@ function renderScreenerTableFromState(panelKey, containerId, countId) {
       : '<td style="color:var(--muted);">—</td>';
     return `<tr title="${esc(label.full)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')">
       <td style="text-align:left;">${esc(label.short)} ${liveBadgeHTML(m)}</td>
+      <td style="text-align:left; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${r.event ? esc(r.event) : ''}">${r.event ? esc(r.event) : '—'}</td>
       <td style="text-align:left;">${esc(r.series)}</td>
       <td>${category}</td>
       <td>${yesPrice != null ? yesPrice + '¢' : '—'} ${priceChangeHTML(m.ticker, r.yesBid)}</td>
@@ -78,6 +91,7 @@ function renderScreenerTableFromState(panelKey, containerId, countId) {
   el.innerHTML = `<table class="positions-table sortable">
     <thead><tr>
       ${sortHeaderHTML(st, 'ticker', 'Market', sortCall('ticker'))}
+      ${sortHeaderHTML(st, 'event', 'Event', sortCall('event'))}
       ${sortHeaderHTML(st, 'series', 'Series', sortCall('series'))}
       <th>Category</th>
       ${sortHeaderHTML(st, 'yesBid', 'Yes', sortCall('yesBid'))}
