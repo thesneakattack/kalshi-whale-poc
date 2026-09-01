@@ -228,7 +228,9 @@ async function loadCalibrationReport() {
     const suggested = r.suggested_weights || {};
     const factorRows = r.per_factor.map(f => {
       const gapColor = f.discriminates === true ? 'var(--yes)' : (f.discriminates === false && f.gap_pts < 0 ? 'var(--no)' : 'var(--muted)');
-      const gapText = f.gap_pts === null ? 'not enough data' : `${f.gap_pts > 0 ? '+' : ''}${f.gap_pts.toFixed(1)}pts`;
+      const gapText = f.gap_pts !== null
+        ? `${f.gap_pts > 0 ? '+' : ''}${f.gap_pts.toFixed(1)}pts`
+        : (f.data_status === 'contaminated' ? 'boundary tie — unreliable' : 'not enough data');
       const current = r.current_weights[f.factor];
       const suggest = suggested[f.factor];
       return `<tr>

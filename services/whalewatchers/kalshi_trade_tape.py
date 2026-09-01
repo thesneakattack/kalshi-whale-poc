@@ -174,7 +174,7 @@ def _prescan_count(trade: dict) -> tuple[str, float] | None:
     return (side, count) if count is not None else None
 
 
-def _trend_factor(ticker: str, side: str, now: float) -> float:
+def _trend_factor(ticker: str, side: str, now: float) -> float | None:
     """Does this print's direction agree with, or fight, the market's own
     recent real price trend? Feeds composite_confidence_breakdown's
     trend_factor (see services/confidence_scoring.py and
@@ -184,12 +184,14 @@ def _trend_factor(ticker: str, side: str, now: float) -> float:
     rising (favors yes) - signed to the print's own side so "with the
     trend" is always positive, then linearly scaled into 0-1 around a
     neutral 0.5 (no clear lean either way), saturating at the extremes
-    rather than growing unbounded. Returns the neutral default (0.5) when
-    there isn't yet enough real price history to judge - same as this
-    function not being called at all, never guessed."""
+    rather than growing unbounded. Returns None when there isn't yet enough
+    real price history to judge: a real provider looked and found nothing,
+    which composite_confidence_breakdown (services/confidence_scoring.py)
+    now knows how to exclude from the weighted sum rather than blend in as
+    a fabricated neutral (design §5.1)."""
     mom = market_history.momentum(ticker, _TREND_LOOKBACK_SEC, as_of=now)
     if mom is None:
-        return 0.5
+        return None
     signed_delta = mom["delta"] if side == "yes" else -mom["delta"]
     return 0.5 + 0.5 * min(max(signed_delta / _TREND_FULL_SCALE, -1.0), 1.0)
 
@@ -690,13 +692,13 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 continue
 
             # Do recent real prints on this exact market agree with this
-            # one? No recent history at all is neutral (0.5) - not scored as
-            # either agreement or disagreement, same idiom composite_
-            # confidence_breakdown's other missing-data cases already use.
+            # one? No recent history at all is None - not scored as either
+            # agreement or disagreement, honest absence rather than a
+            # fabricated neutral, same idiom depth_factor/raw_spread already use.
             recent_sides = signal_log.recent_sides_for_ticker(ticker, since_ts=now - _AGREEMENT_LOOKBACK_SEC)
             agreement_factor = (
                 sum(1 for s in recent_sides if s == side) / len(recent_sides)
-                if recent_sides else 0.5
+                if recent_sides else None
             )
 
             # Does this print look like part of an active accumulation run
@@ -741,9 +743,8 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # rather than re-derived later (market_catalog/market_history
             # are watchlist-scoped and rotate, so they can't reliably answer
             # "what was this market's spread/volume at the exact moment
-            # this signal fired" after the fact). yes_ask_dollars falls
-            # back to price itself ("no ask data = assume no spread").
-            yes_ask = float(market.get("yes_ask_dollars") or price)
+            # this signal fired" after the fact).
+            yes_ask = _price_dollars(market, "yes_ask_dollars")
             raw_context = {
                 # No longer the gate (contract count is - see docstring),
                 # but still real, useful context - and None rather than a
@@ -752,7 +753,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 # signal_log.py's raw_notional_usd docstring: nullable,
                 # only real providers with a raw_context populate it.
                 "notional_usd": round(notional, 2) if notional is not None else None,
-                "spread": round(max(yes_ask - price, 0.0), 4),
+                "spread": None if yes_ask is None else round(max(yes_ask - price, 0.0), 4),
                 "volume_24h": float(market.get("volume_24h_fp") or 0.0),
             }
 

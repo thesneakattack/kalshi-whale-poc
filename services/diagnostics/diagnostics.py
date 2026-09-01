@@ -699,6 +699,43 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     )
 
 
+def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+    """How often each of the four fabrication-fixed factors (depth_factor,
+    trend_factor, agreement_factor, raw_spread) is honestly absent -
+    surfaced from CLAUDE.md's own "Start investigations here" step 1, no
+    need to know to poll the calibration-specific route. Observational,
+    not pass/fail (design §6.1) - a structural absence rate (a 15-minute
+    market has no 24h volume) isn't itself a defect; the value is
+    visibility and trend, not a threshold.
+
+    Calls confidence_calibration.compute_input_coverage() directly, not
+    generate_calibration_report() - this route is polled every 5s by the
+    dashboard on the same tick_executor pool the trading loop uses, and the
+    full nine-factor tertile report this check doesn't need cost 1.661s of
+    a measured 2.549s total against real production history (2026-09-01
+    final-review fix)."""
+    from services.whale_calibration import confidence_calibration
+
+    cc_cfg = cfg.get("confidence_calibration") or {}
+    min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
+    rows = signal_log.resolved_signals_with_factors(since_ts=since_ts)
+    resolved_count = len(rows)
+    if resolved_count < min_resolved_signals:
+        return Check(
+            "confidence_input_coverage", _UNKNOWN,
+            f"{resolved_count}/{min_resolved_signals} resolved real signals with a factor "
+            "breakdown - calibration activates once that's reached",
+        )
+    coverage = confidence_calibration.compute_input_coverage(rows, resolved_count)
+    return Check(
+        "confidence_input_coverage", _OK,
+        f"depth {coverage['depth_factor']['absent_pct']}%, trend {coverage['trend_factor']['absent_pct']}%, "
+        f"agreement {coverage['agreement_factor']['absent_pct']}%, spread {coverage['raw_spread']['absent_pct']}% "
+        f"absent (n={resolved_count})",
+        detail={"input_coverage": coverage},
+    )
+
+
 def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
@@ -718,6 +755,7 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
         check_config_bounds(cfg),
         performance_by_epoch(since_ts, now),
         selectivity_curve(since_ts=since_ts, now=now),
+        check_confidence_input_coverage(cfg, since_ts, now),
     ]
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by

@@ -267,11 +267,12 @@ def cluster_factor(ticker: str, side: str, size: float, since_ts: float, max_siz
     print that's part of such a run is a stronger signal than an equally
     large one with nothing else like it nearby, not a weaker one.
 
-    Unlike recent_sides_for_ticker/agreement_factor's "no history = neutral"
-    idiom, "no similar-sized recent prints" is itself informative here (an
-    isolated print, exactly the profile a pure notional-size threshold
-    already treats as its only signal) - so this returns 0.0, not 0.5, when
-    nothing qualifies. Scales toward 1.0 as more size-compatible prints pile
+    Unlike agreement_factor's "no history = None" honest-absence idiom
+    (services/confidence_scoring.py, Task 5/6), "no similar-sized recent
+    prints" is itself informative here (an isolated print, exactly the
+    profile a pure notional-size threshold already treats as its only
+    signal) - so this returns 0.0, not 0.5, when nothing qualifies. Scales
+    toward 1.0 as more size-compatible prints pile
     up, capped at 3 (matching find_clusters' own "more prints = more likely
     real accumulation" intuition without trying to reproduce its full
     sequential-run algorithm here - this is a cheaper, real-time proxy for
@@ -625,23 +626,47 @@ def resolved_with_factors_count() -> int:
         ).fetchone()[0]
 
 
-def resolved_signals_with_factors() -> list[dict]:
+def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     """services/whale_calibration/confidence_calibration.py's entire input: resolved signals
     that carry a real per-factor confidence breakdown. factors_json IS NOT
     NULL is the filter, not a source string match - only real providers
     (services/whalewatchers/kalshi_trade_tape.py) ever populate it, so this
     naturally excludes every simulator-sourced row without needing a second,
-    possibly-drifting definition of "real" to maintain. No date/limit
-    scoping - the calibration gate cares about total resolved count, not
-    recency, and this table is small enough (one row per signal, not per
-    tick) that a full scan is cheap. `series` is already a stored, indexed
+    possibly-drifting definition of "real" to maintain. No limit scoping,
+    and date scoping is optional (see since_ts below) rather than default -
+    the calibration gate cares about total resolved count, not recency.
+    An unscoped scan is NOT cheap at real production volume - measured at
+    ~1s against 103k+ rows (2026-09-01, whale-confidence-scoring-remediation
+    final review) - a caller on a tight polling budget (e.g. a route hit
+    every few seconds) should pass since_ts to bound it; the calibration
+    gate itself stays unscoped by design since it cares about total
+    resolved count, not recency. `series` is already a stored, indexed
     column (issue #60 - it existed but was never selected here, so every
-    consumer of this function was blind to it)."""
+    consumer of this function was blind to it).
+
+    since_ts=None keeps today's full-history behavior (design §4: the
+    calibration gate cares about total resolved count, not recency) - a caller
+    wanting a recency-scoped view (e.g. a future report asking "does the gap
+    look different in the last 30 days") passes it explicitly. ORDER BY
+    seen_at ASC makes today's de facto row order (SQLite rowid order) an
+    explicit, stated property instead of an accident a future VACUUM/migration
+    could silently reorder history out from under."""
+    # `series` corrected into this SELECT during the 2026-08-31 catch-up review: a
+    # same-day but unrelated commit (5bb29be, "expose the series dimension") already
+    # added it to the real current query before this task's own commit ever landed -
+    # dropping it here would silently regress a column services/whale_calibration/
+    # README.md:97-101 documents as feeding the by_series report field.
+    query = (
+        "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
+        "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL"
+    )
+    params: tuple = ()
+    if since_ts is not None:
+        query += " AND seen_at >= ?"
+        params = (since_ts,)
+    query += " ORDER BY seen_at ASC"
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
-            "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL",
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     results = []
     for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series in rows:
         try:

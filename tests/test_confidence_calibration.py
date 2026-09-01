@@ -4,11 +4,17 @@ from services.whale_calibration import confidence_calibration as cc
 from services.confidence_scoring import DEFAULT_WEIGHTS
 
 
-def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5, series="KXTEST"):
+def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5, series="KXTEST", raw_spread=1.0):
     return {
         "confidence": confidence,
         "correct": correct,
         "series": series,
+        # Row-level column, not a factors-dict entry - matches
+        # resolved_signals_with_factors()'s real returned shape
+        # (services/signal_log.py:649-657), which is what this task's
+        # input_coverage["raw_spread"] reads from (r["raw_spread"], not
+        # r["factors"]).
+        "raw_spread": raw_spread,
         "factors": {
             "depth_factor": depth, "unusualness_factor": unusualness,
             "proximity_factor": proximity, "context_factor": context,
@@ -95,6 +101,60 @@ def test_generate_calibration_report_includes_by_series_breakdown():
     ]
 
 
+def _tie_dataset(values, correct_fn=lambda i: i % 2 == 0):
+    """Rows whose depth_factor equals `values[i]` in the given order -
+    _bucket_win_rates sorts internally, so insertion order doesn't matter.
+    correct_fn is an arbitrary, non-degenerate correctness pattern; this
+    predicate only cares about win_rate once buckets form, which these
+    tests don't assert on."""
+    return [_row(depth=v, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=correct_fn(i)) for i, v in enumerate(values)]
+
+
+def test_small_incidental_tie_at_a_cut_boundary_is_not_contaminated():
+    # n=1000, materiality floor is max(30, 0.005*1000)=30. A 5-row tie
+    # straddling the low cut (index 1000//3=333) mirrors depth_factor's
+    # real 2-6-row float ties (audit table row 1, design §2) - must NOT trip.
+    # Replace indices 330-334 (original values 0.330-0.334) with tied constant
+    # 0.332, keeping the run at sorted positions 330-334 which straddles
+    # cut_idx=333 (5 < materiality_floor=30, so "ok").
+    values = [i / 1000 for i in range(1000)]
+    values[330:335] = [0.332] * 5
+    buckets, status = cc._bucket_win_rates(_tie_dataset(values), "depth_factor")
+    assert status == "ok"
+    assert buckets  # a real split happened
+
+
+def test_large_structural_tie_at_a_cut_boundary_is_contaminated():
+    # n=90, cuts at index 30 and 60. A 40-row tie spans indices 20-59,
+    # straddling the low cut - 40 >= max(30, 0.45)=30. Mirrors
+    # agreement_factor's real 24,357-row tie (audit table row 5, design §2).
+    values = [i / 100 for i in range(20)] + [0.5] * 40 + [0.9 + i / 1000 for i in range(30)]
+    buckets, status = cc._bucket_win_rates(_tie_dataset(values), "depth_factor")
+    assert status == "contaminated"
+    assert buckets == {}
+
+
+def test_single_valued_factor_is_insufficient_variance_never_contaminated():
+    # analyst_factor/block_trade_factor's real shape (audit §1.8/§1.9):
+    # always present, zero variance. This is Stage 4's Finding 2 regression -
+    # a permanently sparse factor's {} must not read as a real tie.
+    rows = [_row(depth=0.1, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=(i % 2 == 0)) for i in range(50)]
+    buckets, status = cc._bucket_win_rates(rows, "depth_factor")
+    assert status == "insufficient_variance"
+    assert buckets == {}
+
+
+def test_factor_report_carries_data_status_through():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    depth_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "depth_factor")
+    assert depth_report["data_status"] == "ok"
+    unusual_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "unusualness_factor")
+    assert unusual_report["data_status"] == "insufficient_variance"
+
+
 def test_constant_factor_does_not_discriminate():
     rows = _discriminating_dataset(n_per_bucket=10)
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
@@ -105,6 +165,7 @@ def test_constant_factor_does_not_discriminate():
     unusual_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "unusualness_factor")
     assert unusual_report["gap_pts"] is None
     assert unusual_report["discriminates"] is None
+    assert unusual_report["data_status"] == "insufficient_variance"
 
 
 def test_missing_factor_key_excluded_not_crashed():
@@ -135,6 +196,7 @@ def test_missing_factor_key_excluded_not_crashed():
     assert cluster_report["buckets"] == {}
     assert cluster_report["gap_pts"] is None
     assert cluster_report["discriminates"] is None
+    assert cluster_report["data_status"] == "insufficient_variance"
     # depth_factor is present on every row and still discriminates normally.
     depth_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "depth_factor")
     assert depth_report["discriminates"] is True
@@ -300,3 +362,45 @@ def test_confidence_exactly_one_lands_in_top_band():
     bands = cc._confidence_calibration_bands(rows)
     assert bands[0]["band"] == "90-100%"
     assert bands[0]["n"] == 3
+
+
+def test_bucket_win_rates_excludes_rows_with_an_explicit_none_value():
+    # The hard dependency this task exists to close: post-fix, a row's
+    # factors dict always HAS every key, but the value can be None. The
+    # old key-presence-only filter would pass such a row into sorted(),
+    # crashing on None-vs-float comparison the first time it runs.
+    rows = [_row(depth=0.1 + i * 0.05, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=(i % 2 == 0)) for i in range(10)]
+    rows.append({"confidence": 0.5, "correct": True,
+                 "factors": {"depth_factor": None, "unusualness_factor": 0.5}})
+    buckets, status = cc._bucket_win_rates(rows, "depth_factor")  # must not raise
+    assert status == "ok"
+
+
+def test_input_coverage_reports_absent_pct_per_fabrication_site():
+    rows = _discriminating_dataset(n_per_bucket=10)  # 30 rows, all factors present
+    for r in rows[:5]:
+        r["factors"]["depth_factor"] = None
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    coverage = result["report"]["input_coverage"]
+    assert coverage["depth_factor"]["n"] == 30
+    assert coverage["depth_factor"]["absent_pct"] == pytest.approx(5 / 30 * 100, abs=0.1)
+
+
+def test_input_coverage_raw_spread_reads_the_row_level_column_not_factors():
+    # Partial-null, mirroring the depth_factor test above - not all-or-
+    # nothing. _row()'s "factors" dict never has a "raw_spread" key at all,
+    # so a regression to reading r["factors"].get("raw_spread") would
+    # return None (absent) for every row regardless of what the row-level
+    # r["raw_spread"] actually holds - it would report 100% absent no
+    # matter which/how many rows were nulled here. Only nulling a SUBSET
+    # and asserting the resulting fraction (not 0% or 100%) can tell that
+    # wrong reads-from-"factors" behavior apart from the correct
+    # reads-from-row-level-"raw_spread" behavior.
+    rows = _discriminating_dataset(n_per_bucket=10)  # 30 rows, raw_spread=1.0 (present) by default
+    for r in rows[:5]:
+        r["raw_spread"] = None
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    coverage = result["report"]["input_coverage"]["raw_spread"]
+    assert coverage["n"] == 30
+    assert coverage["absent_pct"] == pytest.approx(5 / 30 * 100, abs=0.1)
