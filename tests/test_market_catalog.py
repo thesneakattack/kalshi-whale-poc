@@ -285,6 +285,65 @@ def test_mark_scanned_is_idempotent_and_updates_timestamp(tmp_path, monkeypatch)
     assert batch[0]["ticker"] == "SER-B"  # never-scanned SER-B still ranks before the re-scanned SER-A
 
 
+# --- pinned_series_needing_scan (2026-09-01 fix) - next_series_to_scan's
+# expired-tier-always-first ranking can starve a pinned series that has
+# zero current markets (so it's never "expired") indefinitely: confirmed
+# live, 4 real kalshi.markets_watchlist entries (KXGOLDH/KXSILVERH/
+# KXGOLD15M/KXSILVER15M) sat 16 days unscanned behind a persistent
+# ~304-series expired-tier backlog even though a pin's whole point is to
+# force inclusion regardless of ranking. This is the guaranteed-freshness
+# escape hatch for pins specifically, not a replacement for the general
+# two-tier scan order. --------------------------------------------------
+
+def test_pinned_series_needing_scan_includes_never_scanned_pin(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    all_series = [{"ticker": "KXGOLDH"}, {"ticker": "KXBTC15M"}]
+    result = cat.pinned_series_needing_scan(["KXGOLDH"], all_series, now=time.time())
+    assert [s["ticker"] for s in result] == ["KXGOLDH"]
+
+
+def test_pinned_series_needing_scan_includes_stale_pin(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.mark_scanned(["KXGOLDH"], scanned_at=now - 1_400_000)  # ~16 days ago, the real incident
+    all_series = [{"ticker": "KXGOLDH"}]
+    result = cat.pinned_series_needing_scan(["KXGOLDH"], all_series, now=now, staleness_sec=300)
+    assert [s["ticker"] for s in result] == ["KXGOLDH"]
+
+
+def test_pinned_series_needing_scan_excludes_fresh_pin(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    cat.mark_scanned(["KXGOLDH"], scanned_at=now - 60)  # well inside the staleness window
+    all_series = [{"ticker": "KXGOLDH"}]
+    result = cat.pinned_series_needing_scan(["KXGOLDH"], all_series, now=now, staleness_sec=300)
+    assert result == []
+
+
+def test_pinned_series_needing_scan_excludes_non_pinned_series(tmp_path, monkeypatch):
+    cat = _mc(tmp_path, monkeypatch)
+    # SER-OTHER is never scanned too, but it isn't in the watchlist - this
+    # function is scoped to pins only, next_series_to_scan already covers
+    # every other series through the normal two-tier ranking.
+    all_series = [{"ticker": "KXGOLDH"}, {"ticker": "SER-OTHER"}]
+    result = cat.pinned_series_needing_scan(["KXGOLDH"], all_series, now=time.time())
+    assert [s["ticker"] for s in result] == ["KXGOLDH"]
+
+
+def test_pinned_series_needing_scan_excludes_literal_market_ticker_pins(tmp_path, monkeypatch):
+    """A watchlist entry that isn't a real series ticker (an exact market
+    instance pin, e.g. "KXBTC15M-26AUG161445-45") never matches any row in
+    all_series - main._fetch_markets already falls back to treating it as a
+    literal market ticker via _cached_market_fetch, so this function must
+    not try to "scan" it as if it were a series."""
+    cat = _mc(tmp_path, monkeypatch)
+    all_series = [{"ticker": "KXGOLDH"}]
+    result = cat.pinned_series_needing_scan(
+        ["KXGOLDH", "KXBTC15M-26AUG161445-45"], all_series, now=time.time(),
+    )
+    assert [s["ticker"] for s in result] == ["KXGOLDH"]
+
+
 def test_scan_progress_reports_counts(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     now = time.time()

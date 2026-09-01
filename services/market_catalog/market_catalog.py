@@ -169,6 +169,50 @@ def next_series_to_scan(all_series: list[dict], batch_size: int, now: float | No
     return ranked[:batch_size]
 
 
+def pinned_series_needing_scan(
+    watchlist: list[str], all_series: list[dict], now: float | None = None,
+    staleness_sec: float = 300,
+) -> list[dict]:
+    """Series-level pins from kalshi.markets_watchlist that are stale enough
+    to need a guaranteed scan this batch, independent of next_series_to_
+    scan's own two-tier ranking. A pin exists specifically to force a
+    series in despite ranking (market_fetch.py's own docstring: "the market
+    watch list should act as that override"), but next_series_to_scan's
+    expired-tier-always-first priority can silently starve a pinned series
+    that currently has zero known markets (so it never registers as
+    "expired") for as long as the expired tier stays non-empty - confirmed
+    live 2026-09-01: 4 real Commodities pins (KXGOLDH/KXSILVERH/KXGOLD15M/
+    KXSILVER15M) sat 16 days unscanned behind a persistent ~304-series
+    expired-tier backlog (9798 series in the non-expired tier competing for
+    the leftover batch slots). This is the escape hatch for pins
+    specifically - it does not replace or reorder the general ranking for
+    every other series.
+
+    staleness_sec default (300s) reuses services/market_watch/discovery_
+    cache.py's own _PINNED_MARKET_REFRESH_SEC - the system's already-
+    established bound on how stale a pinned market's structural data may
+    get, not a new number invented for this.
+
+    A watchlist entry that isn't a real series ticker (an exact market
+    instance pin, e.g. "KXBTC15M-26AUG161445-45") never matches any row in
+    all_series and is silently skipped here - main._fetch_markets already
+    handles that case by falling back to a literal-ticker fetch
+    (_cached_market_fetch), which has nothing to do with series scanning."""
+    if not watchlist:
+        return []
+    now = now if now is not None else time.time()
+    watchlist_set = set(watchlist)
+    by_ticker = {s["ticker"]: s for s in all_series if s.get("ticker") in watchlist_set}
+    if not by_ticker:
+        return []
+    with _connect(DB_PATH) as conn:
+        scanned_at = dict(conn.execute("SELECT series_ticker, last_scanned_at FROM series_scan_state").fetchall())
+    return [
+        s for ticker, s in by_ticker.items()
+        if now - scanned_at.get(ticker, 0.0) > staleness_sec
+    ]
+
+
 def mark_scanned(series_tickers: list[str], scanned_at: float | None = None):
     scanned_at = scanned_at if scanned_at is not None else time.time()
     with _connect(DB_PATH) as conn:

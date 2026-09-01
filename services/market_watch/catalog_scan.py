@@ -741,6 +741,17 @@ async def _scan_catalog_batch(client: KalshiPublicGateway, cfg: dict):
     if categories:
         all_series = [s for s in all_series if s.get("category") in categories]
     batch = market_catalog.next_series_to_scan(all_series, _CATALOG_SCAN_BATCH_SIZE)
+    # Guaranteed-freshness escape hatch for series-level markets_watchlist
+    # pins (2026-09-01 fix, see pinned_series_needing_scan's own docstring):
+    # a pinned series exists specifically to force inclusion despite
+    # ranking, but this batch's own two-tier priority can starve one
+    # indefinitely if the expired tier stays persistently non-empty -
+    # confirmed live, 4 real Commodities pins sat 16 days unscanned. This
+    # is additive to the normal batch, not a reordering of it.
+    watchlist = cfg["kalshi"].get("markets_watchlist") or []
+    pinned_stale = market_catalog.pinned_series_needing_scan(watchlist, all_series, now=time.time())
+    already_batched = {s["ticker"] for s in batch}
+    batch = batch + [s for s in pinned_stale if s["ticker"] not in already_batched]
     if not batch:
         return
     # Fresh per call (finding #8 - see _paced_get_markets' own docstring):

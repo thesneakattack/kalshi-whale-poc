@@ -67,6 +67,88 @@ def test_pace_limit_is_below_the_full_batch_size():
     assert catalog_scan.PACE_LIMIT < catalog_scan._CATALOG_SCAN_BATCH_SIZE
 
 
+# --- pinned watchlist series get a guaranteed scan (2026-09-01 fix) -------
+#
+# Confirmed live: next_series_to_scan's expired-tier-always-first ranking
+# can starve a pinned series indefinitely (16 days measured) whenever the
+# expired tier stays persistently non-empty - a batch of size
+# _CATALOG_SCAN_BATCH_SIZE fills entirely from the expired tier, so a
+# pinned series sitting in the non-expired tier never wins a slot no
+# matter how stale its own last scan is.
+
+class _TrackingClient(_FakePacedClient):
+    def __init__(self):
+        super().__init__()
+        self.series_seen: list[str] = []
+
+    async def get_markets(self, limit, status, series_ticker):
+        self.series_seen.append(series_ticker)
+        return await super().get_markets(limit, status, series_ticker)
+
+
+def test_scan_catalog_batch_guarantees_a_stale_pinned_series_even_when_the_expired_tier_fills_the_batch(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(market_catalog, "DB_PATH", tmp_path / "market_catalog_pin.db")
+    now = time.time()
+    # _CATALOG_SCAN_BATCH_SIZE filler series, all in the expired tier - real
+    # markets whose only known close_time is already in the past - so the
+    # normal ranking fills the whole batch from them, leaving zero slots for
+    # anything else.
+    filler_tickers = [f"FILL-{i}" for i in range(catalog_scan._CATALOG_SCAN_BATCH_SIZE)]
+    for t in filler_tickers:
+        market_catalog.upsert_markets(t, "Sports", [{
+            "ticker": f"{t}-OLD", "event_ticker": f"{t}-E", "status": "closed",
+            "close_time": "2020-01-01T00:00:00Z", "occurrence_datetime": None,
+        }], updated_at=now)
+    # KXGOLDH: real Commodities pin, never scanned, no known markets at all
+    # (so it's not "expired" either - the exact live shape of the incident:
+    # a series with zero rows never registers in the expired set).
+    state["series_cache"] = {
+        "fetched_at": now,
+        "series": [{"ticker": t, "category": "Sports"} for t in filler_tickers]
+        + [{"ticker": "KXGOLDH", "category": "Commodities"}],
+    }
+    client = _TrackingClient()
+    cfg = {"kalshi": {"categories": None, "markets_watchlist": ["KXGOLDH"]}}
+
+    asyncio.run(catalog_scan._scan_catalog_batch(client, cfg))
+
+    assert "KXGOLDH" in client.series_seen, (
+        "a stale pinned series must be scanned even when the expired tier "
+        "fills the whole normal batch"
+    )
+    # The normal batch is untouched in size/selection - this is additive,
+    # not a reordering of the general ranking.
+    assert all(t in client.series_seen for t in filler_tickers)
+
+
+def test_scan_catalog_batch_does_not_rescan_an_already_fresh_pinned_series(tmp_path, monkeypatch):
+    monkeypatch.setattr(market_catalog, "DB_PATH", tmp_path / "market_catalog_pin2.db")
+    now = time.time()
+    # Same expired-tier-fills-the-batch setup as the test above, so
+    # KXGOLDH's absence from series_seen can only be explained by the
+    # freshness gate, not by the normal ranking happening to include it.
+    filler_tickers = [f"FILL-{i}" for i in range(catalog_scan._CATALOG_SCAN_BATCH_SIZE)]
+    for t in filler_tickers:
+        market_catalog.upsert_markets(t, "Sports", [{
+            "ticker": f"{t}-OLD", "event_ticker": f"{t}-E", "status": "closed",
+            "close_time": "2020-01-01T00:00:00Z", "occurrence_datetime": None,
+        }], updated_at=now)
+    market_catalog.mark_scanned(["KXGOLDH"], scanned_at=now - 30)  # well inside the staleness window
+    state["series_cache"] = {
+        "fetched_at": now,
+        "series": [{"ticker": t, "category": "Sports"} for t in filler_tickers]
+        + [{"ticker": "KXGOLDH", "category": "Commodities"}],
+    }
+    client = _TrackingClient()
+    cfg = {"kalshi": {"categories": None, "markets_watchlist": ["KXGOLDH"]}}
+
+    asyncio.run(catalog_scan._scan_catalog_batch(client, cfg))
+
+    assert "KXGOLDH" not in client.series_seen
+
+
 # --- pacing semaphore survives multiple event loops (code-review finding #8) --
 #
 # asyncio.Semaphore binds lazily to whatever event loop is running the
