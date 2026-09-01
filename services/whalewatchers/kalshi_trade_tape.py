@@ -741,9 +741,8 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             # rather than re-derived later (market_catalog/market_history
             # are watchlist-scoped and rotate, so they can't reliably answer
             # "what was this market's spread/volume at the exact moment
-            # this signal fired" after the fact). yes_ask_dollars falls
-            # back to price itself ("no ask data = assume no spread").
-            yes_ask = float(market.get("yes_ask_dollars") or price)
+            # this signal fired" after the fact).
+            yes_ask = _price_dollars(market, "yes_ask_dollars")
             raw_context = {
                 # No longer the gate (contract count is - see docstring),
                 # but still real, useful context - and None rather than a
@@ -752,7 +751,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
                 # signal_log.py's raw_notional_usd docstring: nullable,
                 # only real providers with a raw_context populate it.
                 "notional_usd": round(notional, 2) if notional is not None else None,
-                "spread": round(max(yes_ask - price, 0.0), 4),
+                "spread": None if yes_ask is None else round(max(yes_ask - price, 0.0), 4),
                 "volume_24h": float(market.get("volume_24h_fp") or 0.0),
             }
 

@@ -185,7 +185,7 @@ def test_fetch_signals_captures_raw_context_alongside_the_factor_breakdown():
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
     raw = signals[0].raw_context
     assert raw["notional_usd"] == pytest.approx(6000.0)  # 10000 * 0.60
-    assert raw["spread"] == 0.0  # no yes_ask_dollars in the fixture - falls back to price itself
+    assert raw["spread"] is None  # no yes_ask_dollars in the fixture - spread is None, not fabricated 0.0
     assert raw["volume_24h"] == 15000.0
 
 
@@ -733,3 +733,21 @@ def test_batch_capacity_truncation_is_counted(_fresh_perf, monkeypatch):
     }))
     c = _fresh_perf.snapshot()["counters"]["window"]
     assert c["batch_capacity_truncated"] == 1
+
+
+def test_raw_spread_is_none_not_zero_when_market_has_no_ask():
+    provider = KalshiTradeTapeProvider()
+    market = _market(ticker="K1")
+    market.pop("yes_ask_dollars", None)  # no ask field at all
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
+    assert signals[0].raw_context["spread"] is None
+
+
+def test_raw_spread_still_computed_when_a_real_ask_exists():
+    provider = KalshiTradeTapeProvider()
+    market = _market(ticker="K1")
+    market["yes_ask_dollars"] = "0.65"
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
+    assert signals[0].raw_context["spread"] is not None
