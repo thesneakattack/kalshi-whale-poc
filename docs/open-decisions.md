@@ -7,7 +7,7 @@ in the same session it is written. This list is the track — no new plan doc
 for anything already on it.
 
 - `tools/kanban_sync` plan-doc classification only runs on demand · run `/kanban-board-sync` at PR-open and plan-close (mechanical sources already run from `/checkpoint`), one writer at a time (`ListAgents` first) · me · 2026-08-28
-- The fastapi container has no `git`, so `tests/test_quality_coordination_cleanup_actions.py`, `tests/test_cleanup_worktrees.py`, and the launcher-prelude tests skip or fail locally and only prove out in CI · add git to the image (`Dockerfile`) or keep trusting CI for them · you · 2026-08-28
+- RESOLVED 2026-09-01 by direct instruction: `git` added to the fastapi image (`Dockerfile`, `apt-get install --no-install-recommends git`), matching CI's own `tests-pytest.yml` workaround for the same `python:3.13-slim` gap, baked into the container this time instead of staying a CI-only fix. `tests/test_quality_coordination_cleanup_actions.py`, `tests/test_cleanup_worktrees.py`, and the launcher-prelude tests should now pass locally too, not just in CI - confirm after the container rebuild.
 - `advisory_engine` suggests on win rate alone, never cost/P&L · implement cost-aware suggestion or close · you (design approval) · 2026-08-22
 - Banded cost-aware gate EV diagnostic (0.60–0.95 band negative-EV) · approve `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` or close · you · 2026-08-26
 - Shadow-mode evaluation stretch has never run · schedule a dated stretch · you · 2026-08-26
