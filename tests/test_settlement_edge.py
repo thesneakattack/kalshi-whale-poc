@@ -38,12 +38,15 @@ def _projection(known, partial, spot, required):
 
 
 def test_only_records_while_the_window_is_open():
-    assert se.record_observation("KXBTC15M-A", _SPEC,
-                                 {"status": "outside_window"}, 0.5) is False
-    assert se.record_observation("KXBTC15M-A", _SPEC,
-                                 {"status": "determined"}, 0.5) is False
-    assert se.record_observation("KXBTC15M-A", _SPEC,
-                                 _projection(30, 63490.0, 63495.0, 63510.0), 0.5) is True
+    accepted, _ = se.record_observation("KXBTC15M-A", _SPEC,
+                                        {"status": "outside_window"}, 0.5)
+    assert accepted is False
+    accepted, _ = se.record_observation("KXBTC15M-A", _SPEC,
+                                        {"status": "determined"}, 0.5)
+    assert accepted is False
+    accepted, _ = se.record_observation("KXBTC15M-A", _SPEC,
+                                        _projection(30, 63490.0, 63495.0, 63510.0), 0.5)
+    assert accepted is True
 
 
 def test_records_both_forecasts_at_the_same_instant():
@@ -210,13 +213,36 @@ def test_record_observation_logs_a_real_failure_instead_of_crashing_on_it(monkey
     logged = []
     monkeypatch.setattr(fault_log, "record", lambda *a, **k: logged.append(a))
     before = se._record_errors
-    ok = se.record_observation(
+    ok, should_flush = se.record_observation(
         "KXBTC15M-A", {"strike": 63500.0, "comparison": ">="},  # no index_id
         _projection(30, 63490.0, 63495.0, 63510.0), 0.6,
     )
     assert ok is False
+    assert should_flush is False
     assert se._record_errors == before + 1
     assert logged and logged[0][:2] == ("settlement_edge", "record_observation")
+
+
+def test_record_observation_returns_should_flush_without_flushing(monkeypatch):
+    """Event-loop-blocking fix 2 (2026-09-01): record_observation used to
+    call flush() inline once the buffer hit _FLUSH_BATCH - real synchronous
+    disk I/O with no await point, blocking the whole event loop for the
+    write's duration (confirmed live: a 13-minute app-wide stall). Now it
+    only reports should_flush; the caller (services/whale_stream/
+    index_stream_handlers.py's _record_settlement_observations) schedules
+    the actual flush via tick_executor.run(), never here."""
+    flush_calls = []
+    monkeypatch.setattr(se, "flush", lambda: flush_calls.append(1) or {})
+    for i in range(se._FLUSH_BATCH - 1):
+        accepted, should_flush = se.record_observation(
+            "KXBTC15M-A", _SPEC, _projection(30, 63490.0, 63495.0, 63510.0), 0.55)
+        assert accepted is True
+        assert should_flush is False
+    accepted, should_flush = se.record_observation(
+        "KXBTC15M-A", _SPEC, _projection(30, 63490.0, 63495.0, 63510.0), 0.55)
+    assert accepted is True
+    assert should_flush is True
+    assert flush_calls == []
 
 
 def test_mismatched_observations_are_removable_and_resolved_ones_are_not():

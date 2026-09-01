@@ -158,7 +158,9 @@ async def _record_settlement_observations(index_id: str | None) -> None:
             continue
         projection = index_feed.settlement_projection(index_id, spec["strike"])
         market_price = state["latest_prices"].get(ticker)
-        settlement_edge.record_observation(ticker, spec, projection, market_price)
+        _, should_flush = settlement_edge.record_observation(ticker, spec, projection, market_price)
+        if should_flush:
+            asyncio.create_task(tick_executor.run(settlement_edge.flush))
         decision = settlement_edge_entry.evaluate_entry(
             ticker, spec, projection, market_price, cfg, broker, risk,
         )

@@ -21,6 +21,12 @@ import asyncio
 import services.whale_stream.index_stream_handlers as ish
 
 
+async def _async_return(value):
+    """Turns a plain value into an awaitable, for monkeypatching an async
+    function (e.g. _spec_for) with a plain lambda."""
+    return value
+
+
 class _FakeClient:
     instances: list["_FakeClient"] = []
 
@@ -132,3 +138,58 @@ def test_process_stream_index_schedules_flush_via_tick_executor_when_told(monkey
     assert len(scheduled) == 1
     assert len(tick_executor_calls) == 1
     assert tick_executor_calls[0] is index_feed.flush
+
+
+def test_record_settlement_observations_schedules_flush_via_tick_executor_when_told(monkeypatch):
+    """Event-loop-blocking fix 2 (2026-09-01): settlement_edge.record_observation
+    used to call flush() inline on the event loop once its buffer hit
+    _FLUSH_BATCH - real synchronous disk I/O with no await point, blocking
+    the whole loop for the write's duration (confirmed live: a 13-minute
+    app-wide stall, unrelated in-memory-only endpoints hung too). Now it
+    only reports should_flush; _record_settlement_observations must schedule
+    the actual flush via tick_executor.run() wrapped in asyncio.create_task,
+    never await it directly (that would just reintroduce the same blocking
+    wait inline)."""
+    from services import index_feed, settlement_edge, tick_executor
+    from services.app_state import state
+
+    monkeypatch.setattr(index_feed, "latest", lambda index_id: {"q15_window_size": 60})
+    monkeypatch.setattr(index_feed, "window_matches_close", lambda entry, close_ts: True)
+    monkeypatch.setattr(index_feed, "settlement_projection",
+                        lambda index_id, strike: {"status": "accumulating"})
+    monkeypatch.setattr(
+        ish, "_spec_for",
+        lambda ticker: _async_return({"supported": True, "index_id": "KXBTC", "strike": 50000.0}),
+    )
+
+    monkeypatch.setitem(state, "markets", [{"ticker": "TICK-A"}])
+    monkeypatch.setitem(state, "latest_prices", {"TICK-A": 0.55})
+
+    scheduled = []
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro):
+        scheduled.append(coro)
+        return real_create_task(coro)
+
+    monkeypatch.setattr(asyncio, "create_task", spy_create_task)
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+    monkeypatch.setattr(settlement_edge, "record_observation", lambda *a, **k: (True, True))
+
+    async def _drive():
+        await ish._record_settlement_observations("KXBTC")
+        # Let the scheduled task actually run before the loop closes.
+        if scheduled:
+            await scheduled[0]
+
+    asyncio.run(_drive())
+
+    assert len(scheduled) == 1
+    assert tick_executor_calls[0] is settlement_edge.flush

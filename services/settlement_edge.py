@@ -101,17 +101,28 @@ _buffer_lock = threading.Lock()
 
 
 def record_observation(ticker: str, spec: dict, projection: dict,
-                       market_yes_price: float | None, now: float | None = None) -> bool:
+                       market_yes_price: float | None, now: float | None = None) -> tuple[bool, bool]:
     """One paired forecast, taken while the settlement window is open.
 
     Records BOTH predictors at the same instant - the market's yes price and
     everything needed to derive the projection - so neither can be
     reconstructed later with hindsight leaking in. Only fires while
     projection["status"] == "accumulating"; outside the window there is
-    nothing to compare."""
+    nothing to compare.
+
+    Returns (accepted, should_flush) - accepted is the original "was this
+    row recorded" signal; should_flush tells the caller a buffer-full flush
+    is now due, to be scheduled off the event loop (see services/
+    whale_stream/index_stream_handlers.py's _record_settlement_observations)
+    rather than called inline here - event-loop-blocking elimination Fix 1,
+    2026-09-01. Real live bug this fixed: flush() used to run inline,
+    synchronously, on this function's own caller's event-loop thread -
+    real disk I/O with no await point, blocking the entire asyncio event
+    loop for the write's duration (confirmed live: a 13-minute app-wide
+    stall, unrelated in-memory-only endpoints hung too)."""
     try:
         if projection.get("status") != "accumulating":
-            return False
+            return False, False
         now = now if now is not None else time.time()
         window_end = close_ts(spec)
         row = (
@@ -125,9 +136,7 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         with _buffer_lock:
             _buffer.append(row)
             should_flush = len(_buffer) >= _FLUSH_BATCH
-        if should_flush:
-            flush()
-        return True
+        return True, should_flush
     except Exception as exc:
         # Counted, not just swallowed. This except exists because the
         # recorder runs on the websocket path and must never take the
@@ -150,7 +159,7 @@ def record_observation(ticker: str, spec: dict, projection: dict,
         global _record_errors
         _record_errors += 1
         fault_log.record("settlement_edge", "record_observation", exc)
-        return False
+        return False, False
 
 
 def close_ts(spec: dict) -> float | None:
