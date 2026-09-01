@@ -1,160 +1,119 @@
 # Next action
 
-**Re-run `python -m tools.soak_analyzer` around 2026-08-31 16:11 UTC** (24h
-past the first restart boundary) to confirm the `capture_writer_health`/
-`exit_engine_faults` fault-log FAILs have aged out with zero new occurrences.
-If clean, close `docs/open-decisions.md`'s `two_consumer_mode` permanence
-item by updating the file comment in `config/settings.yaml`. (Not yet due —
-current time is well before 16:11 UTC; nothing else blocking right now.)
+**Root-cause why `capture_writer_health`/`exit_engine_faults` are still
+actively recurring, not aging out as previously hoped.** The 2026-08-30
+soak boundary assumed these would clear from the 24h fault window on their
+own; the 2026-09-01 re-run still VERDICT FAIL, and `/api/health/faults`
+confirms both are live (`capture_writer`'s "database is locked" — issue
+#211, already tracked — last occurred 2026-09-01T06:06:23Z; `exit_engine`'s
+`stale_price_uncorroborated` last occurred 2026-09-01T06:07:09Z, untracked
+so far). See `docs/open-decisions.md`'s newest line for the full evidence.
+Use `superpowers:systematic-debugging`. Only once both are actually clean
+(checked by fault recency, not just verdict text) does the
+`realtime_data_plane.two_consumer_mode` permanence decision become
+answerable.
 
-**Leave alone — active peer-session work, not ready for anything:**
-- `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`,
-  13 commits ahead of `main`, no PR yet).
-- `autotrade-29` is progressing docs-only planning PRs to just-prior-to-
-  implementation (David's task) and is closing PR #310 as superseded by
-  #312 (see below) — no action needed from you on that.
+**Also open, lower priority:** a one-time `sudo chown`/`rm -rf` cleanup pass
+is needed for pre-existing root-owned leftovers in other worktrees (see
+below) — `ddev exec -s fastapi` can no longer force through them now that
+it runs as the host user.
 
-## Recently resolved (2026-08-31, this session)
+## Recently resolved (2026-09-01, this session)
 
-- **PR #313 merged** (`data/fault_log.db` storage-growth fix, by
-  `autotrade-79`): added `services/fault_log.py`'s `prune(retention_hours,
-  now=None) -> int`, wired into `main.py`'s hourly
-  `_maybe_prune_capture_stores` sweep, `fault_log.retention_hours: 336`
-  (14d, matching `observability`'s window) in `config/settings.yaml` — the
-  one capture store missing from that sweep, root-caused via
-  systematic-debugging (ruled out `capture_writer`'s lock-contention bug,
-  issue #211, first: its counters are zero for the live process). Full
-  review cycle run; independent adversarial review found and fixed a real
-  defect (`prune()` didn't wrap its `DELETE`, violating the module's own
-  "never raises, ever" contract — fixed in `b300a51`) and caught a false
-  Test Plan claim ("`quality_audit --strict` exits 0" — actually exits 1,
-  due to 4 pre-existing unrelated `config-unread:*` warnings on `main`, not
-  a regression; corrected in the PR body). CI green, merged, branch deleted.
-  Also cleaned up two dead worktrees left over from earlier in this session:
-  `fault-log-retention` (this PR, root-owned files needed `ddev exec -s
-  fastapi rm -rf` before `git worktree prune` would take) and
-  `entry-gate-netting-remediation` (PR #303, same root-owned-files issue;
-  its local branch pointer was also `git branch -d`-deleted since the
-  remote was already gone). A `pr-303-review` local branch of unclear
-  provenance was left alone.
-- **PR #303 merged** (watermark boundary gap, stale docstring, misleading
-  metric comment — PR #298 follow-up). Full self-review → independent
-  adversarial-review Agent call → consolidation cycle run first; the
-  adversarial pass caught a real defect (the PR's own new comment in
-  `services/mutual_exclusivity.py` claimed a fallback runs "unconditionally
-  on EVERY whale signal" — false, it's short-circuited by the `me_pairs`
-  fast path; fixed in commit `e209c94` before merging, CI re-confirmed
-  green). Remote branch deleted; the local worktree
-  `.claude/worktrees/entry-gate-netting-remediation` was cleaned up later
-  this session (see the PR #313 entry above) once it was confirmed idle.
-- **PR #307 merged**: broadened CLAUDE.md's `dimensional-analysis` HARD RULE
-  from money/probability math only to any arithmetic/unit conversion/numeric
-  derivation; confirmed (not from memory) that `dimensional-analysis` is a
-  separate `trailofbits` plugin, not part of `superpowers`; noted Wolfram MCP
-  as an optional (not required) numeric-verification complement, since
-  dimensional-analysis itself has no computation engine. Self-review caught
-  that `.claude/hooks/guard_workflow.py`'s automated nudge is still scoped
-  narrower than the new rule (money/probability files only) — said so
-  explicitly in the rule text and tracked broadening the hook as a separate
-  item in `docs/open-decisions.md` rather than silently leaving it out of
-  sync.
-- PR #308 merged (by another session — not this one): `POST /api/backup/run`'s manual trigger had zero
-  concurrency guard against the periodic scheduler
-  (`_maybe_run_backup`/`_maybe_run_large_backup`), unlike the scheduler's own
-  `state["backup"/"backup_large"]["running"]` self-guard. Found live: a
-  peer session's manual large-tier trigger (part of PR #302's Task 5
-  verification, above) landed during a `uvicorn --reload` cold-start window
-  and raced the scheduler's own cold-start reseed, producing two
-  independent, fully redundant ~27GB `series_watcher.db`/`candidate_log.db`/
-  `market_history.db` snapshots 26 seconds apart — 54GB on disk for one
-  logical backup. Fixed with `backup.run_backup_now()`, an atomic
-  check-and-set (no `await` between the `running` check and the set) now
-  shared by the manual route for all three tiers, raising
-  `BackupAlreadyRunningError` -> HTTP 409 on collision. Full review cycle
-  run (self-review, independent adversarial-review Agent call against the
-  diff, a second independent adversarial pass against the pushed PR itself)
-  — the first adversarial pass caught a real gap (the `tier=all` path could
-  silently drop a completed regular-tier result behind a bare 409 if only
-  the large tier collided), fixed and re-verified before merge. CI green,
-  merged, branch deleted. The duplicate 27GB snapshot
-  (`data/backups_large/20260831T055419Z`) was deleted from disk separately
-  (with explicit confirmation, since the classifier flags `rm -rf` as
-  destructive) — the surviving snapshot (`20260831T055445Z`, `backup_runs`
-  id 72) is intact and is what `/api/backup/status` already reported as
-  `last_run`.
-- Two new permanent CLAUDE.md HARD RULEs merged: "nothing advances on one
-  pass" (PR #304 — self-review/adversarial-review/consolidation gates every
-  planning-stage handoff and PR merge) and the PR/commit task-list-grep
-  requirement in `.claude/rules/branching-and-ci.md` (PR #305). Both went
-  through their own review cycle, including an independent adversarial pass
-  that caught real defects each time (see the memory files
-  `nothing-advances-on-one-pass.md` and `read-pr-body-before-merging.md` for
-  the verified evidence behind adopting this — 11/12 real catches across
-  PR #299 and #300's review checkpoints, not adopted on faith).
-- PR #299, #300, #301, #302 all merged. Primary checkout (`main` working
-  directory, currently on `feat/realtime-data-plane-remediation`) was stale
-  relative to `origin/main` after those merges — fixed by merging
-  `origin/main` into it. **Lesson for next time:** that merge touches many
-  tracked `.py` files under ddev's bind mount and triggers a live
-  `uvicorn --reload` restart — don't fire a request at the running app in
-  the same breath as a file-changing git operation on the primary checkout,
-  or an in-flight request can die as a client-side 504 even though the
-  backend completes fine (confirm via the relevant status endpoint, not the
-  POST response, if this happens).
-- PR #302's deferred Task 5 (live ddev verification of the two-tier backup
-  split) completed clean once the primary was synced: regular-tier backup
-  correctly excludes series_watcher.db/candidate_log.db/market_history.db;
-  large-tier backup correctly includes exactly those three (confirmed via
-  `/api/backup/status`, not just the POST response, because of the 504
-  above). **Still open:** market_history.db's row-cap is only confirmed
-  reachable, not confirmed effective yet — current size (1.16GB) matches
-  the documented pre-fix baseline, which is expected since the fix caps
-  growth going forward rather than shrinking existing rows. Re-check its
-  size/row count after an hour or so of normal operation to confirm the
-  cap is actually holding.
-- Two provably-merged worktrees cleaned up via `scripts/cleanup-worktrees.sh`
-  (`agent-a5110e2d3016b26a8`/PR #300, `web-skip-test-tighten`/PR #301).
-- **PR #311 merged**: added a pre-merge peer ping to
-  `.claude/rules/branching-and-ci.md`/`CLAUDE.md` — a live peer per
-  `ListAgents` gets a one-line "about to merge PR #N" `SendMessage` ping
-  before `gh pr merge` (courtesy, not a blocking gate, not a substitute for
-  the adversarial-review requirement). Adversarial review caught a real
-  conflation risk (the ping/ack could be mistaken for the required
-  independent review) and an undefined "reasonable wait" — both fixed
-  before merge. Already used for its own merge and for PR #312 below.
-- **PR #312 merged**: filed the claudesuperpower.com toolkit assessment
-  (previously an untracked scratch file of uncertain provenance in the
-  shared primary checkout, flagged last entry) into
-  `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
-  verbatim, as a research input for a future planning sequence, plus a
-  `docs/open-decisions.md` tracking line. You confirmed the file's content
-  first. Turned out neither this session, `autotrade-79`, nor `autotrade-29`
-  authored the original — `autotrade-29` is closing PR #310 (the file's
-  other home) as superseded by this filed copy. The untracked scratch file
-  itself was deleted after filing (content now permanent in git history).
+- **PR #387 merged**: `fastapi` ddev container now runs as the host user
+  (`user: "${DDEV_UID}:${DDEV_GID}"` in `.ddev/docker-compose.fastapi.yaml`),
+  not root. Root cause of `config/settings.yaml` and 2,163 other paths
+  (including several live `data/*.db` files) silently going root-owned on
+  every write — `services/config/config_store.py`'s `update()` writes
+  straight onto the bind-mounted repo, and Docker/WSL2 doesn't remap
+  container UIDs. Verified live before/after (`ddev exec -s fastapi id`,
+  a real `POST /api/config` round-trip). Full review cycle run: independent
+  adversarial review confirmed the mechanism against ddev's own internal
+  compose templates (not just its docs page), and caught two comments
+  (`scripts/cleanup-worktrees.sh`, `.claude/hooks/check_py_syntax.py`) left
+  factually stale by the exact same change — fixed in the same PR before
+  merge. One-time remediation chown was done by David (sudo, host-side,
+  outside the diff).
+  **New, expected side effect** (flagged live by `autotrade-d4`): pre-fix
+  root-owned leftovers in *other* worktrees (e.g.
+  `.claude/worktrees/impl-whale-confidence-scoring` after PR #388) can no
+  longer be force-cleared by `ddev exec -s fastapi rm -rf` — it's no longer
+  root either. `cleanup-worktrees.sh`'s comment already documents this
+  (says "kept", never lies about success); the leftover directories
+  themselves still need a one-time host-level `sudo rm -rf` pass whenever
+  convenient. Not urgent, not blocking anything.
+- **PR #389 merged**: `config/settings.yaml` updated directly by David via
+  the dashboard — `markets_watchlist` widened from 1 ticker (`KXBTC15M`) to
+  16 across BTC/ETH/gold/silver weekly/daily/hourly series (addresses the
+  long-standing watchlist-coverage-bottleneck gap), `strategy.min_unit_cost`
+  0.35→0.25, `whale_watcher_kalshi.min_contracts` 10000→3000. The same save
+  also silently wiped `min_contracts_by_series` and
+  `strategy_overrides.by_category` (Sports `stop_loss_pct` override) to
+  `{}` — `config_store.py`'s `update()` shallow-merges, so a patch
+  resending a top-level key as a bare `{}` overwrites rather than
+  preserves. Flagged explicitly; David confirmed leaving both wiped. Only
+  the historical `whale_confidence_weights` calibration-audit comment
+  (pure documentation) was restored, since its deletion was pure collateral
+  loss rather than an intended edit. Also added
+  `docs/nothing-advances-diagram.png`.
+- **PR #388 merged** (by `autotrade-d4`, whale-confidence-scoring-remediation
+  Tasks 1-9): fixed 4 fabricated-default sites and a tie-blind bucketing bug
+  in the whale-confidence-scoring formula
+  (`services/confidence_scoring.py`, `services/whale_calibration/confidence_calibration.py`,
+  `services/whalewatchers/kalshi_trade_tape.py`,
+  `services/diagnostics/diagnostics.py`, `services/signal_log.py`,
+  `services/market_analyst_agent/per_market.py`,
+  `frontend/src/js/advisory-calibration.js`). No overlap confirmed with this
+  session's work. **Tasks 10-16 blocked on a soak-time gate** — see
+  `autotrade-d4` for status.
+- Confirmed (not assumed) that git is genuinely absent from the `fastapi`
+  container — already tracked at `docs/open-decisions.md` line 10, not a
+  new finding; a stale comment in `tools/project_manifest.py`'s
+  `_git_head()` claims otherwise (harmless — caught as `OSError`, not a
+  live bug) but was left alone as out-of-scope for the container-user PR.
+- Ran `docs/next-action.md`'s previously-pending soak_analyzer recheck (see
+  "Next action" above for what it found) and `tools/quality_coordination`'s
+  read-only scan — its `escalation_eligible` backlog (a dozen+ old plan
+  docs, `feat/candlestick-volatility`) is pre-existing, already-investigated
+  noise per `docs/open-decisions.md`'s 2026-08-30 entry (AQC's cleanup
+  action for this was retired after proving 0-value); nothing new added.
+  Skipped `kanban_sync`/board writes this session — `autotrade-d4` and
+  `autotrade-1f` were both live and mid-merge (PRs #388, #390) at checkpoint
+  time; confirmed with `autotrade-d4` the board was clear for them
+  afterward.
+
+## Leave alone — active peer-session work
+
+- `.claude/worktrees/candlestick-volatility` (`feat/candlestick-volatility`).
+- `.claude/worktrees/impl-whale-confidence-scoring` — PR #388 merged by
+  `autotrade-d4`, git-level cleanup done, but an inert leftover directory
+  with root-owned cache files remains (see "Also open" above).
+- `feat/watchlist-event-grouping` (`autotrade-1f`, PR #390) — frontend-only
+  (watchlist sidebar event-grouping), confirmed no file overlap with this
+  session's work.
 
 ## Also still open, unrelated
 
-- Re-run `python -m tools.soak_analyzer` around 2026-08-31 16:11 UTC (24h
-  past the first restart boundary) to confirm the `capture_writer_health`/
-  `exit_engine_faults` fault-log FAILs have aged out with zero new
-  occurrences. If clean, close `docs/open-decisions.md`'s `two_consumer_mode`
-  permanence item by updating the file comment in `config/settings.yaml`.
-- **Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`
-  (PR #263, merged docs-only) — temperature-market settlement-edge ingestion
-  via Kalshi's `GET /live_data/weather/{city}`. Stops at the spec per the
-  brainstorming skill's own gate until reviewed; opens a new market category.
-- **Needs your go-ahead, not a session's:** `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`'s
-  FINAL VERDICT recommends piloting 4 official `claude-plugins-official`
-  plugins in priority order (`pr-review-toolkit`, `claude-security`,
-  `claude-md-management`, `codspeed`) — nothing installed yet. Run a
-  `superpowers:brainstorming`/`writing-plans` sequence off that doc to
-  decide which (if any) to pilot, or close the `docs/open-decisions.md`
-  line explicitly.
-- `/api/quality/summary`'s `series_funnel` checks show KXBTC15M/KXMLBGAME/
-  KXATPMATCH all underwater at the price level after fees — this is the
-  already-documented, already-open pricing/edge gap at entry (see CLAUDE.md's
-  "Standing goal" section), not a new finding; no new action implied here.
+- **Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`'s
+  implementation plan is now ready (`docs/superpowers/plans/2026-08-31-weather-index-ingestion*.md`,
+  full review cycle complete) — give the go-ahead on Task 1, or decline and
+  close (`docs/open-decisions.md`).
+- **Needs your go-ahead, not a session's:** the claudesuperpower.com
+  plugin-pilot plan (`docs/superpowers/plans/2026-08-31-claudesuperpower-plugin-pilot*.md`)
+  is ready — Task 1 (3 plain-install plugins) and Task 5 (codspeed, needs an
+  external account) are separate go-aheads (`docs/open-decisions.md`).
+- kalshi-category-data-completeness Task 12's 2-underlying Pyth Commodities
+  scope (gold/silver only vs `["all"]`) was never an explicit go/no-go —
+  confirm or widen (`docs/open-decisions.md`).
+- `propagate_milestone_winners`'s `related_event_tickers`-vs-market-tickers
+  mismatch (0 markets returned for 710 real event tickers, pre-existing,
+  found 2026-08-31) — decide priority/approach (`docs/open-decisions.md`).
+- `scripts/cleanup-worktrees.sh`'s `git branch -d` vs `-D` bug (spurious
+  abort when the primary isn't on `main` and the remote branch is already
+  gone) — small fix, needs its own review cycle (`docs/open-decisions.md`).
+- `/api/quality/summary`'s `series_funnel` pricing/edge gap at entry
+  (KXBTC15M/KXMLBGAME/KXATPMATCH underwater after fees) — already-documented,
+  open (CLAUDE.md's "Standing goal" section), not a new finding.
 
 Layer contract behind the tool: `docs/data-layer-analysis-layer-contract.md`.
 Full audit history if picking this up cold:
