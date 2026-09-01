@@ -368,7 +368,7 @@ def test_trend_factor_is_neutral_with_no_real_price_history():
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
-    assert signals[0].factors["trend_factor"] == 0.5
+    assert signals[0].factors["trend_factor"] is None
 
 
 def test_trend_factor_is_high_when_yes_print_agrees_with_a_rising_price():
@@ -751,3 +751,20 @@ def test_raw_spread_still_computed_when_a_real_ask_exists():
     trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
     signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
     assert signals[0].raw_context["spread"] is not None
+
+
+def test_trend_factor_is_none_when_no_momentum_history_exists(monkeypatch):
+    from services.whalewatchers.kalshi_trade_tape import _trend_factor
+    monkeypatch.setattr(market_history, "momentum", lambda *a, **k: None)
+    result = _trend_factor("TICK-A", "yes", time.time())
+    assert result is None
+
+
+def test_signal_carries_none_trend_through_to_the_breakdown(monkeypatch):
+    from services import market_history as mh
+    monkeypatch.setattr(mh, "momentum", lambda *a, **k: None)
+    provider = KalshiTradeTapeProvider()
+    market = _market(ticker="K1")
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
+    assert signals[0].factors["trend_factor"] is None

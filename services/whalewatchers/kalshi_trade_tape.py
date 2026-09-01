@@ -174,7 +174,7 @@ def _prescan_count(trade: dict) -> tuple[str, float] | None:
     return (side, count) if count is not None else None
 
 
-def _trend_factor(ticker: str, side: str, now: float) -> float:
+def _trend_factor(ticker: str, side: str, now: float) -> float | None:
     """Does this print's direction agree with, or fight, the market's own
     recent real price trend? Feeds composite_confidence_breakdown's
     trend_factor (see services/confidence_scoring.py and
@@ -184,12 +184,14 @@ def _trend_factor(ticker: str, side: str, now: float) -> float:
     rising (favors yes) - signed to the print's own side so "with the
     trend" is always positive, then linearly scaled into 0-1 around a
     neutral 0.5 (no clear lean either way), saturating at the extremes
-    rather than growing unbounded. Returns the neutral default (0.5) when
-    there isn't yet enough real price history to judge - same as this
-    function not being called at all, never guessed."""
+    rather than growing unbounded. Returns None when there isn't yet enough
+    real price history to judge: a real provider looked and found nothing,
+    which composite_confidence_breakdown (services/confidence_scoring.py)
+    now knows how to exclude from the weighted sum rather than blend in as
+    a fabricated neutral (design §5.1)."""
     mom = market_history.momentum(ticker, _TREND_LOOKBACK_SEC, as_of=now)
     if mom is None:
-        return 0.5
+        return None
     signed_delta = mom["delta"] if side == "yes" else -mom["delta"]
     return 0.5 + 0.5 * min(max(signed_delta / _TREND_FULL_SCALE, -1.0), 1.0)
 
