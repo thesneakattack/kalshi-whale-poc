@@ -378,6 +378,33 @@ def test_list_open_by_label_propagates_a_real_error():
         assert "422" in str(exc)
 
 
+def test_list_closed_issues_returns_all_closed_issues_unscoped_by_label():
+    """Backfill support (root cause A fix, 2026-08-31): unlike
+    list_open_by_label, this has no --label filter - the backfill needs
+    every closed issue on the repo, not just one type:* family, since all
+    four close paths in sync.py write board Status regardless of the
+    issue's type label."""
+    runner = FakeRunner()
+    runner.queue(json.dumps([
+        {
+            "number": 149, "state": "CLOSED",
+            "labels": [{"name": "type:feature"}],
+            "body": "some body",
+        },
+    ]))
+    client = GithubClient(REPO, runner=runner)
+
+    result = client.list_closed_issues()
+
+    assert len(result) == 1
+    assert result[0].number == 149
+    assert result[0].open is False
+    call = runner.calls[0]
+    assert call[:3] == ["gh", "issue", "list"]
+    assert "--label" not in call
+    assert "--state" in call and "closed" in call
+
+
 def test_ensure_on_project_calls_gh_project_item_add_with_owner_and_url_not_repo():
     runner = FakeRunner()
     runner.queue(json.dumps({"id": "PVTI_abc123", "content": {"number": 42}}))
