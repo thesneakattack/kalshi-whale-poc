@@ -119,7 +119,18 @@ def _bucket_win_rates(rows: list[dict], factor_name: str) -> tuple[dict, str]:
     from a transient tie-contaminated cut ("contaminated", the condition
     this predicate exists to catch) - only the second should ever gate
     anything downstream (§9)."""
-    applicable_rows = [r for r in rows if factor_name in r["factors"]]
+    # Post-composite_confidence_breakdown's renormalization fix
+    # (services/confidence_scoring.py), a row's factors dict always HAS
+    # every key, but the value can be None (honest absence, e.g. depth_
+    # factor when the market had no reportable 24h volume) - key-presence
+    # alone is no longer enough to know a value is comparable. Without the
+    # "and not None" half, sorted() below crashes the first time any real
+    # row carries an absent factor (None-vs-float comparison has no
+    # ordering in Python).
+    applicable_rows = [
+        r for r in rows
+        if factor_name in r["factors"] and r["factors"][factor_name] is not None
+    ]
     sorted_rows = sorted(applicable_rows, key=lambda r: r["factors"][factor_name])
     n = len(sorted_rows)
     # Rounded before dedup (2026-08-14 fix): exact float equality here would

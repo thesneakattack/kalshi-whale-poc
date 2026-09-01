@@ -82,16 +82,23 @@ class ConfidenceBreakdown:
     """Every factor that went into a composite_confidence score, not just
     the final blended number - what services/whale_calibration/confidence_calibration.py
     needs to later ask "which of these factors actually predicted a correct
-    call", something the plain float alone can't answer after the fact."""
-    depth_factor: float
-    unusualness_factor: float
-    proximity_factor: float
-    context_factor: float
-    agreement_factor: float
-    cluster_factor: float
-    trend_factor: float
-    analyst_factor: float
-    block_trade_factor: float
+    call", something the plain float alone can't answer after the fact.
+
+    Each factor is float | None in practice: None means a real provider
+    looked and found nothing to report (e.g. depth_factor when the market
+    has no reportable 24h volume, or an explicit agreement_factor=None from
+    a caller with no signal-agreement concept for this print) - honest
+    absence, not coerced to a fabricated neutral 0.5. score renormalizes
+    over only the present factors (see composite_confidence_breakdown)."""
+    depth_factor: float | None
+    unusualness_factor: float | None
+    proximity_factor: float | None
+    context_factor: float | None
+    agreement_factor: float | None
+    cluster_factor: float | None
+    trend_factor: float | None
+    analyst_factor: float | None
+    block_trade_factor: float | None
     score: float
 
     def to_dict(self) -> dict:
@@ -122,7 +129,7 @@ DEFAULT_WEIGHTS = {
 
 def composite_confidence_breakdown(
     market: dict, markets: list[dict], size: float, price: float, now: float,
-    agreement_factor: float = 0.5, cluster_factor: float = 0.0, trend_factor: float = 0.5,
+    agreement_factor: float | None = 0.5, cluster_factor: float = 0.0, trend_factor: float | None = 0.5,
     analyst_factor: float = 0.5, block_trade_factor: float = 0.0,
     weights: dict | None = None, side: str = "yes",
 ) -> ConfidenceBreakdown:
@@ -191,8 +198,16 @@ def composite_confidence_breakdown(
     # for arbitrarily larger prints - while still landing at the same ~0.9
     # for "exactly one day's volume" the old cap used to bind at, so this
     # isn't a wholesale rescale, just removing the cliff.
-    depth_ratio = size / max(market_volume, 1.0)
-    depth_factor = 1.0 - math.exp(-_DEPTH_SATURATION_K * depth_ratio)
+    # market_volume <= 0 means no reportable 24h volume at all - undefined,
+    # not badly-defined - so depth_factor is None (honest absence) rather
+    # than the old max(market_volume, 1.0) floor, which silently forced
+    # depth_ratio = size (i.e. depth_factor -> ~1.0, a false-confident
+    # maximum) for a market with zero volume on record.
+    if market_volume <= 0:
+        depth_factor = None
+    else:
+        depth_ratio = size / market_volume
+        depth_factor = 1.0 - math.exp(-_DEPTH_SATURATION_K * depth_ratio)
 
     # (2) How unusual the price is — interpret the traded-side price so
     # that a "no"-side print at a 1c yes-price (yes=0.01) is treated the
@@ -294,18 +309,31 @@ def composite_confidence_breakdown(
     # actual is_block_trade field to read) - the simulator has no equivalent
     # concept and always passes the default.
 
+    # Renormalized weighted average over only the PRESENT factors - an
+    # absent (None) factor is left out of both the numerator and the
+    # denominator entirely, not treated as a 0. Flat weighted-sum against a
+    # fixed denominator (the old behavior) would silently punish a signal
+    # for a provider having nothing to report on one factor, exactly the
+    # same "coerce absence into a bad score" bug this task exists to close
+    # for depth_factor/agreement_factor/trend_factor (design §5.2). Falls
+    # back to 0.5 (maximally uncertain) only in the degenerate case where
+    # every weighted factor for this row is absent - never a crash, never a
+    # fabricated 0.
+    factor_values = {
+        "depth_factor": depth_factor, "unusualness_factor": unusualness_factor,
+        "proximity_factor": proximity_factor, "context_factor": context_factor,
+        "agreement_factor": agreement_factor, "cluster_factor": cluster_factor,
+        "trend_factor": trend_factor, "analyst_factor": analyst_factor,
+        "block_trade_factor": block_trade_factor,
+    }
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
-    score = (
-        w["depth_factor"] * depth_factor
-        + w["unusualness_factor"] * unusualness_factor
-        + w["proximity_factor"] * proximity_factor
-        + w["context_factor"] * context_factor
-        + w["agreement_factor"] * agreement_factor
-        + w["cluster_factor"] * cluster_factor
-        + w["trend_factor"] * trend_factor
-        + w["analyst_factor"] * analyst_factor
-        + w["block_trade_factor"] * block_trade_factor
-    )
+    present = {name: value for name, value in factor_values.items() if value is not None}
+    weight_sum = sum(w[name] for name in present)
+    if weight_sum > 0:
+        score = sum(w[name] * value for name, value in present.items()) / weight_sum
+    else:
+        score = 0.5  # every weighted factor absent for this row - maximally
+                      # uncertain, not a crash or a fabricated 0 (design §5.2)
     return ConfidenceBreakdown(
         depth_factor=depth_factor, unusualness_factor=unusualness_factor,
         proximity_factor=proximity_factor, context_factor=context_factor,

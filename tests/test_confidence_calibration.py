@@ -356,3 +356,16 @@ def test_confidence_exactly_one_lands_in_top_band():
     bands = cc._confidence_calibration_bands(rows)
     assert bands[0]["band"] == "90-100%"
     assert bands[0]["n"] == 3
+
+
+def test_bucket_win_rates_excludes_rows_with_an_explicit_none_value():
+    # The hard dependency this task exists to close: post-fix, a row's
+    # factors dict always HAS every key, but the value can be None. The
+    # old key-presence-only filter would pass such a row into sorted(),
+    # crashing on None-vs-float comparison the first time it runs.
+    rows = [_row(depth=0.1 + i * 0.05, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=(i % 2 == 0)) for i in range(10)]
+    rows.append({"confidence": 0.5, "correct": True,
+                 "factors": {"depth_factor": None, "unusualness_factor": 0.5}})
+    buckets, status = cc._bucket_win_rates(rows, "depth_factor")  # must not raise
+    assert status == "ok"
