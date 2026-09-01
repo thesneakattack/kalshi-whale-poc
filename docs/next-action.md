@@ -1,26 +1,43 @@
 # Next action
 
-**Investigate WS reconnect churn + slow background REST calls as the
-residual cause of tick slowness now that the write-path capacity fix (PR
-#409, below) is deployed** (issue #412). Post-deploy measurement still shows
-`last_tick_duration_sec: 113s` (down 2x from 228s pre-fix, but not healthy)
-and a directly-observed 45-second full request-silence gap
-(2026-09-01 16:17:49-16:18:34, zero requests served or logged). This is a
-*different* mechanism than PR #409 touched - `GET /api/health/pipeline`
-shows 3 WS reconnects in the first 13 minutes post-deploy
-(`ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout`,
-one ~90s before the observed gap) and some REST calls
-(`background_catalog`/`background_resolution` classes) taking up to 55.8s.
-Use `superpowers:systematic-debugging` and the same observability-first
-methodology as PR #409 - measure before touching anything, per the
-data-plane HARD RULE. Two other follow-ups from the same investigation,
-lower priority: issue #410 (two routes - `analytics/routes.py`'s
-`population_gate_summary`, `whale_calibration/routes.py`'s `_build_report` -
-still share `tick_executor`'s pool the way `run_offline()` used to, unmeasured)
-and issue #411 (a CI `push/tests-pytest` failure that didn't reproduce
-locally or on the `pr/tests-pytest` context for the same commit - needs a
-valid Woodpecker token to read the actual log, since the stored one was
-stale).
+**Root-cause and fix issue #410's tick_executor pool starvation - now
+MEASURED, not just predicted** (`analytics/routes.py`'s
+`get_candidate_log_summary` and `whale_calibration/routes.py`'s
+`get_confidence_calibration_report`, both `await tick_executor.run(...)`,
+confirmed against current source at `analytics/routes.py:103` and
+`whale_calibration/routes.py:117`). During PR #414's own required Task 5
+live-validation window (2026-09-01, 16 min, real WS traffic, no synthetic
+load), real browser traffic (nginx access log, client `172.18.0.2` via
+`autotrade.webfoundry.dev`) hit **9 upstream timeouts each** on
+`/api/confidence-calibration/report` and `/api/candidate-log/summary` in a
+~4-minute window, correlated with `last_tick_duration_sec` spiking to
+96.56-138.5s (vs. a healthy 4-24s baseline seen earlier in the same run) -
+consistent with these two routes' `tick_executor.run()` calls competing with
+the tick loop's own trading-critical `tick_executor` usage for the same 2
+workers. This likely explains the live symptom directly reported this
+session ("as soon as i start clicking around in the app things start to
+degrade... but they also degrade on their own without any action" - a
+dashboard tab polling either endpoint saturates the pool on its own, user
+interaction compounds it). Full evidence posted to issue #410
+(https://github.com/thesneakattack/kalshi-whale-poc/issues/410#issuecomment-5500274545).
+**Also found in the same window, separate and not yet root-caused:**
+`/api/quality/summary` (services/quality/routes.py) hit 6 timeouts too,
+despite using its own dedicated `_diagnostics_pool.py` (NOT tick_executor,
+per PR #409 Task 8) - should be isolated from this specific mechanism, needs
+its own look before assuming the same cause. Use
+`superpowers:systematic-debugging`: measure real per-call query cost for
+`population_gate_summary()`/`_build_report()` before choosing a fix shape
+(pool isolation vs. query-cost reduction - issue #410's own note is that
+isolation alone may just relocate the slowness if the underlying query is
+also genuinely slow), per the data-plane HARD RULE. Two other follow-ups,
+lower priority: issue #412 (WS reconnect churn - PR #414 already fixed the
+inline-flush mechanism that caused *total* request-silence freezes; #412's
+narrower remaining scope, if any, needs re-assessment against tonight's
+evidence before further investigation, since tonight's residual stalls now
+have a more specific, already-tracked explanation) and issue #411 (a CI
+`push/tests-pytest` failure that didn't reproduce locally or on the
+`pr/tests-pytest` context for the same commit - needs a valid Woodpecker
+token to read the actual log, since the stored one was stale).
 
 ---
 
@@ -80,6 +97,45 @@ it runs as the host user.
 
 ## Recently resolved (2026-09-01, this session)
 
+- **PR #414 merged and deployed** (event-loop-blocking elimination Fix 1,
+  merge commit `9e26af7`): 6 functions across `services/index_feed/ingestion.py`,
+  `services/settlement_edge.py`, `services/game_state.py`,
+  `services/series_watcher.py` no longer call SQLite `flush()` inline,
+  synchronously, unawaited, from `async def` functions on the event loop -
+  each now returns `should_flush`/is offloaded via
+  `asyncio.create_task(tick_executor.run(<module>.flush))` (fire-and-forget)
+  or, for `last_tick_before` (needs its own flush-then-read atomicity), a
+  direct `await tick_executor.run(...)`. Full "nothing advances on one pass"
+  cycle at both spec/plan and PR stage (self-review + adversarial review +
+  consolidation, fresh Agent calls each time;
+  `docs/superpowers/specs/2026-09-01-event-loop-blocking-fix1-pr-review.md`);
+  adversarial review at PR stage found 2 more undisclosed sync-flush sites
+  (`last_tick_before`/`record_cfbenchmarks_backfill`), fixed and re-reviewed
+  before merge. Full suite: 3037 passed / 0 failed, confirmed independently
+  twice. **Live validation (this plan's own required Task 5 Step 3) found a
+  genuine complication worth recording honestly:** the *first* live-validation
+  attempt was contaminated by this session's own mistake - a leftover
+  `docker exec pytest` process from an earlier check was misdiagnosed as
+  leaked test debris and killed (with explicit user approval after the auto-mode
+  classifier twice blocked the attempt), but the killed process was actually
+  uvicorn `--reload`'s own live server worker (cmdline
+  `multiprocessing.spawn_main`, part of uvicorn's real reload mechanism, not
+  pytest) - this caused a genuine ~4-minute outage, recovered via
+  `ddev restart`. A second, truly clean 16-minute window (post-restart, zero
+  intervention from this session) then confirmed: **PR #414's own narrow goal
+  is met** - the *total* request-silence app freeze (45-90s+, zero requests
+  served anywhere) that motivated this fix did not recur even once, including
+  during periods of elevated `last_tick_duration_sec` (96-138s), where
+  non-tick_executor-dependent endpoints kept serving normally throughout
+  (qualitatively different, healthier failure mode than pre-fix). **What the
+  clean window also found: a residual, smaller-magnitude stall pattern
+  (~35-40s recurring full-silence gaps, and the elevated tick durations
+  above) that PR #414 was never scoped to fix** - traced to issue #410's
+  already-filed, previously-"unmeasured" tick_executor pool-sharing finding,
+  now measured with real evidence (see "Next action" above and
+  https://github.com/thesneakattack/kalshi-whale-poc/issues/410#issuecomment-5500274545).
+  Not a PR #414 regression - a pre-existing, separate mechanism its fix was
+  never meant to close.
 - **PR #409 merged and deployed** (write-path capacity fix, milestone issue
   #400/8 tasks, all closed): two root causes fixed under one architectural
   principle - nothing non-critical shares `services.tick_executor`'s

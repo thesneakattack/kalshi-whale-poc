@@ -1161,7 +1161,7 @@ git commit -m "fix: record_book stops blocking the event loop on buffer-full flu
 the live symptom, per this repo's own standing practice (matching the
 write-path capacity fix's Task 7/8 earlier today).
 
-- [ ] **Step 1: Run the full local test suite**
+- [x] **Step 1: Run the full local test suite**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/event-loop-blocking-fix && python -m pytest tests/ -q -m 'not slow'"`
 
@@ -1171,13 +1171,13 @@ gap in `test_quality_coordination_cleanup_actions.py`, unrelated to this
 fix) plus the new tests this plan added, all passing. Any OTHER failure is a
 real regression - investigate before proceeding.
 
-- [ ] **Step 2: `import main` sanity check**
+- [x] **Step 2: `import main` sanity check**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/event-loop-blocking-fix && python -c 'import main' && echo IMPORT_OK"`
 Expected: `IMPORT_OK`, no import errors from the new `tick_executor`/
 `asyncio` imports across the 5 touched caller files.
 
-- [ ] **Step 3: Deploy and capture a live before/after reading**
+- [x] **Step 3: Deploy and capture a live before/after reading**
 
 After this branch merges and the primary checkout's running app reloads it
 (same procedure as the write-path capacity fix's own deployment earlier
@@ -1196,7 +1196,7 @@ fixed mechanism - the write-path capacity fix, PR #409 - so a return to that
 specific range would mean THIS fix didn't address the residual stall, not
 that the prior fix regressed).
 
-- [ ] **Step 4: Record the result**
+- [x] **Step 4: Record the result**
 
 Write the outcome into `docs/next-action.md` (whatever this plan's item
 currently occupies there) and `docs/open-decisions.md` if anything remains
@@ -1205,6 +1205,26 @@ open (e.g., if Step 3's watch period still shows any stall, however smaller
 plan's app-wide grep (`should_flush = `) didn't catch, or a genuinely
 different mechanism, and needs its own fresh investigation rather than being
 silently left unrecorded).
+
+**Actual outcome (2026-09-01):** Recorded in `docs/next-action.md`'s
+"Recently resolved" section. Summary: PR #414's narrow goal (eliminate the
+total request-silence app freeze caused by inline synchronous `flush()`
+calls) is confirmed met - that specific freeze pattern (45-90s+, zero
+requests served anywhere) did not recur in a clean 16-minute live-validation
+window, including during periods of elevated `last_tick_duration_sec`, where
+non-tick_executor endpoints kept serving normally (a qualitatively healthier
+failure mode than pre-fix). A smaller, separate residual stall pattern
+(~35-40s recurring gaps, elevated tick durations to 96-138s) persisted in the
+clean window - traced to the already-filed, previously-"unmeasured" issue
+#410 (tick_executor pool sharing in `analytics/routes.py`/
+`whale_calibration/routes.py`), now measured with real live evidence and
+posted there - not a fifth instance of this plan's bug class and not a PR
+#414 regression, but a pre-existing, separate mechanism this plan was never
+scoped to fix. The first live-validation attempt was contaminated by this
+session's own process-management mistake (killed the live server process,
+misdiagnosed as leaked test debris; caused a real ~4-minute outage, recovered
+via `ddev restart`) - documented honestly in `docs/next-action.md` and as a
+new `feedback` memory so it isn't repeated.
 
 ---
 
