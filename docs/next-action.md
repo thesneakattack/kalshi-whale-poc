@@ -1,6 +1,47 @@
 # Next action
 
-**Run `python -m tools.soak_analyzer` no earlier than ~2026-09-01T10:53Z
+**Root-cause why the trade/candidate write path (capture_writer/candidate_log)
+degrades under legitimate high trade volume instead of sustaining it - a live
+incident today proved it does, and the data-plane HARD RULE says it must
+not.** 2026-09-01: raising `whale_watcher_kalshi.min_contracts_by_series`
+overrides for `KXBTC15M`/`KXBTCD`/`KXETH15M` (dropping BTC15M's effective
+threshold 3000→173) produced a real, measured spike - 8322 `min_contracts`
+rejection_events in 15 minutes (5046 from KXBTC15M alone) - that overwhelmed
+`capture_writer`/`candidate_log`'s write path: tick duration climbed
+6.63s→32.41s→241.63s peak, `kalshi_websocket` hit repeated
+`consumer_stalled_forced_reconnect`, the ingest queue approached its 20000
+capacity (17451, real risk of message loss), and signal generation stopped
+for ~6 minutes. Reverted those 3 series' overrides as an immediate stopgap
+(confirmed recovery: queue 17451→0, tick duration back to 5-31s within ~5
+min) - **but per direct correction, that revert is a patch, not the fix:
+"the amount of trades shouldn't slow things down EVER."** Gold/silver/
+commodities' own overrides stayed (only ~9.5% of the spike, and the actual
+original fix - see below).
+
+Use `superpowers:systematic-debugging`. Candidate mechanisms worth checking
+first (not yet verified, don't assume): whether `capture_writer`'s daemon-
+thread batching (1s cadence, `_FLUSH_BATCH` size) itself scales with burst
+rate or has a fixed-cost bottleneck per flush; whether `candidate_log`'s
+per-print `record_rejection`/`record_signal` calls do anything synchronous
+on the hot path beyond the already-batched `capture_writer.submit()`; and
+whether the `kalshi_trade_tape.py` prescan/resolve pipeline itself (not just
+the DB layer) has a per-message cost that doesn't stay flat as message rate
+grows. This is squarely "the data plane is the product" territory - measure
+the actual bottleneck and its mechanism before touching any capacity/rate/
+batch-size value (HARD RULE), and note this is now urgent for a second
+reason: a peer session's WS-push plan (`feat/frontend-realtime-push`) adds
+new real DB-backed work onto the same hot path handlers
+(`_process_stream_trade`/`_process_stream_fill`), so this capacity ceiling
+is a live constraint on other in-flight work, not just today's incident.
+
+**Once that's genuinely fixed** (not just reverted around), re-attempt
+raising KXBTC15M/KXBTCD/KXETH15M's `min_contracts_by_series` to their real
+P90 (173/248/50 - already computed, see PR #397's history) under a write
+path that can actually sustain the resulting volume.
+
+---
+
+**Also open:** run `python -m tools.soak_analyzer` no earlier than ~2026-09-01T10:53Z
 (~3h past PR #394's merge/deploy), then confirm via fault recency (not just
 verdict text) that `capture_writer_health`/`exit_engine_faults` have
 genuinely stopped recurring before revisiting the `realtime_data_plane.
