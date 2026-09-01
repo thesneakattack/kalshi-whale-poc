@@ -381,7 +381,11 @@ class KalshiPublicGateway:
                 for et in tickers:
                     milestones_by_ticker.setdefault(et, []).append(ms)
             for e in events:
-                e["milestones"] = milestones_by_ticker.get(e.get("event_ticker"), [])
+                et = e.get("event_ticker")
+                # mypy (CI's quality-architecture-audit): milestones_by_ticker's
+                # keys are str, but a plain dict's .get() types event_ticker as
+                # Any | None - narrow explicitly rather than passing that through.
+                e["milestones"] = milestones_by_ticker.get(et, []) if isinstance(et, str) else []
         return events
 
     async def get_milestones_for_event(self, event_ticker: str, limit: int = 5) -> list[dict]:
