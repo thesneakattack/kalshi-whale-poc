@@ -76,7 +76,7 @@ function renderScreenerTableFromState(panelKey, containerId, countId) {
       : '<td style="color:var(--muted);">—</td>';
     return `<tr title="${esc(label.full)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(m.ticker)}', '${esc(m.event_ticker || '')}')">
       <td style="text-align:left;">${esc(label.short)} ${liveBadgeHTML(m)}</td>
-      <td style="text-align:left;">${r.event ? esc(r.event) : '—'}</td>
+      <td style="text-align:left; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${r.event ? esc(r.event) : ''}">${r.event ? esc(r.event) : '—'}</td>
       <td style="text-align:left;">${esc(r.series)}</td>
       <td>${category}</td>
       <td>${yesPrice != null ? yesPrice + '¢' : '—'} ${priceChangeHTML(m.ticker, r.yesBid)}</td>
