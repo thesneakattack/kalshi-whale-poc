@@ -141,7 +141,30 @@ whale_watcher_kalshi:
   # 5000 global floor with no override would have gone dark on both. 2500/
   # 500 sit at or below every affected series' observed p10, so switching
   # units doesn't silently zero out their signal flow.
-  min_contracts_by_series: {}
+  # 2026-09-01: top-10%-by-size (P90) per series, computed from real Kalshi
+  # trade history (GET /markets/trades' count_fp - contract count, not
+  # dollar notional), not the app's own gate-filtered capture (that data
+  # mixes whatever min_contracts regime was live at capture time across
+  # this app's history, e.g. 10000 before 2026-09-01's 3000). Direct
+  # instruction: "seeking edge not just wins" - a fixed global 3000
+  # (calibrated for crypto) filtered out ~99% of gold/silver's real flow,
+  # since those series trade in far smaller typical sizes. 15-min series
+  # (BTC15M/GOLD15M/SILVER15M/ETH15M) sampled from the single currently-open
+  # instance only (Kalshi's status=closed transitions to finalized quickly),
+  # not multiple rollovers - revisit if that sample proves unrepresentative.
+  min_contracts_by_series:
+    KXSILVERW: 114
+    KXGOLDW: 190
+    KXBTCD: 248
+    KXGOLDD: 200
+    KXSILVERD: 98
+    KXETHD: 76
+    KXGOLDH: 25
+    KXSILVERH: 33
+    KXBTC15M: 173
+    KXGOLD15M: 82
+    KXSILVER15M: 75
+    KXETH15M: 50
 # depth_factor/unusualness_factor/proximity_factor floored at the shared
 # minimum (0.0404) since 2026-08-10's first real calibration run found
 # unusualness_factor/agreement_factor negative. SUPERSEDED 2026-08-30: a
