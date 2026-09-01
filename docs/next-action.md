@@ -92,6 +92,32 @@ it runs as the host user.
   (watchlist sidebar event-grouping), confirmed no file overlap with this
   session's work.
 
+## whale-confidence-scoring-remediation open items (PR #388, autotrade-d4)
+
+- **Task 10 (real-data re-measurement gate) — not startable yet.** Needs this
+  fix running in production for a real soak period first (design §10) —
+  check back after real elapsed time. When ready: pull a live report,
+  confirm no factor reads `data_status: "contaminated"`
+  (`"insufficient_variance"` is fine/expected), record the real observed
+  per-factor gaps, then Tasks 11-16 can start (plan:
+  `docs/superpowers/plans/2026-08-30-whale-confidence-scoring-remediation-implementation.md`).
+- **Do not click "Apply suggested weights" on the whale-confidence-calibration
+  dashboard panel right now.** The tie-safe re-measurement correctly flags
+  5/9 factors unreliable on real data, which concentrates `suggested_weights`
+  onto 2 factors (measured: `context_factor` 0.34→0.54 if applied).
+  `auto_apply_enabled` stays `false` so nothing writes this automatically,
+  but the manual route has no guard yet — Task 12 is the fix, blocked
+  behind Task 10 by design. Full detail: `docs/open-decisions.md`.
+- **Two algorithm-precision follow-ups from PR #388's own adversarial
+  review**, not fixed in that PR on purpose (design work, not a same-PR
+  patch): `_tied_run_size` flags contamination on a tied run's full length
+  rather than the minority side actually crossing the cut (real example: a
+  1,662-row run where only 1.1% is on the minority side trips the same flag
+  as a fully-tied bucket); the materiality floor `max(30, 0.005*n)` has a
+  blind band below n≈6000 (not reachable at today's real ~103k-row volume,
+  latent at `min_resolved_signals: 50`). Worth a design call before Task 10
+  treats today's algorithm as final. Full detail: `docs/open-decisions.md`.
+
 ## Also still open, unrelated
 
 - **Parked, needs your read:** `docs/superpowers/specs/2026-08-30-weather-index-ingestion-design.md`'s
