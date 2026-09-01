@@ -95,6 +95,57 @@ def test_generate_calibration_report_includes_by_series_breakdown():
     ]
 
 
+def _tie_dataset(values, correct_fn=lambda i: i % 2 == 0):
+    """Rows whose depth_factor equals `values[i]` in the given order -
+    _bucket_win_rates sorts internally, so insertion order doesn't matter.
+    correct_fn is an arbitrary, non-degenerate correctness pattern; this
+    predicate only cares about win_rate once buckets form, which these
+    tests don't assert on."""
+    return [_row(depth=v, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=correct_fn(i)) for i, v in enumerate(values)]
+
+
+def test_small_incidental_tie_at_a_cut_boundary_is_not_contaminated():
+    # n=1000, materiality floor is max(30, 0.005*1000)=30. A 5-row tie
+    # straddling the low cut (index 1000//3=333) mirrors depth_factor's
+    # real 2-6-row float ties (audit table row 1, design §2) - must NOT trip.
+    values = [i / 1000 for i in range(1000)]
+    values[330:335] = [0.5] * 5
+    buckets, status = cc._bucket_win_rates(_tie_dataset(values), "depth_factor")
+    assert status == "ok"
+    assert buckets  # a real split happened
+
+
+def test_large_structural_tie_at_a_cut_boundary_is_contaminated():
+    # n=90, cuts at index 30 and 60. A 40-row tie spans indices 20-59,
+    # straddling the low cut - 40 >= max(30, 0.45)=30. Mirrors
+    # agreement_factor's real 24,357-row tie (audit table row 5, design §2).
+    values = [i / 100 for i in range(20)] + [0.5] * 40 + [0.9 + i / 1000 for i in range(30)]
+    buckets, status = cc._bucket_win_rates(_tie_dataset(values), "depth_factor")
+    assert status == "contaminated"
+    assert buckets == {}
+
+
+def test_single_valued_factor_is_insufficient_variance_never_contaminated():
+    # analyst_factor/block_trade_factor's real shape (audit §1.8/§1.9):
+    # always present, zero variance. This is Stage 4's Finding 2 regression -
+    # a permanently sparse factor's {} must not read as a real tie.
+    rows = [_row(depth=0.1, unusualness=0.5, proximity=0.5, context=0.5,
+                 agreement=0.5, correct=(i % 2 == 0)) for i in range(50)]
+    buckets, status = cc._bucket_win_rates(rows, "depth_factor")
+    assert status == "insufficient_variance"
+    assert buckets == {}
+
+
+def test_factor_report_carries_data_status_through():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    depth_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "depth_factor")
+    assert depth_report["data_status"] == "ok"
+    unusual_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "unusualness_factor")
+    assert unusual_report["data_status"] == "insufficient_variance"
+
+
 def test_constant_factor_does_not_discriminate():
     rows = _discriminating_dataset(n_per_bucket=10)
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
@@ -105,6 +156,7 @@ def test_constant_factor_does_not_discriminate():
     unusual_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "unusualness_factor")
     assert unusual_report["gap_pts"] is None
     assert unusual_report["discriminates"] is None
+    assert unusual_report["data_status"] == "insufficient_variance"
 
 
 def test_missing_factor_key_excluded_not_crashed():
@@ -135,6 +187,7 @@ def test_missing_factor_key_excluded_not_crashed():
     assert cluster_report["buckets"] == {}
     assert cluster_report["gap_pts"] is None
     assert cluster_report["discriminates"] is None
+    assert cluster_report["data_status"] == "insufficient_variance"
     # depth_factor is present on every row and still discriminates normally.
     depth_report = next(f for f in result["report"]["per_factor"] if f["factor"] == "depth_factor")
     assert depth_report["discriminates"] is True
