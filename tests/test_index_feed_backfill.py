@@ -163,10 +163,89 @@ def test_backfill_index_stores_the_returned_points_and_updates_stats():
     assert s["rows_backfilled"] == 2
     assert s["last_result"]["rows"] == 2
 
+    # The flush is scheduled via asyncio.create_task (event-loop-blocking
+    # elimination Fix 1) rather than run inline - asyncio.run() above
+    # doesn't wait for outstanding tasks once backfill_index itself
+    # returns, so call flush() explicitly here to check real persistence
+    # (harmless/idempotent if the scheduled task already ran first).
+    ingestion.flush()
+
     with __import__("sqlite3").connect(ingestion.DB_PATH) as conn:
         conn.row_factory = __import__("sqlite3").Row
         rows = conn.execute("SELECT * FROM index_ticks ORDER BY source_ts_ms").fetchall()
     assert [r["source"] for r in rows] == ["cfbenchmarks_backfill", "cfbenchmarks_backfill"]
+
+
+def test_backfill_index_schedules_flush_via_tick_executor_when_points_are_stored(monkeypatch):
+    """event-loop-blocking elimination Fix 1 (2026-09-01) - a second,
+    lower-frequency instance found by adversarial review of the PR that
+    fixed the original four sites: record_cfbenchmarks_backfill() no
+    longer calls flush() itself; backfill_index() must schedule it via
+    create_task(tick_executor.run(...)) instead of blocking on it.
+    Real tick_executor.run/asyncio.create_task run underneath (not fully
+    mocked) - ingestion.last_tick_before also legitimately calls
+    tick_executor.run internally (its own flush-then-read fix), so this
+    spies rather than replaces, and only asserts on the second call
+    (backfill_index's own scheduled flush), not the first."""
+    from services import tick_executor
+
+    scheduled = []
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro):
+        scheduled.append(coro)
+        return real_create_task(coro)
+
+    monkeypatch.setattr(asyncio, "create_task", spy_create_task)
+
+    tick_executor_calls = []
+    real_tick_executor_run = tick_executor.run
+
+    async def spy_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return await real_tick_executor_run(fn)
+
+    monkeypatch.setattr(tick_executor, "run", spy_tick_executor_run)
+
+    gap = {"reconnect_at": 110.0, "gap_sec": 20.0, "reconnects": 1}
+    points = [{"time": 91_000, "value": "63500.00"}]
+
+    async def fetch_history(index_id, start_ts, end_ts):
+        return points
+
+    asyncio.run(backfill.backfill_index("BRTI", gap, fetch_history))
+
+    # Two tick_executor.run calls total: last_tick_before's internal
+    # flush-then-read, then backfill_index's own scheduled flush.
+    assert len(tick_executor_calls) == 2
+    assert tick_executor_calls[1] is ingestion.flush
+    # Only the second is scheduled via create_task (fire-and-forget) - the
+    # first is awaited directly inside last_tick_before, never wrapped in
+    # create_task, so exactly one create_task call is expected here.
+    assert len(scheduled) == 1
+
+
+def test_backfill_index_schedules_no_flush_when_nothing_was_stored(monkeypatch):
+    """An empty fetch_history result reaches record_cfbenchmarks_backfill
+    but stores nothing (should_flush=False) - backfill_index must not
+    schedule a flush in that case. last_tick_before's own internal
+    tick_executor.run call (for its flush-then-read) still happens - this
+    only asserts nothing extra gets scheduled via create_task on top of
+    that expected one."""
+    from services import tick_executor
+
+    scheduled = []
+    real_create_task = asyncio.create_task
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: scheduled.append(coro) or real_create_task(coro))
+
+    gap = {"reconnect_at": 110.0, "gap_sec": 20.0, "reconnects": 1}
+
+    async def fetch_history(index_id, start_ts, end_ts):
+        return []  # nothing to store
+
+    asyncio.run(backfill.backfill_index("BRTI", gap, fetch_history))
+
+    assert scheduled == []
 
 
 def test_backfill_index_never_raises_when_fetch_history_fails():

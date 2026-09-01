@@ -13,6 +13,7 @@ _tick_buffer/_dropped_rows - see services/index_feed/__init__.py's
 docstring for why the package-level names aren't the ones ingestion.py's
 own functions actually read/write.
 """
+import asyncio
 import json
 import sqlite3
 
@@ -280,7 +281,7 @@ def test_last_tick_before_ignores_ticks_at_or_after_the_cutoff():
     _ingestion.record_cfbenchmarks(_cf_msg(spot="2"), now=105.0)
     _ingestion.record_cfbenchmarks(_cf_msg(spot="3"), now=110.0)  # at/after cutoff - excluded
 
-    assert _ingestion.last_tick_before("BRTI", 110.0) == pytest.approx(105.0)
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 110.0)) == pytest.approx(105.0)
 
 
 def test_last_tick_before_flushes_the_buffer_first():
@@ -290,12 +291,12 @@ def test_last_tick_before_flushes_the_buffer_first():
     _ingestion.record_cfbenchmarks(_cf_msg(), now=50.0)
     assert _ingestion._tick_buffer  # still buffered, not yet flushed
 
-    assert _ingestion.last_tick_before("BRTI", 60.0) == pytest.approx(50.0)
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 60.0)) == pytest.approx(50.0)
     assert _ingestion._tick_buffer == []
 
 
 def test_last_tick_before_returns_none_when_index_never_seen():
-    assert _ingestion.last_tick_before("BRTI", 100.0) is None
+    assert asyncio.run(_ingestion.last_tick_before("BRTI", 100.0)) is None
 
 
 def test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source():
@@ -303,8 +304,10 @@ def test_record_cfbenchmarks_backfill_stores_rows_distinguishable_by_source():
         {"type": "value", "id": "BRTI", "time": 1_755_000_000_000, "value": "63500.00"},
         {"type": "value", "id": "BRTI", "time": 1_755_000_001_000, "value": "63501.50"},
     ]
-    stored = _ingestion.record_cfbenchmarks_backfill("BRTI", points, now=1000.0)
+    stored, should_flush = _ingestion.record_cfbenchmarks_backfill("BRTI", points, now=1000.0)
     assert stored == 2
+    assert should_flush is True
+    _ingestion.flush()  # caller's job now (event-loop-blocking elimination Fix 1) - do it explicitly here to check persistence
 
     with sqlite3.connect(_ingestion.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -331,5 +334,5 @@ def test_record_cfbenchmarks_backfill_never_regresses_latest_backward():
 
 
 def test_record_cfbenchmarks_backfill_never_raises_on_garbage():
-    assert _ingestion.record_cfbenchmarks_backfill("BRTI", [None, "not a dict", {}]) == 1
-    assert _ingestion.record_cfbenchmarks_backfill("BRTI", None) == 0
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", [None, "not a dict", {}]) == (1, True)
+    assert _ingestion.record_cfbenchmarks_backfill("BRTI", None) == (0, False)

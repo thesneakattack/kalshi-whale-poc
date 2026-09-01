@@ -115,11 +115,13 @@ def record_observation(ticker: str, spec: dict, projection: dict,
     is now due, to be scheduled off the event loop (see services/
     whale_stream/index_stream_handlers.py's _record_settlement_observations)
     rather than called inline here - event-loop-blocking elimination Fix 1,
-    2026-09-01. Real live bug this fixed: flush() used to run inline,
-    synchronously, on this function's own caller's event-loop thread -
-    real disk I/O with no await point, blocking the entire asyncio event
-    loop for the write's duration (confirmed live: a 13-minute app-wide
-    stall, unrelated in-memory-only endpoints hung too)."""
+    2026-09-01. flush() used to run inline, synchronously, on this
+    function's own caller's event-loop thread - real disk I/O with no await
+    point, a plausible contributor to a confirmed live 13-minute app-wide
+    stall (unrelated in-memory-only endpoints hung too) - though no stack
+    trace pinpointed this exact call site during that stall (py-spy
+    couldn't attach, ptrace blocked), so this is source-level inference
+    from a reproduced symptom, not a directly observed cause."""
     try:
         if projection.get("status") != "accumulating":
             return False, False

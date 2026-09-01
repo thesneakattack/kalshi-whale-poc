@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 
-from services import fault_log
+from services import fault_log, tick_executor
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "index_feed.db"
 
@@ -128,8 +128,11 @@ def record_cfbenchmarks(msg: dict, now: float | None = None) -> tuple[bool, bool
     is now due. The caller (not this function) is responsible for scheduling
     that flush off the event loop - see services/whale_stream/
     index_stream_handlers.py's _process_stream_index. An inline synchronous
-    flush() call here was a real, confirmed live event-loop-blocking bug
-    (Fix 1, 2026-09-01)."""
+    flush() call here was a real, plausible contributor to a confirmed live
+    event-loop stall (Fix 1, 2026-09-01) - no stack trace pinpointed this
+    exact call site during that stall (py-spy couldn't attach, ptrace
+    blocked), so this is source-level inference from a reproduced symptom,
+    not a directly observed cause."""
     try:
         index_id = msg.get("index_id")
         if not index_id:
@@ -201,14 +204,31 @@ def record_pyth(msg: dict, now: float | None = None) -> tuple[bool, bool]:
         return False, False
 
 
-def last_tick_before(index_id: str, before_ts: float) -> float | None:
+async def last_tick_before(index_id: str, before_ts: float) -> float | None:
     """Most recent `observed_at` for index_id strictly before before_ts -
     the true start of a reconnect gap (services/index_feed/backfill.py,
     issue #260), not just the running MAX(observed_at), which could
     already include ticks recorded AFTER the reconnect by the time a
     periodic gap check actually runs (the WS starts streaming again well
-    before a 10s-interval check task next executes). Flushes the buffer
-    first so a tick still sitting in _tick_buffer isn't missed."""
+    before a 10s-interval check task next executes).
+
+    async, running the flush-then-read as one unit on tick_executor's pool
+    (event-loop-blocking elimination Fix 1, 2026-09-01 - a second, lower-
+    frequency instance of the same bug the PR's four other functions fixed,
+    found by adversarial review of that PR, not by the original app-wide
+    grep, which only caught the more common append-then-conditionally-flush
+    shape). Deliberately NOT split into "schedule the flush, then read" -
+    this function's whole contract is that the read sees whatever is
+    currently in the buffer, so the flush and the read must run as one
+    atomic unit on the same worker thread, in order; a fire-and-forget
+    scheduled flush (the pattern this PR's other four fixes use) would let
+    the read race ahead of it and see a stale MAX(observed_at)."""
+    return await tick_executor.run(lambda: _last_tick_before_sync(index_id, before_ts))
+
+
+def _last_tick_before_sync(index_id: str, before_ts: float) -> float | None:
+    """The actual flush-then-read, run on a tick_executor worker thread by
+    last_tick_before() above - never called directly."""
     flush()
     try:
         with _connect() as conn:
@@ -222,7 +242,7 @@ def last_tick_before(index_id: str, before_ts: float) -> float | None:
     return row[0] if row and row[0] is not None else None
 
 
-def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float | None = None) -> int:
+def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float | None = None) -> tuple[int, bool]:
     """Persist historical CF Benchmarks points fetched via the REST
     passthrough (services/index_feed/backfill.py, docs/kalshi/
     rest-passthrough.md) to backfill a WS reconnect gap. Each entry in
@@ -249,7 +269,18 @@ def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float |
     (last_tick_before/tick_stats/recent_volatility). `now` is only a
     fallback for the (should-not-happen - callers filter this case out
     before calling here) case of a point with no derivable timestamp at
-    all, and that fallback is logged rather than silent."""
+    all, and that fallback is logged rather than silent.
+
+    Returns (stored, should_flush) - stored is the original row count;
+    should_flush is True whenever any row was stored (unlike the four
+    threshold-gated record_*() functions, this one always wants to flush
+    promptly after a non-empty backfill, not wait for _FLUSH_BATCH - a
+    backfill is rare and its rows should be durable soon). The caller
+    schedules that flush off the event loop rather than this function
+    calling flush() itself - event-loop-blocking elimination Fix 1,
+    2026-09-01 (found by adversarial review of PR #414, a second,
+    lower-frequency instance of the same bug its four other fixes
+    addressed)."""
     now = now if now is not None else time.time()
     stored = 0
     for point in points or []:
@@ -278,14 +309,13 @@ def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float |
             stored += 1
         except Exception as exc:
             fault_log.record("index_feed", "record_cfbenchmarks_backfill", exc)
-    if stored:
-        # Backfill is rare (only on reconnect) and low-volume per event -
-        # persist immediately rather than waiting for the live stream's
-        # _FLUSH_BATCH threshold, so a backfilled gap is durable right away
-        # instead of sitting in memory behind whatever the live stream
-        # happens to be buffering.
-        flush()
-    return stored
+    # Backfill is rare (only on reconnect) and low-volume per event - the
+    # caller schedules a flush promptly (not gated by the live stream's
+    # _FLUSH_BATCH threshold) whenever should_flush is True, so a backfilled
+    # gap is durable soon instead of sitting in memory behind whatever the
+    # live stream happens to be buffering. flush() itself is no longer
+    # called here - see this function's own docstring.
+    return stored, bool(stored)
 
 
 def flush() -> dict:
