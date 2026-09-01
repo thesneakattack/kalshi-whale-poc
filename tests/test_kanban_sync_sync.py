@@ -4,8 +4,8 @@ from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync import project_status
 from tools.kanban_sync.sync import (
-    close_completed_plan_parents, close_stale_roadmap_issues, close_stale_worktree_issues,
-    reconcile, sync_pass_one, _mismatch_comment,
+    backfill_closed_status, close_completed_plan_parents, close_stale_roadmap_issues,
+    close_stale_worktree_issues, reconcile, sync_pass_one, _mismatch_comment,
 )
 
 
@@ -30,6 +30,13 @@ class FakeGithubClient:
             IssueState(number=number, open=True, labels=frozenset(issue["labels"]), body=issue["body"])
             for number, issue in self.issues.items()
             if issue["open"] and label in issue["labels"]
+        ]
+
+    def list_closed_issues(self):
+        return [
+            IssueState(number=number, open=False, labels=frozenset(issue["labels"]), body=issue["body"])
+            for number, issue in self.issues.items()
+            if not issue["open"]
         ]
 
     def create_issue(self, title, body, labels_):
@@ -451,6 +458,30 @@ def test_close_stale_worktree_issues_dry_run_makes_no_mutating_calls():
     assert report.closed  # still reported, matching sync_pass_one's own dry-run convention
 
 
+def test_close_stale_worktree_issues_sets_project_status_to_done_when_closing():
+    """Root cause A (94% of closed issues showing the wrong/no board Status,
+    confirmed live 2026-08-31): this close path called client.close_issue()
+    directly and never touched the Project Status field, unlike
+    sync_pass_one's own done-transition close path."""
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_DONE
+
+
+def test_close_stale_worktree_issues_dry_run_does_not_touch_project_status():
+    client = FakeGithubClient()
+    sync_pass_one([_worktree_item()], client, dry_run=False)
+    before = dict(client.project_status)
+
+    close_stale_worktree_issues(live_branches=set(), client=client, dry_run=True)
+
+    assert client.project_status == before
+
+
 def test_close_stale_worktree_issues_does_not_touch_a_manually_closed_tracking_issue():
     client = FakeGithubClient()
     sync_pass_one([_worktree_item()], client, dry_run=False)
@@ -552,6 +583,33 @@ def test_close_completed_plan_parents_ignores_marker_less_issues_even_with_type_
     # Sub-issue must NOT close (no marker, despite type:plan-task label and complete subs)
     assert client.issues[sub_issue_number]["open"] is True
     assert sub_issue_number not in [int(c.split()[0][1:]) for c in report.closed]
+
+
+def test_close_completed_plan_parents_sets_project_status_to_done_when_closing():
+    """Same root cause A as the other two mechanical closers - this path
+    also called client.close_issue() directly with no Project Status
+    update, which is also root cause B's neighbor: a plan whose sub-issues
+    just finished would close correctly but never reach the Done column."""
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (3, 3)
+
+    close_completed_plan_parents(client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_DONE
+
+
+def test_close_completed_plan_parents_dry_run_does_not_touch_project_status():
+    client = FakeGithubClient()
+    sync_pass_one([_plan_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.sub_issues_summary[number] = (3, 3)
+    before = dict(client.project_status)
+
+    close_completed_plan_parents(client, dry_run=True)
+
+    assert client.project_status == before
 
 
 def test_mismatch_comment_for_plan_kind_names_the_classification():
@@ -690,6 +748,49 @@ def test_close_stale_roadmap_issues_dry_run_makes_no_mutating_calls():
     assert report.closed  # still reported, matching every other dry-run in this file
 
 
+def test_backfill_closed_status_sets_done_for_every_closed_issue():
+    """One-time backfill for root cause A (confirmed live 2026-08-31: 122 of
+    130 closed issues had a stale, missing, or absent board Status because
+    3 of 4 close paths never wrote it before this fix). Unconditional/
+    idempotent, matching _sync_project_status's own "runs every time"
+    convention - no need to read the current Status first."""
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=True)], client, dry_run=False)  # never existed + done -> no issue created
+    sync_pass_one([_item(key="B", title="Track B", done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.close_issue(number)  # simulate one of the 3 close paths that skipped Status
+
+    report = backfill_closed_status(client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_DONE
+    assert report.updated
+
+
+def test_backfill_closed_status_ignores_open_issues():
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    before = dict(client.project_status)
+
+    report = backfill_closed_status(client, dry_run=False)
+
+    assert client.project_status == before  # untouched - the issue is still open
+    assert report.updated == []
+
+
+def test_backfill_closed_status_dry_run_makes_no_mutating_calls():
+    client = FakeGithubClient()
+    sync_pass_one([_item(done=False)], client, dry_run=False)
+    (number,) = client.issues.keys()
+    client.close_issue(number)
+    before = dict(client.project_status)
+
+    report = backfill_closed_status(client, dry_run=True)
+
+    assert client.project_status == before
+    assert report.updated  # still reported, matching every other dry-run in this file
+
+
 def test_close_stale_roadmap_issues_does_not_touch_a_manually_closed_issue():
     client = FakeGithubClient()
     sync_pass_one([_roadmap_item()], client, dry_run=False)
@@ -703,3 +804,25 @@ def test_close_stale_roadmap_issues_does_not_touch_a_manually_closed_issue():
     assert client.issues[number]["open"] is False
     assert client.comments == []
     assert report.closed == []
+
+
+def test_close_stale_roadmap_issues_sets_project_status_to_done_when_closing():
+    """Same root cause A as close_stale_worktree_issues - this path also
+    called client.close_issue() directly with no Project Status update."""
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    (number,) = client.issues.keys()
+
+    close_stale_roadmap_issues(current_keys={"some-other-bullet"}, client=client, dry_run=False)
+
+    assert client.project_status[number] == project_status.STATUS_DONE
+
+
+def test_close_stale_roadmap_issues_dry_run_does_not_touch_project_status():
+    client = FakeGithubClient()
+    sync_pass_one([_roadmap_item()], client, dry_run=False)
+    before = dict(client.project_status)
+
+    close_stale_roadmap_issues(current_keys={"some-other-bullet"}, client=client, dry_run=True)
+
+    assert client.project_status == before

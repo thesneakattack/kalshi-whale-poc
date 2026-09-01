@@ -142,6 +142,9 @@ def _patch_sync_pipeline(monkeypatch, *, items, live_branches):
     monkeypatch.setattr(cli, "_collect_items", lambda sources, plan_classifications: (items, live_branches))
     monkeypatch.setattr(cli, "_check_rate_limit_budget", lambda client, item_count, dry_run: None)
     monkeypatch.setattr(cli, "reconcile", lambda items, client, dry_run: _FakeReport())
+    # close_completed_plan_parents runs unconditionally now (root cause B fix) -
+    # stubbed here so tests unrelated to it don't hit the fake object() client below.
+    monkeypatch.setattr(cli, "close_completed_plan_parents", lambda client, dry_run: _FakeReport())
     monkeypatch.setattr(cli, "GithubClient", lambda repo: object())
 
 
@@ -278,7 +281,16 @@ def test_cmd_sync_runs_close_completed_plan_parents_when_plan_in_sources(monkeyp
     assert calls == [True]
 
 
-def test_cmd_sync_skips_close_completed_plan_parents_when_plan_not_in_sources(monkeypatch):
+def test_cmd_sync_runs_close_completed_plan_parents_even_when_plan_not_in_sources(monkeypatch):
+    """Root cause B (confirmed live 2026-08-31): close_completed_plan_parents
+    is a purely mechanical sub-issue-count check with no dependency on
+    `items` or on --plan-classifications (unlike build_plan_items' judgment-
+    assisted plan-doc classification, which does stay gated on "plan" in
+    sources). Gating it on "plan" meant the routine `/checkpoint`-wired
+    invocation (--sources worktree,roadmap,track, per this module's own
+    docstring) never ran it, so a plan whose sub-issues all finished would
+    sit open indefinitely unless someone separately ran the judgment-heavy
+    --sources plan path too."""
     calls = []
     _patch_sync_pipeline(monkeypatch, items=[], live_branches=None)
     monkeypatch.setattr(
@@ -288,7 +300,7 @@ def test_cmd_sync_skips_close_completed_plan_parents_when_plan_not_in_sources(mo
 
     cli._cmd_sync(argparse.Namespace(sources="roadmap", dry_run=False, plan_classifications=None))
 
-    assert calls == []
+    assert calls == [True]
 
 
 class _FakeClosedParentClient:
@@ -334,6 +346,39 @@ def _sync_item(kind, key):
         kind=kind, key=key, title=key, status_label="status:claimable",
         type_label="type:feature", context_body="", acceptance_criteria=(),
     )
+
+
+def test_backfill_status_subcommand_is_registered(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_cmd_backfill_status", lambda args: calls.append(args.dry_run))
+
+    cli.main(["backfill-status"])
+
+    assert calls == [False]
+
+
+def test_backfill_status_subcommand_passes_dry_run_flag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_cmd_backfill_status", lambda args: calls.append(args.dry_run))
+
+    cli.main(["backfill-status", "--dry-run"])
+
+    assert calls == [True]
+
+
+def test_cmd_backfill_status_calls_backfill_closed_status_and_reports_count(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: object())
+    fake_report = _FakeReport()
+    fake_report.updated = ["#1 backfilled Status=Done", "#2 backfilled Status=Done"]
+    monkeypatch.setattr(
+        cli, "backfill_closed_status",
+        lambda client, dry_run: fake_report,
+    )
+
+    cli._cmd_backfill_status(argparse.Namespace(dry_run=False))
+
+    assert "backfilled: 2" in capsys.readouterr().out
 
 
 def test_cmd_sync_runs_stale_roadmap_check_with_only_roadmap_keys_when_roadmap_in_sources(monkeypatch):
