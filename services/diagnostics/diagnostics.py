@@ -44,6 +44,7 @@ from services import signal_log
 from services.config import config_performance
 from services import paper_broker as pb_module
 from services.config.config_paths import _config_value_at_path
+from services.diagnostics import _aio_db
 
 _OK = "ok"
 _WARN = "warn"
@@ -613,8 +614,8 @@ def check_config_bounds(cfg: dict) -> Check:
     )
 
 
-def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
-                      now: float | None = None) -> Check:
+async def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
+                             now: float | None = None) -> Check:
     """What did over-permissive vs over-restrictive settings actually cost?
     (2026-08-17 direct request: "you can make easy insight gains by
     comparing trades that ignored all this stuff and the trades that were
@@ -642,14 +643,13 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 30 * 24 * 3600
     try:
-        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
-                "WHERE seen_at > ? AND resolved = 1 AND excluded = 0 "
-                "AND raw_notional_usd IS NOT NULL AND raw_notional_usd >= ?",
-                (since_ts, min_notional),
-            ).fetchall()
+        conn = await _aio_db.connection_for(signal_log.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
+            "WHERE seen_at > ? AND resolved = 1 AND excluded = 0 "
+            "AND raw_notional_usd IS NOT NULL AND raw_notional_usd >= ?",
+            (since_ts, min_notional),
+        )
     except sqlite3.Error as exc:
         return Check("selectivity_curve", _UNKNOWN, f"signal_log unreadable: {exc}")
     if len(rows) < 50:
@@ -699,7 +699,7 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     )
 
 
-def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """How often each of the four fabrication-fixed factors (depth_factor,
     trend_factor, agreement_factor, raw_spread) is honestly absent -
     surfaced from CLAUDE.md's own "Start investigations here" step 1, no
@@ -709,16 +709,23 @@ def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, no
     visibility and trend, not a threshold.
 
     Calls confidence_calibration.compute_input_coverage() directly, not
-    generate_calibration_report() - this route is polled every 5s by the
-    dashboard on the same tick_executor pool the trading loop uses, and the
-    full nine-factor tertile report this check doesn't need cost 1.661s of
-    a measured 2.549s total against real production history (2026-09-01
-    final-review fix)."""
+    generate_calibration_report() - this route runs via aiosqlite with no
+    dedicated pool at all (after this plan's conversion from
+    services.diagnostics._diagnostics_pool), and the full nine-factor
+    tertile report this check doesn't need cost 1.661s of a measured
+    2.549s total against real production history (2026-09-01 final-review
+    fix)."""
+    import asyncio
     from services.whale_calibration import confidence_calibration
 
     cc_cfg = cfg.get("confidence_calibration") or {}
     min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
-    rows = signal_log.resolved_signals_with_factors(since_ts=since_ts)
+    # signal_log.py is out of this plan's scope (see Global Constraints) -
+    # resolved_signals_with_factors() stays a plain synchronous DB call, run
+    # on a worker thread via asyncio.to_thread. Its own unscoped-fetch cost
+    # (docs/open-decisions.md's Task 9 entry) is unchanged by this - only
+    # where it runs changes, not what it costs.
+    rows = await asyncio.to_thread(signal_log.resolved_signals_with_factors, since_ts=since_ts)
     resolved_count = len(rows)
     if resolved_count < min_resolved_signals:
         return Check(

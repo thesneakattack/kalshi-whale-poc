@@ -6,6 +6,7 @@ convention throughout tests/*.py, and a hard requirement per CLAUDE.md:
 accumulated history in data/*.db is a first-class asset and must never be
 touched by a test run).
 """
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
@@ -350,12 +351,12 @@ def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypat
                  json.dumps({"depth_factor": None, "unusualness_factor": 0.5})),
             )
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "ok"
     assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
 
 
 def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "unknown"
