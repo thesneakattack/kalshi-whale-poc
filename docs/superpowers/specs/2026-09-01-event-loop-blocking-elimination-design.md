@@ -237,10 +237,20 @@ same way).
 
 Fix 1 ships first — smaller, more urgent, more directly evidenced against
 the live incident, and independent of Fix 2 (touches entirely different
-files). Fix 2 follows as its own set of tasks. Both land in one PR under the
-same architectural principle, matching this session's earlier precedent
-(PR #409 unified two root causes under one spec after being told to "revise
-the plan altogether" rather than ship them as separate, narrower efforts).
+files). It gets its own complete implementation plan and PR now.
+
+**Fix 2 gets its own separate implementation plan, written later, not
+bundled into Fix 1's.** Writing-plans-stage research found the
+diagnostics-widening portion genuinely larger and more interconnected than
+scoped here: `diagnostics.py`'s `Check` functions share helper functions
+(`_fetch_path_changes`, `_close_ts_for_tickers`) across multiple checks, each
+opening their own raw connections — the aiosqlite conversion isn't cleanly
+one-function-at-a-time the way the whale-scoring pool consumers are, and
+needs its own design pass rather than being rushed into a combined plan.
+This spec's unifying principle (both fixes address "the event loop must
+never be blocked by synchronous SQLite I/O") still holds across two plans;
+only the plan-writing and execution are now separate, not the architectural
+framing.
 
 ## Non-goals, explicit
 
