@@ -125,3 +125,38 @@ def test_trades_that_skip_the_provider_still_record_capture_and_total(_stream_mo
     assert stages["handler_total"]["window"]["count"] == 1
     assert stages["config"]["window"]["count"] == 0
     assert provider.calls == 0
+
+
+def test_process_stream_ticker_schedules_flush_via_tick_executor_when_told(monkeypatch):
+    """Event-loop-blocking elimination Fix 1 (2026-09-01): a should_flush=True
+    from series_watcher.record_book must be scheduled off the event loop
+    via tick_executor.run(series_watcher.flush), never called inline on the
+    ticker-channel hot path - see series_watcher.record_book's own
+    docstring for why this is plausibly the highest-frequency instance of
+    the blocking-flush bug class."""
+    from services import series_watcher, tick_executor
+
+    scheduled = []
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro):
+        scheduled.append(coro)
+        return real_create_task(coro)
+
+    monkeypatch.setattr(asyncio, "create_task", spy_create_task)
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+    monkeypatch.setattr(series_watcher, "record_book", lambda *a, **k: (True, True))
+
+    asyncio.run(wsh._process_stream_ticker({
+        "ticker": "KXTEST-25", "yes_bid_dollars": "0.55",
+    }))
+
+    assert len(scheduled) == 1
+    assert tick_executor_calls[0] is series_watcher.flush

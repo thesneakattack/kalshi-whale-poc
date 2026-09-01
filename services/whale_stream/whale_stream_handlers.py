@@ -12,7 +12,7 @@ deliberate coupling from the original code, preserved exactly as-is here.
 import asyncio
 import time
 
-from services import market_history, series_watcher, settlement_resolver
+from services import market_history, series_watcher, settlement_resolver, tick_executor
 from services.config import config_performance
 from services import whale_pipeline_perf
 from services.exits import position_netting
@@ -284,7 +284,9 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     # a directionally-correct signal still lost money, and none of them were
     # recoverable after the fact. Self-throttling and never raises - see
     # series_watcher.record_book.
-    series_watcher.record_book(ticker_msg, config_store.get(), now)
+    _, should_flush = series_watcher.record_book(ticker_msg, config_store.get(), now)
+    if should_flush:
+        asyncio.create_task(tick_executor.run(series_watcher.flush))
     try:
         state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
     except (TypeError, ValueError):
