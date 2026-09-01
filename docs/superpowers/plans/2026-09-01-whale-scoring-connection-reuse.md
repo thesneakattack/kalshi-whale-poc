@@ -44,7 +44,7 @@ reviewed through a full NO-GO→revised cycle each).
 
 ---
 
-## Task 1: `services/whalewatchers/_scoring_pool.py` — dedicated pool + connection cache
+### Task 1: `services/whalewatchers/_scoring_pool.py` — dedicated pool + connection cache
 
 **Files:**
 - Create: `services/whalewatchers/_scoring_pool.py`
@@ -193,7 +193,7 @@ git commit -m "feat: add dedicated worker pool + connection cache for whale-scor
 
 ---
 
-## Task 2: `services/signal_log.py` — scoring-read helper via the cache
+### Task 2: `services/signal_log.py` — scoring-read helper via the cache
 
 **Files:**
 - Modify: `services/signal_log.py:35-150` (extract schema DDL from `_connect()` into a reusable `_init_schema()`; add a new scoring-read helper)
@@ -300,7 +300,7 @@ git commit -m "feat: signal_log's whale-scoring reads use the cached scoring con
 
 ---
 
-## Task 3: `services/market_history.py` — scoring-read helper for `momentum()`
+### Task 3: `services/market_history.py` — scoring-read helper for `momentum()`
 
 **Files:**
 - Modify: `services/market_history.py:57-90ish` (extract schema DDL from `_connect(db_path)` into `_init_schema()`; add scoring-read helper)
@@ -379,7 +379,7 @@ git commit -m "feat: market_history's momentum() uses the cached scoring connect
 
 ---
 
-## Task 4: `services/market_analyst_agent/_db.py` — scoring-read helper for `analyst_lean()`
+### Task 4: `services/market_analyst_agent/_db.py` — scoring-read helper for `analyst_lean()`
 
 **Files:**
 - Modify: `services/market_analyst_agent/_db.py:16-40ish` (extract schema DDL into `_init_schema()`; add scoring-read helper)
@@ -448,7 +448,7 @@ git commit -m "feat: market_analyst_agent's analyst_lean() uses the cached scori
 
 ---
 
-## Task 5: `kalshi_trade_tape.py` — run scoring work on the dedicated pool
+### Task 5: `kalshi_trade_tape.py` — run scoring work on the dedicated pool
 
 **Files:**
 - Modify: `services/whalewatchers/kalshi_trade_tape.py`'s `fetch_signals()` (replace `asyncio.to_thread`)
@@ -529,7 +529,7 @@ git commit -m "feat: kalshi_trade_tape runs scoring work on the dedicated whale-
 
 ---
 
-## Task 6: `services/candidate_retry.py` — await the now-async `score_recovered_trade`
+### Task 6: `services/candidate_retry.py` — await the now-async `score_recovered_trade`
 
 **Files:**
 - Modify: `services/candidate_retry.py:167`
@@ -597,7 +597,7 @@ git commit -m "fix: candidate_retry awaits score_recovered_trade now that it's a
 
 ---
 
-## Task 7: Required measured validation (spec section 6) — before this is trusted
+### Task 7: Required measured validation (spec section 6) — before this is trusted
 
 **Not a code task — this is the empirical safety gate the spec's section 6 requires
 before merge, per `services.tick_executor.connection_for()`'s own documented bar
@@ -640,7 +640,7 @@ own standing rule that nothing that matters lives only in chat.
 
 ---
 
-## Task 8: `services/diagnostics/_diagnostics_pool.py` — isolate `run_offline()` from `tick_executor`
+### Task 8: `services/diagnostics/_diagnostics_pool.py` — isolate `run_offline()` from `tick_executor`
 
 **Files:**
 - Create: `services/diagnostics/_diagnostics_pool.py`
