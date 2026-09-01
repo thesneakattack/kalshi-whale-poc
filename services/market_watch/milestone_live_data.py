@@ -321,3 +321,37 @@ def extract(milestone_type: str, details: dict) -> dict:
         _record_default_path_type(milestone_type)
         return _pass_through(details)
     return extractor(details)
+
+
+# Task 13 (kalshi-category-data-completeness): extract_index_series() is a
+# separate accessor for truflation and artist_streams types' domain-specific
+# fields (index series data), not a change to extract()'s status/winner
+# contract. Per spec §3.3, this is capture-ready plumbing for a future
+# consumer reading index_feed-style data (D3 work, not yet wired). The field
+# names below are sourced from the design spec's own P3 census
+# (docs/superpowers/specs/2026-08-30-kalshi-category-data-completeness-
+# design.md:589-601) and cross-checked against the test fixtures in this
+# module's tests (test_extract_index_series_returns_truflation_fields and
+# test_extract_index_series_returns_artist_streams_fields).
+_INDEX_SERIES_FIELDS = {
+    "truflation": ["indicator", "latest_value", "target_date", "series_key", "timeseries"],
+    "artist_streams": ["timeseries_daily", "timeseries_weekly", "current_total",
+                       "period_start", "period_end", "target_week_finalized"],
+}
+
+
+def extract_index_series(milestone_type: str, details: dict) -> dict | None:
+    """Extracts domain-specific fields for index/report milestone types
+    (truflation, artist_streams) that carry no widget_status/winner but do
+    carry their own structured time-series data. Returns a dict of those
+    fields for truflation/artist_streams, None for any other type.
+
+    This is separate from extract()'s status/winner contract - those remain
+    (None, None) as originally designed for these types. No call site yet
+    (spec §3.3 doesn't name a consumer - future D3 work reading index_feed
+    -style data); this is capture-ready plumbing."""
+    details = details or {}
+    fields = _INDEX_SERIES_FIELDS.get(milestone_type)
+    if fields is None:
+        return None
+    return {field: details.get(field) for field in fields}

@@ -392,3 +392,49 @@ def test_political_race_is_registered_not_left_on_the_default_path(monkeypatch):
     mld.extract("political_race", {"race_call_status": "Called", "winner": "some-id"})
     assert faults == []
     assert "political_race" not in mld.default_path_types_snapshot().get("types", [])
+
+
+# ---------------------------------------------------------------------------
+# truflation and artist_streams (Task 13, kalshi-category-data-
+# completeness). These two types are index/report milestones, not discrete
+# events - they have no widget_status or winner fields (S3/S4). extract()
+# correctly returns (None, None) for them via _no_live_outcome. This task
+# adds a SEPARATE accessor, extract_index_series(), for their real
+# domain-specific fields (indicator/timeseries for truflation, timeseries_daily/
+# current_total for artist_streams, etc.). It is not a change to extract()'s
+# status/winner contract - those remain (None, None) as originally designed.
+#
+# Step 0's verification (querying this app's own captured history in
+# data/game_state.db): ZERO rows for either type -
+#   SELECT event_type, COUNT(*) FROM game_states WHERE event_type IN
+#   ('truflation', 'artist_streams') GROUP BY event_type -> []
+#   SELECT COUNT(*) FROM game_states -> 9,139 total
+#   SELECT DISTINCT event_type FROM game_states -> [None, 'commodity']
+# This means these two types do NOT currently reach _fetch_live_status's
+# watchlist/near-term-catalog scope in practice (they sit in Economics/Crypto/
+# Entertainment categories, not Sports-heavy). Per the design spec §3.3:
+# "if it doesn't [reach them], the fix is D2's discovery-scope question, not
+# a new capture mechanism" - that's a separate, out-of-scope follow-up.
+# The extractor still ships (it's correct and cheap regardless), and becomes
+# useful the moment the discovery-scope gap is later closed.
+def test_extract_index_series_returns_truflation_fields():
+    result = mld.extract_index_series("truflation", {
+        "indicator": "CPI", "latest_value": 3.2, "target_date": "2026-09-01",
+        "series_key": "cpi-us", "timeseries": [{"t": 1, "v": 3.1}],
+    })
+    assert result == {"indicator": "CPI", "latest_value": 3.2, "target_date": "2026-09-01",
+                       "series_key": "cpi-us", "timeseries": [{"t": 1, "v": 3.1}]}
+
+
+def test_extract_index_series_returns_artist_streams_fields():
+    result = mld.extract_index_series("artist_streams", {
+        "current_total": 5000000, "timeseries_daily": [{"t": 1, "v": 100}],
+        "timeseries_weekly": [{"t": 1, "v": 700}], "period_start": "2026-08-01",
+        "period_end": "2026-08-07", "target_week_finalized": False,
+    })
+    assert result["current_total"] == 5000000
+    assert result["target_week_finalized"] is False
+
+
+def test_extract_index_series_returns_none_for_a_non_index_type():
+    assert mld.extract_index_series("tennis_tournament_singles", {"widget_status": "live"}) is None
