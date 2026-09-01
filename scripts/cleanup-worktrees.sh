@@ -21,10 +21,17 @@
 # No time-based quarantine on top of these - a timer would be superstition
 # once the guards above establish certainty directly.
 #
-# A worktree whose root-owned cache files (left behind by `ddev exec`,
-# which runs as root in the container) block plain `git worktree remove`
-# is cleaned up via `ddev exec` itself - already-root inside the
-# container that created them - never via `sudo` on the host.
+# A worktree whose root-owned cache files (left behind by `ddev exec`, which
+# used to run as root in the container before .ddev/docker-compose.fastapi.
+# yaml's `user: "${DDEV_UID}:${DDEV_GID}"` fix, 2026-09-01) block plain
+# `git worktree remove` fall through to the `ddev exec` call below. That
+# call is now a no-op for anything genuinely still root-owned - `ddev exec
+# -s fastapi` runs as the same host uid as the caller now, so it can no
+# longer force-delete what the host user couldn't already delete directly.
+# Degrades safely either way (see the `[ -e "$path" ]` check right after
+# it): a leftover it can't clear is reported as "kept", never silently
+# misreported as removed. A genuinely root-owned leftover predating that
+# fix needs a one-time `sudo rm -rf` on the host instead.
 #
 # Usage:
 #   scripts/cleanup-worktrees.sh            # act: remove every stale worktree found

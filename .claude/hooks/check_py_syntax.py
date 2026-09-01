@@ -9,11 +9,13 @@ file.
 Deliberately uses compile(source, ..., 'exec') rather than `python3 -m
 py_compile` or py_compile.compile(): both of those always write a real .pyc
 to disk (py_compile.compile() even refuses cfile='/dev/null' outright -
-"non-regular file"), and this project's containers run some commands as root
-against the same bind-mounted repo, so a stale root-owned __pycache__ has
-twice now turned a plain PermissionError into a misreported "syntax error."
-compile() only builds a code object in memory - no file, no cache, no
-ownership to trip over.
+"non-regular file"), and this project's fastapi container used to run as
+root against the same bind-mounted repo (fixed 2026-09-01 -
+.ddev/docker-compose.fastapi.yaml's `user: "${DDEV_UID}:${DDEV_GID}"`), so a
+stale root-owned __pycache__ had twice turned a plain PermissionError into a
+misreported "syntax error." compile() only builds a code object in memory -
+no file, no cache, no ownership to trip over - so this stays true defense-
+in-depth even now that the underlying cause is fixed.
 """
 import json
 import sys
