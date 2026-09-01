@@ -30,6 +30,7 @@ from pathlib import Path
 from services import fault_log
 from services import kalshi_fees
 from services.signal_log import series_of
+from services.whalewatchers import _scoring_pool
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "market_history.db"
 
@@ -104,18 +105,19 @@ def _scoring_read_connection(db_path: Path) -> sqlite3.Connection:
     contributor to the write-path capacity incident this fix addresses.
     Never closed per-call; cached_read_connection owns its lifetime.
 
-    Import is deliberately local, not module-level: services.whalewatchers'
-    package __init__ eagerly imports kalshi_trade_tape.py, which imports
-    this module (market_history) back at module scope - a module-level
-    `from services.whalewatchers import _scoring_pool` here creates a real
-    circular-import failure (confirmed 2026-09-01: `python3 -c "import
-    services.signal_log"` raised ImportError: cannot import name 'series_of'
-    from partially initialized module 'services.signal_log', tracing through
-    this exact whalewatchers-package-init cascade). Deferring the import to
-    call time sidesteps the module-init-order cycle entirely, since
-    momentum() only ever runs after application startup has finished
-    importing everything."""
-    from services.whalewatchers import _scoring_pool
+    Module-level `_scoring_pool` import above is safe despite this module
+    sitting inside services.whalewatchers' own import chain (package
+    __init__ eagerly imports kalshi_trade_tape.py, which imports this
+    module back at module scope): kalshi_trade_tape.py binds this module
+    with `from services import market_history` (tolerates a
+    partially-initialized module, no specific attribute needed at import
+    time), unlike this module's own `from services.signal_log import
+    series_of` (needs a specific already-defined attribute - signal_log.py
+    genuinely does need a deferred import for that reason). Verified
+    directly, not assumed: `python -c "import main"` and `python -c
+    "import services.market_history"` both succeed cleanly with this
+    import at module level (2026-09-01, correcting an earlier, wrongly
+    generalized claim that this file needed the same deferral)."""
     db_path.parent.mkdir(exist_ok=True)
     return _scoring_pool.cached_read_connection(db_path, _init_schema)
 
