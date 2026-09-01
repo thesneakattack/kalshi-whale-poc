@@ -795,6 +795,71 @@ def test_maybe_capture_resets_the_loop_watchdog_window_after_persisting(monkeypa
     assert resets == [1]
 
 
+def test_maybe_capture_logs_a_fault_when_the_watchdog_recorded_a_stall(monkeypatch):
+    """Previously the watchdog's snapshot was read-only - a severe stall
+    (measured live 2026-09-01: up to 130s) was recorded in-memory and
+    persisted to observability.db, but nothing surfaced it anywhere a
+    human or soak_analyzer would see without manually querying
+    /api/observability/summary. One fault_log row per persisted window
+    (not per-stall - loop_watchdog._tick()'s own 0.1s hot loop must never
+    do blocking I/O itself, so the read happens here, in the
+    already-synchronous, already-inline maybe_capture path, not there)."""
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    monkeypatch.setattr(loop_watchdog, "_stall_max_ms", 1500.0)
+    monkeypatch.setattr(loop_watchdog, "_stall_count", 3)
+    monkeypatch.setattr(loop_watchdog, "_samples", 600)
+    recorded = []
+    monkeypatch.setattr(observability.fault_log, "record_fault",
+                        lambda *a, **k: recorded.append((a, k)) or True)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert len(recorded) == 1
+    args, kwargs = recorded[0]
+    assert args[0] == "loop_watchdog"
+    assert args[1] == "event_loop_stall"
+    assert "3" in args[2] and "1500" in args[2]
+    assert kwargs["severity"] == "error"  # >= 1000ms
+
+
+def test_maybe_capture_logs_a_warn_severity_fault_for_a_smaller_stall(monkeypatch):
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    monkeypatch.setattr(loop_watchdog, "_stall_max_ms", 120.0)
+    monkeypatch.setattr(loop_watchdog, "_stall_count", 1)
+    monkeypatch.setattr(loop_watchdog, "_samples", 600)
+    recorded = []
+    monkeypatch.setattr(observability.fault_log, "record_fault",
+                        lambda *a, **k: recorded.append((a, k)) or True)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert len(recorded) == 1
+    assert recorded[0][1]["severity"] == "warn"  # < 1000ms
+
+
+def test_maybe_capture_logs_no_fault_when_the_watchdog_saw_no_stall(monkeypatch):
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    monkeypatch.setattr(loop_watchdog, "_stall_max_ms", 0.0)
+    monkeypatch.setattr(loop_watchdog, "_stall_count", 0)
+    monkeypatch.setattr(loop_watchdog, "_samples", 600)
+    recorded = []
+    monkeypatch.setattr(observability.fault_log, "record_fault",
+                        lambda *a, **k: recorded.append((a, k)) or True)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert recorded == []
+
+
 def test_candidate_retry_metrics_flow_into_the_snapshot(monkeypatch):
     from services import candidate_retry
     monkeypatch.setattr(candidate_retry, "_pending", {"t1": {}})
