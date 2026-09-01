@@ -287,7 +287,11 @@ def test_signal_carries_a_full_factor_breakdown():
     assert factors is not None
     for key in ("depth_factor", "unusualness_factor", "proximity_factor", "context_factor", "agreement_factor", "score"):
         assert key in factors
-        assert 0.0 <= factors[key] <= 1.0
+        # agreement_factor can be None when there's no recent print history
+        if key == "agreement_factor":
+            assert factors[key] is None or (0.0 <= factors[key] <= 1.0)
+        else:
+            assert 0.0 <= factors[key] <= 1.0
 
 
 def test_block_trade_factor_reflects_kalshis_own_is_block_trade_flag():
@@ -314,7 +318,7 @@ def test_agreement_factor_is_neutral_with_no_recent_history():
     trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market()], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
-    assert signals[0].factors["agreement_factor"] == 0.5
+    assert signals[0].factors["agreement_factor"] is None
 
 
 def test_agreement_factor_reflects_recent_same_side_signals_on_the_same_ticker():
@@ -337,7 +341,7 @@ def test_agreement_factor_ignores_signals_on_a_different_ticker():
     trade = _trade(ticker="TICK-A", count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
     ctx = {"markets": [_market(ticker="TICK-A")], "trade_tape": [trade], "cfg": {}}
     signals = asyncio.run(provider.fetch_signals(market_context=ctx))
-    assert signals[0].factors["agreement_factor"] == 0.5  # no history on TICK-A itself
+    assert signals[0].factors["agreement_factor"] is None  # no history on TICK-A itself
 
 
 # ---- cluster_factor wiring (docs/prediction-market-strategy-alignment-plan.md Part 2.1) ----
@@ -768,3 +772,21 @@ def test_signal_carries_none_trend_through_to_the_breakdown(monkeypatch):
     trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
     signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
     assert signals[0].factors["trend_factor"] is None
+
+
+def test_agreement_factor_is_none_when_no_recent_prints_exist(monkeypatch):
+    monkeypatch.setattr(signal_log, "recent_sides_for_ticker", lambda *a, **k: [])
+    provider = KalshiTradeTapeProvider()
+    market = _market(ticker="K1")
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
+    assert signals[0].factors["agreement_factor"] is None
+
+
+def test_agreement_factor_still_computed_when_recent_prints_exist(monkeypatch):
+    monkeypatch.setattr(signal_log, "recent_sides_for_ticker", lambda *a, **k: ["yes", "yes", "no"])
+    provider = KalshiTradeTapeProvider()
+    market = _market(ticker="K1")
+    trade = _trade(ticker="K1", count_fp="50000.00", taker_side="yes")
+    signals = asyncio.run(provider.fetch_signals(market_context={"markets": [market], "trade_tape": [trade], "cfg": {}}))
+    assert signals[0].factors["agreement_factor"] == pytest.approx(2 / 3)

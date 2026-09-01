@@ -698,7 +698,7 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
             recent_sides = signal_log.recent_sides_for_ticker(ticker, since_ts=now - _AGREEMENT_LOOKBACK_SEC)
             agreement_factor = (
                 sum(1 for s in recent_sides if s == side) / len(recent_sides)
-                if recent_sides else 0.5
+                if recent_sides else None
             )
 
             # Does this print look like part of an active accumulation run
