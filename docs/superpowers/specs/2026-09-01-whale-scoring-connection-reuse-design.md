@@ -1,11 +1,37 @@
-# Whale-Scoring Per-Trade Connection Reuse — Design (Revision 2)
+# Isolating Write-Critical Work From `tick_executor`'s Shared Pool — Design (Revision 3)
 
-Revision 2, written against the required fix list in
-`2026-09-01-whale-scoring-connection-reuse-design-review.md` (NO-GO on revision 1).
-Every factual citation in revision 1 held up under independent adversarial
-re-verification; the causal analysis had a real gap that changes the core mechanism
-(section 4) and scope (section 1a, section 4's `score_recovered_trade` coverage) —
-addressed below, not just patched around.
+Revision 3. Revision 2 was written against the required fix list in
+`2026-09-01-whale-scoring-connection-reuse-design-review.md` (NO-GO on revision 1);
+every factual citation in revision 1 held up under independent adversarial
+re-verification, and the causal analysis gap that revision found (section 4's core
+mechanism, section 1a's `score_recovered_trade` scope) is addressed and carried
+forward unchanged into this revision.
+
+**Revision 3 broadens scope on direct instruction, after a second, independently
+confirmed root cause landed the same day.** A peer session (`autotrade-dc`) found and
+verified live — the app genuinely hung on `/api/quality/summary` (confirmed
+independently in this revision too, `curl` timeout, `HTTP_STATUS:000`) — that
+`services/diagnostics/diagnostics.py`'s `run_offline()`, invoked by that endpoint on
+every dashboard poll (every 5s), was pinning **both** of `tick_executor`'s 2 workers
+continuously for 5h10m+ (confirmed via `/proc`: `futex_do_wait`/GIL contention,
+~82% CPU each), starving the *actual* trading-critical writes
+(`_flush_trade_capture_async`, `_resolve_and_record_settlements_async`,
+`_build_series_track_record_async`) that share that same pool — directly explaining
+the ongoing `capture_writer` "database is locked" faults independent of the whale-
+scoring mechanism this spec originally targeted. Both are now understood as two
+instances of one architectural gap, not two coincidentally-related bugs: **nothing
+non-critical should share `tick_executor`'s pool with the trading-critical writes it
+exists to protect** — this spec's original whale-scoring fix already isolates one
+non-critical consumer (scoring reads) onto its own pool; this revision adds the
+second (diagnostics) under the same principle, in the same spec, per direct
+instruction to revise rather than run two disconnected efforts.
+
+An immediate stopgap was applied before this revision was written: the `fastapi`
+container was restarted (clears stuck threads, does not fix the underlying cost) —
+confirmed the app recovered from a full hang to "slow but responding"
+(`quality/summary`: 19.2s, still far too slow) — proving the restart bought time
+without touching the actual cause, consistent with every other stopgap applied
+today.
 
 ## 1. Problem, grounded in source and live telemetry
 
@@ -71,16 +97,74 @@ worker-thread call running concurrently. Real, but a pre-existing thread-safety 
 unrelated to connection lifecycle; noted here as a pointer for a future item, not
 addressed by this spec.
 
+## 1b. Second root cause, independently verified — `run_offline()` saturating `tick_executor`
+
+`services/diagnostics/diagnostics.py:764-765` (`run_offline`) loops over every
+watched series (8, from `config/settings.yaml`'s `series_watcher.series`) and calls
+`series_watcher.check_series_funnel()` once per series — not a single aggregate
+call. `funnel()` (`services/series_watcher.py:519-567`) runs two `raw_trades`
+aggregate queries per call (`:543-547`, `:548-552`): both filter on
+`series`/`observed_at` (covered by `idx_raw_trades_series (series, observed_at)`)
+*and* on `excluded`/`resolved_side` (not covered by that index — every row in the
+time-windowed range must still be examined to evaluate those conditions). `raw_trades`
+has grown to 38,438,068 rows (27.9GB) as of this revision, up from a documented
+30,787,297-row/22.3GB baseline (`services/diagnostics/store_stats.py`, 2026-08-30) —
+confirmed directly, `SELECT COUNT(*)` took 93.0s on a read-only connection.
+
+`services/quality/routes.py:81` wraps the entire 8-series loop in one
+`await tick_executor.run(lambda: diagnostics.run_offline(cfg))` call — the **same**
+2-worker pool `main.py` routes `_flush_trade_capture_async`/
+`_resolve_and_record_settlements_async`/`_build_series_track_record_async` through.
+The route's own comment documents this call was measured at "1.8-2.5s on a cold page
+cache" when it was first offloaded onto `tick_executor` (2026-08-27, itself a fix for
+an earlier, different bug — this call used to block the event loop directly for
+~15s). That number is now stale: as `raw_trades` grew, the call's real cost grew
+with it, and `GET /api/quality/summary` is polled by the dashboard every 5s
+(`refreshIntervalMs`, default) regardless — so polls began queuing faster than they
+could drain, both `tick_executor` workers ended up permanently occupied by
+overlapping `run_offline()` calls, and the trading-critical writes sharing that pool
+were starved. Confirmed live via `/proc`: both worker threads in `futex_do_wait`
+(GIL contention) at ~82% CPU each, continuously, for 5h10m+ at time of discovery —
+matching `capture_writer` "database is locked" faults recurring live (114 count,
+most recent minutes old, not historical) and `exit_engine` staleness faults 2 minutes
+old at check time. Independently re-confirmed in this revision: `GET
+/api/quality/summary` timed out on a direct `curl -m 12` (`HTTP_STATUS:000`) while
+`/api/health/pipeline` (which doesn't route through `tick_executor`) responded
+normally at the same moment.
+
+**2026-08-27's own fix moved this call off the event loop and onto `tick_executor`
+specifically to avoid blocking it — a real, correct fix for the bug it targeted, that
+became this one as the underlying table grew.** The lesson generalizes: routing
+something expensive onto *a* thread pool isn't sufficient on its own — routing it
+onto the *same* pool as trading-critical writes, with no isolation, means its own
+cost growth over time can silently start starving something else entirely unrelated
+to it. This is exactly the failure mode section 4a's design closes.
+
 ## 2. Non-goals
 
 - `capture_writer`'s flush cadence/batch size and `services.tick_executor`'s own
   2-worker pool sizing are **not** touched here. Increasing `tick_executor`'s worker
-  count was considered and rejected: SQLite serializes writers at the file level
-  regardless of Python thread count (WAL allows concurrent readers alongside one
-  writer, never concurrent writers to the same file), so more threads contending for
-  the same lock plausibly makes lock-acquisition retry/backoff worse, not better —
-  and per this repo's own HARD RULE, thread-count is not a parameter to guess-adjust
-  without first identifying the measured mechanism, which this spec does instead.
+  count was considered and rejected for both mechanisms in this spec: SQLite
+  serializes writers at the file level regardless of Python thread count (WAL allows
+  concurrent readers alongside one writer, never concurrent writers to the same
+  file), so more threads contending for the same lock plausibly makes
+  lock-acquisition retry/backoff worse, not better — and per this repo's own HARD
+  RULE, thread-count is not a parameter to guess-adjust without first identifying
+  the measured mechanism, which this spec does instead (two, in fact: this is about
+  isolating existing work onto separate small pools, not growing any one pool).
+- Optimizing `funnel()`'s own query shape (e.g., composite indexes covering
+  `excluded`/`resolved_side` so the aggregate queries stop examining every row in a
+  series' time window) is a real, plausible complementary improvement, but is **not**
+  in this spec — it would reduce `run_offline()`'s absolute cost, but wouldn't by
+  itself fix the architectural problem (anything sharing `tick_executor`'s pool with
+  critical writes remains a risk regardless of its own cost), and adding an index to
+  a heavily-written table has its own write-amplification cost this spec hasn't
+  measured. Worth a follow-up item, not bundled here.
+- Reducing `/api/quality/summary`'s 5s poll interval, or moving it off polling
+  entirely, is **not** in this spec — it would reduce trigger *frequency* but not fix
+  the shared-pool starvation a single slow call already causes, and polling-interval
+  changes are their own scoped decision elsewhere in this codebase's history, not
+  something to fold in here.
 - Re-raising `KXBTC15M`/`KXBTCD`/`KXETH15M`'s `min_contracts_by_series` back toward
   their computed P90 values is explicitly **out of scope** for this spec — that's
   the next-action item's own stated follow-up, gated on this fix actually landing
@@ -236,6 +320,76 @@ functions holds a transaction open across calls; each executes one `SELECT`, ful
 drains it via `.fetchall()`, and returns within the same call. No long-running
 reader snapshot is ever held that could block a writer's checkpoint.
 
+## 4a. Design — diagnostics gets its own isolated pool
+
+Same principle as section 4, applied to the second mechanism (section 1b): move
+`run_offline()`'s work off `tick_executor`'s shared pool onto its own dedicated one,
+so its cost — whatever it is, today or after any future query optimization — can
+never again starve the trading-critical writes that pool exists to protect.
+
+**New: `services/diagnostics/_diagnostics_pool.py`** — same shape as
+`services/whalewatchers/_scoring_pool.py` (Task 1 of the implementation plan),
+deliberately a separate module and a separate `ThreadPoolExecutor`, not a shared
+utility between the two: they isolate two unrelated workloads from `tick_executor`
+for two unrelated reasons (whale-scoring's per-trade connection overhead vs.
+diagnostics' per-series-loop cost against a large table), and a future change to one
+pool's sizing/behavior shouldn't need to reason about whether it affects the other.
+
+```python
+"""Dedicated worker pool for services/diagnostics/diagnostics.py's
+run_offline() - see docs/superpowers/specs/2026-09-01-whale-scoring-
+connection-reuse-design.md section 1b/4a for why this needs its own pool,
+not services.tick_executor's shared one: run_offline()'s per-series
+raw_trades aggregate queries (services/series_watcher.py's funnel()) grew
+expensive enough, as raw_trades grew past 38M rows, to permanently occupy
+both of tick_executor's 2 workers - starving the trading-critical writes
+that pool exists to protect (confirmed live, 2026-09-01: both workers in
+futex_do_wait for 5h10m+, capture_writer lock faults recurring).
+
+1 worker, not tick_executor's 2 or the whale-scoring pool's 4: this is a
+single dashboard-triggered call path (GET /api/quality/summary), never
+concurrent with itself in practice (the same poll interval that triggers
+it also means a slow call's overlap with the next poll is the actual
+failure mode this pool exists to contain, not a healthy concurrency
+pattern to provision extra capacity for) - a second worker would just let
+two slow run_offline() calls overlap and both run slowly together, not
+make either one faster."""
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, TypeVar
+
+T = TypeVar("T")
+
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diagnostics")
+
+
+async def run(fn: Callable[[], T]) -> T:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, fn)
+```
+
+**Modify `services/quality/routes.py:81`:** replace
+`await tick_executor.run(lambda: diagnostics.run_offline(cfg))` with
+`await _diagnostics_pool.run(lambda: diagnostics.run_offline(cfg))`.
+
+**No connection caching added here** — unlike the whale-scoring fix, this spec
+doesn't change `series_watcher.py`'s own connection handling or query shape (see
+section 2's non-goals: query optimization is a real, separate follow-up, not bundled
+in). This section is isolation only: same expensive call, same cost, just no longer
+capable of starving `tick_executor`'s critical-path work regardless of how expensive
+it is or becomes. `run_offline()` becoming slower over time (as `raw_trades` keeps
+growing) will now show up as `/api/quality/summary` itself getting slower — a direct,
+attributable, visible symptom on the one endpoint that actually causes the cost —
+rather than an indirect, confusing "trading writes are failing" symptom on an
+unrelated part of the system.
+
+**Interaction with the overlapping-call failure mode:** if polls keep arriving faster
+than `run_offline()` completes, they'll now queue behind this pool's single worker —
+visible as growing latency on `/api/quality/summary` specifically, not a silent
+thread/GIL leak elsewhere. This is the same "bounded and observable, not eliminated"
+property section 4's whale-scoring pool design already established — consistent
+architecture across both fixes in this spec, not two different philosophies.
+
 ## 5. Resilience
 
 **Corrected in revision 2** — the file-relocation scenario revision 1's mitigation
@@ -289,29 +443,61 @@ review alone.**
   themselves (this design bounds their blast radius, it doesn't resolve the
   underlying cancellation gap) — both stay separate, explicitly out-of-scope items.
 
+**Diagnostics pool validation (section 4a), added in revision 3:**
+
+- Unit: `_diagnostics_pool.run()` executes on a thread named `diagnostics-*`, not
+  the event loop and not a `tick_executor`/`whale-scoring` thread.
+- **Required before merge, not optional, same bar as the whale-scoring fix:** confirm
+  live that `GET /api/quality/summary` no longer competes with trading-critical
+  writes for `tick_executor` capacity — capture `tick_executor`'s own worker
+  business (a simple probe: submit a no-op and time how long it takes to run) while a
+  `run_offline()`-triggering poll is in flight, before and after this change. Before:
+  the probe should show contention/delay while `run_offline()` is running (this is
+  the bug, so it should be reproducible). After: the probe should return promptly
+  regardless of `run_offline()`'s own state. This is the direct, mechanistic proof
+  the isolation actually isolates, not just an indirect inference from fewer faults.
+- Confirm `/api/quality/summary`'s own response time is unaffected (or, if
+  `run_offline()` is still slow against the current table size, that the *symptom*
+  is now confined to that one endpoint's latency, not visible as `capture_writer`
+  lock faults or other-endpoint hangs).
+
 ## 7. Rollback
 
-Additive: one new module, three small new helper functions in existing modules, no
-change to any existing function's signature or behavior for any *other* caller, no
-schema change, no config field. Revertible with a normal `git revert`.
+Additive: two new modules (`_scoring_pool.py`, `_diagnostics_pool.py`), a handful of
+small new helper functions in existing modules, one call-site swap in
+`quality/routes.py`. No change to any existing function's signature or behavior for
+any *other* caller, no schema change, no config field. Revertible with a normal
+`git revert`, and the two fixes are independently revertible from each other (touch
+disjoint files).
 
-## 8. Spec self-review (revision 2)
+## 8. Spec self-review (revision 3)
 
-- Placeholder scan: none — every file, line number, busy-timeout value, and thread
-  count above was read from current source during this design.
-- Internal consistency: section 4's dedicated pool directly resolves both item 1
-  (leak boundedness) and item 2 (thread-count stability) from the review; section
-  1a's `score_recovered_trade` scope addition is carried through consistently into
-  section 4's implementation and section 6's test plan.
-- Scope check: still one cohesive unit — bringing `score_recovered_trade` in scope
-  (section 1a) is the same underlying mechanism, not a second project.
-- Ambiguity check: "proven safe by real measurement" is concrete in section 6 with a
-  named pass criterion; section 4's `is_new`/`schema_init` mechanism replaces
-  revision 1's prose-only claim with an actual implementable signature.
-- Fix-list recheck (required before trusting this revision, not accepted on its own
-  completion claim): re-verified `candidate_retry.py`'s `run_pending()` is already
-  `async def` and its one `score_recovered_trade` call site (`:167`) is a plain
-  `for` loop — confirmed the "small, contained ripple" claim holds before stating it
-  as fact, rather than asserting it from inference. All seven review items addressed;
-  no new gap found in this pass beyond that one detail, which is now stated precisely
-  rather than left general.
+- Placeholder scan: none — every file, line number, busy-timeout value, thread count,
+  and row/size figure above was read from current source or live telemetry during
+  this design (section 1b's numbers independently re-confirmed in this revision, not
+  taken on the peer session's word alone: re-ran the `curl` timeout myself).
+- Internal consistency (carried from revision 2): section 4's dedicated pool directly
+  resolves both item 1 (leak boundedness) and item 2 (thread-count stability) from
+  the original review; section 1a's `score_recovered_trade` scope addition is carried
+  through consistently into section 4's implementation and section 6's test plan.
+- Internal consistency (new in revision 3): section 4a's diagnostics pool follows the
+  same architectural principle section 4 establishes (isolate onto a dedicated,
+  deliberately-small pool; make overload a visible backlog, not a silent leak) —
+  stated explicitly in section 4a rather than left as an implicit parallel, and the
+  two pools are kept genuinely separate (own modules, own executors) rather than
+  merged into one shared "everything non-critical" pool, since they isolate two
+  unrelated workloads for two unrelated reasons.
+- Scope check: this spec now covers two independently-revertible fixes under one
+  architectural principle, per direct instruction to revise together rather than run
+  disconnected efforts — each remains a cohesive unit on its own (section 7 notes
+  they touch disjoint files), so this isn't scope creep into an unrelated third
+  thing, but it is now two fixes, and the implementation plan (next) will need two
+  correspondingly separable groups of tasks.
+- Ambiguity check: section 4a's "1 worker, not tick_executor's 2 or the whale-scoring
+  pool's 4" sizing is justified with reasoning (single call path, no legitimate
+  concurrency benefit from more), not left as an unexplained number.
+- What revision 3 has *not* yet had: a fresh adversarial review of the new section
+  1b/4a material specifically. Per this repo's own rule, genuinely new scope (not
+  fix-list work implementing an already-reviewed recommendation) needs its own
+  independent pass before this is trusted, not just this self-review — queued as the
+  next step before writing/revising the implementation plan.
