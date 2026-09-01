@@ -345,8 +345,15 @@ def test_event_loop_stalls_passes_on_zero():
 
 
 def test_event_loop_stalls_unknown_when_component_absent():
-    """An app predating this check exposes no loop_watchdog key - UNKNOWN,
-    never a silent PASS, same discipline as check_exit_engine_faults."""
+    """`by_component` comes from a SQL GROUP BY (fault_log.summary()), so a
+    component with zero matching rows in the window is ABSENT from the
+    dict, not present with a 0 - in practice this is the normal shape of a
+    genuinely healthy zero-stall window, not just an app predating this
+    check. Either way: UNKNOWN, never a silent PASS, same discipline as
+    check_exit_engine_faults (PR #417 adversarial review finding 4/5c -
+    this means check_event_loop_stalls can't report PASS from real healthy
+    data either, a pre-existing shape shared with check_exit_engine_faults,
+    tracked as a follow-up rather than fixed here)."""
     p = _payload(faults_last_24h={"by_component": {"capture_writer": 0, "exit_engine": 0}})
     c = _by_id(sa.run_checks(p))["event_loop_stalls"]
     assert c.status == sa.UNKNOWN

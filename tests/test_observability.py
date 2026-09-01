@@ -825,6 +825,27 @@ def test_maybe_capture_logs_a_fault_when_the_watchdog_recorded_a_stall(monkeypat
     assert kwargs["severity"] == "error"  # >= 1000ms
 
 
+def test_maybe_capture_logs_error_severity_at_the_exact_1000ms_boundary(monkeypatch):
+    """The threshold is `>= 1000.0`, inclusive - exactly 1000.0ms must be
+    'error', not 'warn' (PR #417 adversarial review finding 5a: only
+    well-above and well-below values were tested, not the boundary
+    itself)."""
+    from services import loop_watchdog
+    monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
+    monkeypatch.setattr(observability.http_client, "reset_rest_latency_window", lambda: None)
+    monkeypatch.setattr(loop_watchdog, "_stall_max_ms", 1000.0)
+    monkeypatch.setattr(loop_watchdog, "_stall_count", 1)
+    monkeypatch.setattr(loop_watchdog, "_samples", 600)
+    recorded = []
+    monkeypatch.setattr(observability.fault_log, "record_fault",
+                        lambda *a, **k: recorded.append((a, k)) or True)
+    state = {"observability": {"last_sample_at": time.time() - 999}}
+
+    observability.maybe_capture({"observability": {"enabled": True, "sample_interval_sec": 60}}, state, None, None)
+
+    assert recorded[0][1]["severity"] == "error"
+
+
 def test_maybe_capture_logs_a_warn_severity_fault_for_a_smaller_stall(monkeypatch):
     from services import loop_watchdog
     monkeypatch.setattr(observability.http_client, "rest_latency_snapshot", _fake_rest_latency)
