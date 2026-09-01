@@ -102,43 +102,76 @@ addressed by this spec.
 `services/diagnostics/diagnostics.py:764-765` (`run_offline`) loops over every
 watched series (8, from `config/settings.yaml`'s `series_watcher.series`) and calls
 `series_watcher.check_series_funnel()` once per series — not a single aggregate
-call. `funnel()` (`services/series_watcher.py:519-567`) runs two `raw_trades`
-aggregate queries per call (`:543-547`, `:548-552`): both filter on
-`series`/`observed_at` (covered by `idx_raw_trades_series (series, observed_at)`)
-*and* on `excluded`/`resolved_side` (not covered by that index — every row in the
-time-windowed range must still be examined to evaluate those conditions). `raw_trades`
-has grown to 38,438,068 rows (27.9GB) as of this revision, up from a documented
-30,787,297-row/22.3GB baseline (`services/diagnostics/store_stats.py`, 2026-08-30) —
-confirmed directly, `SELECT COUNT(*)` took 93.0s on a read-only connection.
+call. `check_series_funnel()` isn't itself a single cost: it calls `reconcile()`
+(`series_watcher.py:655`, its own real query cost against `signal_log.db`/
+`paper_broker.db`, not otherwise analyzed here) unconditionally per series, and only
+calls `funnel()` (`series_watcher.py:519-652` — the function spans to 652, not 567;
+corrected in this revision) when both `signal_accuracy_pct` and
+`realised_win_rate_pct` are non-None. `funnel()` runs two `raw_trades` aggregate
+queries per call (`:543-547`, `:548-552`): both filter on `series`/`observed_at`
+(covered by `idx_raw_trades_series (series, observed_at)`) *and* on
+`excluded`/`resolved_side` (not covered by that index — every row in the
+time-windowed range must still be examined to evaluate those conditions).
+`raw_trades` has grown to ~38.4M rows (27.9GB) as of this revision, up from a
+documented 30,787,297-row/22.3GB baseline (2026-08-30).
 
-`services/quality/routes.py:81` wraps the entire 8-series loop in one
+**Not the whole story — a sibling, already-documented cost lives in the same call,
+missed in the first draft of this revision and caught on adversarial review.**
+`run_offline()` also runs `check_confidence_input_coverage()` before the per-series
+loop, which calls `signal_log.resolved_signals_with_factors()` with no `since_ts` —
+a full, unscoped fetch against `signal_log.db`'s 103k+ rows. This is not a new
+finding: `docs/open-decisions.md` already records it (2026-09-01,
+whale-confidence-scoring-remediation Task 9), independently measured at ~1.0-1.1s,
+already flagged there as "roughly a 20% duty cycle on [tick_executor] for this one
+diagnostic alone," still open, awaiting a design call on whether to bound the fetch
+or accept the cost. Section 4a's isolation fix resolves that entry's specific
+"eats into tick_executor capacity" framing as a side effect — the whole
+`run_offline()` call leaves that pool, this one included — even though the
+underlying per-call cost of `resolved_signals_with_factors()` itself is unchanged
+(query-bounding stays this spec's own non-goal). `docs/open-decisions.md`'s entry
+should be updated to note this once section 4a ships, not left stale.
+
+`services/quality/routes.py:81` wraps the entire `run_offline()` call — both the
+`raw_trades`-scanning loop and the sibling cost above — in one
 `await tick_executor.run(lambda: diagnostics.run_offline(cfg))` call — the **same**
 2-worker pool `main.py` routes `_flush_trade_capture_async`/
-`_resolve_and_record_settlements_async`/`_build_series_track_record_async` through.
-The route's own comment documents this call was measured at "1.8-2.5s on a cold page
-cache" when it was first offloaded onto `tick_executor` (2026-08-27, itself a fix for
-an earlier, different bug — this call used to block the event loop directly for
-~15s). That number is now stale: as `raw_trades` grew, the call's real cost grew
-with it, and `GET /api/quality/summary` is polled by the dashboard every 5s
-(`refreshIntervalMs`, default) regardless — so polls began queuing faster than they
-could drain, both `tick_executor` workers ended up permanently occupied by
-overlapping `run_offline()` calls, and the trading-critical writes sharing that pool
-were starved. Confirmed live via `/proc`: both worker threads in `futex_do_wait`
-(GIL contention) at ~82% CPU each, continuously, for 5h10m+ at time of discovery —
-matching `capture_writer` "database is locked" faults recurring live (114 count,
-most recent minutes old, not historical) and `exit_engine` staleness faults 2 minutes
-old at check time. Independently re-confirmed in this revision: `GET
-/api/quality/summary` timed out on a direct `curl -m 12` (`HTTP_STATUS:000`) while
-`/api/health/pipeline` (which doesn't route through `tick_executor`) responded
-normally at the same moment.
+`_resolve_and_record_settlements_async`/`_build_series_track_record_async`, and
+`decision_bridge.py`'s `candidate_ledger.claim()`/`record_decision()` (which gate
+every whale signal), through. `GET /api/quality/summary` is polled by the dashboard
+every 5s regardless of either cost — so polls began queuing faster than they could
+drain, both `tick_executor` workers ended up permanently occupied, and the
+trading-critical work sharing that pool was starved. Confirmed live via `/proc`:
+both worker threads in `futex_do_wait` (GIL contention) at ~82% CPU each,
+continuously, for 5h10m+ at time of discovery — matching `capture_writer` "database
+is locked" faults recurring live. Independently re-confirmed *twice* now (once in
+this revision, once again during this revision's own adversarial review, both
+after an emergency container restart): the fault recurs again within ~11 minutes of
+a freshly-started process, and `GET /api/quality/summary` still hangs.
 
-**2026-08-27's own fix moved this call off the event loop and onto `tick_executor`
-specifically to avoid blocking it — a real, correct fix for the bug it targeted, that
-became this one as the underlying table grew.** The lesson generalizes: routing
-something expensive onto *a* thread pool isn't sufficient on its own — routing it
-onto the *same* pool as trading-critical writes, with no isolation, means its own
-cost growth over time can silently start starving something else entirely unrelated
-to it. This is exactly the failure mode section 4a's design closes.
+**What this mechanism confidently explains, and what it doesn't.** `tick_executor`
+pool-sharing is well-supported as the cause of the recurring `capture_writer` lock
+faults specifically — verified same pool object, verified faults recur quickly even
+post-restart. It does **not** fully explain the broader "the bare event loop
+stalls, other endpoints hang too" symptom: `GET /api/health/pipeline` (confirmed via
+source to use `asyncio.to_thread`, never `tick_executor`) was independently
+reproduced hanging as well, both in this revision's own check and again in its
+adversarial review. `tick_executor` sharing can't be the cause of a hang on an
+endpoint that never touches `tick_executor`. The more likely explanation is the
+*other* half of this same spec: until the whale-scoring connection-reuse fix ships
+(sections 1/1a/4), `_process_trades_sync` still runs on that same shared default
+`asyncio.to_thread` executor `/api/health/pipeline`'s own code also uses — real
+default-executor contention from the still-open half of this spec, not something
+section 4a touches. **Both fixes in this spec are needed together for the full
+picture** — this is the reason to ship them as one spec, not a coincidence.
+
+**2026-08-27's own fix moved `run_offline()` off the event loop and onto
+`tick_executor` specifically to avoid blocking it — a real, correct fix for the bug
+it targeted, that became this one as the underlying table (and the sibling
+unscoped fetch above) grew.** The lesson generalizes: routing something expensive
+onto *a* thread pool isn't sufficient on its own — routing it onto the *same* pool
+as trading-critical work, with no isolation, means its own cost growth over time can
+silently start starving something else entirely unrelated to it. This is exactly
+the failure mode section 4a's design closes — for the mechanism it actually covers.
 
 ## 2. Non-goals
 
@@ -346,21 +379,31 @@ both of tick_executor's 2 workers - starving the trading-critical writes
 that pool exists to protect (confirmed live, 2026-09-01: both workers in
 futex_do_wait for 5h10m+, capture_writer lock faults recurring).
 
-1 worker, not tick_executor's 2 or the whale-scoring pool's 4: this is a
-single dashboard-triggered call path (GET /api/quality/summary), never
-concurrent with itself in practice (the same poll interval that triggers
-it also means a slow call's overlap with the next poll is the actual
-failure mode this pool exists to contain, not a healthy concurrency
-pattern to provision extra capacity for) - a second worker would just let
-two slow run_offline() calls overlap and both run slowly together, not
-make either one faster."""
+2 workers, not tick_executor's 2 (shared with trading-critical work,
+the exact problem being fixed) or the whale-scoring pool's 4 (a
+different, higher-frequency workload shape). Corrected during this
+revision's own adversarial review: an earlier draft assumed 1 worker
+on the reasoning that only the dashboard's own 5s poll calls this
+endpoint - false. Real, structural other callers exist: this repo's
+own .claude/hooks/guard_workflow.py routes sessions to this exact
+endpoint, CLAUDE.md's own "Start investigations here" names it step 1
+(printed every session banner), tools/quality_coordination.py also
+calls it, and this repo routinely runs multiple parallel Claude
+sessions that each independently check it - with individual calls
+already running 15-20s+, overlap between the dashboard's own poll and
+a session's manual check is plausible, not an edge case. 2 gives
+headroom for that realistic pattern without reintroducing
+tick_executor's own problem (unbounded, unisolated sharing) - if 2
+still isn't enough, that becomes a measurable, attributable backlog on
+THIS pool specifically (see below), not a guess to get right on the
+first try."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diagnostics")
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="diagnostics")
 
 
 async def run(fn: Callable[[], T]) -> T:
@@ -378,10 +421,20 @@ section 2's non-goals: query optimization is a real, separate follow-up, not bun
 in). This section is isolation only: same expensive call, same cost, just no longer
 capable of starving `tick_executor`'s critical-path work regardless of how expensive
 it is or becomes. `run_offline()` becoming slower over time (as `raw_trades` keeps
-growing) will now show up as `/api/quality/summary` itself getting slower — a direct,
-attributable, visible symptom on the one endpoint that actually causes the cost —
-rather than an indirect, confusing "trading writes are failing" symptom on an
-unrelated part of the system.
+growing, or as `resolved_signals_with_factors()`'s own unscoped fetch grows with
+`signal_log.db`) will now show up as `/api/quality/summary` itself getting
+slower — a direct, attributable, visible symptom on the one endpoint that actually
+causes the cost — rather than an indirect, confusing "trading writes are failing"
+symptom on an unrelated part of the system.
+
+**Stated explicitly, not left implicit: `/api/quality/summary` will very likely
+still be slow after this fix ships**, possibly still look "hung" from the
+dashboard's perspective on a bad day — this is isolation, not a performance fix for
+`run_offline()` itself. The real, load-bearing improvement is that its cost can no
+longer take `capture_writer`'s writes down with it. Whether the endpoint's own
+residual slowness is acceptable, or worth `docs/open-decisions.md`'s already-open
+query-bounding question (Task 9) being picked up as a follow-up, is a separate call
+this spec doesn't make.
 
 **Interaction with the overlapping-call failure mode:** if polls keep arriving faster
 than `run_offline()` completes, they'll now queue behind this pool's single worker —
@@ -493,11 +546,21 @@ disjoint files).
   they touch disjoint files), so this isn't scope creep into an unrelated third
   thing, but it is now two fixes, and the implementation plan (next) will need two
   correspondingly separable groups of tasks.
-- Ambiguity check: section 4a's "1 worker, not tick_executor's 2 or the whale-scoring
-  pool's 4" sizing is justified with reasoning (single call path, no legitimate
-  concurrency benefit from more), not left as an unexplained number.
-- What revision 3 has *not* yet had: a fresh adversarial review of the new section
-  1b/4a material specifically. Per this repo's own rule, genuinely new scope (not
-  fix-list work implementing an already-reviewed recommendation) needs its own
-  independent pass before this is trusted, not just this self-review — queued as the
-  next step before writing/revising the implementation plan.
+- Ambiguity check: section 4a's worker-count sizing is justified with reasoning tied
+  to realistic known callers, not an unexplained number.
+
+**Post-adversarial-review update (this section written before that review; findings
+below are from it, addressed above, not re-asserted here as new self-review):** the
+new section 1b/4a material got its own fresh, independent adversarial review
+(separate consolidation doc, `2026-09-01-diagnostics-pool-addition-review.md`,
+NO-GO). Real findings, all fixed in this file: two citation inaccuracies
+(`funnel()`'s actual line span; `check_series_funnel()`'s conditional, not
+unconditional, call into `funnel()`), a missed cross-reference to an already-open,
+same-day `docs/open-decisions.md` entry describing a sibling cost inside the same
+`run_offline()` call, an important reframing (this fix confidently explains
+`capture_writer` faults but only *partially* explains the broader event-loop-stall
+symptom — the rest needs the whale-scoring half of this same spec), and the 1-worker
+diagnostics-pool sizing changed to 2 once real evidence of legitimate concurrent
+callers surfaced. Fix-list recheck: re-read every edited section above against the
+review's five items after making the edits — all five addressed, no new gap found
+in this pass.
