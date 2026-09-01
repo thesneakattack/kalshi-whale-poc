@@ -149,22 +149,36 @@ whale_watcher_kalshi:
   # instruction: "seeking edge not just wins" - a fixed global 3000
   # (calibrated for crypto) filtered out ~99% of gold/silver's real flow,
   # since those series trade in far smaller typical sizes. 15-min series
-  # (BTC15M/GOLD15M/SILVER15M/ETH15M) sampled from the single currently-open
-  # instance only (Kalshi's status=closed transitions to finalized quickly),
-  # not multiple rollovers - revisit if that sample proves unrepresentative.
+  # (GOLD15M/SILVER15M) sampled from the single currently-open instance only
+  # (Kalshi's status=closed transitions to finalized quickly), not multiple
+  # rollovers - revisit if that sample proves unrepresentative.
+  #
+  # KXBTC15M/KXBTCD/KXETH15M deliberately EXCLUDED here, reverted to the
+  # global 3000 fallback same-day (2026-09-01, ~15 min after first applying
+  # their own P90 override): live incident, not a guess - dropping BTC15M's
+  # effective threshold 3000->173 (a ~17x cut on this app's single highest-
+  # frequency series) produced a measured 8322-rejection/15min spike (5046
+  # from KXBTC15M alone, 61%; BTCD+ETH15M another 17%) that overwhelmed
+  # capture_writer/candidate_log's write path (the same file PR #394 fixed
+  # lock contention on hours earlier, just not sized for this volume):
+  # tick duration 6.63s->32.41s, kalshi_websocket consumer_stalled_forced_
+  # reconnect fired repeatedly, and signal generation dropped to 0/min for
+  # ~6 minutes. Gold/silver's own share of the spike was only ~9.5% (793 of
+  # 8322) - the crypto series were already reasonably served by 3000 (BTC15M
+  # DID produce followed signals under it, just a small fraction of real
+  # flow) and are excluded until write-path capacity for this volume is
+  # separately measured and fixed, not re-applied by raising the P90 number
+  # alone without addressing the mechanism.
   min_contracts_by_series:
     KXSILVERW: 114
     KXGOLDW: 190
-    KXBTCD: 248
     KXGOLDD: 200
     KXSILVERD: 98
     KXETHD: 76
     KXGOLDH: 25
     KXSILVERH: 33
-    KXBTC15M: 173
     KXGOLD15M: 82
     KXSILVER15M: 75
-    KXETH15M: 50
 # depth_factor/unusualness_factor/proximity_factor floored at the shared
 # minimum (0.0404) since 2026-08-10's first real calibration run found
 # unusualness_factor/agreement_factor negative. SUPERSEDED 2026-08-30: a
