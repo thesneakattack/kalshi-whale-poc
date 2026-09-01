@@ -259,6 +259,15 @@ def test_get_series_cache_merges_a_delta_response_instead_of_replacing(tmp_path,
     monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
     state["series_cache"] = {
         "fetched_at": 0.0,
+        # last_full_sync_at recent (final whole-branch review re-review
+        # finding): without this, a missing key defaults to due for the
+        # periodic full resync, which takes the unfiltered get_series_list()
+        # branch instead of the delta path this test's own name and fake
+        # client (min_updated_ts-keyed signature) specifically exist to
+        # exercise - it was still passing either way (the merge/pop logic
+        # is shared by both branches), but silently stopped testing what it
+        # claims to.
+        "last_full_sync_at": time.time(),
         "series": [{"ticker": "OLD-UNCHANGED", "category": "Sports", "volume_fp": "100"}],
     }
 
@@ -288,6 +297,10 @@ def test_get_series_cache_removes_a_series_whose_volume_drops_to_zero_in_the_del
     monkeypatch.setattr(series_cache, "DB_PATH", tmp_path / "series_cache.db")
     state["series_cache"] = {
         "fetched_at": 0.0,
+        # last_full_sync_at recent - same reasoning as the merge test above
+        # (final whole-branch review re-review finding): keeps this test on
+        # the delta path its own name specifically claims to exercise.
+        "last_full_sync_at": time.time(),
         "series": [
             {"ticker": "WENT-QUIET", "category": "Sports", "volume_fp": "100",
              "last_updated_ts": "2026-08-01T00:00:00Z"},

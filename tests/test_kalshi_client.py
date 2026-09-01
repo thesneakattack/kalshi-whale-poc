@@ -38,7 +38,7 @@ def test_get_events_returns_flat_events_keyed_by_ticker(monkeypatch):
     # with_milestones=False (default) still needs a slot on the fake - the
     # real gateway always passes it explicitly, never omits the kwarg (Task
     # 10, kalshi-category-data-completeness); see
-    # test_get_events_default_omits_with_milestones_for_existing_callers
+    # test_get_events_default_sends_with_milestones_false_for_existing_callers
     # below for the dedicated proof of the value actually sent.
     async def fake_get_events(tickers, limit, with_milestones=False):
         calls.append((tickers, limit))

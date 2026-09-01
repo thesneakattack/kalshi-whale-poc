@@ -236,7 +236,10 @@ def _record_unmapped_political_race_status(race_call_status: str) -> None:
         f"{race_call_status!r}: not in _POLITICAL_RACE_STATUS's observed vocabulary - "
         "defaulting to the safe 'none' string (truthy, non-terminal, is_live=False) "
         "rather than a guessed live/finished mapping",
-        severity="warning",
+        severity="warn",  # matches the repo's established vocabulary (grepped: every
+        # other fault_log.record_fault/record_exception call site uses "warn"/"error"/
+        # "info", never "warning" - /api/health/faults' by_severity bucketing would
+        # otherwise split this into its own bucket for no reason)
     )
 
 
