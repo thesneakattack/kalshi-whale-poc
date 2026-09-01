@@ -462,9 +462,13 @@ tests/test_index_feed.py tests/test_index_feed_backfill.py tests/test_settlement
 ```
 Zero failures, zero errors, zero skips.
 
-Full suite (`pytest tests/ -q -m 'not slow'`): run in progress at the time
-this section was written; see the session's own record for the final tally
-if not yet appended here.
+Full suite (`pytest tests/ -q -m 'not slow'`), run to completion myself:
+```
+3037 passed, 16 skipped, 2 deselected, 1 warning in 289.50s (0:04:49)
+```
+Exit code 0, zero `FAILED`/`ERROR` lines. Matches the commit message's own
+"3037 passed, 0 failed" claim exactly — independently confirmed, not taken
+on faith.
 
 ### What I verified directly vs. took on the commit message's word
 
@@ -477,19 +481,20 @@ actually assert; the scoped test run (executed myself); an independent
 app-wide re-sweep for `flush()`/`flush_now()` reachability beyond the two
 sites Finding 1 named.
 
-Not independently re-verified: the commit's claim of "3037 passed, 0 failed"
-for the full local suite pre-dating this session's own run — my own full-
-suite run was in progress when this section was written; see the test
-results subsection above for the up-to-date figure once available.
+Not independently re-verified: nothing left outstanding — the full-suite run
+completed (see above) and matches the commit message's own figure exactly.
 
-**Addendum (orchestrating session, same day):** the re-reviewer's full-suite
-run didn't complete before it stopped responding. The orchestrating session's
-own full-suite run, taken independently right after committing `734eca0`
-(before this re-review was dispatched): `3037 passed, 16 skipped, 2
-deselected, 1 warning in 242.69s` - zero failures, matching the scoped run's
-zero-failure result above. `capture_writer.flush_now()`'s undisclosed-
-blocking gap (candidate_log.py's gate_summary/count_range/clear_range/
-clear_all, reachable from main.py's _maybe_run_auto_apply and
-services/reset/routes.py's admin routes with no executor offload) filed as
-its own tracked follow-up rather than folded into this PR - out of scope
-per this section's own reasoning above.
+**Addendum (orchestrating session, same day):** at the time this addendum was
+first written, the re-reviewer's full-suite run had not yet completed. It has
+since completed (see "Test results" above: `3037 passed, 16 skipped, 2
+deselected, 1 warning in 289.50s`, zero failures) and agrees with the
+orchestrating session's own independent full-suite run, taken right after
+committing `734eca0` (before this re-review was dispatched): `3037 passed,
+16 skipped, 2 deselected, 1 warning in 242.69s` - also zero failures. Two
+independent full-suite runs, same pass/skip/deselect counts, zero failures
+either time. `capture_writer.flush_now()`'s undisclosed-blocking gap
+(candidate_log.py's gate_summary/count_range/clear_range/clear_all,
+reachable from main.py's _maybe_run_auto_apply and services/reset/routes.py's
+admin routes with no executor offload) filed as its own tracked follow-up
+rather than folded into this PR - out of scope per this section's own
+reasoning above.
