@@ -625,7 +625,7 @@ def resolved_with_factors_count() -> int:
         ).fetchone()[0]
 
 
-def resolved_signals_with_factors() -> list[dict]:
+def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     """services/whale_calibration/confidence_calibration.py's entire input: resolved signals
     that carry a real per-factor confidence breakdown. factors_json IS NOT
     NULL is the filter, not a source string match - only real providers
@@ -636,12 +636,31 @@ def resolved_signals_with_factors() -> list[dict]:
     recency, and this table is small enough (one row per signal, not per
     tick) that a full scan is cheap. `series` is already a stored, indexed
     column (issue #60 - it existed but was never selected here, so every
-    consumer of this function was blind to it)."""
+    consumer of this function was blind to it).
+
+    since_ts=None keeps today's full-history behavior (design §4: the
+    calibration gate cares about total resolved count, not recency) - a caller
+    wanting a recency-scoped view (e.g. a future report asking "does the gap
+    look different in the last 30 days") passes it explicitly. ORDER BY
+    seen_at ASC makes today's de facto row order (SQLite rowid order) an
+    explicit, stated property instead of an accident a future VACUUM/migration
+    could silently reorder history out from under."""
+    # `series` corrected into this SELECT during the 2026-08-31 catch-up review: a
+    # same-day but unrelated commit (5bb29be, "expose the series dimension") already
+    # added it to the real current query before this task's own commit ever landed -
+    # dropping it here would silently regress a column services/whale_calibration/
+    # README.md:97-101 documents as feeding the by_series report field.
+    query = (
+        "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
+        "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL"
+    )
+    params: tuple = ()
+    if since_ts is not None:
+        query += " AND seen_at >= ?"
+        params = (since_ts,)
+    query += " ORDER BY seen_at ASC"
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series "
-            "FROM signals WHERE resolved = 1 AND excluded = 0 AND factors_json IS NOT NULL",
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     results = []
     for confidence, correct, factors_json, raw_notional_usd, raw_spread, raw_volume_24h, series in rows:
         try:

@@ -523,3 +523,36 @@ def test_resolve_from_market_results_is_idempotent_and_never_reopens(tmp_path, m
 def test_resolve_from_market_results_with_no_rows_returns_zero(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     assert log.resolve_from_market_results("NOPE", "yes") == 0
+
+
+def test_resolved_signals_with_factors_orders_by_seen_at_ascending(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    # Logged out of chronological order - the old behavior (unspecified
+    # rowid order) would return them in insertion order here, which is
+    # coincidentally reverse-chronological; ORDER BY seen_at ASC must not
+    # depend on insertion order at all.
+    log.log_signal("B", "yes", 100, 0.6, "real-provider", seen_at=200, factors={"depth_factor": 0.5})
+    log.log_signal("A", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.log_signal("C", "yes", 100, 0.6, "real-provider", seen_at=300, factors={"depth_factor": 0.5})
+    for row_id in (1, 2, 3):
+        log.mark_resolved(row_id, correct=True)
+    rows = log.resolved_signals_with_factors()
+    # Tightened 2026-08-31 adversarial review: the prior "assert len(rows) == 3"
+    # passes identically with or without ORDER BY seen_at ASC - it doesn't test
+    # ordering despite the test's name. seen_at itself isn't in the returned
+    # dict shape, but `series` now is (this task's SELECT was corrected to
+    # keep it, see the query above) - tickers "A"/"B"/"C" have no hyphen, so
+    # today's series_of() (ticker.split("-")[0]) maps each straight through
+    # to its own name, giving a real per-row ordering probe with no schema
+    # change needed:
+    assert [r["series"] for r in rows] == ["A", "B", "C"]
+
+
+def test_resolved_signals_with_factors_since_ts_scopes_the_window(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("OLD", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.log_signal("NEW", "yes", 100, 0.6, "real-provider", seen_at=500, factors={"depth_factor": 0.5})
+    for row_id in (1, 2):
+        log.mark_resolved(row_id, correct=True)
+    assert len(log.resolved_signals_with_factors()) == 2  # default: unscoped, unchanged
+    assert len(log.resolved_signals_with_factors(since_ts=300)) == 1  # only NEW
