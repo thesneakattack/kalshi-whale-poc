@@ -388,8 +388,19 @@ def test_input_coverage_reports_absent_pct_per_fabrication_site():
 
 
 def test_input_coverage_raw_spread_reads_the_row_level_column_not_factors():
-    rows = _discriminating_dataset(n_per_bucket=10)
-    for r in rows:
+    # Partial-null, mirroring the depth_factor test above - not all-or-
+    # nothing. _row()'s "factors" dict never has a "raw_spread" key at all,
+    # so a regression to reading r["factors"].get("raw_spread") would
+    # return None (absent) for every row regardless of what the row-level
+    # r["raw_spread"] actually holds - it would report 100% absent no
+    # matter which/how many rows were nulled here. Only nulling a SUBSET
+    # and asserting the resulting fraction (not 0% or 100%) can tell that
+    # wrong reads-from-"factors" behavior apart from the correct
+    # reads-from-row-level-"raw_spread" behavior.
+    rows = _discriminating_dataset(n_per_bucket=10)  # 30 rows, raw_spread=1.0 (present) by default
+    for r in rows[:5]:
         r["raw_spread"] = None
     result = cc.generate_calibration_report(rows, min_resolved_signals=30)
-    assert result["report"]["input_coverage"]["raw_spread"]["absent_pct"] == 100.0
+    coverage = result["report"]["input_coverage"]["raw_spread"]
+    assert coverage["n"] == 30
+    assert coverage["absent_pct"] == pytest.approx(5 / 30 * 100, abs=0.1)
