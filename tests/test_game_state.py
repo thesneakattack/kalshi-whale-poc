@@ -118,6 +118,117 @@ def test_record_never_raises_on_garbage():
     assert gs.record("EVT-1", {"last_play": "not-a-dict", "home_points": "x"}) is True
 
 
+def test_concurrent_record_and_flush_never_silently_lose_a_row(monkeypatch):
+    """Regression test for the 2026-09-01 lock fix (services/series_
+    watcher.py's own _buffer_lock comment names the exact mechanism):
+    main.py's _flush_secondary_capture_stores now runs flush() on a
+    tick_executor worker thread while record() keeps running on the event
+    loop - real concurrent-OS-thread access to _buffer that didn't exist
+    before that change. Without _buffer_lock guarding both record()'s
+    append and flush()'s swap-and-clear, an append landing between a
+    flush()'s buffer-read and its buffer-reset is silently lost - real
+    threads racing against real code, not a mock, to actually exercise
+    the race rather than assert the lock exists.
+
+    Asserts every recorded row is either written or counted as dropped
+    (flush()'s own "rows"/"dropped" return keys), not that every row is
+    written unconditionally - two flush() calls genuinely colliding at
+    the SQLite layer (this module has no capture_writer-style retain-on-
+    lock retry) is a separate, pre-existing, already-accepted trade-off
+    for this "observability record, not trading state" class of store
+    (see services/series_watcher.py's own docstring for the same explicit
+    trade-off on book_snapshots) - a COUNTED drop, not a silent one. This
+    test's job is only to prove the buffer race the lock fixes is gone."""
+    import threading as _threading
+
+    # Isolate the race under test: record()'s OWN internal auto-flush
+    # (triggered once the shared buffer crosses _FLUSH_BATCH) calls flush()
+    # directly and discards its result, which this test has no way to
+    # observe - raising the threshold past what this test could ever
+    # accumulate means every flush() in this test comes from the dedicated
+    # _flush_worker threads below, so every row is fully accounted for.
+    monkeypatch.setattr(gs, "_FLUSH_BATCH", 10_000_000)
+
+    n_per_thread = 300
+    n_recorders = 4
+    recorded_counts = []
+    recorded_lock = _threading.Lock()
+    flush_results = []
+    flush_results_lock = _threading.Lock()
+
+    def _record_worker(worker_id):
+        recorded = 0
+        for i in range(n_per_thread):
+            payload = dict(_FOOTBALL)
+            if gs.record(f"TICK-{worker_id}-{i}", payload, sport="football", now=1000.0 + i):
+                recorded += 1
+        with recorded_lock:
+            recorded_counts.append(recorded)
+
+    def _flush_worker(stop_event):
+        while not stop_event.is_set():
+            result = gs.flush()
+            with flush_results_lock:
+                flush_results.append(result)
+
+    stop_event = _threading.Event()
+    flushers = [_threading.Thread(target=_flush_worker, args=(stop_event,)) for _ in range(2)]
+    for t in flushers:
+        t.start()
+    recorders = [_threading.Thread(target=_record_worker, args=(w,)) for w in range(n_recorders)]
+    for t in recorders:
+        t.start()
+    for t in recorders:
+        t.join()
+    stop_event.set()
+    for t in flushers:
+        t.join()
+    with flush_results_lock:
+        flush_results.append(gs.flush())  # catch anything left buffered
+
+    expected = sum(recorded_counts)
+    written = sum(r.get("rows", 0) for r in flush_results)
+    dropped = sum(r.get("dropped", 0) for r in flush_results)
+    assert written + dropped == expected, (
+        f"expected every recorded row accounted for (written or counted dropped): "
+        f"{written} written + {dropped} dropped != {expected} recorded - "
+        "a row vanished with no accounting at all"
+    )
+    with sqlite3.connect(gs.DB_PATH) as conn:
+        actual = conn.execute("SELECT COUNT(*) FROM game_states").fetchone()[0]
+    assert actual == written, "flush()'s own claimed write count must match what's actually in the DB"
+
+
+def test_flush_failure_is_recorded_to_fault_log(monkeypatch):
+    """Gap found 2026-09-01 while investigating why /api/health/faults never
+    surfaced a real, live 'database is locked' flush collision on this
+    store: unlike series_watcher.py/settlement_edge.py/index_feed/
+    ingestion.py's flush() (all three call fault_log.record on failure),
+    game_state.flush() only did logger.exception() (app log only) plus an
+    in-memory _last_flush_error string - invisible to /api/health/faults,
+    tools/soak_analyzer.py, and this module's own stats() 'buffered'
+    section had no cumulative loss count either. The route's own comment
+    (services/diagnostics/routes.py, 'faults_last_24h') names the exact
+    failure this gap re-opened: 'the distinction that cost game_state
+    every row it should have written on 2026-08-17' - a fault_log-visible
+    signal is what makes that distinction visible at all."""
+    from services import fault_log
+
+    logged = []
+    monkeypatch.setattr(fault_log, "record", lambda *a, **k: logged.append(a))
+
+    def _broken_connect():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(gs, "_connect", _broken_connect)
+    gs.record("EVT-1", _FOOTBALL, sport="football", now=1000.0)
+
+    result = gs.flush()
+
+    assert result.get("dropped") == 1
+    assert logged and logged[0][:2] == ("game_state", "flush")
+
+
 def test_timeline_and_stats_are_readable():
     gs.record("EVT-1", _FOOTBALL, sport="football", now=1000.0)
     gs.record("EVT-2", _BASEBALL, sport="baseball", now=1010.0)

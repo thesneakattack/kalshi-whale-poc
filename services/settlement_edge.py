@@ -31,6 +31,7 @@ outcome is filled in later against the same row.
 This module never trades. It records and scores.
 """
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -85,6 +86,18 @@ def _connect() -> sqlite3.Connection:
 _buffer: list[tuple] = []
 _FLUSH_BATCH = 120
 _record_errors = 0
+# A tick_executor worker thread (main.py's _flush_secondary_capture_stores,
+# 2026-09-01) and the main asyncio event-loop thread (services/whale_stream/
+# index_stream_handlers.py's record_observation call, awaited directly on
+# the loop) both touch _buffer now - before that fix, flush() also only ran
+# on the event loop, so append/flush could only interleave cooperatively.
+# Same race series_watcher.py's own _buffer_lock was added to fix (code-
+# review finding #2): an unsynchronized flush() swap-and-clear racing a
+# concurrent .append() can orphan an appended row into a buffer nothing
+# ever flushes again - a silently lost row, no error, no drop counter
+# increment. threading.Lock, not asyncio.Lock - the two real callers are on
+# different OS threads, not just different coroutines on one event loop.
+_buffer_lock = threading.Lock()
 
 
 def record_observation(ticker: str, spec: dict, projection: dict,
@@ -101,15 +114,18 @@ def record_observation(ticker: str, spec: dict, projection: dict,
             return False
         now = now if now is not None else time.time()
         window_end = close_ts(spec)
-        _buffer.append((
+        row = (
             ticker, spec["index_id"], window_end or 0.0, now,
             (window_end - now) if window_end else None,
             projection["observations_known"], projection["partial_average"],
             spec["strike"], spec["comparison"], projection.get("spot"),
             projection.get("required_remaining"), projection.get("gap_from_spot"),
             market_yes_price,
-        ))
-        if len(_buffer) >= _FLUSH_BATCH:
+        )
+        with _buffer_lock:
+            _buffer.append(row)
+            should_flush = len(_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception as exc:
@@ -151,7 +167,15 @@ def close_ts(spec: dict) -> float | None:
 
 def flush() -> dict:
     global _buffer
-    rows, _buffer = _buffer, []
+    # _buffer_lock: the swap-and-clear must be atomic with record_observation's
+    # own append (above) and with a concurrent second flush() call - without
+    # this, two flush() calls can both capture the same not-yet-reset buffer
+    # (window_observations has no unique constraint, so that means literal
+    # duplicate rows), or an append can land in a buffer neither flush() call
+    # will ever read again (a silently lost row). The DB write itself stays
+    # outside the lock - only the buffer swap needs it.
+    with _buffer_lock:
+        rows, _buffer = _buffer, []
     if not rows:
         return {"observations": 0}
     try:

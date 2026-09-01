@@ -83,6 +83,81 @@ def test_resolved_row_is_not_overwritten_by_a_later_rejection():
     assert gates[0]["yes_count"] == 1
 
 
+class _CountingConn:
+    """Wraps a real sqlite3.Connection, counting write statements issued
+    through it - used to pin down how many round trips resolve_from_
+    market_results makes against the file, since round-trip count is what
+    determines how long its write transaction holds candidate_log.db's
+    single file-level lock (issue #211-adjacent: capture_writer's own
+    daemon thread flushes the same file on a 1s budget and loses the race
+    when this function's transaction runs long)."""
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.write_statements: list[str] = []
+
+    def _note(self, sql):
+        if sql.strip().upper().startswith(("UPDATE", "INSERT", "DELETE")):
+            self.write_statements.append(sql)
+
+    def execute(self, sql, *args, **kwargs):
+        self._note(sql)
+        return self._real.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        self._note(sql)
+        return self._real.executemany(sql, *args, **kwargs)
+
+    def __enter__(self):
+        self._real.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_resolve_from_market_results_batches_updates_instead_of_one_per_row(monkeypatch):
+    """resolve_from_market_results used to issue one UPDATE per resolved
+    row (both rejected_candidates and rejection_events) in a Python loop,
+    holding candidate_log.db's write lock open for the whole loop - live-
+    confirmed 2026-09-01 via /api/health/faults: capture_writer's daemon
+    thread (1s busy budget) collided with it 91 times in one recent
+    window, all logged as 'rejected_candidates: N row(s) retained on
+    lock'. Batching via executemany keeps the write phase to a small,
+    bounded number of statements regardless of how many rows resolve in
+    one tick, shrinking the collision window."""
+    n = 25
+    for i in range(n):
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
+    market_results = {f"TICK-{i}": "yes" for i in range(n)}
+
+    real_connect = cl._connect
+    wrapped = []
+
+    def _spy_connect(*args, **kwargs):
+        conn = _CountingConn(real_connect(*args, **kwargs))
+        wrapped.append(conn)
+        return conn
+
+    monkeypatch.setattr(cl, "_connect", _spy_connect)
+
+    resolved = cl.resolve_from_market_results(market_results)
+
+    assert resolved == n
+    assert len(wrapped) == 1
+    # One batched UPDATE per table (rejected_candidates, rejection_events),
+    # never one execute() per resolved row.
+    assert len(wrapped[0].write_statements) <= 2, (
+        f"expected batched UPDATEs, got {len(wrapped[0].write_statements)}: "
+        f"{wrapped[0].write_statements}"
+    )
+    gates = cl.gate_summary()
+    assert gates[0]["resolved_count"] == n
+
+
 def test_hypothetical_win_rate_none_when_no_side_known():
     cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, side=None)
     cl.resolve_from_market_results({"TICK-A": "yes"})

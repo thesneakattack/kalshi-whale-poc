@@ -22,6 +22,7 @@ DISCIPLINE
 """
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +48,15 @@ _latest: dict[str, dict] = {}
 _tick_buffer: list[tuple] = []
 _FLUSH_BATCH = 200
 _dropped_rows = 0
+# A tick_executor worker thread (main.py's _flush_secondary_capture_stores,
+# 2026-09-01) and the main asyncio event-loop thread (record_cfbenchmarks/
+# record_pyth, awaited on the index-stream WS path) both touch _tick_buffer
+# now - see services/series_watcher.py's own _buffer_lock comment for the
+# exact race this guards against (an unsynchronized flush() swap-and-clear
+# racing a concurrent .append() can silently lose the appended row).
+# threading.Lock, not asyncio.Lock - the two real callers are on different
+# OS threads.
+_buffer_lock = threading.Lock()
 
 
 def _connect() -> sqlite3.Connection:
@@ -137,13 +147,16 @@ def record_cfbenchmarks(msg: dict, now: float | None = None) -> bool:
             "q15_window_end_ts_ms": q15.get("window_end_ts_exclusive") if q15 else None,
         }
         _latest[index_id] = entry
-        _tick_buffer.append((
+        row = (
             index_id, "cfbenchmarks", now, msg.get("received_at"), None, spot,
             entry["avg_60s_value"], entry["avg_60s_window_size"],
             entry["q15_value"], entry["q15_window_size"],
             json.dumps(msg, default=str),
-        ))
-        if len(_tick_buffer) >= _FLUSH_BATCH:
+        )
+        with _buffer_lock:
+            _tick_buffer.append(row)
+            should_flush = len(_tick_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception as exc:
@@ -167,11 +180,14 @@ def record_pyth(msg: dict, now: float | None = None) -> bool:
             "value": value, "avg_60s_value": None, "avg_60s_window_size": None,
             "q15_value": None, "q15_window_size": None,
         }
-        _tick_buffer.append((
+        row = (
             ticker, "pyth", now, msg.get("received_at"), msg.get("source_ts_ms"),
             value, None, None, None, None, json.dumps(msg, default=str),
-        ))
-        if len(_tick_buffer) >= _FLUSH_BATCH:
+        )
+        with _buffer_lock:
+            _tick_buffer.append(row)
+            should_flush = len(_tick_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception:
@@ -247,10 +263,11 @@ def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float |
                     "wall-clock time instead of its own historical timestamp",
                     severity="warn",
                 )
-            _tick_buffer.append((
-                index_id, BACKFILL_SOURCE, observed_at, None, source_ts_ms, value,
-                None, None, None, None, json.dumps(point, default=str),
-            ))
+            with _buffer_lock:
+                _tick_buffer.append((
+                    index_id, BACKFILL_SOURCE, observed_at, None, source_ts_ms, value,
+                    None, None, None, None, json.dumps(point, default=str),
+                ))
             stored += 1
         except Exception as exc:
             fault_log.record("index_feed", "record_cfbenchmarks_backfill", exc)
@@ -266,7 +283,13 @@ def record_cfbenchmarks_backfill(index_id: str, points: list[dict], now: float |
 
 def flush() -> dict:
     global _tick_buffer, _dropped_rows
-    rows, _tick_buffer = _tick_buffer, []
+    # _buffer_lock: the swap-and-clear must be atomic with record_
+    # cfbenchmarks/record_pyth/record_cfbenchmarks_backfill's own appends
+    # and with a concurrent second flush() call - see
+    # services/series_watcher.py's own _buffer_lock comment for why. The DB
+    # write itself stays outside the lock.
+    with _buffer_lock:
+        rows, _tick_buffer = _tick_buffer, []
     if not rows:
         return {"ticks": 0}
     try:

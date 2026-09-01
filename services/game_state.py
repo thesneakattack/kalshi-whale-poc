@@ -48,6 +48,7 @@ and had to fix retroactively.
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -63,6 +64,14 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "game_state.db"
 # 2026-08-11.
 _buffer: list[tuple] = []
 _FLUSH_BATCH = 100
+# A tick_executor worker thread (main.py's _flush_secondary_capture_stores,
+# 2026-09-01) and the main asyncio event-loop thread (record()'s own call,
+# awaited on the live-status pass) both touch _buffer now - see
+# services/series_watcher.py's own _buffer_lock comment for the exact race
+# this guards against (an unsynchronized flush() swap-and-clear racing a
+# concurrent .append() can silently lose the appended row). threading.Lock,
+# not asyncio.Lock - the two real callers are on different OS threads.
+_buffer_lock = threading.Lock()
 # Last stored fingerprint per event, so an unchanged game state doesn't
 # write a duplicate row every poll. A finished game polled for hours would
 # otherwise dominate the table with identical rows.
@@ -271,15 +280,18 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
             return False
         _last_fingerprint[event_ticker] = fp
         _last_write_at[event_ticker] = now
-        _buffer.append((
+        row = (
             event_ticker, sport, event_type or details.get("type"), now,
             fields["source_updated_ts"], fields["status"], fields["widget_status"],
             fields["home_score"], fields["away_score"], fields["period"],
             fields["period_label"], fields["clock"], fields["winner"],
             fields["last_play"], fields["last_play_ts"],
             json.dumps(details, default=str),
-        ))
-        if len(_buffer) >= _FLUSH_BATCH:
+        )
+        with _buffer_lock:
+            _buffer.append(row)
+            should_flush = len(_buffer) >= _FLUSH_BATCH
+        if should_flush:
             flush()
         return True
     except Exception as exc:
@@ -289,7 +301,12 @@ def record(event_ticker: str, details: dict, sport: str | None = None,
 
 def flush() -> dict:
     global _buffer
-    rows, _buffer = _buffer, []
+    # _buffer_lock: the swap-and-clear must be atomic with record()'s own
+    # append and with a concurrent second flush() call - see
+    # services/series_watcher.py's own _buffer_lock comment for why. The DB
+    # write itself stays outside the lock.
+    with _buffer_lock:
+        rows, _buffer = _buffer, []
     if not rows:
         return {"rows": 0}
     try:
@@ -308,9 +325,24 @@ def flush() -> dict:
         # every insert. A capture layer that fails quietly is worse than one
         # that fails loudly, because the whole point is being trusted while
         # nobody is watching.
+        #
+        # fault_log.record (2026-09-01 fix): logger.exception()/
+        # _last_flush_error alone reach the app log and this module's own
+        # stats(), but not /api/health/faults, tools/soak_analyzer.py, or
+        # capture_writer.py's loss-accounting siblings - series_watcher.py/
+        # settlement_edge.py/index_feed/ingestion.py's own flush() all
+        # already call fault_log.record on failure; this one didn't, the
+        # one inconsistency found while investigating why a real, live
+        # "database is locked" flush collision on this store (introduced by
+        # main.py's _flush_secondary_capture_stores now calling flush() from
+        # a second thread) went unmeasured by this app's own health
+        # endpoints - exactly the "cost game_state every row it should have
+        # written on 2026-08-17" gap this function's own comment already
+        # named.
         global _last_flush_error
         _last_flush_error = str(exc)
         logger.exception("flush failed, %d row(s) dropped", len(rows))
+        fault_log.record("game_state", "flush", exc, context=f"{len(rows)} row(s) dropped")
         return {"rows": 0, "dropped": len(rows), "error": str(exc)}
     return {"rows": len(rows)}
 
