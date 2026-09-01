@@ -307,3 +307,49 @@ def test_prune_respects_batch_size_cap(tmp_path, monkeypatch):
 
     assert result["snapshots_deleted"] == 3
     assert mh.snapshot_count() == 7
+
+
+# --- momentum() scoring-connection cache (write-path capacity fix Task 3) ----
+# momentum() is on kalshi_trade_tape.py's per-trade whale-scoring hot path
+# (fetch_signals -> momentum()); it used to open a fresh sqlite3 connection
+# on every call via _connect(). It now goes through
+# services/whalewatchers/_scoring_pool.py's cached_read_connection() instead
+# - one thread-locally cached connection per db file, reused across calls.
+
+def test_momentum_uses_the_scoring_cache(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    from services.whalewatchers import _scoring_pool
+
+    calls = []
+    real = _scoring_pool.cached_read_connection
+
+    def spy(db_path, schema_init):
+        calls.append(db_path)
+        return real(db_path, schema_init)
+
+    monkeypatch.setattr(_scoring_pool, "cached_read_connection", spy)
+    mh.momentum("KXTEST-25", lookback_sec=300, as_of=12345.0)
+    assert len(calls) == 1
+
+
+def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(tmp_path, monkeypatch):
+    # Write two snapshots via the plain, event-loop-side _connect() path
+    # (record_snapshot_from_ticker -> record_snapshots -> _connect()), then
+    # confirm momentum() - which now reads via the cached scoring-read
+    # connection (_scoring_read_connection, a *separate* sqlite3.Connection
+    # object opened against the same file) - sees them immediately: same
+    # file, same WAL, no staleness introduced by caching a second
+    # connection. Two snapshots (not one) because momentum() needs at least
+    # 2 in-window snapshots to return anything but None - it isn't a
+    # cache-visibility check otherwise.
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshot_from_ticker(
+        "KXTEST-VIS", 0.50, spread=0.02, volume_24h=1000.0, close_time=None, now=12000.0,
+    )
+    mh.record_snapshot_from_ticker(
+        "KXTEST-VIS", 0.55, spread=0.02, volume_24h=1000.0, close_time=None, now=12300.0,
+    )
+    result = mh.momentum("KXTEST-VIS", lookback_sec=300, as_of=12300.0)
+    assert result is not None
+    assert result["from_price"] == 0.50
+    assert result["to_price"] == 0.55

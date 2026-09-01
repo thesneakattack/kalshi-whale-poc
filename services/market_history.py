@@ -54,16 +54,7 @@ _TICKER_SNAPSHOT_MIN_INTERVAL_SEC = 5.0
 _last_ticker_snapshot: dict[str, float] = {}
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -89,7 +80,44 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect.
+    conn.execute("PRAGMA journal_mode=WAL")
+    _init_schema(conn)
     return conn
+
+
+def _scoring_read_connection(db_path: Path) -> sqlite3.Connection:
+    """Thread-locally cached connection for momentum()'s per-trade scoring
+    reads (services/whalewatchers/_scoring_pool.py, Task 1 of the write-path
+    capacity fix) - avoids opening a fresh sqlite3 connection on every
+    incoming whale trade, the measured per-trade connection-churn
+    contributor to the write-path capacity incident this fix addresses.
+    Never closed per-call; cached_read_connection owns its lifetime.
+
+    Import is deliberately local, not module-level: services.whalewatchers'
+    package __init__ eagerly imports kalshi_trade_tape.py, which imports
+    this module (market_history) back at module scope - a module-level
+    `from services.whalewatchers import _scoring_pool` here creates a real
+    circular-import failure (confirmed 2026-09-01: `python3 -c "import
+    services.signal_log"` raised ImportError: cannot import name 'series_of'
+    from partially initialized module 'services.signal_log', tracing through
+    this exact whalewatchers-package-init cascade). Deferring the import to
+    call time sidesteps the module-init-order cycle entirely, since
+    momentum() only ever runs after application startup has finished
+    importing everything."""
+    from services.whalewatchers import _scoring_pool
+    db_path.parent.mkdir(exist_ok=True)
+    return _scoring_pool.cached_read_connection(db_path, _init_schema)
 
 
 def seconds_to_close(close_time: str | float | int | None, now: float) -> float | None:
@@ -199,12 +227,12 @@ def momentum(ticker: str, lookback_sec: float, as_of: float | None = None) -> di
     data is treated as "no signal," never as zero momentum."""
     as_of = as_of if as_of is not None else time.time()
     window_start = as_of - lookback_sec
-    with _connect(DB_PATH) as conn:
-        rows = conn.execute(
-            "SELECT yes_price, timestamp FROM snapshots WHERE ticker = ? AND timestamp <= ? "
-            "ORDER BY timestamp ASC",
-            (ticker, as_of),
-        ).fetchall()
+    conn = _scoring_read_connection(DB_PATH)
+    rows = conn.execute(
+        "SELECT yes_price, timestamp FROM snapshots WHERE ticker = ? AND timestamp <= ? "
+        "ORDER BY timestamp ASC",
+        (ticker, as_of),
+    ).fetchall()
     in_window = [r for r in rows if r[1] >= window_start]
     if len(in_window) < 2:
         return None
