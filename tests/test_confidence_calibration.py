@@ -4,11 +4,17 @@ from services.whale_calibration import confidence_calibration as cc
 from services.confidence_scoring import DEFAULT_WEIGHTS
 
 
-def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5, series="KXTEST"):
+def _row(depth, unusualness, proximity, context, agreement, correct, confidence=0.5, cluster=0.0, trend=0.5, analyst=0.5, series="KXTEST", raw_spread=1.0):
     return {
         "confidence": confidence,
         "correct": correct,
         "series": series,
+        # Row-level column, not a factors-dict entry - matches
+        # resolved_signals_with_factors()'s real returned shape
+        # (services/signal_log.py:649-657), which is what this task's
+        # input_coverage["raw_spread"] reads from (r["raw_spread"], not
+        # r["factors"]).
+        "raw_spread": raw_spread,
         "factors": {
             "depth_factor": depth, "unusualness_factor": unusualness,
             "proximity_factor": proximity, "context_factor": context,
@@ -369,3 +375,21 @@ def test_bucket_win_rates_excludes_rows_with_an_explicit_none_value():
                  "factors": {"depth_factor": None, "unusualness_factor": 0.5}})
     buckets, status = cc._bucket_win_rates(rows, "depth_factor")  # must not raise
     assert status == "ok"
+
+
+def test_input_coverage_reports_absent_pct_per_fabrication_site():
+    rows = _discriminating_dataset(n_per_bucket=10)  # 30 rows, all factors present
+    for r in rows[:5]:
+        r["factors"]["depth_factor"] = None
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    coverage = result["report"]["input_coverage"]
+    assert coverage["depth_factor"]["n"] == 30
+    assert coverage["depth_factor"]["absent_pct"] == pytest.approx(5 / 30 * 100, abs=0.1)
+
+
+def test_input_coverage_raw_spread_reads_the_row_level_column_not_factors():
+    rows = _discriminating_dataset(n_per_bucket=10)
+    for r in rows:
+        r["raw_spread"] = None
+    result = cc.generate_calibration_report(rows, min_resolved_signals=30)
+    assert result["report"]["input_coverage"]["raw_spread"]["absent_pct"] == 100.0

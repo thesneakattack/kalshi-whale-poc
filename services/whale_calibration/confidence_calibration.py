@@ -328,6 +328,45 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
         key=lambda f: f["gap_pts"], reverse=True,
     )
 
+    def _coverage(factor_name):
+        # n/absent are dimensionless row counts (not contracts, not
+        # dollars); absent_pct = absent/n*100 rounded to 1 decimal, same
+        # shape as overall_win_rate/gap_pts above. The `if n else 0.0`
+        # guard is defensive only: n is always resolved_count here, and
+        # the gate above (resolved_count < min_resolved_signals) plus the
+        # unguarded resolved_count division at overall_win_rate already
+        # make resolved_count == 0 unreachable at this point in practice.
+        n = resolved_count
+        absent = sum(1 for r in rows if r["factors"].get(factor_name) is None)
+        return {"n": n, "absent_pct": round(absent / n * 100, 1) if n else 0.0}
+
+    input_coverage = {
+        "depth_factor": _coverage("depth_factor"),
+        "trend_factor": _coverage("trend_factor"),
+        "agreement_factor": _coverage("agreement_factor"),
+        # Row-level column (services/signal_log.py's
+        # resolved_signals_with_factors() selects it alongside "factors",
+        # not inside it) - read from r["raw_spread"], never r["factors"].
+        "raw_spread": {
+            "n": resolved_count,
+            "absent_pct": round(
+                sum(1 for r in rows if r.get("raw_spread") is None) / resolved_count * 100, 1,
+            ) if resolved_count else 0.0,
+        },
+        # Observational approximation, not an exact flag (design doc §6.1;
+        # no persisted fallback marker exists to check instead): a row
+        # counts as a Task 3 degenerate-fallback candidate when its three
+        # sampled factors are all None AND confidence is exactly the
+        # fallback's 0.5, since a genuine 0.5 composite from real factor
+        # data is otherwise indistinguishable from the fallback firing.
+        "score_fallback_pct": round(
+            sum(1 for r in rows if r["factors"].get("depth_factor") is None
+                and r["factors"].get("trend_factor") is None
+                and r["factors"].get("agreement_factor") is None
+                and r["confidence"] == 0.5) / resolved_count * 100, 1,
+        ) if resolved_count else 0.0,
+    }
+
     return {
         "report": {
             "resolved_count": resolved_count,
@@ -349,6 +388,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
             "suggested_weights": _suggested_weights(per_factor),
             "confidence_calibration": _confidence_calibration_bands(rows),
             "by_series": _series_win_rates(rows),
+            "input_coverage": input_coverage,
         },
         "gated_reason": None,
         "resolved_count": resolved_count,
