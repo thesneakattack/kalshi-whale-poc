@@ -84,21 +84,27 @@ class ConfidenceBreakdown:
     needs to later ask "which of these factors actually predicted a correct
     call", something the plain float alone can't answer after the fact.
 
-    Each factor is float | None in practice: None means a real provider
-    looked and found nothing to report (e.g. depth_factor when the market
-    has no reportable 24h volume, or an explicit agreement_factor=None from
-    a caller with no signal-agreement concept for this print) - honest
-    absence, not coerced to a fabricated neutral 0.5. score renormalizes
-    over only the present factors (see composite_confidence_breakdown)."""
+    Three of these nine - depth_factor, agreement_factor, trend_factor - are
+    float | None in practice: None means a real provider looked and found
+    nothing to report (depth_factor when the market has no reportable 24h
+    volume; an explicit agreement_factor=None or trend_factor=None from a
+    caller with no signal-agreement/trend concept for this print) - honest
+    absence, not coerced to a fabricated neutral 0.5. The other six
+    (unusualness_factor, proximity_factor, context_factor, cluster_factor,
+    analyst_factor, block_trade_factor) are always computed to a real float
+    - no branch in composite_confidence_breakdown or in any caller's
+    signature can produce None for them, so they stay plain float rather
+    than a wider annotation nothing can ever fill. score renormalizes over
+    only the present factors (see composite_confidence_breakdown)."""
     depth_factor: float | None
-    unusualness_factor: float | None
-    proximity_factor: float | None
-    context_factor: float | None
+    unusualness_factor: float
+    proximity_factor: float
+    context_factor: float
     agreement_factor: float | None
-    cluster_factor: float | None
+    cluster_factor: float
     trend_factor: float | None
-    analyst_factor: float | None
-    block_trade_factor: float | None
+    analyst_factor: float
+    block_trade_factor: float
     score: float
 
     def to_dict(self) -> dict:
