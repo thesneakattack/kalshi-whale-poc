@@ -24,7 +24,9 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import candidate_retry, capture_writer, http_client, loop_watchdog, strategy_engine, whale_pipeline_perf
+from services import (
+    candidate_retry, capture_writer, fault_log, http_client, loop_watchdog, strategy_engine, whale_pipeline_perf,
+)
 from services.exits import exit_engine
 from services.quality.models import QualityFinding
 
@@ -456,6 +458,23 @@ def maybe_capture(cfg: dict, state: dict, trade_stream, index_stream) -> None:
                 pass
     whale_pipeline_perf.perf.reset_window()
     http_client.reset_rest_latency_window()
+    # loop_watchdog fault visibility (2026-09-01): the watchdog's own
+    # snapshot was previously read-only - severe stalls (measured live, up
+    # to 130s) were persisted to observability.db but never surfaced
+    # anywhere a human or soak_analyzer would see without manually
+    # querying /api/observability/summary. Read BEFORE reset_window()
+    # clears the window; one fault_log row per persisted window here, not
+    # per-stall inside loop_watchdog._tick() itself - that 0.1s hot loop
+    # must never do blocking I/O, and this call site is already
+    # synchronous and already inline in maybe_capture regardless.
+    lw_snapshot = loop_watchdog.snapshot()
+    if lw_snapshot.get("stall_count"):
+        fault_log.record_fault(
+            "loop_watchdog", "event_loop_stall",
+            f"{lw_snapshot['stall_count']} stall(s) this window, worst "
+            f"{lw_snapshot['stall_max_ms']:.0f}ms over {lw_snapshot['samples']} samples",
+            severity="error" if lw_snapshot["stall_max_ms"] >= 1000.0 else "warn",
+        )
     loop_watchdog.reset_window()
     candidate_retry.reset_window()
     exit_engine.reset_window()  # P8 Task 35: stale-uncorroborated once-per-ticker-per-window log
