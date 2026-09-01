@@ -186,6 +186,65 @@ async def propagate_milestone_winners(client: KalshiPublicGateway, markets: list
                     if cs_id and cs_id not in seen_custom_strike_ids:
                         seen_custom_strike_ids.add(cs_id)
                         custom_strike_ids.append(cs_id)
+
+            # political_race candidate_id_mapping (kalshi-category-data-
+            # completeness Task 14) - a SEPARATE, no-extra-REST-call UUID
+            # source feeding the SAME get_structured_targets() batch above,
+            # not a new resolution mechanism. Live-verified 2026-08-31
+            # against a real, currently-open Massachusetts Senate primary
+            # (milestone id 2967c0f7-57f5-47ee-be41-f92df9dc699a, event
+            # KXSENATEMAR-26, via get_milestones_bulk(category="Elections")
+            # + get_markets(event_ticker=..., status="open")): the
+            # MILESTONE object's own `details.candidate_id_mapping` is
+            # {pol_id: candidate_structured_target_uuid} - Kalshi's internal
+            # numeric politician id mapped to that politician's structured-
+            # target UUID, the same UUID space get_structured_targets
+            # resolves. Confirmed by direct comparison: John Deaton's UUID
+            # (de224459-c787-4c8b-8e58-59b817528ec4) appeared BOTH as a
+            # candidate_id_mapping VALUE and as that same candidate's own
+            # market's custom_strike.politician value (ticker
+            # KXSENATEMAR-26-JDEA, strike_type: "structured") - so this is
+            # already fully covered by the loop just above for a candidate
+            # whose own market resolves cleanly this tick. The genuine
+            # value here: `ms` (this loop's milestone dict) comes from
+            # get_events(..., with_milestones=True)'s join (Task 10,
+            # services/kalshi/public.py get_events()), which calls
+            # .model_dump(mode="json") on the SDK's Milestone response
+            # objects - and docs/kalshi/get-events.md's Milestone schema
+            # (lines 315-333, 372-375) lists `details` as a REQUIRED field
+            # (`type: object, additionalProperties: true`), so it's already
+            # present on `ms` with zero new REST call; reading it here just
+            # widens the UUID pool for a race where a candidate is
+            # registered in candidate_id_mapping but that candidate's own
+            # market doesn't yet carry a resolvable custom_strike UUID this
+            # tick (a data-population lag) - worst case redundant with the
+            # loop above, best case pre-warms structured_targets_cache with
+            # a candidate the market-level scan alone would have missed.
+            # Only VALUES matter (the UUIDs) - the keys (pol_ids, Kalshi's
+            # own internal numeric politician ids) are never resolvable via
+            # get_structured_targets and are never added here.
+            #
+            # Confirmed, permanent, OUT OF SCOPE for this task: 3 of this
+            # exact real race's 4 candidates (Evangelidis, Thrasher, Baker)
+            # have strike_type: "custom" markets with a plain-name
+            # custom_strike (e.g. {"Candidate": "Lewis Evangelidis"}) and
+            # are absent from candidate_id_mapping/candidate_ids/pol_ids
+            # entirely - Kalshi itself has not assigned them a structured
+            # target, so there is no UUID anywhere in this milestone's data
+            # to resolve them with. This loop cannot fix that, and does not
+            # attempt to - those candidates keep falling through to the
+            # existing yes_sub_title/no_sub_title/title match below,
+            # unchanged.
+            for ms in milestone_by_event.values():
+                if ms.get("type") != "political_race":
+                    continue
+                candidate_id_mapping = (ms.get("details") or {}).get("candidate_id_mapping") or {}
+                for v in candidate_id_mapping.values():
+                    cs_id = str(v) if v else ""
+                    if cs_id and cs_id not in seen_custom_strike_ids:
+                        seen_custom_strike_ids.add(cs_id)
+                        custom_strike_ids.append(cs_id)
+
             missing_target_ids = [i for i in custom_strike_ids if i not in structured_targets_cache]
             if missing_target_ids:
                 structured_targets_cache.update(await client.get_structured_targets(missing_target_ids))
