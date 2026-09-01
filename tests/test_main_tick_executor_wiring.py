@@ -99,6 +99,69 @@ def test_flush_trade_capture_writes_the_same_rows_as_before_extraction(monkeypat
     assert stats.get("raw_trades") == 2
 
 
+def test_flush_secondary_capture_stores_runs_via_tick_executor(monkeypatch):
+    """index_feed/settlement_edge/game_state's flush() + the hourly
+    _maybe_prune_capture_stores sweep (which includes series_watcher.prune()'s
+    full-scan DELETE - the same file capture_writer's raw_trades store
+    writes to) used to run directly on the event loop: a lock collision on
+    any of them froze WS ticker/trade processing and HTTP requests, not just
+    this tick - the same class of bug P1 Task 7/8 already fixed for
+    raw_trades/resolve_and_record. Moved onto tick_executor the same way."""
+    calls = []
+
+    async def _spy_run(fn):
+        calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(main.tick_executor, "run", _spy_run)
+    asyncio.run(main._flush_secondary_capture_stores_async(CFG, 1_755_000_000.0))
+    assert len(calls) == 1
+
+
+def test_flush_secondary_capture_stores_flushes_all_three_and_prunes(monkeypatch, tmp_path):
+    from services import game_state as gs_module
+    from services import index_feed as idxf_module
+    from services.index_feed import ingestion as idxf_ingestion_module
+
+    monkeypatch.setattr(sedge_module, "DB_PATH", tmp_path / "settlement_edge_isolated.db")
+    monkeypatch.setattr(gs_module, "DB_PATH", tmp_path / "game_state_isolated.db")
+    monkeypatch.setattr(idxf_ingestion_module, "DB_PATH", tmp_path / "index_feed_isolated.db")
+
+    monkeypatch.setattr(sedge_module, "_buffer", [])
+    monkeypatch.setattr(gs_module, "_buffer", [])
+    monkeypatch.setattr(idxf_ingestion_module, "_tick_buffer", [])
+    # Through the real recorder, not a hand-built row tuple - the column
+    # order is that function's own concern, not this test's to guess at.
+    sedge_module.record_observation(
+        "KXBTC15M-26AUG17-B1",
+        spec={"index_id": "BTC", "strike": 50000.0, "comparison": "gte", "close_time": None},
+        projection={
+            "status": "accumulating", "observations_known": 30, "partial_average": 0.5,
+            "spot": 100.0, "required_remaining": 40.0, "gap_from_spot": 0.6,
+        },
+        market_yes_price=0.55, now=1_755_000_100.0,
+    )
+
+    # Force the hourly prune gate open so this call actually exercises
+    # _maybe_prune_capture_stores' own body, not just its early return.
+    monkeypatch.setattr(main, "_last_capture_prune_at", 0.0)
+    pruned = []
+    monkeypatch.setattr(main.series_watcher, "prune", lambda **kw: pruned.append("series_watcher"))
+    monkeypatch.setattr(idxf_module, "prune", lambda **kw: pruned.append("index_feed"))
+    monkeypatch.setattr(gs_module, "prune", lambda **kw: pruned.append("game_state"))
+    monkeypatch.setattr(main.observability, "prune", lambda **kw: pruned.append("observability"))
+    monkeypatch.setattr(mh_module, "prune", lambda **kw: pruned.append("market_history"))
+    monkeypatch.setattr(main.fault_log, "prune", lambda **kw: pruned.append("fault_log"))
+
+    result = asyncio.run(main._flush_secondary_capture_stores_async(CFG, 1_755_000_000.0))
+
+    assert result["settlement_edge"]["observations"] == 1
+    assert sedge_module._buffer == []  # flushed, not left buffered
+    assert set(pruned) == {
+        "series_watcher", "index_feed", "game_state", "observability", "market_history", "fault_log",
+    }
+
+
 def test_resolve_and_record_settlements_runs_via_tick_executor(monkeypatch):
     calls = []
 

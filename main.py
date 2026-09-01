@@ -327,6 +327,40 @@ async def _flush_trade_capture_async(trade_tape: list, cfg: dict) -> dict:
     return await tick_executor.run(lambda: _flush_trade_capture(trade_tape, cfg))
 
 
+def _flush_secondary_capture_stores(cfg: dict, now: float) -> dict:
+    """index_feed/settlement_edge/game_state's own flush() plus the hourly
+    _maybe_prune_capture_stores sweep - the remaining synchronous capture-
+    store I/O that P1 Task 7/8 (see _flush_trade_capture_async/
+    _resolve_and_record_settlements_async above) never moved off the event
+    loop. capture_writer.py's own module docstring already names the
+    mechanism (issue #211): series_watcher.db has more than one writer, and
+    SQLite's write lock is per-file, not per-table - series_watcher.prune()
+    (a full-scan DELETE, called from _maybe_prune_capture_stores below) is
+    one of the writers that contends for that lock. capture_writer's daemon
+    thread only pays for a collision with a bounded retry; running these
+    calls directly on the event loop meant a collision froze the WHOLE
+    event loop instead - every WS ticker/trade message and every HTTP
+    request, not just this one tick's own progress. Confirmed live
+    (2026-09-01): tick.phase.capture_flush_and_titles_sec measured a 882.6s
+    max against a 7.3s average, directly correlated with open-position
+    ticker staleness (oldest observed 3.8h) and exit_engine's
+    stale_price_uncorroborated fault. Moved onto tick_executor the same way
+    P1 Task 7/8 already did, not given its own new thread pool - see
+    tick_executor.py's own docstring for why its 2-worker pool wasn't
+    blindly widened without measuring that specific bottleneck first."""
+    index_result = index_feed.flush()
+    settlement_result = settlement_edge.flush()
+    game_state_result = game_state.flush()
+    _maybe_prune_capture_stores(cfg, now)
+    return {"index_feed": index_result, "settlement_edge": settlement_result, "game_state": game_state_result}
+
+
+async def _flush_secondary_capture_stores_async(cfg: dict, now: float) -> dict:
+    """Awaitable wrapper: runs _flush_secondary_capture_stores via
+    tick_executor instead of the calling event loop."""
+    return await tick_executor.run(lambda: _flush_secondary_capture_stores(cfg, now))
+
+
 def _resolve_and_record_settlements(markets: list, market_results: dict, tick_now: float) -> list:
     """The tick's synchronous market-result resolution + market-history
     recording - root-cause report C1's ~1-5s 'resolve_and_record' phase
@@ -939,24 +973,23 @@ async def trading_loop():
             # runs via tick_executor (P1 Task 7) for the book_snapshots
             # flush series_watcher.flush() still does synchronously here.
             await _flush_trade_capture_async(trade_tape, cfg)
-            # Same per-tick batched write for index ticks. Without this the
-            # buffer only drained when it hit its own _FLUSH_BATCH, which at
-            # ~1 tick/sec/index meant minutes of data sitting unwritten -
-            # observed live as index_ticks holding 0 rows while the in-memory
-            # snapshot showed ticks arriving.
-            index_feed.flush()
-            settlement_edge.flush()
-            game_state.flush()
-            # Retention (2026-08-17). Every capture store above is
-            # unbounded by construction, and prune() existed but was never
-            # called - data/ was already 841MB with series_watcher at 130MB
-            # after a few hours and game_state at 32MB within minutes of
-            # first writing, because a crypto payload carries a whole
-            # candlestick array per row. Runs at most hourly, and never
-            # touches raw_trades or settlement-window rows: CLAUDE.md treats
-            # accumulated history as a first-class asset, so only the
-            # high-churn sampled series are trimmed.
-            _maybe_prune_capture_stores(cfg, tick_now)
+            # Same per-tick batched write for index ticks (index_feed), plus
+            # settlement_edge/game_state's own flush and the hourly
+            # retention sweep (_maybe_prune_capture_stores - series_watcher/
+            # index_feed/game_state/observability/market_history/fault_log
+            # prune(), 2026-08-17: every capture store above is unbounded by
+            # construction, data/ was already 841MB with series_watcher at
+            # 130MB after a few hours and game_state at 32MB within minutes
+            # of first writing, because a crypto payload carries a whole
+            # candlestick array per row - runs at most hourly, never touches
+            # raw_trades or settlement-window rows since CLAUDE.md treats
+            # accumulated history as a first-class asset). Routed through
+            # tick_executor (see _flush_secondary_capture_stores' own
+            # docstring) rather than run directly here - a lock collision on
+            # any of these, series_watcher.prune()'s full-scan DELETE
+            # (issue #211) included, used to freeze the whole event loop,
+            # not just this tick.
+            await _flush_secondary_capture_stores_async(cfg, tick_now)
             await _resolve_settlement_windows(client)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
             # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
