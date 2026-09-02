@@ -34,7 +34,6 @@ numbers are in doubt.
 """
 import json
 import sqlite3
-from contextlib import closing
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

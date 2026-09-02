@@ -61,7 +61,6 @@ trusted when the dashboard's numbers are already in doubt.
 import json
 import sqlite3
 import threading
-from contextlib import closing
 import time
 from pathlib import Path
 
