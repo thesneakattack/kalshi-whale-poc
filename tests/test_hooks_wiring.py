@@ -78,8 +78,10 @@ def test_guard_hooks_are_wired_for_the_events_they_implement():
     assert ("PreToolUse", "Bash") in wired
     assert ("PreToolUse", "Edit|Write") in wired
     assert ("PostToolUse", "Edit|Write") in wired and ("PostToolUse", "Bash|Read|mcp__gitnexus__.*") in wired
-    data_guard = {(e, m) for e, m, c, _ in _commands() if "guard_data_db.py" in c}
-    assert ("PreToolUse", "Bash") in data_guard
+    # guard_data_db.py disabled 2026-09-02 by direct instruction, flagged for removal -
+    # same decision as guard_workflow.py's R2 (see that module's docstring). Deliberately
+    # unwired now, not a wiring bug this test should catch.
+    assert not any("guard_data_db.py" in c for _, _, c, _ in _commands())
     assert any(e == "SessionStart" for e, _, c, _ in _commands() if "orient.sh" in c)
 
 
