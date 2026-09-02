@@ -1,6 +1,6 @@
 import { HISTORY_CLOSE_TYPE_LABELS, historyDurationHTML, historyFilter, historyTotal, historyTrades } from './history-core.js';
 import { seriesMeta } from './polling-and-websocket.js';
-import { $, comboLegsHTML, esc, eventLiveDataLineHTML, eventTitles, fmt, liveBadgeHTML, marketContext, marketLabel, marketTaxonomyHTML, marketTitles, priceChangeHTML, seriesLabel, seriesOf, sideAdjustedPrice, uniqueSorted } from './shared-utils.js';
+import { $, comboLegsHTML, esc, eventLiveDataLineHTML, eventTitles, fmt, liveBadgeHTML, marketContext, marketLabel, marketResultBadgeHTML, marketTaxonomyHTML, marketTitles, pnlRowTint, priceChangeHTML, seriesLabel, seriesOf, sideAdjustedPrice, uniqueSorted } from './shared-utils.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
@@ -16,24 +16,17 @@ function renderHistoryTrades() {
   }
   // Same P&L-magnitude row-tint gradient and market-settlement signal as
   // the Portfolio tab's Trade Log (trade-log-and-real.js's renderTrades/
-  // renderTradeLogTable, PR #421) - direct request, 2026-09-02: History's
-  // own trade table never got either. Same constants/contrast-safe design
-  // already reviewed and fixed there - ported here, not reinvented. Every
-  // row here is a CLOSE row (this endpoint only ever returns closed
-  // trades - see build_trade_history's own docstring), so pnl is always
-  // realized_pnl, no mark-to-market branch needed.
-  const ROW_TINT_MIN_ALPHA = 0.06;
-  const ROW_TINT_MAX_ALPHA = 0.40;
-  const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
-  const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+  // renderTradeLogTable, PR #421/#422) - shared pnlRowTint()/
+  // marketResultBadgeHTML() (shared-utils.js), one definition instead of
+  // a third copy of the same formula. Every row here is a CLOSE row (this
+  // endpoint only ever returns closed trades - see build_trade_history's
+  // own docstring), so pnl is always realized_pnl, no mark-to-market
+  // branch needed.
   const maxAbsPnl = Math.max(1, ...historyTrades.map(t => Math.abs(t.realized_pnl || 0)));
   const rows = historyTrades.map(t => {
     const label = marketLabel(t.ticker);
     const pnl = t.realized_pnl;
-    const tintRgb = pnl > 0 ? ROW_TINT_YES_RGB : pnl < 0 ? ROW_TINT_NO_RGB : null;
-    const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(pnl || 0) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
-    const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
-    const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
+    const { style: rowBg, onTintColor } = pnlRowTint(pnl, maxAbsPnl);
     const pnlColor = onTintColor(pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)'));
     const closeTypeLabel = HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type || 'unknown';
     // The market's real settled result vs. this position's own side - same
@@ -43,9 +36,7 @@ function renderHistoryTrades() {
     // judging an early exit (stop-loss, take-profit, sentiment reversal,
     // ...) in hindsight against what the market actually went on to
     // resolve as.
-    const marketResultCell = t.market_result
-      ? `<span style="color:${onTintColor(t.market_result === t.side ? 'var(--yes)' : 'var(--no)')};" title="Market settled ${esc(t.market_result.toUpperCase())} — this position held ${esc(String(t.side).toUpperCase())}">${esc(t.market_result.toUpperCase())} ${t.market_result === t.side ? '✓' : '✗'}</span>`
-      : `<span style="color:${onTintColor('var(--muted)')};">pending</span>`;
+    const marketResultCell = marketResultBadgeHTML(t.market_result, t.side, onTintColor);
     const conf = t.entry_confidence !== null && t.entry_confidence !== undefined ? `${(t.entry_confidence * 100).toFixed(0)}%` : '—';
     const title = `Entry: ${t.entry_reason || 'unknown'}\nExit: ${t.exit_reason} — click to view full market detail`;
     const et = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';

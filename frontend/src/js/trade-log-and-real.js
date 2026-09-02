@@ -1,5 +1,5 @@
 import { HISTORY_CLOSE_TYPE_LABELS } from './history-core.js';
-import { $, advToggleHTML, comboLegsHTML, contextLineHTML, costHTML, esc, eventTitles, fetchJSON, fmt, isAdvanced, marketContext, marketLabel, marketTitles, parseConfidence, payoutHTML, sideAdjustedPrice, sortHeaderHTML, sortRows } from './shared-utils.js';
+import { $, advToggleHTML, comboLegsHTML, contextLineHTML, costHTML, esc, eventTitles, fetchJSON, fmt, isAdvanced, marketContext, marketLabel, marketResultBadgeHTML, marketTitles, parseConfidence, payoutHTML, pnlRowTint, sideAdjustedPrice, sortHeaderHTML, sortRows } from './shared-utils.js';
 
 // Part of index.html's JS split - see shared-utils.js's header for the
 // load-order/shared-global-scope rationale common to all these files.
@@ -24,12 +24,10 @@ function renderTrades(trades, prices) {
     // 2026-09-02: this Simple view is the default (isAdvanced defaults to
     // false until a viewer clicks the toggle), and the gradient had shipped
     // only in the Advanced table, so the default view a viewer actually
-    // sees never showed it. Same constants/contrast-safe design already
-    // reviewed and fixed there (PR #421) - ported here, not reinvented.
-    const ROW_TINT_MIN_ALPHA = 0.06;
-    const ROW_TINT_MAX_ALPHA = 0.40;
-    const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
-    const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+    // sees never showed it. Shared pnlRowTint()/marketResultBadgeHTML()
+    // (shared-utils.js) - same contrast-safe design already reviewed and
+    // fixed here (PR #421/#422), one definition now instead of a third
+    // copy of the same formula.
     const withPnl = lastTradeLog.map(t => {
       const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
       // Same close-vs-open P&L source as renderTradeLogTable: a close row's
@@ -51,10 +49,7 @@ function renderTrades(trades, prices) {
       const label = marketLabel(t.ticker);
       const when = new Date(t.timestamp * 1000).toLocaleTimeString();
       const tEt = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
-      const tintRgb = pnl > 0 ? ROW_TINT_YES_RGB : pnl < 0 ? ROW_TINT_NO_RGB : null;
-      const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(pnl) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
-      const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
-      const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
+      const { style: rowBg, onTintColor, tinted } = pnlRowTint(pnl, maxAbsPnl);
       // A close trade (t.close_type set server-side - see main.py's
       // _enrich_recent_trades) gets its real result shown, not the entry-
       // style cost/payout framing that made every closed position look
@@ -70,12 +65,10 @@ function renderTrades(trades, prices) {
       // outcomes table). Only shown for a closed trade - an open position
       // has nothing to compare yet.
       const marketResultHtml = isClose
-        ? (t.market_result
-          ? ` <span style="color:${onTintColor(t.market_result === t.side ? 'var(--yes)' : 'var(--no)')}; font-size:11px;" title="Market settled ${esc(t.market_result.toUpperCase())} — this position held ${esc(String(t.side).toUpperCase())}">market: ${esc(t.market_result.toUpperCase())} ${t.market_result === t.side ? '✓' : '✗'}</span>`
-          : ` <span style="color:${onTintColor('var(--muted)')}; font-size:11px;">market: pending</span>`)
+        ? ' ' + marketResultBadgeHTML(t.market_result, t.side, onTintColor, { prefix: 'market: ', fontSize: '11px' })
         : '';
       return `
-      <div class="trade-row${tintRgb ? ' tinted' : ''}" style="cursor:pointer;${rowBg}" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
+      <div class="trade-row${tinted ? ' tinted' : ''}" style="cursor:pointer;${rowBg}" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
         <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
           ${contextLineHTML(t.ticker, t.side)}
         </div>
@@ -148,37 +141,15 @@ function renderTradeLogTable() {
     sortHeaderHTML(tradeLogFilter, key, label, `toggleSort(tradeLogFilter,'${key}',renderTradeLogTable)`)
   ).join('');
 
-  // Row background is a P&L gradient - transparent near $0, ramping up to
-  // a shade of --yes (win) or --no (loss) capped at a max alpha chosen so
-  // --text stays readable on top of it even at the cap (WCAG contrast
-  // checked directly against this app's real panel/text/yes/no colors:
-  // 0.40 alpha still holds ~5.9:1 on --yes and ~7.5:1 on --no, both well
-  // past the 4.5:1 AA floor). Scaled per-render against the largest |P&L|
-  // in the currently filtered/sorted rows, not a hardcoded dollar figure,
-  // so the gradient stays meaningful as position sizing changes over time.
-  //
-  // Every cell that would otherwise render in --yes/--no/--muted (P&L,
-  // Result, Market Settled, the "Betting: ..." subline) switches to plain
-  // --text on a tinted row instead, via onTintColor() below - adversarial-
-  // review catch: checked in isolation, the cap only verified --text vs.
-  // the tint; --muted's own contrast against a bright same-hue tint drops
-  // below 4.5:1 well before the cap, and colored text on a matching-hue
-  // tint drops below it too past roughly the row's own midpoint alpha. The
-  // row background already carries the win/loss + magnitude signal, so
-  // this drops a redundant (and, it turns out, unsafe at this cap) second
-  // color encoding rather than losing any information.
-  const ROW_TINT_MIN_ALPHA = 0.06;
-  const ROW_TINT_MAX_ALPHA = 0.40;
-  const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
-  const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+  // Row background is a P&L gradient - shared pnlRowTint()/
+  // marketResultBadgeHTML() (shared-utils.js) so this table, the Simple
+  // view above, and the History tab all share one definition of the tint
+  // formula and its contrast-safe max alpha instead of three copies.
   const maxAbsPnl = Math.max(1, ...rows.map(r => Math.abs(r.pnl)));
 
   const bodyRows = rows.map(r => {
     const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
-    const tintRgb = r.pnl > 0 ? ROW_TINT_YES_RGB : r.pnl < 0 ? ROW_TINT_NO_RGB : null;
-    const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(r.pnl) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
-    const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
-    const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
+    const { style: rowBg, onTintColor, tinted } = pnlRowTint(r.pnl, maxAbsPnl);
     const resultCell = r.isClose
       ? `<span style="color:${onTintColor(r.won ? 'var(--yes)' : 'var(--no)')};">${r.won ? 'Won' : 'Lost'} · ${esc(HISTORY_CLOSE_TYPE_LABELS[r.close_type] || r.close_type)}</span>`
       : `<span style="color:${onTintColor('var(--muted)')};">open</span>`;
@@ -190,9 +161,7 @@ function renderTradeLogTable() {
     // whether that early exit was the right call in hindsight. "pending"
     // covers both a still-open position and a closed one whose market
     // hasn't settled yet - this app has no way to tell those apart here.
-    const marketResultCell = r.market_result
-      ? `<span style="color:${onTintColor(r.market_result === r.side ? 'var(--yes)' : 'var(--no)')};" title="Market settled ${esc(r.market_result.toUpperCase())} — this position held ${esc(String(r.side).toUpperCase())}">${esc(r.market_result.toUpperCase())} ${r.market_result === r.side ? '✓' : '✗'}</span>`
-      : `<span style="color:${onTintColor('var(--muted)')};">pending</span>`;
+    const marketResultCell = marketResultBadgeHTML(r.market_result, r.side, onTintColor);
     // Smaller second line under the title (2026-08-10 report: "YES"/"NO"
     // alone not saying who/what it means, plus rows going extremely wide).
     const rCtx = marketContext(r.ticker, r.side);
@@ -205,7 +174,7 @@ function renderTradeLogTable() {
     <td>${r.size.toLocaleString()}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence != null ? (r.confidence*100).toFixed(0) + '%' : '—'}</td>
-    <td class="${r.pnl >= 0 ? 'pos' : 'neg'}"${tintRgb ? ' style="color:var(--text);"' : ''}>${fmt(r.pnl)}</td>
+    <td class="${r.pnl >= 0 ? 'pos' : 'neg'}"${tinted ? ' style="color:var(--text);"' : ''}>${fmt(r.pnl)}</td>
     <td>${resultCell}</td>
     <td>${marketResultCell}</td>
   </tr>`;
