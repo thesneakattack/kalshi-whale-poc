@@ -144,11 +144,45 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
         # showing the mechanism, not just the fee-adjusted result (the
         # reason string's "(realized ...)" figure IS fee-inclusive - see
         # PaperBroker.close_position - this is that same fee cost broken
-        # back out for display). 0.0 for trades logged before fee modeling
-        # existed, not None, since "no fee data" and "zero fee" look
-        # identical for those old rows and there's no honest way to tell
-        # them apart in a display context.
-        fees_paid = round((entry.get("fee") or 0.0 if entry else 0.0) + (t.get("fee") or 0.0), 2)
+        # back out for display).
+        #
+        # Derived as the residual (cash_back - cost_basis - realized_pnl)
+        # rather than independently summing/rounding the two raw fee
+        # floats, whenever both are available. Algebraically these are the
+        # same number: mark_to_market == cash_back - cost_basis exactly
+        # (both sides reduce to size*(exit_price-entry_price) once the
+        # side-aware unit_cost signs cancel), and realized_pnl ==
+        # mark_to_market - (entry_fee + close_fee) - so fees_total ==
+        # cash_back - cost_basis - realized_pnl in exact arithmetic. But
+        # entry_fee/close_fee carry sub-cent precision (Kalshi ceils the
+        # trade fee to $0.000001, docs/kalshi/fee_rounding.md) while
+        # realized_pnl gets its own independent 2dp rounding downstream
+        # (PaperBroker.close_position's "%+.2f" reason string) - two
+        # separate roundings of the same underlying fee value, reached via
+        # two different intermediate float expressions, can each correctly
+        # round-to-nearest-cent yet land on opposite sides of a $X.XX5
+        # boundary. Real bug found 2026-09-02, direct report ("the 1c
+        # rounding errors are a problem"): confirmed against the live book,
+        # 4 of 1,124 closed trades showed Fees a literal $0.01 off from what
+        # Cost/Payout/Realized P&L implied it should be (e.g.
+        # KXSILVER15M-26SEP020130-30: entry fee's raw float rounds to
+        # $30.77 in isolation, but realized_pnl's raw float - computed by
+        # subtracting that same fee from mark_to_market first - rounds to
+        # a P&L implying $30.76). Deriving Fees as the residual against the
+        # already-displayed, already-rounded cost_basis/cash_back/
+        # realized_pnl instead makes every row foot exactly: the <=$0.01
+        # rounding noise lands in this explanatory breakout column instead
+        # of surfacing as a cross-column mismatch against the headline P&L
+        # number traders actually read. Falls back to the direct sum when
+        # there's no realized_pnl to reconcile against (unparseable reason
+        # string) or no paired entry (cost_basis unknown) - 0.0 for trades
+        # logged before fee modeling existed, not None, since "no fee data"
+        # and "zero fee" look identical for those old rows and there's no
+        # honest way to tell them apart in a display context.
+        if cost_basis is not None and realized_pnl is not None:
+            fees_paid = round(cash_back - cost_basis - realized_pnl, 2)
+        else:
+            fees_paid = round((entry.get("fee") or 0.0 if entry else 0.0) + (t.get("fee") or 0.0), 2)
 
         rows.append({
             "ticker": t["ticker"],
