@@ -66,10 +66,16 @@ should-fix item, plus the highest-value should-add scope gaps.
 6. **O3**: the WS `queue_wait` corroboration conflated two things —
    the metric measures enqueue→dequeue, not socket-to-end-of-handler
    (a smaller quantity than claimed), and the "live right now" framing
-   used the lifetime-cumulative average (4.4s) rather than the actual
+   used the lifetime-cumulative average (the document's original probe
+   read 5.24s; the adversarial review's own later, independent probe of
+   the same ever-growing cumulative average read 4.4s — both are real
+   readings of the same monotonically-averaging counter taken at
+   different moments, not a discrepancy) rather than the actual
    current-window average (0.33s) — the same window/lifetime conflation
    the document itself calls out elsewhere as having caused a real 30×
-   measurement bug. Both corrected.
+   measurement bug. Both corrected; the audit document itself retains its
+   own original 5.24s reading with the current-window correction applied
+   alongside it.
 7. **O5**: §6.2's "one 6s timer, three routes, 19 requests" framing
    conflated two mutually exclusive dashboard tabs (`/api/quality/summary`
    fires only on the Terminal tab; the two `tick_executor` routes only on
@@ -146,6 +152,34 @@ should-fix item, plus the highest-value should-add scope gaps.
   RULE rather than presented as free; and a note that this document is
   self-contained by design specifically because the source scratch reports
   are ephemeral).
+
+## PR-stage review (separate cycle, per `.claude/rules/branching-and-ci.md`)
+
+After the artifact-stage cycle above landed and PR #430 was opened
+(`docs/2026-09-02-architecture-audit` → `main`), a second, genuinely
+separate review ran against the PR as actually submitted, per this
+project's requirement that the PR itself gets its own cycle distinct from
+whatever review the underlying artifact went through beforehand.
+
+- **Self-review**: confirmed the pushed commit (`80cd31c`) contains
+  exactly the two intended files, `config/settings.yaml`'s pre-existing
+  unrelated uncommitted change was not swept in, and all 10 required
+  Woodpecker checks (5 `push/*`, 5 `pr/*`) passed.
+- **Adversarial review** (fresh Agent call, no memory of the drafting
+  session): verified the diff was clean, independently re-checked 13 of
+  the fix-list items directly against the committed file content (not the
+  consolidation doc's own summary), re-derived 4 fresh live/source facts
+  independently (`risk_manager.py`/`shadow_mode.py` line counts,
+  `strategy_engine.py:63`'s docstring nature, `alerting.py`'s 3 call
+  sites, `index_ticks`' exact row count, and a fresh live probe of
+  `/api/quality/summary` — found still slow, if anything worse than
+  documented), and checked the executive summary/§12/§14 for internal
+  coherence. One non-blocking nit found and fixed (this consolidation
+  document's own O3 summary understated which reading came from which
+  probe — corrected above, the audit document's own text was already
+  correct).
+- **Verdict: GO.** No fabricated fixes found; the revision cycle
+  demonstrably landed in the actual committed content, not just claimed.
 
 ## What was not changed
 
