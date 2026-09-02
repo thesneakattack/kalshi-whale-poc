@@ -708,32 +708,53 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
     services.diagnostics._diagnostics_pool), and the full nine-factor
     tertile report this check doesn't need cost 1.661s of a measured
     2.549s total against real production history (2026-09-01 final-review
-    fix)."""
+    fix).
+
+    since_ts defaults to a 24h window (2026-09-02 fast-follow, closing
+    docs/open-decisions.md's Task 9 entry) - the one check in this file
+    with no purpose-matched default of its own, so a caller that doesn't
+    pass since_ts explicitly (run_offline()'s own default is None) fell
+    straight through to resolved_signals_with_factors()'s unscoped
+    full-table scan, independently measured at ~1.0-1.1s / 103k+ rows and
+    growing (124,859 rows, PR #420's own live measurement). This is
+    "current data-quality state" (matches check_threshold_integrity/
+    check_price_band_adherence/check_runway_at_entry's own 24h defaults,
+    directly above/below this function) - a rolling recency question, not
+    the separate, genuinely all-history calibration-weight gate in
+    services/whale_calibration/confidence_calibration.py, which stays
+    unscoped by design and is untouched here. 24h of real signal volume
+    (measured ~5,150/day) clears min_resolved_signals's default floor of
+    50 by two orders of magnitude, so this bound costs no real coverage
+    for THIS check's own purpose."""
     import asyncio
     from services.whale_calibration import confidence_calibration
 
+    now = now if now is not None else time.time()
+    since_ts = since_ts if since_ts is not None else now - 24 * 3600
+    window_hours = round((now - since_ts) / 3600, 1)
     cc_cfg = cfg.get("confidence_calibration") or {}
     min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
     # signal_log.py is out of this plan's scope (see Global Constraints) -
     # resolved_signals_with_factors() stays a plain synchronous DB call, run
-    # on a worker thread via asyncio.to_thread. Its own unscoped-fetch cost
-    # (docs/open-decisions.md's Task 9 entry) is unchanged by this - only
-    # where it runs changes, not what it costs.
+    # on a worker thread via asyncio.to_thread.
     rows = await asyncio.to_thread(signal_log.resolved_signals_with_factors, since_ts=since_ts)
     resolved_count = len(rows)
     if resolved_count < min_resolved_signals:
         return Check(
             "confidence_input_coverage", _UNKNOWN,
             f"{resolved_count}/{min_resolved_signals} resolved real signals with a factor "
-            "breakdown - calibration activates once that's reached",
+            f"breakdown in the last {window_hours}h - a recency window, not the separate "
+            "all-history calibration-weight gate (which stays unscoped and may already be "
+            "active on far more rows than this window alone shows)",
+            detail={"window_hours": window_hours},
         )
     coverage = confidence_calibration.compute_input_coverage(rows, resolved_count)
     return Check(
         "confidence_input_coverage", _OK,
         f"depth {coverage['depth_factor']['absent_pct']}%, trend {coverage['trend_factor']['absent_pct']}%, "
         f"agreement {coverage['agreement_factor']['absent_pct']}%, spread {coverage['raw_spread']['absent_pct']}% "
-        f"absent (n={resolved_count})",
-        detail={"input_coverage": coverage},
+        f"absent (n={resolved_count}, last {window_hours}h)",
+        detail={"input_coverage": coverage, "window_hours": window_hours},
     )
 
 
@@ -749,6 +770,30 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
 
     now_ts = now if now is not None else time.time()
     hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
+    # NOTE (2026-09-02): an earlier fast-follow added `await asyncio.sleep(0)`
+    # between each check below, reasoning that run_offline() held the event
+    # loop continuously across its ~14 sequential checks with no yield point.
+    # That premise was FALSIFIED by adversarial review: aiosqlite's own
+    # `_execute` already `return`s via `await future`, so every one of the
+    # awaited calls in this function already yields control back to the loop
+    # - measured at ~1,100 real yields per run_offline() call, with or
+    # without the added sleep(0)s. The sleep(0) calls were removed as
+    # non-load-bearing rather than left in on a claim that didn't hold up.
+    #
+    # A second fast-follow idea - an elastic per-file connection pool in
+    # _aio_db.py - was tried, found to contain two Critical concurrency bugs,
+    # fixed, then independently re-measured against the same live incident
+    # and found to perform WORSE than the original PR #420 single-connection
+    # design on both wall time and worst-case co-resident latency (every pool
+    # variant tried lost to no pool at all). It was reverted rather than kept
+    # on the strength of "it should help", back to _aio_db.py's original
+    # PR #420 single-connection design (this comment is the record of that
+    # attempt and reversal; _aio_db.py itself carries no trace of it).
+    # The change that actually fixed the live incident (5 concurrent
+    # GET /api/quality/summary requests stalling an unrelated GET /api/state)
+    # was bounding check_confidence_input_coverage's previously-unscoped
+    # query to a purpose-matched 24h window - see docs/open-decisions.md's
+    # Task 9 entry for what was actually measured.
     checks = [
         await check_threshold_integrity(cfg, since_ts, now),
         await check_price_band_adherence(cfg, since_ts, now),

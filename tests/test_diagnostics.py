@@ -409,6 +409,42 @@ def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypat
     assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
 
 
+def test_confidence_input_coverage_defaults_to_a_24h_window_not_full_history(dbs):
+    """Fast-follow to #420 (2026-09-02, closing docs/open-decisions.md's
+    Task 9 entry): this was the one check in the file with no purpose-
+    matched since_ts default of its own, so a caller that doesn't pass one
+    (run_offline()'s own default) fell straight through to
+    resolved_signals_with_factors()'s unscoped full-table scan - measured
+    live at 124,859 rows / ~1s per call on a route polled every ~5s.
+    Real behavior change, not just a docstring claim: seed signals both
+    inside and outside a 24h window and confirm only the in-window ones
+    are counted, the same way check_threshold_integrity's own 24h default
+    is already exercised elsewhere in this file."""
+    import json
+    now = time.time()
+    sl_module._connect().close()
+    with sqlite3.connect(sl_module.DB_PATH) as conn:
+        for i in range(60):  # inside the 24h window - must be counted
+            conn.execute(
+                "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+                "resolved, excluded, correct, factors_json) VALUES (?,?,?,?,?,?,?,1,0,?,?)",
+                ("T", "T", "yes", 100, 0.6, "real-provider", now - 3600, i % 2,
+                 json.dumps({"depth_factor": None})),
+            )
+        for i in range(60):  # 25h old - outside the window, must NOT be counted
+            conn.execute(
+                "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+                "resolved, excluded, correct, factors_json) VALUES (?,?,?,?,?,?,?,1,0,?,?)",
+                ("T", "T", "yes", 100, 0.6, "real-provider", now - 25 * 3600, i % 2,
+                 json.dumps({"depth_factor": None})),
+            )
+    cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg, now=now))
+    assert c.status == "ok"
+    assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
+    assert "n=60" in c.summary  # exactly the in-window rows, not all 120
+
+
 def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
     c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
