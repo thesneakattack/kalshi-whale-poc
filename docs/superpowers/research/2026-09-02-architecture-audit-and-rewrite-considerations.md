@@ -14,6 +14,30 @@ end up becoming a comprehensive rewrite of the application entirely" — that
 question is addressed head-on in §12, with a specific, evidence-backed
 answer that is *not* "yes."
 
+**Post-merge note (2026-09-02, added the same day, after this document's
+own review cycle completed and it was merged as PR #430):** while this
+audit's research and review cycle were in progress, the repository owner
+merged a separate, unrelated PR (#429, `docs: drop additive-schema,
+one-DB-per-concern, and tooling-separation rules`, merged 2026-09-02T08:35Z)
+removing three `CLAUDE.md` rules this document cites by name in a few
+places: the "schema changes are additive only" mandate (§9.1's DDL-
+duplication finding; the underlying engineering concern — silent schema
+divergence across duplicate `CREATE TABLE` blocks — stands on its own
+merits independent of whether it's mandated policy), and the "one SQLite
+file per concern, no shared DB, no ORM" persistence-idiom bullet (§5.1,
+§5.2, §11, §12 all reference it as "the" architectural rule this app
+follows — it remains an accurate description of the *current code*, but
+it is no longer a *mandated* constraint on future design, which is
+directly relevant to §5's own recommendations and is flagged as an open
+item in §14 rather than silently assumed unchanged). Nothing else in this
+document is affected — no other finding, measurement, or recommendation
+depends on either removed rule. This note is a factual correction to keep
+the document accurate against a same-day external change, not a new
+analysis pass; per this project's own process, a mechanical correction of
+this kind doesn't require re-running the full review cycle, and it
+doesn't change §12's verdict (which was never conditioned on this
+specific pair of rules existing).
+
 **Method.** A 15-minute live read-only monitor (24 samples, 20s apart)
 against the app's own diagnostic endpoints, run in parallel with four
 independent research agents (each opus-model, one on the newly available
@@ -1416,6 +1440,13 @@ here — this is the list a future `superpowers:brainstorming` session
 should start from, formatted to slot directly into `docs/open-decisions.md`'s
 one-line-plus-next-action convention when that happens.
 
+- **Now that "one SQLite file per concern, no shared DB, no ORM" is no
+  longer a `CLAUDE.md`-mandated rule (PR #429, see the post-merge note at
+  the top of this document), does §5's per-concern SQLite-fitness verdict
+  still reflect what you actually want, or does removing that constraint
+  open up options (e.g. a broader consolidation, a different default
+  engine) this document didn't evaluate because it was reasoning inside
+  that boundary?** · you (design call) · 2026-09-02.
 - **Is `market_analyst_agent` still advisory-only?** (§3.4, §12) · confirm
   directly against current `strategy_engine.evaluate()` call graph, not by
   inference from a `grep` · you or me · 2026-09-02.
