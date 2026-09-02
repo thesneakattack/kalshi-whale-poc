@@ -32,6 +32,7 @@ reports status "unknown" with the reason, never a fabricated number. That
 matters more here than usual: this module exists to be trusted when other
 numbers are in doubt.
 """
+import asyncio
 import json
 import sqlite3
 import time
@@ -749,21 +750,40 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
 
     now_ts = now if now is not None else time.time()
     hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
-    checks = [
-        await check_threshold_integrity(cfg, since_ts, now),
-        await check_price_band_adherence(cfg, since_ts, now),
-        await check_runway_at_entry(cfg, since_ts, now),
-        check_config_bounds(cfg),  # unchanged - no DB access, stays sync
-        await performance_by_epoch(since_ts, now),
-        await selectivity_curve(since_ts=since_ts, now=now),
-        await check_confidence_input_coverage(cfg, since_ts, now),
-    ]
+    # await asyncio.sleep(0) after every check below is a deliberate
+    # cooperative-yield point, not incidental: each check's own aggregation
+    # runs synchronously on the event loop once its aiosqlite I/O returns
+    # (measured ~80-90ms/check in isolation, PR #420's own adversarial
+    # review finding I4) - with no yield between checks, run_offline's own
+    # total held-loop time is the SUM of every check's CPU time back-to-back
+    # (5-25s+ observed live under concurrent load), during which every other
+    # request sharing this same event loop - including completely unrelated
+    # ones like GET /api/state - is blocked. Yielding here doesn't reduce
+    # any single check's cost; it breaks the total into per-check slices so
+    # another pending coroutine gets a scheduling turn between them, instead
+    # of only after the entire sequence finishes. Fast-follow to #420,
+    # confirmed live: 5 concurrent GET /api/quality/summary requests stalled
+    # unrelated /api/state/pipeline requests for minutes.
+    checks = [await check_threshold_integrity(cfg, since_ts, now)]
+    await asyncio.sleep(0)
+    checks.append(await check_price_band_adherence(cfg, since_ts, now))
+    await asyncio.sleep(0)
+    checks.append(await check_runway_at_entry(cfg, since_ts, now))
+    await asyncio.sleep(0)
+    checks.append(check_config_bounds(cfg))  # unchanged - no DB access, stays sync
+    checks.append(await performance_by_epoch(since_ts, now))
+    await asyncio.sleep(0)
+    checks.append(await selectivity_curve(since_ts=since_ts, now=now))
+    await asyncio.sleep(0)
+    checks.append(await check_confidence_input_coverage(cfg, since_ts, now))
+    await asyncio.sleep(0)
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by
     # construction: a blended number across every series answers nobody's
     # question about a specific one.
     for series in series_watcher.watched_series(cfg):
         checks.append(await series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
+        await asyncio.sleep(0)
     worst = _OK
     for c in checks:
         if c.status == _FAIL:

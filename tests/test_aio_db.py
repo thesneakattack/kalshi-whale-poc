@@ -25,14 +25,65 @@ def test_connection_for_returns_a_usable_connection(tmp_path):
 
 
 def test_connection_for_is_cached_within_the_same_loop(tmp_path):
+    """_aio_db keeps a pool of connections per (loop, db_path), handed out
+    round-robin - not a single one - so identity across the first several
+    calls legitimately differs (fast-follow to #420, 2026-09-02: live-
+    measured that 5 concurrent identical requests against real data
+    serialized on a single connection's one worker thread for minutes).
+    The pool is ELASTIC (grows under concurrent demand, see the dedicated
+    growth test below), but a run of purely SEQUENTIAL calls - no two ever
+    in flight at once - never observes concurrent demand, so it settles at
+    exactly _MIN_POOL_SIZE and stays there. What must still hold is the
+    actual cache contract: no NEW connection is opened once every slot is
+    filled - round-robin wraps back to objects already returned, not
+    growing without bound just because more calls keep arriving one at a
+    time."""
     db_path = tmp_path / "t.db"
 
     async def _run():
-        first = await _aio_db.connection_for(db_path)
-        second = await _aio_db.connection_for(db_path)
-        return first is second
+        seen = [await _aio_db.connection_for(db_path) for _ in range(_aio_db._MIN_POOL_SIZE)]
+        wrapped = await _aio_db.connection_for(db_path)
+        return len({id(c) for c in seen}) == _aio_db._MIN_POOL_SIZE, wrapped in seen
 
-    assert asyncio.run(_run()) is True
+    distinct_count_matches_pool_size, wraps_to_a_seen_connection = asyncio.run(_run())
+    assert distinct_count_matches_pool_size
+    assert wraps_to_a_seen_connection
+    asyncio.run(_aio_db.reset())
+
+
+def test_connection_for_grows_the_pool_under_real_concurrent_demand(tmp_path):
+    """The elastic half of the contract: _MIN_POOL_SIZE is only a floor.
+    When more callers are genuinely concurrent for the same key than the
+    current pool holds, the pool grows (lazily, capped at _MAX_POOL_SIZE)
+    rather than making the extra callers round-robin over too few
+    connections - live-measured need, 2026-09-02: 5 concurrent identical
+    requests against real data serialized for minutes even at a fixed pool
+    of 2. A slow schema_init holds each slot's creation open long enough
+    to force genuine overlap, so this actually exercises concurrency
+    rather than asserting on timing alone."""
+    db_path = tmp_path / "t.db"
+    assert _aio_db._MAX_POOL_SIZE > _aio_db._MIN_POOL_SIZE, (
+        "test assumes real headroom to grow into"
+    )
+    concurrency = min(_aio_db._MAX_POOL_SIZE, _aio_db._MIN_POOL_SIZE + 3)
+
+    async def _schema_init(conn):
+        await asyncio.sleep(0.05)  # widens the overlap window deterministically
+        await conn.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+
+    async def _run():
+        conns = await asyncio.gather(*[
+            _aio_db.connection_for(db_path, schema_init=_schema_init)
+            for _ in range(concurrency)
+        ])
+        return len({id(c) for c in conns})
+
+    distinct = asyncio.run(_run())
+    assert distinct > _aio_db._MIN_POOL_SIZE, (
+        f"only {distinct} distinct connections were created for {concurrency} "
+        "genuinely concurrent callers - the pool did not grow past its floor"
+    )
+    assert distinct <= _aio_db._MAX_POOL_SIZE
     asyncio.run(_aio_db.reset())
 
 
@@ -115,7 +166,15 @@ def test_close_for_current_loop_only_closes_this_loops_entries(tmp_path):
     asyncio.run(_aio_db.reset())
 
 
-def test_schema_init_runs_once_on_first_open_only(tmp_path):
+def test_schema_init_runs_once_per_pool_slot_never_again_after_the_pool_fills(tmp_path):
+    """schema_init's idempotent DDL runs once per slot, on that slot's own
+    first-ever open - once per pool slot total per key, not once (fast-
+    follow to #420, 2026-09-02: a pool of connections per file, not 1).
+    Purely sequential calls never trigger elastic growth (see the dedicated
+    growth test), so the pool settles at exactly _MIN_POOL_SIZE here. What
+    must still hold is the actual "never again" half of the contract: once
+    every slot is filled, further calls are pure cache hits with zero new
+    schema_init invocations, however many more calls are made."""
     db_path = tmp_path / "t.db"
     calls = []
 
@@ -124,11 +183,11 @@ def test_schema_init_runs_once_on_first_open_only(tmp_path):
         await conn.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
 
     async def _run():
-        await _aio_db.connection_for(db_path, schema_init=_schema_init)
-        await _aio_db.connection_for(db_path, schema_init=_schema_init)  # cache hit
+        for _ in range(_aio_db._MIN_POOL_SIZE + 3):  # +3: well past a full pool
+            await _aio_db.connection_for(db_path, schema_init=_schema_init)
 
     asyncio.run(_run())
-    assert len(calls) == 1
+    assert len(calls) == _aio_db._MIN_POOL_SIZE
     asyncio.run(_aio_db.reset())
 
 
