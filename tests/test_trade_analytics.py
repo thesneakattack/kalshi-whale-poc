@@ -114,6 +114,9 @@ def test_build_trade_history_fees_paid_reconciles_with_realized_pnl_at_a_roundin
     assert r["cost_basis"] == 586.0
     assert r["cash_back"] == 0.0
     assert r["realized_pnl"] == -616.76
+    # Explicit: the old direct-sum formula would give 30.77 here (a real
+    # regression this pins by name, not just via the round-trip identity).
+    assert r["fees_paid"] == 30.76
     assert round(r["cash_back"] - r["cost_basis"] - r["fees_paid"], 2) == r["realized_pnl"]
 
 
