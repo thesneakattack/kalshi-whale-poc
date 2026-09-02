@@ -1231,11 +1231,11 @@ git commit -m "feat: wire run_offline() as async end-to-end, delete _diagnostics
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_aio_db.py tests/test_diagnostics.py tests/test_series_watcher.py tests/test_quality_routes.py tests/test_diagnostics_routes.py tests/test_research.py -v"`
 Expected: PASS, 0 failures. Per CLAUDE.md, the full suite is CI's job (Woodpecker), not this session's — this targeted run is what a local pre-push check should cover.
 
-- [ ] **Step 2: `ddev restart` so the container image actually has `aiosqlite` baked in from `requirements.txt`** (not just the `pip install` used for local iteration in Task 1)
+- [x] **Step 2: `ddev restart` so the container image actually has `aiosqlite` baked in from `requirements.txt`** (not just the `pip install` used for local iteration in Task 1)
 
 Run from the primary checkout (not the worktree — `ddev` commands run from the primary root per CLAUDE.md): `ddev restart`
 
-- [ ] **Step 3: Live smoke test against the running app**
+- [x] **Step 3: Live smoke test against the running app**
 
 Per CLAUDE.md's "Start investigations here" list and the `run` skill:
 - `curl -sk -m 10 https://kalshi-whale-poc.ddev.site:8443/api/quality/summary -w "\ntime_total=%{time_total}\n"` — expect a normal (<2s) response, not the 30s hang this plan's own investigation reproduced live before the fix.
@@ -1244,14 +1244,29 @@ Per CLAUDE.md's "Start investigations here" list and the `run` skill:
 - Fire 5 concurrent requests at `/api/quality/summary` (`for i in 1 2 3 4 5; do curl -sk -m 15 .../api/quality/summary -o /dev/null -w "%{time_total}\n" & done; wait`) and confirm none of them time out and `/api/health/pipeline`'s `last_tick_duration_sec` doesn't spike during the burst — the actual, direct test of "no longer blocking the event loop" this whole plan exists to achieve.
 - `GET /api/health/faults` — confirm no new fault class appears post-restart.
 
-- [ ] **Step 4: `superpowers:requesting-code-review` + this repo's "nothing advances on one pass" cycle**
+Done, and this exact 5-concurrent burst test is what surfaced the real
+live incident this plan's Task 7 was meant to catch: 5 concurrent
+`GET /api/quality/summary` calls stalled an unrelated `GET /api/state` for
+minutes. That incident became its own fast-follow branch
+(`fix/run-offline-cooperative-yield`, PR #424) rather than a fix folded
+back into this already-merged PR — see that PR's own review trail
+(`docs/superpowers/specs/2026-09-02-run-offline-cooperative-yield-*.md`)
+for the full investigation, an elastic connection pool that was tried and
+proven (by measurement) to regress the incident further, and the query-
+bound fix that actually resolved it.
+
+- [x] **Step 4: `superpowers:requesting-code-review` + this repo's "nothing advances on one pass" cycle**
 
 Per CLAUDE.md's HARD RULE: this PR carries new logic (a new dependency, a new connection-cache module, an architectural change to how 2 files do I/O) — self-review, then a fresh memory-less adversarial-review `Agent` call re-deriving every load-bearing claim from source (not this plan's own tables), then a consolidation doc reconciling both into a GO/no-go, each its own artifact under `docs/superpowers/specs/`. Do not open the PR's merge step until that cycle says GO.
 
-- [ ] **Step 5: Push, open PR, label, merge per `.claude/rules/branching-and-ci.md`**
+- [x] **Step 5: Push, open PR, label, merge per `.claude/rules/branching-and-ci.md`**
 
 `git push -u origin fix/aiosqlite-diagnostics-widening`, `gh pr create`, confirm real Woodpecker CI status via `gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status` (never assume from the push alone), run the PR-stage review cycle from Step 4 again against the PR as actually pushed, then `gh pr merge --merge`.
 
-- [ ] **Step 6: Record the deferred findings**
+Merged as PR #420.
+
+- [x] **Step 6: Record the deferred findings**
+
+Recorded in `docs/open-decisions.md` (the unscoped `check_confidence_input_coverage` query, closed 2026-09-02 by PR #424) and in this plan's own review artifacts under `docs/superpowers/specs/2026-09-01-event-loop-blocking-fix2-*.md`.
 
 Add to `docs/open-decisions.md`: (1) `check_series_funnel`'s double computation of `reconcile()`+`funnel()` (Task 5 Step 6's note) — compute-redundancy, not event-loop-blocking, separate from this plan; (2) confirm issue #410 and the `resolved_signals_with_factors()`/`population_gate_summary()` unbounded-query findings are still accurately described there (this plan didn't touch either, only stopped them from blocking the event loop where they're called from newly-async code).
