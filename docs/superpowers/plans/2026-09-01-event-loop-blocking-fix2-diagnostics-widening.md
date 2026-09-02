@@ -4,7 +4,7 @@
 
 **Goal:** Convert every DB-touching function `diagnostics.run_offline()` and `GET /api/diagnostics/series/{series}` reach, in `services/diagnostics/diagnostics.py` and `services/series_watcher.py`, from raw synchronous `sqlite3` to `aiosqlite`, so the event loop is never blocked by their disk I/O — then delete `services/diagnostics/_diagnostics_pool.py`, whose whole reason to exist (isolating blocking work on a thread pool) disappears once the work is genuinely non-blocking.
 
-**Architecture:** One shared module, `services/diagnostics/_aio_db.py`, holds a small cache of persistent `aiosqlite.Connection`s (one per `(event_loop, db_path)` pair — loop-scoped, not just path-scoped, because one caller (`services/research/research.py`) runs this code from a throwaway `asyncio.run()` loop on a worker thread, never the main app loop, and an `aiosqlite.Connection` is not safe to reuse across two different event loops). Every DB-touching function in the two target files becomes `async def` and calls `await _aio_db.connection_for(SOME_MODULE.DB_PATH)` instead of `sqlite3.connect(...)`. Two call sites reach into an out-of-scope module's own DB helper (`trade_category.categories_for_tickers`, `signal_log.resolved_signals_with_factors`) — those stay synchronous and get wrapped in `asyncio.to_thread(...)` at the call site rather than converted themselves, so this plan's file footprint stays exactly the two files the design spec named plus the three call sites that reach `run_offline`/`funnel`/`reconcile`.
+**Architecture:** One shared module, `services/diagnostics/_aio_db.py`, holds a small cache of persistent `aiosqlite.Connection`s (one per `(event_loop, db_path)` pair — loop-scoped, not just path-scoped, because one caller (`services/research/research.py`) runs this code from a throwaway `asyncio.run()` loop on a worker thread, never the main app loop, and then calls `close_for_current_loop()` to clean up after itself. **Corrected 2026-09-01 (PR adversarial review finding I3):** the reason is connection *lifetime/ownership*, not loop affinity — keyed by path alone, research.py's cleanup would close connections the main app's long-lived loop is still using, and entries belonging to an already-dead throwaway loop could never be distinguished from the main loop's in order to be cleaned up at all. An `aiosqlite.Connection` in the pinned 0.22.1 is **not** bound to the loop that created it; this plan originally claimed it was.) Every DB-touching function in the two target files becomes `async def` and calls `await _aio_db.connection_for(SOME_MODULE.DB_PATH)` instead of `sqlite3.connect(...)`. Two call sites reach into an out-of-scope module's own DB helper (`trade_category.categories_for_tickers`, `signal_log.resolved_signals_with_factors`) — those stay synchronous and get wrapped in `asyncio.to_thread(...)` at the call site rather than converted themselves, so this plan's file footprint stays exactly the two files the design spec named plus the three call sites that reach `run_offline`/`funnel`/`reconcile`.
 
 **Tech Stack:** Python 3.13, FastAPI, `aiosqlite` (new dependency, pinned `0.22.1` — the current latest stable, confirmed via `pip index versions aiosqlite` inside the `fastapi` container, 2026-09-01; not previously a dependency of this repo, confirmed via `requirements.txt` and a failed `import aiosqlite` inside the container).
 
@@ -49,7 +49,7 @@
 - Produces: `async def close_for_current_loop() -> None` — closes and evicts only the cache entries opened under the currently-running event loop.
 - Produces: `async def reset() -> None` — test-only, closes and evicts every cached connection regardless of loop.
 
-- [ ] **Step 1: Add the dependency**
+- [x] **Step 1: Add the dependency**
 
 Append to `requirements.txt` (after the `websockets` line, before the `anthropic` comment block, matching this file's existing per-dependency rationale-comment convention):
 
@@ -65,7 +65,7 @@ Append to `requirements.txt` (after the `websockets` line, before the `anthropic
 aiosqlite==0.22.1
 ```
 
-- [ ] **Step 2: Write the failing test for the connection cache**
+- [x] **Step 2: Write the failing test for the connection cache**
 
 Create `tests/test_aio_db.py`:
 
@@ -191,14 +191,14 @@ def test_locks_are_scoped_per_loop_not_shared_across_loops(tmp_path):
     asyncio.run(_aio_db.reset())
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [x] **Step 3: Run the test to verify it fails**
 
 Run: `cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_aio_db.py -v` (via `docker exec ddev-kalshi-whale-poc-fastapi sh -c "..."`, since `ddev exec` refuses to run from a linked worktree per this repo's own `CLAUDE.md`)
 Expected: FAIL with `ModuleNotFoundError: No module named 'services.diagnostics._aio_db'` (and `aiosqlite` itself not yet installed in the container — install it first, see note below).
 
 Before running: the container image doesn't have `aiosqlite` yet either (Task 1 Step 1 only edited `requirements.txt`, the image hasn't rebuilt). For local iteration without a full `ddev restart`/rebuild, `docker exec ddev-kalshi-whale-poc-fastapi sh -c "pip install aiosqlite==0.22.1"` installs it into the running container for this session; a real `ddev restart` (which rebuilds from `requirements.txt`) is still required before this is a durable part of the image, and CI's own build does this from `requirements.txt` directly regardless.
 
-- [ ] **Step 4: Implement `_aio_db.py`**
+- [x] **Step 4: Implement `_aio_db.py`**
 
 Create `services/diagnostics/_aio_db.py`:
 
@@ -223,12 +223,22 @@ research.py's build_report() calls into this module from a plain sync
 function that itself runs via asyncio.to_thread(run_and_store, cfg) - a
 worker thread with no running event loop of its own - and reaches
 diagnostics.run_offline() through its own throwaway asyncio.run() call.
-An aiosqlite.Connection is bound to the event loop that created it; handing
-a connection opened under the main app's long-lived loop to code running
-under a different, temporary loop (or vice versa) is a real correctness
-hazard, not a hypothetical - aiosqlite's internal read/write queue is
-loop-bound. Keying by loop identity means research.py's throwaway loop
-always gets its own fresh connections, never the main loop's.
+Keying by loop identity means research.py's throwaway loop always gets its
+own fresh connections, never the main loop's, and - the actual point - that
+its close_for_current_loop() closes exactly those and not the main app's.
+
+[Corrected 2026-09-01, PR adversarial review finding I3. This paragraph
+originally read: "An aiosqlite.Connection is bound to the event loop that
+created it ... aiosqlite's internal read/write queue is loop-bound." That is
+false for the pinned 0.22.1, verified by reading the installed
+aiosqlite/core.py: Connection.__init__ warns the `loop` parameter is "no
+longer used", Connection._execute creates its future on whatever loop is
+CALLING via asyncio.get_event_loop().create_future(), and the worker thread
+delivers results with future.get_loop().call_soon_threadsafe(...). The
+transport is a plain SimpleQueue on a plain Thread. Loop-scoping the cache
+remains correct, but for connection lifetime/ownership reasons - see the
+Architecture note above and the shipped docstring in
+services/diagnostics/_aio_db.py.]
 
 The lock guarding first-open-per-key is ALSO scoped per loop (a dict of
 locks, not one shared asyncio.Lock) for the identical reason: asyncio's own
@@ -317,12 +327,12 @@ async def reset() -> None:
     _locks.clear()
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_aio_db.py -v"`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add requirements.txt services/diagnostics/_aio_db.py tests/test_aio_db.py
@@ -341,7 +351,7 @@ git commit -m "feat: add aiosqlite dependency + shared loop-scoped connection ca
 - Consumes: `_aio_db.connection_for(db_path)` from Task 1.
 - Produces: `async def _close_ts_for_tickers(tickers) -> dict`, `async def _fetch_path_changes(paths, since_ts) -> list`, `async def check_threshold_integrity(...) -> Check`, `async def check_price_band_adherence(...) -> Check` — Task 6 awaits these from `run_offline()`.
 
-- [ ] **Step 1: Update the existing tests to `asyncio.run(...)`-wrap these two checks**
+- [x] **Step 1: Update the existing tests to `asyncio.run(...)`-wrap these two checks**
 
 In `tests/test_diagnostics.py`, every call of the shape `diagnostics.check_threshold_integrity(...)` or `diagnostics.check_price_band_adherence(...)` (5 tests total: `test_threshold_integrity_flags_signals_below_the_configured_floor`, `test_threshold_integrity_respects_per_series_overrides`, `test_threshold_integrity_unknown_when_no_data`, `test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config`, `test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_raise`, `test_price_band_flags_entries_above_max_unit_cost`, `test_price_band_uses_side_aware_unit_cost_not_raw_price`, `test_price_band_is_epoch_aware_not_judged_against_todays_band`) — wrap the call:
 
@@ -363,12 +373,12 @@ def _reset_aio_db_cache():
     asyncio.run(_aio_db.reset())
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'threshold_integrity or price_band' -v"`
 Expected: FAIL — `asyncio.run()` wrapping a plain (non-coroutine) return value raises `TypeError: An asyncio.Future, a coroutine or an awaitable is required`, since the functions aren't `async def` yet.
 
-- [ ] **Step 3: Convert the two helpers and two checks**
+- [x] **Step 3: Convert the two helpers and two checks**
 
 In `services/diagnostics/diagnostics.py`, add the import (near the top, alongside the other `services` imports):
 
@@ -489,12 +499,12 @@ async def check_price_band_adherence(cfg: dict, since_ts: float | None = None, n
         # ... rest of the loop body and Check construction unchanged ...
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'threshold_integrity or price_band' -v"`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add services/diagnostics/diagnostics.py tests/test_diagnostics.py
@@ -513,16 +523,16 @@ git commit -m "feat: convert check_threshold_integrity/check_price_band_adherenc
 - Consumes: `_aio_db.connection_for`, `_close_ts_for_tickers` (now async, from Task 2).
 - Produces: `async def check_runway_at_entry(...) -> Check`, `async def config_epochs(...) -> list[dict]`, `async def performance_by_epoch(...) -> Check`.
 
-- [ ] **Step 1: Update existing tests to `asyncio.run(...)`-wrap these three**
+- [x] **Step 1: Update existing tests to `asyncio.run(...)`-wrap these three**
 
 In `tests/test_diagnostics.py`: `test_runway_buckets_entries_by_time_to_close`, `test_runway_unknown_when_no_close_time_is_recorded`, `test_performance_by_epoch_splits_trades_at_config_change_boundaries`, `test_performance_by_epoch_unknown_without_enough_trades` — same `asyncio.run(...)` wrap as Task 2 Step 1.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'runway or performance_by_epoch' -v"`
 Expected: FAIL, same `TypeError` shape as Task 2.
 
-- [ ] **Step 3: Convert `check_runway_at_entry`**
+- [x] **Step 3: Convert `check_runway_at_entry`**
 
 ```python
 async def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
@@ -553,7 +563,7 @@ async def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: f
     # ... rest of the function (bucketing loop, Check construction) unchanged ...
 ```
 
-- [ ] **Step 4: Convert `config_epochs` and `performance_by_epoch`**
+- [x] **Step 4: Convert `config_epochs` and `performance_by_epoch`**
 
 ```python
 async def config_epochs(since_ts: float | None = None, now: float | None = None) -> list[dict]:
@@ -595,12 +605,12 @@ async def performance_by_epoch(since_ts: float | None = None, now: float | None 
 
 Note: `config_epochs` is also called directly elsewhere in this file only by `performance_by_epoch` (grepped, confirmed) — no other caller inside `diagnostics.py` needs updating.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'runway or performance_by_epoch' -v"`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/diagnostics/diagnostics.py tests/test_diagnostics.py
@@ -618,16 +628,16 @@ git commit -m "feat: convert check_runway_at_entry/config_epochs/performance_by_
 **Interfaces:**
 - Produces: `async def selectivity_curve(...) -> Check`, `async def check_confidence_input_coverage(...) -> Check`.
 
-- [ ] **Step 1: Update existing tests**
+- [x] **Step 1: Update existing tests**
 
 In `tests/test_diagnostics.py`: `test_confidence_input_coverage_ok_once_calibration_is_ungated`, `test_confidence_input_coverage_unknown_below_the_resolved_floor`, plus any `selectivity_curve` test present — `asyncio.run(...)` wrap, same as before. `test_confidence_input_coverage_ok_once_calibration_is_ungated` uses `monkeypatch` (per its signature `(dbs, monkeypatch)`) — check what it monkeypatches (likely `confidence_calibration.compute_input_coverage` or `signal_log.resolved_signals_with_factors`) and confirm the patched target's call shape still matches after this task's change (it should — the wrap in Step 3 below calls `signal_log.resolved_signals_with_factors` exactly as before, just via `asyncio.to_thread`).
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'selectivity or confidence_input_coverage' -v"`
 Expected: FAIL, same shape as prior tasks.
 
-- [ ] **Step 3: Convert both functions**
+- [x] **Step 3: Convert both functions**
 
 ```python
 async def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
@@ -682,12 +692,12 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
     )
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k 'selectivity or confidence_input_coverage' -v"`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add services/diagnostics/diagnostics.py tests/test_diagnostics.py
@@ -706,16 +716,16 @@ git commit -m "feat: convert selectivity_curve/check_confidence_input_coverage t
 - Consumes: `_aio_db.connection_for` (Task 1). Note this file does NOT import `services.diagnostics.diagnostics` (avoiding the existing circular-import concern this file's own module docstring already documents for the reverse direction) — import `_aio_db` directly: `from services.diagnostics import _aio_db`.
 - Produces: `async def _signals_for_series(...)`, `async def _trades_for_series(...)`, `async def funnel(...) -> dict`, `async def reconcile(...) -> dict`, `async def check_series_funnel(...) -> Check`, `async def capture_stats(...) -> dict`, `async def book_context_at_entry(...) -> dict`. `check_series_funnel` is what `diagnostics.run_offline()` awaits (Task 6).
 
-- [ ] **Step 1: Update existing tests**
+- [x] **Step 1: Update existing tests**
 
 `tests/test_series_watcher.py` (confirmed as the exact filename covering this module's read-side functions, via adversarial review, 2026-09-01) — every call to `funnel(...)`, `reconcile(...)`, `check_series_funnel(...)`, `capture_stats(...)`, `book_context_at_entry(...)`, `_signals_for_series(...)`, `_trades_for_series(...)` gets the same `asyncio.run(...)` wrap as prior tasks. Grep first to get the complete list before editing: `grep -n "sw\.\(funnel\|reconcile\|check_series_funnel\|capture_stats\|book_context_at_entry\)(" tests/test_series_watcher.py` (adjust the module alias in the pattern to match however this file actually imports `series_watcher` — check its own import line first).
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_series_watcher.py -v"`
 Expected: FAIL, same `TypeError` shape.
 
-- [ ] **Step 3: Add the schema-init helper, then convert `_signals_for_series` and `_trades_for_series`**
+- [x] **Step 3: Add the schema-init helper, then convert `_signals_for_series` and `_trades_for_series`**
 
 `_connect()` (this file, lines 151-207) currently self-heals a missing/fresh `series_watcher.db` on EVERY call: `DB_PATH.parent.mkdir(exist_ok=True)`, `PRAGMA journal_mode=WAL`, `CREATE TABLE IF NOT EXISTS` for both `raw_trades` and `book_snapshots` plus their indexes. `funnel()`, `capture_stats()`, and `book_context_at_entry()` (Steps 4/7/8 below) are the three functions in this file that move off `_connect()` onto `_aio_db.connection_for()` — without replicating this schema-ensuring behavior, a genuinely fresh/empty `series_watcher.db` would make these three functions raise `OperationalError: no such table`, caught by their own `except sqlite3.Error`, and silently collapse the distinction between "no data yet" (today's honest answer) and "store unreadable" (a different honest answer, but the wrong one) - the exact "degrades honestly" design principle `services/diagnostics/diagnostics.py`'s own module docstring states as this whole subsystem's reason to exist. Add, near `_connect()`:
 
@@ -816,7 +826,7 @@ async def _trades_for_series(series: str, since_ts: float, before_ts: float) -> 
     return [dict(r) for r in rows if signal_log.series_of(r["ticker"]) == series]
 ```
 
-- [ ] **Step 4: Convert `funnel`**
+- [x] **Step 4: Convert `funnel`**
 
 Add `async` to the `def` line; the function's own `raw_trades` queries (currently via this module's `_connect()`) move to the shared cache; the two calls it makes to `_signals_for_series`/`_trades_for_series` (now async) get `await`:
 
@@ -867,7 +877,7 @@ async def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | Non
 
 Note `DB_PATH` here is `series_watcher.py`'s own module-level `DB_PATH` (the file this function already lives in) — this replaces the module's existing `_connect()`-based access for this one function only; `_connect()` itself is untouched (still used by the write-path functions this plan doesn't touch).
 
-- [ ] **Step 5: Convert `reconcile`**
+- [x] **Step 5: Convert `reconcile`**
 
 Add `async` to the `def` line, `await` its two calls to `_signals_for_series`/`_trades_for_series`:
 
@@ -887,7 +897,7 @@ async def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | 
     # unchanged ...
 ```
 
-- [ ] **Step 6: Convert `check_series_funnel`**
+- [x] **Step 6: Convert `check_series_funnel`**
 
 ```python
 async def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.0,
@@ -907,7 +917,7 @@ async def check_series_funnel(cfg: dict, series: str | None = None, hours: float
 
 Note (do not act on this in this task — logged here so it isn't lost): `check_series_funnel` computes `reconcile()` and then, separately, `funnel()` again for the `evidence` field — both call `_signals_for_series`/`_trades_for_series` with the same arguments, so this function does its core DB work twice per call. That's a real, measured cost (`funnel()` alone was ~half of `check_series_funnel`'s measured per-series cost during this plan's own investigation) but it's a compute-redundancy problem, not an event-loop-blocking one — orthogonal to this plan's scope and not fixed here. Record it in `docs/open-decisions.md` as its own line when this plan's PR is opened (Task 7).
 
-- [ ] **Step 7: Convert `capture_stats`**
+- [x] **Step 7: Convert `capture_stats`**
 
 ```python
 async def capture_stats(series: str | None = None) -> dict:
@@ -930,7 +940,7 @@ async def capture_stats(series: str | None = None) -> dict:
     # ... rest of the function (the returned dict) unchanged ...
 ```
 
-- [ ] **Step 8: Convert `book_context_at_entry`**
+- [x] **Step 8: Convert `book_context_at_entry`**
 
 ```python
 async def book_context_at_entry(series: str | None = None, hours: float = 24.0,
@@ -972,12 +982,12 @@ async def book_context_at_entry(series: str | None = None, hours: float = 24.0,
     # ... rest of the function (matched==0 branch, final return dict) unchanged ...
 ```
 
-- [ ] **Step 9: Run the tests to verify they pass**
+- [x] **Step 9: Run the tests to verify they pass**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_series_watcher.py -v"`
 Expected: PASS, including (do not skip checking these two specifically) `test_funnel_flags_that_capture_was_off_rather_than_claiming_no_whales` and `test_book_context_says_unknown_rather_than_inventing_a_spread` — both call `funnel()`/`book_context_at_entry()` against a `series_watcher.db` with no prior write, relying entirely on schema self-healing. Step 3's `_ensure_schema_aio` hook exists specifically so these two pass UNCHANGED, with no assertion edits, proving no behavior regression was introduced (adversarial review finding A, 2026-09-01) — if either fails, do not "fix" it by loosening the assertion; that would be silently accepting the regression this step exists to prevent.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add services/series_watcher.py tests/
@@ -1000,16 +1010,16 @@ git commit -m "feat: convert series_watcher.py's read-only functions to aiosqlit
 - Consumes: every `async def` produced by Tasks 2-5.
 - Produces: `async def run_offline(...) -> dict` — the final public entry point every caller reaches.
 
-- [ ] **Step 1: Update `run_offline`'s own tests**
+- [x] **Step 1: Update `run_offline`'s own tests**
 
 `test_run_offline_reports_worst_status_across_checks`, `test_read_paths_close_their_sqlite_connections`, `test_run_offline_never_writes_to_any_db` in `tests/test_diagnostics.py` — `asyncio.run(...)` wrap. `test_read_paths_close_their_sqlite_connections` specifically asserts something about connection lifecycle under the OLD per-call-`closing()` pattern — read this test's actual body once you reach it and adapt its assertion to the new persistent-cache reality (a connection is now expected to stay OPEN across calls within one loop, not closed after each — the test's intent, "no connection leak," is still valid but its mechanism for checking that changes: assert the cache doesn't grow unboundedly across repeated calls with the same DB_PATH, e.g. call `run_offline` twice and assert `len(_aio_db._connections)` doesn't increase on the second call).
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py -k run_offline -v"`
 Expected: FAIL.
 
-- [ ] **Step 3: Convert `run_offline`**
+- [x] **Step 3: Convert `run_offline`**
 
 ```python
 async def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
@@ -1047,7 +1057,7 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
 
 Sequential `await` (not `asyncio.gather`), deliberately: matches today's exact ordering/semantics with the smallest possible behavior change, and avoids introducing new concurrency (and the questions that come with it — e.g. whether two checks touching the same DB file should race) in a plan whose whole point is eliminating a bug, not adding a new axis of behavior. If `run_offline()`'s wall-clock cost is later measured as a problem in its own right (a separate, compute-cost question from the event-loop-blocking one this plan fixes), parallelizing independent checks via `asyncio.gather` is the next lever — not applied speculatively here.
 
-- [ ] **Step 4: Update `services/quality/routes.py`**
+- [x] **Step 4: Update `services/quality/routes.py`**
 
 Remove the `_diagnostics_pool` import and the wrapper call:
 
@@ -1067,7 +1077,7 @@ from services.diagnostics import diagnostics
 
 Also update the surrounding comment block (currently explains why this route uses `_diagnostics_pool` instead of `tick_executor`) — replace it with a short note that `run_offline()`'s own call graph is aiosqlite-native now, so no dedicated pool is needed (point at this plan's design spec).
 
-- [ ] **Step 5: Update `services/diagnostics/routes.py`**
+- [x] **Step 5: Update `services/diagnostics/routes.py`**
 
 ```python
 # get_diagnostics (line 53)
@@ -1095,7 +1105,7 @@ return {
 }
 ```
 
-- [ ] **Step 6: Update `services/research/research.py`**
+- [x] **Step 6: Update `services/research/research.py`**
 
 `build_report()` stays a plain `def` (it's invoked via `asyncio.to_thread(run_and_store, cfg)` from `_run_research_background`, and still calls other genuinely-synchronous, out-of-this-plan's-scope functions like `candidate_log.population_gate_summary()` and `signal_log.resolved_signals_with_factors()` directly — converting just this one call to `await` would require making the whole function async, which would then need those other still-sync calls wrapped too, expanding this plan's scope well past its two named files). Its one call to `diagnostics.run_offline()` goes through a local `asyncio.run(...)`:
 
@@ -1137,7 +1147,7 @@ diagnostics_report = asyncio.run(_diagnostics_and_cleanup())
 
 Then use `diagnostics_report` in the function's final return dict in place of the old inline call.
 
-- [ ] **Step 7: Fix `tests/test_research.py`'s `_patch_every_analyzer()` helper (systemic breakage — adversarial review finding B, 2026-09-01)**
+- [x] **Step 7: Fix `tests/test_research.py`'s `_patch_every_analyzer()` helper (systemic breakage — adversarial review finding B, 2026-09-01)**
 
 Read `tests/test_research.py` line 102's `_patch_every_analyzer()` helper first — it monkeypatches `research.diagnostics.run_offline` as a plain synchronous `lambda cfg, now=None: {"overall": "ok"}`. 11 of this file's ~17 tests call this helper (confirmed by grep at review time), including every test that exercises `build_report()`/`run_and_store()`/`_maybe_run_research()` directly or indirectly. Once Step 6 makes `build_report()` `await diagnostics.run_offline(...)` (inside its own `asyncio.run()` wrapper), awaiting this lambda's plain dict return value raises `TypeError: object dict can't be used in 'await' expression` in every one of those 11 tests. Fix the helper itself, once:
 
@@ -1152,7 +1162,7 @@ monkeypatch.setattr(research.diagnostics, "run_offline", _fake_run_offline)
 
 (Exact surrounding syntax may differ slightly from this sketch — match `_patch_every_analyzer()`'s real current structure when editing, don't paste this block verbatim without checking it against the file first.)
 
-- [ ] **Step 8: Add route-level test coverage for the two converted `services/diagnostics/routes.py` routes (adversarial review finding G, 2026-09-01)**
+- [x] **Step 8: Add route-level test coverage for the two converted `services/diagnostics/routes.py` routes (adversarial review finding G, 2026-09-01)**
 
 Neither `GET /api/diagnostics` nor `GET /api/diagnostics/series/{series}` has any existing test coverage anywhere in `tests/` (confirmed at review time — `tests/test_diagnostics_routes.py` exists but covers different routes in the same file, `get_index_settlement`/`get_account_diagnostics`). Add to `tests/test_diagnostics_routes.py`, following that file's existing test-client/fixture conventions (read a couple of its current tests first to match its setup pattern exactly):
 
@@ -1174,7 +1184,7 @@ def test_get_series_watcher_returns_all_four_sections(client):
 
 These exist specifically so the `await` additions in Step 5 are verified by durable CI coverage, not only by Task 7's manual curl-based smoke test.
 
-- [ ] **Step 9: Delete `_diagnostics_pool.py`**
+- [x] **Step 9: Delete `_diagnostics_pool.py`**
 
 ```bash
 git rm services/diagnostics/_diagnostics_pool.py
@@ -1184,12 +1194,12 @@ Grep to confirm nothing else references it: `grep -rn "_diagnostics_pool" servic
 
 Deletion is safe not primarily because `run_offline()`'s target DB files (`signal_log.db`, `paper_broker.db`, `market_catalog.db`, `config_performance.db`, `series_watcher.db`) don't overlap with `tick_executor`'s trading-critical writers (`candidate_log.db`, `candidate_ledger.db`) — `_diagnostics_pool.py` was never on `tick_executor`'s pool to begin with, it was already its own dedicated 2-worker pool (its own docstring: "not services.tick_executor's shared one"), so that non-overlap was never the risk this deletion removes. The real reason: after this plan, `run_offline()`'s entire call graph runs natively on the asyncio event loop via `aiosqlite` — no thread pool involvement anywhere, dedicated or shared — so there is nothing left for a dedicated isolation pool to isolate. (Also worth being explicit rather than glossing over: `paper_broker.db` is one of `run_offline()`'s most heavily-read targets and is arguably the single most trading-critical file in the app; its absence from the tick_executor-sharing list above is about which OTHER writers share a thread pool with it, not about `paper_broker.db` itself being low-stakes.)
 
-- [ ] **Step 10: Run every affected test file**
+- [x] **Step 10: Run every affected test file**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_diagnostics.py tests/test_quality_routes.py tests/test_diagnostics_routes.py tests/test_research.py -v"`
 Expected: PASS across all of it.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add services/diagnostics/diagnostics.py services/quality/routes.py services/diagnostics/routes.py services/research/research.py tests/
@@ -1203,7 +1213,7 @@ git commit -m "feat: wire run_offline() as async end-to-end, delete _diagnostics
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the full targeted test surface**
+- [x] **Step 1: Run the full targeted test surface**
 
 Run: `docker exec ddev-kalshi-whale-poc-fastapi sh -c "cd /app/.claude/worktrees/aiosqlite-diagnostics-whale-scoring && python -m pytest tests/test_aio_db.py tests/test_diagnostics.py tests/test_series_watcher.py tests/test_quality_routes.py tests/test_diagnostics_routes.py tests/test_research.py -v"`
 Expected: PASS, 0 failures. Per CLAUDE.md, the full suite is CI's job (Woodpecker), not this session's — this targeted run is what a local pre-push check should cover.

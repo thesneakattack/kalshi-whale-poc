@@ -194,10 +194,17 @@ def build_report(cfg: dict, now: float | None = None) -> dict:
         # know to call our own conn.close() first) across every research
         # report ever generated in this process's lifetime. try/finally
         # (adversarial review finding D, 2026-09-01): without it, an
-        # exception from run_offline() skips cleanup entirely, and CPython
-        # can later reuse this dead loop's freed id() for an unrelated new
-        # loop - connection_for() would then hand that new loop a
-        # connection actually bound to the dead one.
+        # exception from run_offline() skips cleanup entirely, pinning this
+        # dead loop object, its connections and their NON-daemon aiosqlite
+        # worker threads for the rest of the process - one set per failed
+        # report. (An earlier version of this comment justified the
+        # try/finally with CPython reusing the dead loop's freed id() for a
+        # new loop; that has been structurally impossible since the cache
+        # key became the loop OBJECT rather than id(loop), which holds a
+        # strong reference - see _aio_db.py's docstring. The try/finally is
+        # still necessary, for the leak reason above; only the stated
+        # rationale was wrong. PR adversarial review finding M2,
+        # 2026-09-01.)
         try:
             return await diagnostics.run_offline(cfg, now=now)
         finally:
