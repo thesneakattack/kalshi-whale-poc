@@ -144,11 +144,36 @@ def build_trade_history(trade_log: list[dict]) -> list[dict]:
         # showing the mechanism, not just the fee-adjusted result (the
         # reason string's "(realized ...)" figure IS fee-inclusive - see
         # PaperBroker.close_position - this is that same fee cost broken
-        # back out for display). 0.0 for trades logged before fee modeling
-        # existed, not None, since "no fee data" and "zero fee" look
-        # identical for those old rows and there's no honest way to tell
-        # them apart in a display context.
-        fees_paid = round((entry.get("fee") or 0.0 if entry else 0.0) + (t.get("fee") or 0.0), 2)
+        # back out for display).
+        #
+        # Derived as the residual (cash_back - cost_basis - realized_pnl)
+        # rather than independently rounding entry_fee + close_fee, when
+        # both are available: algebraically identical (mark_to_market ==
+        # cash_back - cost_basis exactly, and realized_pnl == mark_to_market
+        # - fees), but entry_fee/close_fee carry sub-cent precision while
+        # realized_pnl gets its own independent 2dp rounding downstream
+        # (PaperBroker.close_position's "%+.2f" reason string) - two
+        # roundings of the same fee value, from different float
+        # expressions, can each round correctly yet land on opposite sides
+        # of a $X.XX5 boundary. Real bug, direct report 2026-09-02 ("the 1c
+        # rounding errors are a problem"): confirmed against the live book,
+        # 4 of 1,133 closed trades showed Fees a literal $0.01 off from what
+        # Cost/Payout/Realized P&L implied (see
+        # test_build_trade_history_fees_paid_reconciles_with_realized_pnl_
+        # at_a_rounding_boundary for the worked example). This makes every
+        # row foot exactly against the already-rounded P&L a trader actually
+        # reads, at the cost of absorbing the <=$0.01 rounding noise into
+        # this explanatory breakout column instead. Falls back to the
+        # direct sum when there's no realized_pnl to reconcile against
+        # (unparseable reason string) or no paired entry (cost_basis
+        # unknown) - 0.0 for trades logged before fee modeling existed, not
+        # None, since "no fee data" and "zero fee" look identical for those
+        # old rows and there's no honest way to tell them apart in a
+        # display context.
+        if cost_basis is not None and realized_pnl is not None:
+            fees_paid = round(cash_back - cost_basis - realized_pnl, 2)
+        else:
+            fees_paid = round((entry.get("fee") or 0.0 if entry else 0.0) + (t.get("fee") or 0.0), 2)
 
         rows.append({
             "ticker": t["ticker"],

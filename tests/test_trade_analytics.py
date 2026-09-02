@@ -81,10 +81,43 @@ def test_build_trade_history_defaults_fees_paid_to_zero_without_fee_data():
 def test_build_trade_history_sums_entry_and_close_fees():
     entry = _open(ts=1000.0)
     entry["fee"] = 1.75
-    close = _closed(ts=1300.0)
+    # realized_pnl adjusted for these fees (mark_to_market 25.0 - 1.75 -
+    # 1.31), matching what PaperBroker.close_position actually reports -
+    # fees_paid is now derived as a residual against realized_pnl (see
+    # trade_analytics.py's own comment), so a fixture whose realized figure
+    # ignores the fees it declares no longer exercises real behavior.
+    close = _closed(ts=1300.0, realized=25.0 - 1.75 - 1.31)
     close["fee"] = 1.31
     rows = ta.build_trade_history([entry, close])
     assert rows[0]["fees_paid"] == 3.06
+
+
+def test_build_trade_history_fees_paid_reconciles_with_realized_pnl_at_a_rounding_boundary():
+    # Real bug found 2026-09-02 (direct report: "the 1c rounding errors are
+    # a problem"). Real trade KXSILVER15M-26SEP020130-30: no side, 2344
+    # contracts, entry 0.75c -> exit 1.0 (settled YES, total loss on the no
+    # side). entry_fee's raw float (30.765000000000000568...) rounds UP to
+    # $30.77 in isolation, but mark_to_market minus that same fee
+    # (-616.7649999999999863...) rounds DOWN to a P&L implying $30.76 - two
+    # correctly-rounded views of the identical fee that disagree with each
+    # other by a cent. fees_paid must be derived so the row still foots
+    # exactly against the already-rounded realized_pnl a viewer actually
+    # reads, not independently re-round the raw fee and risk a mismatch.
+    entry = _open(side="no", size=2344, price=0.75, ts=1000.0)
+    entry["fee"] = 30.765
+    close = _closed(
+        side="no", size=2344, price=1.0, ts=1300.0,
+        inner="market settled YES - position lost", realized=-616.765,
+    )
+    rows = ta.build_trade_history([entry, close])
+    r = rows[0]
+    assert r["cost_basis"] == 586.0
+    assert r["cash_back"] == 0.0
+    assert r["realized_pnl"] == -616.76
+    # Explicit: the old direct-sum formula would give 30.77 here (a real
+    # regression this pins by name, not just via the round-trip identity).
+    assert r["fees_paid"] == 30.76
+    assert round(r["cash_back"] - r["cost_basis"] - r["fees_paid"], 2) == r["realized_pnl"]
 
 
 def test_build_trade_history_dollar_amounts_account_for_no_side():
@@ -179,7 +212,9 @@ def test_compute_summary_totals_capital_deployed():
 def test_compute_summary_totals_fees_paid():
     entry = _open(ticker="A", ts=1000.0, tid="o1")
     entry["fee"] = 1.75
-    close = _closed(ticker="A", ts=1100.0, tid="c1")
+    # realized_pnl adjusted for these fees - see the matching comment on
+    # test_build_trade_history_sums_entry_and_close_fees above.
+    close = _closed(ticker="A", ts=1100.0, tid="c1", realized=25.0 - 1.75 - 1.31)
     close["fee"] = 1.31
     rows = ta.build_trade_history([entry, close])
     summary = ta.compute_summary(rows)
