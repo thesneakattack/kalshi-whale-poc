@@ -100,7 +100,15 @@ def test_current_counts_counts_close_trades_and_excludes_flagged_ones(monkeypatc
 # --- build_report: composition over monkeypatched analyzers ---------------
 
 def _patch_every_analyzer(monkeypatch, *, advisory_enabled: bool = True):
-    monkeypatch.setattr(research.diagnostics, "run_offline", lambda cfg, now=None: {"overall": "ok"})
+    # run_offline is `async def` as of event-loop-blocking-fix2-diagnostics-
+    # widening; build_report() awaits it (inside its own local asyncio.run()
+    # wrapper), so the stub must itself be a coroutine function, not a plain
+    # lambda returning a dict - a plain lambda's return value isn't awaitable
+    # and every caller of this helper would raise
+    # `TypeError: object dict can't be used in 'await' expression`.
+    async def _fake_run_offline(cfg, now=None):
+        return {"overall": "ok"}
+    monkeypatch.setattr(research.diagnostics, "run_offline", _fake_run_offline)
     monkeypatch.setattr(research.trade_analytics, "build_trade_history", lambda trade_log: [{"stub": "row"}])
     monkeypatch.setattr(research.trade_analytics, "compute_summary", lambda rows: {"total_closed": len(rows)})
     monkeypatch.setattr(research.signal_log, "resolved_signals_with_factors", lambda: [{"stub": "signal"}])

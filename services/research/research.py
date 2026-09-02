@@ -146,7 +146,10 @@ def build_report(cfg: dict, now: float | None = None) -> dict:
     see this package's README.md for the one-line reason each section
     was chosen."""
     now = now if now is not None else time.time()
+    import asyncio
+
     from services.app_state import broker  # local import, same reason as current_counts above
+    from services.diagnostics import _aio_db
 
     trade_rows = trade_analytics.build_trade_history([t.to_dict() for t in broker.trade_log])
     signal_rows = signal_log.resolved_signals_with_factors()
@@ -178,9 +181,40 @@ def build_report(cfg: dict, now: float | None = None) -> dict:
     else:
         advisory = {"recommendations": [], "gated_reason": "advisory engine is disabled", "resolved_count": None}
 
+    async def _diagnostics_and_cleanup() -> dict:
+        # build_report() runs off the event loop entirely (via
+        # asyncio.to_thread(run_and_store, cfg), _run_research_background's
+        # own docstring below) - this asyncio.run() call creates its own
+        # throwaway loop just for this one await. _aio_db's cache is keyed
+        # by loop identity precisely so this never collides with the main
+        # app's own long-lived connections (see _aio_db.py's own docstring)
+        # - close_for_current_loop() afterward prevents this throwaway
+        # loop's connections from leaking (never explicitly closed
+        # otherwise, since asyncio.run() tears down the loop but doesn't
+        # know to call our own conn.close() first) across every research
+        # report ever generated in this process's lifetime. try/finally
+        # (adversarial review finding D, 2026-09-01): without it, an
+        # exception from run_offline() skips cleanup entirely, pinning this
+        # dead loop object, its connections and their NON-daemon aiosqlite
+        # worker threads for the rest of the process - one set per failed
+        # report. (An earlier version of this comment justified the
+        # try/finally with CPython reusing the dead loop's freed id() for a
+        # new loop; that has been structurally impossible since the cache
+        # key became the loop OBJECT rather than id(loop), which holds a
+        # strong reference - see _aio_db.py's docstring. The try/finally is
+        # still necessary, for the leak reason above; only the stated
+        # rationale was wrong. PR adversarial review finding M2,
+        # 2026-09-01.)
+        try:
+            return await diagnostics.run_offline(cfg, now=now)
+        finally:
+            await _aio_db.close_for_current_loop()
+
+    diagnostics_report = asyncio.run(_diagnostics_and_cleanup())
+
     return {
         "generated_at": now,
-        "diagnostics": diagnostics.run_offline(cfg, now=now),
+        "diagnostics": diagnostics_report,
         "trade_analytics": trade_analytics.compute_summary(trade_rows),
         "confidence_calibration": calibration,
         "advisory": advisory,

@@ -6,9 +6,9 @@ convention throughout tests/*.py, and a hard requirement per CLAUDE.md:
 accumulated history in data/*.db is a first-class asset and must never be
 touched by a test run).
 """
+import asyncio
 import sqlite3
 import time
-from pathlib import Path
 
 import pytest
 
@@ -32,6 +32,13 @@ def dbs(tmp_path, monkeypatch):
     # (services/series_watcher.py), which opens its own store.
     monkeypatch.setattr(sw_module, "DB_PATH", tmp_path / "series_watcher.db")
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
 
 
 def _cfg(**over):
@@ -80,7 +87,7 @@ def test_threshold_integrity_flags_signals_below_the_configured_floor(dbs):
         ("A-2", "KXA", 12.0, now - 90),      # residue from a looser epoch
         ("A-3", "KXA", 3.0, now - 80),
     ])
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "fail"
     assert c.detail["violations"] == 2
     assert c.detail["total"] == 3
@@ -96,7 +103,7 @@ def test_threshold_integrity_respects_per_series_overrides(dbs):
     cfg = _cfg(whale_watcher_kalshi={
         "min_contracts": 5000, "min_contracts_by_series": {"KXBTC15M": 2500},
     })
-    c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(cfg, since_ts=now - 3600, now=now))
     assert c.status == "ok"
     assert c.detail["violations"] == 0
 
@@ -104,7 +111,7 @@ def test_threshold_integrity_respects_per_series_overrides(dbs):
 def test_threshold_integrity_unknown_when_no_data(dbs):
     now = time.time()
     sl_module._connect().close()
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
 
 
@@ -125,7 +132,7 @@ def test_threshold_integrity_is_epoch_aware_not_judged_against_todays_config(dbs
             (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
     cfg = _cfg()  # today's live min_contracts is 5000
-    c = diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(cfg, since_ts=now - 10800, now=now))
     assert c.status == "ok"
     assert c.detail["violations"] == 0
     assert c.detail["epoch_aware"] is True
@@ -145,7 +152,7 @@ def test_threshold_integrity_still_flags_a_real_violation_from_before_a_later_ra
             "trade_count, fingerprint_before, fingerprint_after) VALUES (?,?,?,?,?,?,?,?)",
             (now - 3600, "whale_watcher_kalshi.min_contracts", "100", "5000", "test", 0, "fp0", "fp1"),
         )
-    c = diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 10800, now=now))
     assert c.status == "fail"
     assert c.detail["violations"] == 1
     assert c.evidence[0]["floor_at_the_time"] == 100.0
@@ -160,7 +167,7 @@ def test_price_band_flags_entries_above_max_unit_cost(dbs):
         ("C-2", "yes", 0.65, "whale print 5000 @ 0.65 (conf 0.6)", now - 90),   # inside
         ("C-3", "no", 0.05, "whale print 6000 @ 0.05 (conf 0.6)", now - 80),    # uc 0.95 > 0.8
     ])
-    c = diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "fail"
     assert c.detail["above"] == 2
     assert c.detail["inside"] == 1
@@ -172,7 +179,7 @@ def test_price_band_uses_side_aware_unit_cost_not_raw_price(dbs):
     # exact no-side dollar-math bug class CLAUDE.md documents.
     now = time.time()
     _seed_trades([("D-1", "no", 0.05, "whale print 6000 @ 0.05 (conf 0.6)", now - 10)])
-    c = diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(_cfg(), since_ts=now - 3600, now=now))
     assert c.detail["above"] == 1
     assert c.evidence[0]["unit_cost"] == pytest.approx(0.95)
     assert c.evidence[0]["max_gain_per_contract"] == pytest.approx(0.05)
@@ -193,7 +200,7 @@ def test_price_band_is_epoch_aware_not_judged_against_todays_band(dbs):
             (now - 3600, "strategy.max_unit_cost", "0.95", "0.8", "test", 0, "fp0", "fp1"),
         )
     cfg = _cfg()  # today's live max_unit_cost is 0.8
-    c = diagnostics.check_price_band_adherence(cfg, since_ts=now - 10800, now=now)
+    c = asyncio.run(diagnostics.check_price_band_adherence(cfg, since_ts=now - 10800, now=now))
     assert c.status == "ok"
     assert c.detail["above"] == 0
     assert c.detail["inside"] == 1
@@ -213,7 +220,7 @@ def test_runway_buckets_entries_by_time_to_close(dbs):
         # E-1 had 30s of runway at entry; E-2 had an hour.
         conn.execute("INSERT INTO markets (ticker, close_ts, updated_at) VALUES (?,?,?)", ("E-1", now - 70, now))
         conn.execute("INSERT INTO markets (ticker, close_ts, updated_at) VALUES (?,?,?)", ("E-2", now + 3500, now))
-    c = diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now))
     assert c.detail["buckets"]["<60s"] == 1
     assert c.detail["buckets"][">900s"] == 1
 
@@ -225,7 +232,7 @@ def test_runway_unknown_when_no_close_time_is_recorded(dbs):
     now = time.time()
     _seed_trades([("F-1", "yes", 0.6, "whale print 5000 @ 0.6 (conf 0.6)", now - 100)])
     mc_module._connect(mc_module.DB_PATH).close()
-    c = diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
     assert c.detail["buckets"]["unknown"] == 1
 
@@ -249,7 +256,7 @@ def test_performance_by_epoch_splits_trades_at_config_change_boundaries(dbs):
     for i in range(3):
         rows.append((f"H-{i}", "yes", 0.6, f"closed: stop-loss hit (realized -20.0)", now - 500 + i))
     _seed_trades(rows)
-    c = diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3)
+    c = asyncio.run(diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3))
     assert c.status == "ok"
     epochs = c.detail["epochs"]
     assert len(epochs) == 2
@@ -268,7 +275,7 @@ def test_performance_by_epoch_unknown_without_enough_trades(dbs):
             (now - 1000, "strategy.entry_threshold", "1", "2", "test", 0, "fp0", "fp1"),
         )
     _seed_trades([("I-1", "yes", 0.6, "closed: settled YES - position won (realized +5.0)", now - 500)])
-    c = diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3)
+    c = asyncio.run(diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3))
     assert c.status == "unknown"
 
 
@@ -277,7 +284,7 @@ def test_performance_by_epoch_unknown_without_enough_trades(dbs):
 def test_run_offline_reports_worst_status_across_checks(dbs):
     now = time.time()
     _seed_signals([("J-1", "KXA", 5.0, now - 10)])  # a clear violation -> fail
-    report = diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    report = asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     assert report["overall"] == "fail"
     assert {c["name"] for c in report["checks"]} == {
         "threshold_integrity", "price_band_adherence", "runway_at_entry",
@@ -303,24 +310,34 @@ def test_read_paths_close_their_sqlite_connections(dbs):
     timing (adding unrelated modules to the import graph was enough to
     flip it).
 
-    Asserting on the source rather than on timing: a timing-based test for
-    this would be exactly as flaky as the bug it guards. `closing(...)` is
-    the required idiom for these read paths - it also drops the pointless
-    implicit commit, which is what made a documented never-writes module
-    write at all."""
-    import re
+    Event-loop-blocking-fix2-diagnostics-widening converted every one of
+    these read paths off sqlite3 entirely onto services/diagnostics/
+    _aio_db.py's persistent, loop-keyed aiosqlite connection cache - the
+    old bare-`with sqlite3.connect(...)` regex this test used to run now
+    trivially finds zero matches everywhere, not because a leak was fixed
+    again but because there is no more sqlite3 read call left to leak.
+    The regression this test still needs to guard - "a connection is not
+    silently duplicated/leaked" - has a different shape under that cache:
+    a connection is now DELIBERATELY kept open and reused for the life of
+    an event loop (see _aio_db.py's own module docstring), so "closed
+    after each call" is no longer the right invariant. What's still real
+    to guard is that repeated calls under the SAME loop hit the cache
+    rather than opening a fresh connection every time - i.e. the cache
+    does not grow across calls that reuse the same DB_PATH."""
+    from services.diagnostics import _aio_db
 
-    for module_path in (
-        Path(diagnostics.__file__),
-        Path(sw_module.__file__),
-    ):
-        source = module_path.read_text()
-        bare = re.findall(r"with sqlite3\.connect\(", source)
-        assert not bare, (
-            f"{module_path.name} has {len(bare)} bare `with sqlite3.connect(...)` read site(s) - "
-            "wrap in contextlib.closing() so the connection is actually closed and no "
-            "implicit commit fires on a read path"
-        )
+    async def _run_twice() -> tuple[int, int]:
+        now = time.time()
+        await diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+        after_first = len(_aio_db._connections)
+        await diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+        after_second = len(_aio_db._connections)
+        return after_first, after_second
+
+    after_first, after_second = asyncio.run(_run_twice())
+
+    assert after_first > 0  # the first call actually opened and cached connections
+    assert after_second == after_first  # the second call under the same loop reused them, no growth
 
 
 def test_run_offline_never_writes_to_any_db(dbs):
@@ -329,11 +346,48 @@ def test_run_offline_never_writes_to_any_db(dbs):
     _seed_signals([("K-1", "KXA", 6000.0, now - 10)])
     # Touch every store first so schema creation (CREATE TABLE IF NOT
     # EXISTS on connect) isn't mistaken for a write by the comparison.
-    diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     before = {p.name: p.stat().st_mtime_ns for p in dbs.glob("*.db")}
-    diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     after = {p.name: p.stat().st_mtime_ns for p in dbs.glob("*.db")}
     assert before == after
+
+
+# ---- selectivity_curve ----
+
+def test_selectivity_curve_computes_accuracy_curve_from_real_signals(dbs):
+    """Test that selectivity_curve correctly converts to aiosqlite and computes
+    a meaningful accuracy curve from seeded resolved signals."""
+    import json
+    now = time.time()
+    since_ts = now - 3600
+
+    # Seed 60 resolved signals with the columns selectivity_curve reads.
+    # Mix confidence scores (0.3-0.8 range) and correctness (0/1) to create
+    # a real curve with meaningful accuracy deltas across thresholds.
+    sl_module._connect().close()
+    with sqlite3.connect(sl_module.DB_PATH) as conn:
+        for i in range(60):
+            confidence = 0.3 + (i % 6) * 0.1  # 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
+            correct = (i + (i // 10)) % 2  # varies: ~50% correct overall
+            price = 0.4 + (i % 5) * 0.1  # 0.4-0.8 USD range
+            conn.execute(
+                "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+                "resolved, excluded, correct, raw_notional_usd, price, factors_json) "
+                "VALUES (?,?,?,?,?,?,?,1,0,?,?,?,?)",
+                ("T", "T", "yes", 100, confidence, "test", since_ts + i,
+                 correct, 5000.0 + i * 10, price, "{}"),
+            )
+
+    c = asyncio.run(diagnostics.selectivity_curve(min_notional=5000.0, since_ts=since_ts, now=now))
+    assert c.status == "ok"
+    assert "curve" in c.detail
+    assert len(c.detail["curve"]) > 0
+    # Verify curve has the expected structure
+    for entry in c.detail["curve"]:
+        assert "entry_threshold" in entry
+        assert "signals_kept" in entry
+        assert "accuracy_pct" in entry
 
 
 # ---- confidence input coverage ----
@@ -350,12 +404,12 @@ def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypat
                  json.dumps({"depth_factor": None, "unusualness_factor": 0.5})),
             )
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "ok"
     assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
 
 
 def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "unknown"

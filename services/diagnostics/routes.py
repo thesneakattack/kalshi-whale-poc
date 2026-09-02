@@ -50,7 +50,7 @@ async def get_diagnostics(hours: float = 24.0):
     Offline checks only (no API calls); see /api/diagnostics/coverage for
     the one check that needs real exchange data."""
     now = time.time()
-    return diagnostics.run_offline(config_store.get(), since_ts=now - hours * 3600, now=now)
+    return await diagnostics.run_offline(config_store.get(), since_ts=now - hours * 3600, now=now)
 
 
 @router.get("/api/diagnostics/coverage")
@@ -201,10 +201,10 @@ async def get_series_watcher(series: str, hours: float = 24.0):
     cfg = config_store.get()
     now = time.time()
     return {
-        "funnel": series_watcher.funnel(series, hours=hours, cfg=cfg, now=now),
-        "reconcile": series_watcher.reconcile(series, hours=hours, cfg=cfg, now=now),
-        "book_context": series_watcher.book_context_at_entry(series, hours=hours, now=now),
-        "capture": series_watcher.capture_stats(series),
+        "funnel": await series_watcher.funnel(series, hours=hours, cfg=cfg, now=now),
+        "reconcile": await series_watcher.reconcile(series, hours=hours, cfg=cfg, now=now),
+        "book_context": await series_watcher.book_context_at_entry(series, hours=hours, now=now),
+        "capture": await series_watcher.capture_stats(series),
     }
 
 

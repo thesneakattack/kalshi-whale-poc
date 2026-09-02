@@ -34,7 +34,6 @@ numbers are in doubt.
 """
 import json
 import sqlite3
-from contextlib import closing
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -44,6 +43,7 @@ from services import signal_log
 from services.config import config_performance
 from services import paper_broker as pb_module
 from services.config.config_paths import _config_value_at_path
+from services.diagnostics import _aio_db
 
 _OK = "ok"
 _WARN = "warn"
@@ -71,7 +71,7 @@ class Check:
         }
 
 
-def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
+async def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     """ticker -> close_ts, from market_catalog (the one store that persists a
     close time per market beyond the rotating watchlist). Deliberately NOT
     reconstructed from the ticker string: the YYMMMDDHHMM convention is a
@@ -85,31 +85,30 @@ def _close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     if not unique:
         return {}
     try:
-        with closing(sqlite3.connect(market_catalog.DB_PATH)) as conn:
-            placeholders = ",".join("?" for _ in unique)
-            rows = conn.execute(
-                f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
-                "AND close_ts IS NOT NULL",
-                unique,
-            ).fetchall()
+        conn = await _aio_db.connection_for(market_catalog.DB_PATH)
+        placeholders = ",".join("?" for _ in unique)
+        rows = await conn.execute_fetchall(
+            f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
+            "AND close_ts IS NOT NULL",
+            unique,
+        )
     except sqlite3.Error:
         return {}
     return {t: ts for t, ts in rows}
 
 
-def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
+async def _fetch_path_changes(paths: list[str], since_ts: float) -> list[dict]:
     """Every config_performance.applied_changes row for these exact
     config_path values, recorded after since_ts - the raw material
     _historical_value rewinds. One query per check (not one per row)."""
     try:
-        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            placeholders = ",".join("?" for _ in paths)
-            rows = conn.execute(
-                f"SELECT applied_at, config_path, old_value FROM applied_changes "
-                f"WHERE applied_at > ? AND config_path IN ({placeholders})",
-                (since_ts, *paths),
-            ).fetchall()
+        conn = await _aio_db.connection_for(config_performance.DB_PATH)
+        placeholders = ",".join("?" for _ in paths)
+        rows = await conn.execute_fetchall(
+            f"SELECT applied_at, config_path, old_value FROM applied_changes "
+            f"WHERE applied_at > ? AND config_path IN ({placeholders})",
+            (since_ts, *paths),
+        )
     except sqlite3.Error:
         return []
     return [{"applied_at": r["applied_at"], "config_path": r["config_path"],
@@ -144,7 +143,7 @@ _MIN_CONTRACTS_PATH = "whale_watcher_kalshi.min_contracts"
 _MIN_CONTRACTS_BY_SERIES_PATH = "whale_watcher_kalshi.min_contracts_by_series"
 
 
-def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """Do the signals actually in signal_log respect the contract-count
     whale gate that was actually LIVE when each one was recorded - not the
     gate config declares today. History outlives config: a row recorded
@@ -169,16 +168,15 @@ def check_threshold_integrity(cfg: dict, since_ts: float | None = None, now: flo
     real whale_watcher row" filter here."""
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    changes = _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
+    changes = await _fetch_path_changes([_MIN_CONTRACTS_PATH, _MIN_CONTRACTS_BY_SERIES_PATH], since_ts)
 
     try:
-        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT series, ticker, size, seen_at FROM signals "
-                "WHERE seen_at > ? AND factors_json IS NOT NULL",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(signal_log.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT series, ticker, size, seen_at FROM signals "
+            "WHERE seen_at > ? AND factors_json IS NOT NULL",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("threshold_integrity", _UNKNOWN, f"signal_log unreadable: {exc}")
 
@@ -223,7 +221,7 @@ _OVERRIDES_BY_CATEGORY_PATH = "strategy_overrides.by_category"
 _OVERRIDES_BY_SERIES_PATH = "strategy_overrides.by_series"
 
 
-def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """Did entries respect min_unit_cost/max_unit_cost as they actually
     stood at ENTRY TIME - not as they stand today? Judging a historical
     entry against today's band is the same epoch-blindness
@@ -239,30 +237,30 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
     category/series override chain the strategy itself uses, with every
     layer (base band + both override tiers) individually rewound to its
     entry-time value, not just the base."""
+    import asyncio
     from services import trade_category
     from services.config import config_overrides
 
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
-    changes = _fetch_path_changes(
+    changes = await _fetch_path_changes(
         [_MIN_UNIT_COST_PATH, _MAX_UNIT_COST_PATH, _OVERRIDES_BY_CATEGORY_PATH, _OVERRIDES_BY_SERIES_PATH],
         since_ts,
     )
 
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT ticker, side, price, size, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'whale print%'",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT ticker, side, price, size, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'whale print%'",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("price_band_adherence", _UNKNOWN, f"paper_broker unreadable: {exc}")
     if not rows:
         return Check("price_band_adherence", _UNKNOWN, "no whale-follow entries in this window")
 
-    cats = trade_category.categories_for_tickers([r["ticker"] for r in rows])
+    cats = await asyncio.to_thread(trade_category.categories_for_tickers, [r["ticker"] for r in rows])
     above, below, inside, offenders = 0, 0, 0, []
     for r in rows:
         base_hist = {
@@ -307,7 +305,7 @@ def check_price_band_adherence(cfg: dict, since_ts: float | None = None, now: fl
 
 # ---------------------------------------------------------------- runway
 
-def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """How much time was left to manage each position when it opened, and
     what happened to the ones opened with almost none? This is ROADMAP #1's
     whole thesis, measured rather than asserted: a position opened seconds
@@ -324,24 +322,23 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
     floor = strat.get("min_seconds_to_close")
 
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            opens = conn.execute(
-                "SELECT ticker, side, price, size, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'whale print%' ORDER BY timestamp",
-                (since_ts,),
-            ).fetchall()
-            closes = conn.execute(
-                "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0 ORDER BY timestamp",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        opens = await conn.execute_fetchall(
+            "SELECT ticker, side, price, size, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'whale print%' ORDER BY timestamp",
+            (since_ts,),
+        )
+        closes = await conn.execute_fetchall(
+            "SELECT ticker, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0 ORDER BY timestamp",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("runway_at_entry", _UNKNOWN, f"paper_broker unreadable: {exc}")
     if not opens:
         return Check("runway_at_entry", _UNKNOWN, "no whale-follow entries in this window")
 
-    close_by_ticker = _close_ts_for_tickers([r["ticker"] for r in opens])
+    close_by_ticker = await _close_ts_for_tickers([r["ticker"] for r in opens])
 
     buckets = {"<60s": 0, "60-300s": 0, "300-900s": 0, ">900s": 0, "unknown": 0}
     short_entries = []
@@ -386,7 +383,7 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
 
 # ---------------------------------------------------------------- attribution
 
-def config_epochs(since_ts: float | None = None, now: float | None = None) -> list[dict]:
+async def config_epochs(since_ts: float | None = None, now: float | None = None) -> list[dict]:
     """Reconstruct the real config timeline from
     config_performance.applied_changes - every live tuning change is already
     recorded there with applied_at/config_path/old_value/new_value, so
@@ -395,13 +392,12 @@ def config_epochs(since_ts: float | None = None, now: float | None = None) -> li
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 7 * 24 * 3600
     try:
-        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT applied_at, config_path, old_value, new_value, source "
-                "FROM applied_changes WHERE applied_at > ? ORDER BY applied_at",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(config_performance.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT applied_at, config_path, old_value, new_value, source "
+            "FROM applied_changes WHERE applied_at > ? ORDER BY applied_at",
+            (since_ts,),
+        )
     except sqlite3.Error:
         return []
     # collapse changes sharing a timestamp - one Config-tab save writes many rows
@@ -420,8 +416,8 @@ def config_epochs(since_ts: float | None = None, now: float | None = None) -> li
     return epochs
 
 
-def performance_by_epoch(since_ts: float | None = None, now: float | None = None,
-                         min_trades: int = 3) -> Check:
+async def performance_by_epoch(since_ts: float | None = None, now: float | None = None,
+                               min_trades: int = 3) -> Check:
     """Win rate and realized P&L per config epoch - the direct test of any
     "we used to win ~70%" claim, and of the 2026-08-17 hypothesis that the
     good stretch came from richer pre-rate-limit market coverage rather
@@ -435,18 +431,17 @@ def performance_by_epoch(since_ts: float | None = None, now: float | None = None
     import re
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 7 * 24 * 3600
-    epochs = config_epochs(since_ts, now)
+    epochs = await config_epochs(since_ts, now)
     if not epochs:
         return Check("performance_by_epoch", _UNKNOWN,
                      "no config changes recorded in this window — no epochs to compare")
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            closes = conn.execute(
-                "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        closes = await conn.execute_fetchall(
+            "SELECT ticker, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("performance_by_epoch", _UNKNOWN, f"paper_broker unreadable: {exc}")
 
@@ -613,8 +608,8 @@ def check_config_bounds(cfg: dict) -> Check:
     )
 
 
-def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
-                      now: float | None = None) -> Check:
+async def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = None,
+                             now: float | None = None) -> Check:
     """What did over-permissive vs over-restrictive settings actually cost?
     (2026-08-17 direct request: "you can make easy insight gains by
     comparing trades that ignored all this stuff and the trades that were
@@ -642,14 +637,13 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 30 * 24 * 3600
     try:
-        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
-                "WHERE seen_at > ? AND resolved = 1 AND excluded = 0 "
-                "AND raw_notional_usd IS NOT NULL AND raw_notional_usd >= ?",
-                (since_ts, min_notional),
-            ).fetchall()
+        conn = await _aio_db.connection_for(signal_log.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT confidence, correct, raw_notional_usd, price, side FROM signals "
+            "WHERE seen_at > ? AND resolved = 1 AND excluded = 0 "
+            "AND raw_notional_usd IS NOT NULL AND raw_notional_usd >= ?",
+            (since_ts, min_notional),
+        )
     except sqlite3.Error as exc:
         return Check("selectivity_curve", _UNKNOWN, f"signal_log unreadable: {exc}")
     if len(rows) < 50:
@@ -699,7 +693,7 @@ def selectivity_curve(min_notional: float = 2500.0, since_ts: float | None = Non
     )
 
 
-def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """How often each of the four fabrication-fixed factors (depth_factor,
     trend_factor, agreement_factor, raw_spread) is honestly absent -
     surfaced from CLAUDE.md's own "Start investigations here" step 1, no
@@ -709,16 +703,23 @@ def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, no
     visibility and trend, not a threshold.
 
     Calls confidence_calibration.compute_input_coverage() directly, not
-    generate_calibration_report() - this route is polled every 5s by the
-    dashboard on the same tick_executor pool the trading loop uses, and the
-    full nine-factor tertile report this check doesn't need cost 1.661s of
-    a measured 2.549s total against real production history (2026-09-01
-    final-review fix)."""
+    generate_calibration_report() - this route runs via aiosqlite with no
+    dedicated pool at all (after this plan's conversion from
+    services.diagnostics._diagnostics_pool), and the full nine-factor
+    tertile report this check doesn't need cost 1.661s of a measured
+    2.549s total against real production history (2026-09-01 final-review
+    fix)."""
+    import asyncio
     from services.whale_calibration import confidence_calibration
 
     cc_cfg = cfg.get("confidence_calibration") or {}
     min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
-    rows = signal_log.resolved_signals_with_factors(since_ts=since_ts)
+    # signal_log.py is out of this plan's scope (see Global Constraints) -
+    # resolved_signals_with_factors() stays a plain synchronous DB call, run
+    # on a worker thread via asyncio.to_thread. Its own unscoped-fetch cost
+    # (docs/open-decisions.md's Task 9 entry) is unchanged by this - only
+    # where it runs changes, not what it costs.
+    rows = await asyncio.to_thread(signal_log.resolved_signals_with_factors, since_ts=since_ts)
     resolved_count = len(rows)
     if resolved_count < min_resolved_signals:
         return Check(
@@ -736,7 +737,7 @@ def check_confidence_input_coverage(cfg: dict, since_ts: float | None = None, no
     )
 
 
-def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
+async def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
     calls); callers that want it await it separately and merge the result."""
@@ -749,20 +750,20 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
     now_ts = now if now is not None else time.time()
     hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
     checks = [
-        check_threshold_integrity(cfg, since_ts, now),
-        check_price_band_adherence(cfg, since_ts, now),
-        check_runway_at_entry(cfg, since_ts, now),
-        check_config_bounds(cfg),
-        performance_by_epoch(since_ts, now),
-        selectivity_curve(since_ts=since_ts, now=now),
-        check_confidence_input_coverage(cfg, since_ts, now),
+        await check_threshold_integrity(cfg, since_ts, now),
+        await check_price_band_adherence(cfg, since_ts, now),
+        await check_runway_at_entry(cfg, since_ts, now),
+        check_config_bounds(cfg),  # unchanged - no DB access, stays sync
+        await performance_by_epoch(since_ts, now),
+        await selectivity_curve(since_ts=since_ts, now=now),
+        await check_confidence_input_coverage(cfg, since_ts, now),
     ]
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by
     # construction: a blended number across every series answers nobody's
     # question about a specific one.
     for series in series_watcher.watched_series(cfg):
-        checks.append(series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
+        checks.append(await series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
     worst = _OK
     for c in checks:
         if c.status == _FAIL:

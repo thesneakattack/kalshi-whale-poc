@@ -4,6 +4,7 @@ Every DB_PATH is monkeypatched to a tmp file (CLAUDE.md's standing rule:
 tests never touch a real data/*.db), including the two stores this module
 only reads - signal_log and paper_broker.
 """
+import asyncio
 import json
 import sqlite3
 
@@ -40,6 +41,23 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(capture_writer, "_last_flush_at", {"raw_trades": 0.0})
     monkeypatch.setattr(capture_writer, "_dropped_counts", {"raw_trades": 0})
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    """Same fixture as tests/test_diagnostics.py's — without it, every
+    asyncio.run(...) call below opens its own event loop, and _aio_db's
+    cache is keyed by (loop, db_path), so each test leaves behind a cached
+    aiosqlite.Connection bound to an already-closed loop, pointing at a
+    tmp_path this test just tore down. aiosqlite.Connection also spins up a
+    non-daemon worker thread per connection (aiosqlite/core.py) that only
+    exits on conn.close() - left unclosed, those threads keep the whole
+    test process alive after pytest reports its results (confirmed: without
+    this fixture, `pytest tests/test_series_watcher.py` printed "32 passed"
+    but the process itself hung indefinitely instead of exiting)."""
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
 
 
 CFG = {
@@ -457,7 +475,7 @@ def test_funnel_reports_every_stage_and_separates_capture_from_signals():
     sw.record_trade(_trade("t2", ticker="KXBTC15M-A", count="10.00"), CFG, now=1001.0)
     _flush_trades()
 
-    out = sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0)
+    out = asyncio.run(sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0))
     stages = {s["stage"]: s["count"] for s in out["stages"]}
     assert stages["prints_observed"] == 2
     assert stages["whale_sized_prints"] == 1   # 10,000 contracts clears 2,500; 10 does not
@@ -470,7 +488,7 @@ def test_funnel_reports_every_stage_and_separates_capture_from_signals():
 
 def test_funnel_flags_that_capture_was_off_rather_than_claiming_no_whales():
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
-    out = sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0)
+    out = asyncio.run(sw.funnel("KXBTC15M", hours=24, cfg=CFG, now=1100.0))
     stages = {s["stage"]: s["count"] for s in out["stages"]}
     assert stages["prints_observed"] == 0
     assert stages["signals_logged"] == 1
@@ -486,7 +504,7 @@ def test_reconcile_splits_the_gap_into_selection_and_exit():
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.62, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
     _seed_trade("x1", "KXBTC15M-A", "yes", 0.40, 1100.0, "closed: stop-loss hit at 0.40 (realized -22.00)")
 
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["signal_accuracy_pct"] == 100.0
     assert r["traded_signal_accuracy_pct"] == 100.0
     assert r["realised_win_rate_pct"] == 0.0
@@ -504,7 +522,7 @@ def test_reconcile_detects_adverse_selection():
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
     _seed_trade("x1", "KXBTC15M-A", "yes", 0.20, 1100.0, "closed: market settled no - position lost (realized -40.00)")
 
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["signal_accuracy_pct"] == 50.0
     assert r["traded_signal_accuracy_pct"] == 0.0
     assert r["selection_delta_pts"] == -50.0
@@ -523,7 +541,7 @@ def test_breakeven_accuracy_is_the_entry_price_plus_the_taker_fee():
         _seed_signal(f"KXBTC15M-L{i}", "yes", 1100.0 + i, 0.80, correct=0)
     _seed_trade("e1", "KXBTC15M-W0", "yes", 0.80, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
 
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["signal_accuracy_pct"] == 70.0
     assert r["mean_entry_unit_cost"] == pytest.approx(0.80)
     # 0.80 + taker_fee_per_contract(0.80) = 0.80 + 0.07*0.80*0.20 = 0.8112
@@ -536,14 +554,14 @@ def test_breakeven_accuracy_uses_the_no_side_inversion():
     CLAUDE.md's "no-side dollar math" bug class."""
     _seed_signal("KXBTC15M-A", "no", 1000.0, 0.30)
     _seed_trade("e1", "KXBTC15M-A", "no", 0.30, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["mean_entry_unit_cost"] == pytest.approx(0.70)
 
 
 def test_reconcile_measures_slippage_between_print_and_fill():
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.64, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["mean_entry_slippage_pts"] == pytest.approx(4.0)   # paid 4 cents above the print
 
 
@@ -552,7 +570,7 @@ def test_reconcile_counts_entries_it_could_not_join_to_a_signal():
     the difference between a measurement and a guess."""
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=None)
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["entries"] == 1
     assert r["entries_unjoined_to_signal"] == 1
     assert r["traded_signal_accuracy_pct"] is None
@@ -561,7 +579,7 @@ def test_reconcile_counts_entries_it_could_not_join_to_a_signal():
 def test_reconcile_ignores_other_series():
     _seed_signal("KXETH15M-A", "yes", 1000.0, 0.60)
     _seed_trade("e1", "KXETH15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["signals"] == 0 and r["entries"] == 0
 
 
@@ -571,7 +589,7 @@ def test_reconcile_excludes_quarantined_signals():
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60, correct=0)
     _seed_signal("KXBTC15M-B", "yes", 1010.0, 0.60, correct=1)
     signal_log.mark_excluded_range(999.0, 1005.0)   # quarantines the losing one only
-    r = sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0)
+    r = asyncio.run(sw.reconcile("KXBTC15M", hours=24, cfg=CFG, now=2000.0))
     assert r["signals_resolved"] == 1
     assert r["signal_accuracy_pct"] == 100.0
 
@@ -585,7 +603,7 @@ def test_check_series_funnel_returns_a_diagnostics_check():
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
     _seed_trade("x1", "KXBTC15M-A", "yes", 0.30, 1100.0, "closed: stop-loss hit at 0.30 (realized -30.00)")
 
-    check = sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0)
+    check = asyncio.run(sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0))
     assert isinstance(check, Check)
     assert check.name == "series_funnel:KXBTC15M"
     assert check.status == "fail"
@@ -595,7 +613,7 @@ def test_check_series_funnel_returns_a_diagnostics_check():
 
 def test_check_is_unknown_not_ok_when_a_side_of_the_comparison_is_missing():
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
-    check = sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0)
+    check = asyncio.run(sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0))
     assert check.status == "unknown"
     assert "closed positions" in check.summary
 
@@ -609,7 +627,7 @@ def test_negative_edge_outranks_the_gap_in_the_headline():
     _seed_trade("e1", "KXBTC15M-W0", "yes", 0.95, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
     _seed_trade("x1", "KXBTC15M-W0", "yes", 0.97, 1100.0, "closed: market settled yes - position won (realized +2.00)")
 
-    check = sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0)
+    check = asyncio.run(sw.check_series_funnel(CFG, "KXBTC15M", hours=24, now=2000.0))
     assert check.status == "fail"
     assert "after taker fees just to break even" in check.summary
     # 90% accurate against a 0.95 + 0.07*0.95*0.05 = 95.33% fee-inclusive
@@ -621,7 +639,7 @@ def test_negative_edge_outranks_the_gap_in_the_headline():
 def test_book_context_says_unknown_rather_than_inventing_a_spread():
     _seed_signal("KXBTC15M-A", "yes", 1000.0, 0.60)
     _seed_trade("e1", "KXBTC15M-A", "yes", 0.60, 1005.0, "whale print (conf 0.80)", signal_seen_at=1000.0)
-    out = sw.book_context_at_entry("KXBTC15M", hours=24, now=2000.0)
+    out = asyncio.run(sw.book_context_at_entry("KXBTC15M", hours=24, now=2000.0))
     assert out["status"] == "unknown"
     assert "not reconstructable" in out["reason"]
 
@@ -634,7 +652,7 @@ def test_book_context_reports_spread_and_depth_when_snapshots_exist():
     }, CFG, now=1004.0)
     sw.flush()
 
-    out = sw.book_context_at_entry("KXBTC15M", hours=24, now=2000.0)
+    out = asyncio.run(sw.book_context_at_entry("KXBTC15M", hours=24, now=2000.0))
     assert out["status"] == "ok"
     assert out["entries_with_book"] == 1
     assert out["mean_spread_pts"] == pytest.approx(4.0)

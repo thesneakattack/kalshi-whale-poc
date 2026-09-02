@@ -164,3 +164,56 @@ def _capture_writer_not_left_running():
     from services import capture_writer
     if capture_writer._thread is not None:
         capture_writer.stop()
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    """services/diagnostics/_aio_db.py caches one aiosqlite.Connection (and
+    its own non-daemon worker thread) per (event loop, db_path). Every test
+    here gets DB_PATH monkeypatched to a fresh tmp_path (above), so each
+    test that reaches run_offline()/series_watcher's converted read
+    functions opens a new, never-reused cache entry - previously only reset
+    per-file, by an identical fixture of this same name in
+    tests/test_diagnostics.py, tests/test_diagnostics_routes.py,
+    tests/test_series_watcher.py, and tests/test_main_tick_executor_wiring.py
+    (tests/test_aio_db.py resets a different way, calling
+    asyncio.run(_aio_db.reset()) inline at the end of each test body rather
+    than via this fixture). Promoted here so a new test file that reaches
+    the same call graph can't silently accumulate connections/threads for
+    the rest of the run - measured on tests/test_quality_routes.py before
+    this fixture existed: 30 cached connections / 31 live threads left
+    behind after a 6-test file, never reclaimed until process exit (PR
+    adversarial review finding F3, 2026-09-01). Harmless, not a hang either
+    way - the threading._register_atexit hook in _aio_db.py closes
+    everything correctly at interpreter exit regardless - this just stops
+    the mid-run buildup. Safe to coexist with the per-file copies above:
+    verified with pytest --setup-show that only one same-named autouse
+    fixture instance runs per test - the closer (per-module) definition
+    shadows this one - so a file that already defines it locally keeps
+    doing exactly what it did before and simply never invokes this one.
+
+    Guarded for a loop already running in this thread (CI regression caught
+    on the PR, pipeline 282, 2026-09-01): tests/test_browser_playwright_e2e.py's
+    Playwright-backed fixtures tear down while their own asyncio event loop
+    is still running in this thread, and asyncio.run()'s own source
+    (installed 3.13 asyncio/runners.py) checks
+    events._get_running_loop() is not None and, if so, raises
+    RuntimeError("asyncio.run() cannot be called from a running event
+    loop") before ever touching its argument - exactly the 8 failures CI
+    hit. Skipping the reset in that case is correct, not a compromise: a
+    test whose teardown already has a running loop never reached
+    connection_for() through this fixture's normal path either (the
+    Playwright suite doesn't touch _aio_db at all), so there is nothing
+    here for it to clean up."""
+    yield
+    import asyncio
+
+    from services.diagnostics import _aio_db
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_aio_db.reset())
+    # else: a loop is already running in this thread - nothing this fixture
+    # resets is reachable from a test in that shape, and asyncio.run() would
+    # raise unconditionally here regardless of what _aio_db actually holds.

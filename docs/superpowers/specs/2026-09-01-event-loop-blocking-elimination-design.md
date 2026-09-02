@@ -223,6 +223,48 @@ single connection serializes all operations against that file onto one
 thread, so matching or exceeding today's throughput still means opening more
 than one connection per file (hence 2, not 1, for the scoring pool above).
 
+### Measured tradeoffs of the shipped diagnostics implementation
+
+Added 2026-09-01 after the Fix 2 diagnostics-widening PR's adversarial
+review (findings I4/I5) measured what this section had only reasoned about.
+Recorded as explicit, accepted tradeoffs — **no behaviour was changed in
+response**; both would be behaviour changes needing their own measurement,
+not a drive-by edit to a merging PR.
+
+**1. `_aio_db` ships 1 connection per file, not the >1 this section argues
+for.** The paragraph above says matching prior throughput means more than
+one connection per file. `services/diagnostics/_aio_db.py` keeps exactly one
+per `(loop, db_path)`, where the `_diagnostics_pool` it replaced gave
+`run_offline()` 2 concurrent workers. With `GET /api/quality/summary`
+measured at **20.4s wall** against a ~5s dashboard poll, several requests
+overlap, so per-request latency can degrade under overlap even though
+aggregate throughput is roughly unchanged. The module's "a single connection
+per file is enough headroom here" line is a deliberate simplicity choice,
+**asserted, not measured**.
+
+**2. The conversion moves pure-Python aggregation onto the event loop.**
+`run_offline()` previously ran entirely on `_diagnostics_pool`'s worker
+thread; it now runs on the loop, with only the SQL and two explicitly
+wrapped calls off it. Every aggregation loop between a fetch and its `Check`
+has no `await` point, so it holds the loop for its full duration. Measured
+against the real `data/*.db`, per `run_offline()` call:
+
+| check | rows | I/O (off-loop) | pure-Python (now on-loop) |
+|---|---|---|---|
+| `check_threshold_integrity` | 23,957 | 64ms | **78ms** |
+| `selectivity_curve` | 50,711 | 112ms | **86ms** |
+| `check_confidence_input_coverage` | 124,859 | 1,043ms | **89ms** |
+| `trade_analytics.build_trade_history` | 621 (one series) | — | **1.5ms × 16 ≈ 24ms** |
+
+That is **≥ ~280ms of contiguous, un-awaited on-loop CPU per call** — a
+lower bound: `check_price_band_adherence`, `check_runway_at_entry`,
+`performance_by_epoch` and both `funnel()`/`reconcile()` aggregations were
+not measured. Net effect: a large win for `GET /api/diagnostics` and
+`GET /api/diagnostics/series/{series}` (previously running all ~20s on the
+loop), a **regression** for `GET /api/quality/summary` (previously 0ms
+on-loop, via the pool). Two orders of magnitude better than the 13-minute
+stall this spec exists to fix, but a real cost, stated rather than implied.
+
 ### Testing
 
 Same `asyncio.run()`-wrapping convention (no `pytest-asyncio` in this repo).
@@ -232,6 +274,20 @@ failure modes — a broken/closed `aiosqlite.Connection` needs its own
 reconnect-on-failure test, not a copy-paste of the old thread-local recovery
 logic (that mechanism doesn't apply to a single shared async connection the
 same way).
+
+**Status 2026-09-01:** this reconnect requirement shipped only after the PR
+adversarial review caught it missing (finding I1) — `connection_for()` had
+claimed parity with `_scoring_pool.cached_read_connection()` while doing no
+liveness probe at all. It now probes a cached connection before returning it
+and evicts-and-reopens a dead one, covered by
+`tests/test_aio_db.py::test_connection_for_reopens_a_connection_closed_out_from_under_it`.
+The failure mode is genuinely different from the sync sibling's, exactly as
+this paragraph anticipated: a closed `aiosqlite.Connection` raises
+`ValueError` (`"no active connection"` from `Connection._conn`, or
+`"Connection closed"` from `Connection._execute`), **not**
+`sqlite3.ProgrammingError` — so it is not a `sqlite3.Error` subclass and
+would have bypassed every caller's `except sqlite3.Error` degradation branch
+and surfaced as a 500.
 
 ## Sequencing
 
