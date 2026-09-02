@@ -110,7 +110,7 @@ when a required pipeline is added.
 Meaningful checkpoint commits — not one giant final commit, not trivial ones;
 messages explain *why* in this repo's existing terse tone. No `--force` to
 `main`, no `--no-verify`, never `--amend` pushed history, stage specific paths
-(never `git add -A` — R8 denies it).
+(never `git add -A` — guard_workflow.py's GIT_ADD_ALL_BLOCKED rule denies it).
 
 ## Ending a session
 

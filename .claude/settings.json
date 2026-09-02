@@ -1,4 +1,18 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git fetch origin *)",
+      "Bash(ddev describe *)",
+      "Bash(ddev logs *)",
+      "Bash(gh auth status)",
+      "Bash(scripts/woodpecker-status *)",
+      "Bash(git merge-base *)",
+      "Bash(gh label list *)",
+      "Bash(git check-ignore *)",
+      "Bash(gh project item-list *)",
+      "Bash(docker stats *)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -16,12 +30,6 @@
       {
         "matcher": "Bash",
         "hooks": [
-          {
-            "type": "command",
-            "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_data_db.py; fi",
-            "timeout": 5,
-            "statusMessage": "Checking for data/*.db writes..."
-          },
           {
             "type": "command",
             "command": "p=$(cat); r=$(printf '%s' \"$p\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"cwd\",\"\"))' 2>/dev/null); r=$(git -C \"${r:-$PWD}\" rev-parse --show-toplevel 2>/dev/null || printf '%s' \"${CLAUDE_PROJECT_DIR:-$PWD}\"); h=\"$r/.claude/hooks/run_hook.py\"; if [ -f \"$h\" ]; then printf '%s' \"$p\" | CLAUDE_HOOK_ROOT=\"$r\" python3 \"$h\" guard_workflow.py; fi",

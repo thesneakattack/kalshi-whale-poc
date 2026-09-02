@@ -36,8 +36,8 @@ def _proc(tmp_path: Path, entries: dict) -> Path:
     return root
 
 
-# ---------------------------------------------------------------- R8
-def test_r8_git_add_all_is_denied(tmp_path):
+# ---------------------------------------------------------------- GIT_ADD_ALL_BLOCKED
+def test_git_add_all_is_denied(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     for cmd in ("git add -A", "git add .", "git add --all && git commit -m x", "git add . "):
@@ -45,20 +45,15 @@ def test_r8_git_add_all_is_denied(tmp_path):
     assert g.pre_bash("git add tests/test_x.py", str(tmp_path), st, {}, set()) is None
 
 
-# ---------------------------------------------------------------- R2
-def test_r2_sqlite_on_data_denied_once_then_allowed(tmp_path):
+# ------------------------------------------------- data/*.db ad hoc access (R2, disabled)
+def test_ad_hoc_sqlite_on_data_is_no_longer_gated(tmp_path):
+    """R2 disabled 2026-09-02 by direct instruction, flagged for removal (see module
+    docstring) - alongside guard_data_db.py, its sibling data/*.db-deletion guard.
+    Regression test against either quietly coming back without an explicit decision."""
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     cmd = "sqlite3 data/signal_log.db 'select count(*) from signals'"
-    first = g.pre_bash(cmd, str(tmp_path), st, {}, set())
-    assert first["decision"] == "deny" and "api/quality/summary" in first["reason"]
     assert g.pre_bash(cmd, str(tmp_path), st, {}, set()) is None
-
-
-def test_r2_skipped_when_diagnostics_were_read_this_session(tmp_path):
-    g = _load()
-    st = tmp_path / "st"; st.mkdir()
-    g.post("Bash", {"command": "curl -s https://kalshi-whale-poc.ddev.site:8443/api/quality/summary"}, str(tmp_path), st)
     assert g.pre_bash("sqlite3 data/paper_broker.db .tables", str(tmp_path), st, {}, set()) is None
 
 
@@ -82,8 +77,8 @@ def test_r6_is_retired_git_merge_is_never_denied_for_a_colliding_peer_session(tm
     assert g.pre_bash("git merge origin/main", str(primary), st, sessions, self_pids={222}) is None
 
 
-# ---------------------------------------------------------------- R7
-def test_r7_ddev_exec_from_a_worktree_gets_the_docker_form(tmp_path):
+# ---------------------------------------------------------------- DDEV_EXEC_WRONG_WORKTREE
+def test_ddev_exec_from_a_worktree_gets_the_docker_form(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     primary = _repo(tmp_path / "autotrade")
@@ -96,8 +91,8 @@ def test_r7_ddev_exec_from_a_worktree_gets_the_docker_form(tmp_path):
     assert g.pre_bash("ddev exec -s fastapi ls", str(primary), st, {}, set()) is None
 
 
-# ---------------------------------------------------------------- R3 / R4
-def test_r3_kalshi_file_edit_requires_a_docs_kalshi_read(tmp_path):
+# ---------------------------------------------------------------- KALSHI_DOCS_REQUIRED
+def test_kalshi_file_edit_requires_a_docs_kalshi_read(tmp_path):
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
@@ -107,16 +102,17 @@ def test_r3_kalshi_file_edit_requires_a_docs_kalshi_read(tmp_path):
     assert g.pre_edit("Edit", "services/whale_stream/whale_stream_handlers.py", str(repo), st) is None
 
 
-def test_r4_hot_file_edit_denied_once_until_gitnexus_ran(tmp_path):
+# ------------------------------------------------- hot-path GitNexus check (R4, disabled)
+def test_hot_file_edit_is_no_longer_gated(tmp_path):
+    """R4 disabled 2026-09-02 by direct instruction, flagged for removal (see module
+    docstring). Regression test against it quietly coming back without an explicit
+    decision - CLAUDE.md's Toolchain note ("R4 asks once per session") is now
+    convention only."""
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
-    out = g.pre_edit("Edit", "services/risk_manager.py", str(repo), st)
-    assert out["decision"] == "deny" and "gitnexus@1.6.10" in out["reason"]
     assert g.pre_edit("Edit", "services/risk_manager.py", str(repo), st) is None
-    st2 = tmp_path / "st2"; st2.mkdir()
-    g.post("mcp__gitnexus__impact", {}, str(repo), st2)
-    assert g.pre_edit("Edit", "services/strategy_engine.py", str(repo), st2) is None
+    assert g.pre_edit("Edit", "services/strategy_engine.py", str(repo), st) is None
 
 
 def test_hot_file_edit_nudges_dimensional_analysis_once(tmp_path):
@@ -159,14 +155,16 @@ def test_generated_bundle_and_non_money_assets_do_not_nudge(tmp_path):
 
 def test_prose_under_kalshi_and_hot_packages_is_not_gated(tmp_path):
     """A README or CHEATSHEET under services/exits/ or services/kalshi/ is not money
-    math and carries no Kalshi field semantics in code - no R3, no R4, no nudge."""
+    math and carries no Kalshi field semantics in code - no KALSHI_DOCS_REQUIRED, no
+    nudge. services/exits/exit_engine.py is real code but not Kalshi-shaped, so R4
+    (now disabled) was the only thing that ever gated it - it passes through too."""
     g = _load()
     st = tmp_path / "st"; st.mkdir()
     repo = _repo(tmp_path)
     assert g.pre_edit("Edit", "services/kalshi/CHEATSHEET.md", str(repo), st) is None
     assert g.pre_edit("Edit", "services/exits/README.md", str(repo), st) is None
     assert g.post("Edit", {"file_path": str(repo / "services/exits/README.md")}, str(repo), st) is None
-    assert g.pre_edit("Edit", "services/exits/exit_engine.py", str(repo), st)["decision"] == "deny"
+    assert g.pre_edit("Edit", "services/exits/exit_engine.py", str(repo), st) is None
 
 
 def test_effort_is_not_gated_full_suite_and_new_plans_pass(tmp_path):

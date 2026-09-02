@@ -1,5 +1,43 @@
 # Next action
 
+**Immediate, small: review and merge PR #436** (`chore/workflow-guard-hook-cleanup`,
+this session, 2026-09-02) — disables `guard_workflow.py`'s R2 (data/*.db ad hoc
+access check) and R4 (GitNexus-impact-before-hot-edit check), and unregisters
+`guard_data_db.py` (the data/*.db-deletion guard), all by direct instruction,
+all flagged for removal rather than deleted. Renamed the three rules that stay
+active (R8→`GIT_ADD_ALL_BLOCKED`, R7→`DDEV_EXEC_WRONG_WORKTREE`,
+R3→`KALSHI_DOCS_REQUIRED`) — same behavior, no longer cryptic single letters.
+**Known, accepted consequence, confirmed with the user before implementing:
+no hook-enforced protection is left against `rm`/`mv` against a live trading
+database** — a deliberate departure from CLAUDE.local.md's own "data/*.db
+handling still gets confirmation" line, not an oversight. CI green (5/5
+required contexts on the final commit). **Still needs the "nothing advances
+on one pass" adversarial review cycle before `gh pr merge`** — this PR
+touches CLAUDE.md and `.claude/rules/branching-and-ci.md` (process/rule
+changes), so that gate applies regardless of diff size; it has not run yet.
+Separately, `~/.claude/hooks/sql_guard.py` (a user-level hand-rolled hook,
+outside this repo) was deleted outright per the same direct instruction —
+not part of this PR, noted here for the record.
+
+Also from this session, config/UX only, no code: diagnosed why this user kept
+hitting "Allow once" permission prompts despite repeated in-chat assertions
+of blanket permission — root cause was `permissions.defaultMode: "auto"`
+sitting in the wrong settings-file scope (project-local, where Auto Mode is
+silently ignored; only user/managed scope activates it), and even once fixed,
+Auto Mode's classifier is a risk judgment, not a deterministic allow-all, so
+it can still prompt on unfamiliar-looking commands. Resolution the user
+adopted: the VS Code extension's "Allow dangerously skip permissions" toggle
+(a UI setting, not a CLI flag or settings.json key — confirmed the CLI-flag
+approach has zero effect on an already-running VS Code extension session)
+plus a session restart makes `bypassPermissions` available in the Shift+Tab
+mode cycle inline, on demand — confirmed PreToolUse hooks (the renamed
+R3/R7/R8 above) still fire and can still deny under that mode.
+
+**Then: the standing architecture-audit priority below is still the real
+substantive next work once PR #436 is merged.**
+
+---
+
 **Start the brainstorming/design cycle from tonight's comprehensive
 architecture audit** (`docs/superpowers/research/2026-09-02-architecture-
 audit-and-rewrite-considerations.md`, PR #430 + follow-up PR #431 —

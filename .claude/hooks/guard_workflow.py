@@ -3,10 +3,18 @@
 enforced as harness decisions instead of prose.
 
 PreToolUse (Bash):
-  R8 `git add -A` / `git add .`                        -> deny (stage specific paths)
-  R2 ad hoc sqlite3/python on data/*.db before any     -> deny once, then allow
-     /api/quality|health read this session
-  R7 `ddev exec` from a linked worktree                -> deny, with the working command
+  GIT_ADD_ALL_BLOCKED `git add -A` / `git add .`       -> deny (stage specific paths)
+  DDEV_EXEC_WRONG_WORKTREE `ddev exec` from a linked   -> deny, with the working command
+     worktree
+
+R2 (ad hoc sqlite3/python on data/*.db before an /api/quality|health read this
+session, deny once then allow) disabled 2026-09-02 by direct instruction,
+alongside guard_data_db.py (the sibling data/*.db-deletion guard) - both are
+hand-rolled, both are flagged for removal, code left in place commented out
+rather than deleted so the removal is a clean deletion later, not a
+reconstruction. CLAUDE.local.md's standing "data/*.db handling still gets
+explicit confirmation" carve-out is a known, accepted tradeoff of this
+decision, not an oversight.
 
 R6 (the peer-session git-merge guard) was retired 2026-08-30: its liveness
 check had no time dimension (a session record from a process that died
@@ -22,8 +30,14 @@ registry/`--sessions` output it used stays: `scripts/cleanup-worktrees.sh`
 and `orient.sh` still read it for their own (correctly staleness-aware)
 purposes.
 PreToolUse (Edit|Write):
-  R3 Kalshi-shaped file, no docs/kalshi read yet       -> deny (HARD RULE, CLAUDE.md)
-  R4 money/strategy hot file, no GitNexus run yet      -> deny once, then allow
+  KALSHI_DOCS_REQUIRED Kalshi-shaped file, no docs/    -> deny (HARD RULE, CLAUDE.md)
+     kalshi read yet
+
+R4 (money/strategy hot file, no GitNexus run yet, deny once then allow)
+disabled 2026-09-02 by direct instruction alongside R2 above - same
+flagged-for-removal treatment. CLAUDE.md's Toolchain section note ("R4 asks
+once per session") is now convention only, not harness-enforced; update that
+line if you're reading this after removing the code.
 PostToolUse (Bash|Read|Edit|Write|mcp__gitnexus__*):
   records the markers the gates read; nudges dimensional-analysis once per
   session on a hot-file edit; at most every 10 minutes measures the
@@ -251,7 +265,8 @@ def repo_root(cwd: str) -> Path:
 def primary_root(root: Path) -> Path:
     """<primary>/.claude/worktrees/<name> -> <primary>. Path-only on purpose: ddev
     mounts the primary at /app, so only a worktree under it is reachable from the
-    container, which is the only reason R7 and run_tests.py need this."""
+    container, which is the only reason DDEV_EXEC_WRONG_WORKTREE and run_tests.py
+    need this."""
     parts = root.parts
     for i in range(len(parts) - 2, 0, -1):
         if parts[i] == ".claude" and parts[i + 1] == "worktrees":
@@ -285,15 +300,18 @@ def pre_bash(command: str, cwd: str, state: Path, sessions: dict[int, str], self
     cmd = command.strip()
 
     if _GIT_ADD_ALL.search(cmd):
-        return _deny("R8: `git add -A` / `git add .` is never allowed here - stage specific paths "
+        return _deny("GIT_ADD_ALL_BLOCKED: `git add -A` / `git add .` is never allowed here - stage specific paths "
                      "(data/*.db, .env, session scratch, and other sessions' files live in this tree).")
 
-    if _SQLITE_ON_DATA.search(cmd) and not has(state, "diag_checked") and not has(state, "sqlite_warned"):
-        mark(state, "sqlite_warned")
-        return _deny("R2: ad hoc sqlite3 on data/*.db before reading the app's own diagnostics. Start with "
-                     "`curl -s https://kalshi-whale-poc.ddev.site:8443/api/quality/summary` (then "
-                     "/api/health/pipeline, /api/health/faults). Re-run this command afterwards if it is still needed "
-                     "- this gate only fires once per session.")
+    # R2 disabled 2026-09-02 by direct instruction, flagged for removal (see module
+    # docstring). Original behavior: denied ad hoc sqlite3/python on data/*.db until
+    # this session had read /api/quality|health at least once, deny-once-then-allow.
+    # if _SQLITE_ON_DATA.search(cmd) and not has(state, "diag_checked") and not has(state, "sqlite_warned"):
+    #     mark(state, "sqlite_warned")
+    #     return _deny("R2: ad hoc sqlite3 on data/*.db before reading the app's own diagnostics. Start with "
+    #                  "`curl -s https://kalshi-whale-poc.ddev.site:8443/api/quality/summary` (then "
+    #                  "/api/health/pipeline, /api/health/faults). Re-run this command afterwards if it is still needed "
+    #                  "- this gate only fires once per session.")
 
     dm = _DDEV_EXEC.match(cmd)
     if dm:
@@ -302,7 +320,8 @@ def pre_bash(command: str, cwd: str, state: Path, sessions: dict[int, str], self
         if primary != root:
             rel = root.relative_to(primary).as_posix()
             rest = dm.group(1).strip()
-            return _deny(f"R7: `ddev exec` refuses to run from a linked worktree. From this worktree use:\n"
+            return _deny(f"DDEV_EXEC_WRONG_WORKTREE: `ddev exec` refuses to run from a linked worktree. "
+                         f"From this worktree use:\n"
                          f"  docker exec ddev-{DDEV_PROJECT}-fastapi sh -c \"cd /app/{rel} && {rest}\"")
     return None
 
@@ -321,15 +340,19 @@ def pre_edit(tool: str, file_path: str, cwd: str, state: Path) -> dict | None:
         return None
 
     if rel.startswith(KALSHI_PATHS) and not has(state, "kalshi_docs_read"):
-        return _deny(f"R3: {rel} carries Kalshi-sourced data and no docs/kalshi/ page has been read this session "
-                     "(HARD RULE, CLAUDE.md). Read docs/kalshi/CHEATSHEET.md (titles are printed at session start) "
-                     "and the exact mirrored page for the field/endpoint you are touching, then retry.")
+        return _deny(f"KALSHI_DOCS_REQUIRED: {rel} carries Kalshi-sourced data and no docs/kalshi/ page has been "
+                     "read this session (HARD RULE, CLAUDE.md). Read docs/kalshi/CHEATSHEET.md (titles are printed "
+                     "at session start) and the exact mirrored page for the field/endpoint you are touching, "
+                     "then retry.")
 
-    if rel.startswith(HOT_PATHS) and not has(state, "gitnexus_ran") and not has(state, "hot_edit_warned"):
-        mark(state, "hot_edit_warned")
-        return _deny(f"R4: {rel} is on the money/strategy hot path. Run a blast-radius check first - "
-                     f"`{GITNEXUS} impact <symbol>` or the gitnexus MCP impact tool - then retry. "
-                     "This gate fires once per session; the check is what the tool exists for.")
+    # R4 disabled 2026-09-02 by direct instruction, flagged for removal (see module
+    # docstring). Original behavior: denied editing a money/strategy hot-path file
+    # until a GitNexus impact check ran this session, deny-once-then-allow.
+    # if rel.startswith(HOT_PATHS) and not has(state, "gitnexus_ran") and not has(state, "hot_edit_warned"):
+    #     mark(state, "hot_edit_warned")
+    #     return _deny(f"R4: {rel} is on the money/strategy hot path. Run a blast-radius check first - "
+    #                  f"`{GITNEXUS} impact <symbol>` or the gitnexus MCP impact tool - then retry. "
+    #                  "This gate fires once per session; the check is what the tool exists for.")
     return None
 
 
