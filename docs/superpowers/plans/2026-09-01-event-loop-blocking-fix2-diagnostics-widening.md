@@ -1134,9 +1134,22 @@ async def _diagnostics_and_cleanup() -> dict:
     # call our own conn.close() first) across every research report ever
     # generated in this process's lifetime. try/finally (adversarial review
     # finding D, 2026-09-01): without it, an exception from run_offline()
-    # skips cleanup entirely, and CPython can later reuse this dead loop's
-    # freed id() for an unrelated new loop - connection_for() would then
-    # hand that new loop a connection actually bound to the dead one.
+    # skips cleanup entirely, pinning this dead loop object, its
+    # connections and their NON-daemon aiosqlite worker threads for the
+    # rest of the process - one set per failed report.
+    #
+    # [CORRECTED 2026-09-01, PR adversarial review findings M2 + I3. Do NOT
+    # copy the original of this comment back into research.py: it read
+    # "CPython can later reuse this dead loop's freed id() for an unrelated
+    # new loop - connection_for() would then hand that new loop a
+    # connection actually bound to the dead one", and BOTH halves are
+    # false. (1) id()-reuse has been structurally impossible since the
+    # cache key became the loop OBJECT rather than id(loop), which holds a
+    # strong reference. (2) An aiosqlite.Connection is not "bound to" any
+    # loop in the pinned 0.22.1 - _execute creates its future on whatever
+    # loop is CALLING. The try/finally is still necessary, for the leak
+    # reason stated above; only its rationale was wrong. The shipped
+    # comment in services/research/research.py is the corrected one.]
     try:
         return await diagnostics.run_offline(cfg, now=now)
     finally:

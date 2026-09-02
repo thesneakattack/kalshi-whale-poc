@@ -211,11 +211,17 @@ async def connection_for(
             # ValueError("no active connection") once close() has cleared
             # _connection, and Connection._execute raises
             # ValueError("Connection closed") when _running is False.
-            # ProgrammingError is kept for the case of the underlying
-            # sqlite3 handle being closed from inside the worker thread;
-            # neither is a sqlite3.Error subclass reachable by callers'
-            # `except sqlite3.Error` blocks, which is why an unprobed dead
-            # connection would surface as a 500 rather than degrade.
+            # That ValueError is NOT a sqlite3.Error subclass, so it falls
+            # straight through callers' `except sqlite3.Error` degradation
+            # branches - which is why an unprobed dead connection would
+            # surface as a 500 rather than degrade honestly.
+            # sqlite3.ProgrammingError, by contrast, IS a sqlite3.Error
+            # (MRO: ProgrammingError -> DatabaseError -> Error), so callers
+            # would degrade on it normally; it is caught here only
+            # defensively, for the underlying sqlite3 handle being closed
+            # from inside the worker thread, and is in practice unreachable
+            # since sqlite3 objects are thread-bound and nothing outside
+            # that worker thread can close the handle.
             #
             # Evict only if this exact object is still cached: a concurrent
             # caller on this loop may already have replaced it with a fresh
@@ -274,7 +280,16 @@ async def close_for_current_loop() -> None:
     # it costs nothing (PR adversarial review finding M3, 2026-09-01).
     stale = [key for key in list(_connections) if key[0] is loop]
     for key in stale:
-        await _connections.pop(key).close()
+        # pop(key, None), not pop(key): connection_for()'s liveness probe is
+        # now a second deleter of _connections alongside this function, so a
+        # key present when the snapshot above was taken can in principle be
+        # gone by the time we reach it, and a bare pop would raise KeyError
+        # here - inside research.py's finally, masking its report. Not
+        # reachable on today's call graph (same theoretical class as the M3
+        # snapshot above); closed because it costs nothing.
+        conn = _connections.pop(key, None)
+        if conn is not None:
+            await conn.close()
     _locks.pop(loop, None)
 
 
