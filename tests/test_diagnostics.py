@@ -285,7 +285,7 @@ def test_performance_by_epoch_unknown_without_enough_trades(dbs):
 def test_run_offline_reports_worst_status_across_checks(dbs):
     now = time.time()
     _seed_signals([("J-1", "KXA", 5.0, now - 10)])  # a clear violation -> fail
-    report = diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    report = asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     assert report["overall"] == "fail"
     assert {c["name"] for c in report["checks"]} == {
         "threshold_integrity", "price_band_adherence", "runway_at_entry",
@@ -311,24 +311,34 @@ def test_read_paths_close_their_sqlite_connections(dbs):
     timing (adding unrelated modules to the import graph was enough to
     flip it).
 
-    Asserting on the source rather than on timing: a timing-based test for
-    this would be exactly as flaky as the bug it guards. `closing(...)` is
-    the required idiom for these read paths - it also drops the pointless
-    implicit commit, which is what made a documented never-writes module
-    write at all."""
-    import re
+    Event-loop-blocking-fix2-diagnostics-widening converted every one of
+    these read paths off sqlite3 entirely onto services/diagnostics/
+    _aio_db.py's persistent, loop-keyed aiosqlite connection cache - the
+    old bare-`with sqlite3.connect(...)` regex this test used to run now
+    trivially finds zero matches everywhere, not because a leak was fixed
+    again but because there is no more sqlite3 read call left to leak.
+    The regression this test still needs to guard - "a connection is not
+    silently duplicated/leaked" - has a different shape under that cache:
+    a connection is now DELIBERATELY kept open and reused for the life of
+    an event loop (see _aio_db.py's own module docstring), so "closed
+    after each call" is no longer the right invariant. What's still real
+    to guard is that repeated calls under the SAME loop hit the cache
+    rather than opening a fresh connection every time - i.e. the cache
+    does not grow across calls that reuse the same DB_PATH."""
+    from services.diagnostics import _aio_db
 
-    for module_path in (
-        Path(diagnostics.__file__),
-        Path(sw_module.__file__),
-    ):
-        source = module_path.read_text()
-        bare = re.findall(r"with sqlite3\.connect\(", source)
-        assert not bare, (
-            f"{module_path.name} has {len(bare)} bare `with sqlite3.connect(...)` read site(s) - "
-            "wrap in contextlib.closing() so the connection is actually closed and no "
-            "implicit commit fires on a read path"
-        )
+    async def _run_twice() -> tuple[int, int]:
+        now = time.time()
+        await diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+        after_first = len(_aio_db._connections)
+        await diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+        after_second = len(_aio_db._connections)
+        return after_first, after_second
+
+    after_first, after_second = asyncio.run(_run_twice())
+
+    assert after_first > 0  # the first call actually opened and cached connections
+    assert after_second == after_first  # the second call under the same loop reused them, no growth
 
 
 def test_run_offline_never_writes_to_any_db(dbs):
@@ -337,9 +347,9 @@ def test_run_offline_never_writes_to_any_db(dbs):
     _seed_signals([("K-1", "KXA", 6000.0, now - 10)])
     # Touch every store first so schema creation (CREATE TABLE IF NOT
     # EXISTS on connect) isn't mistaken for a write by the comparison.
-    diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     before = {p.name: p.stat().st_mtime_ns for p in dbs.glob("*.db")}
-    diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
+    asyncio.run(diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now))
     after = {p.name: p.stat().st_mtime_ns for p in dbs.glob("*.db")}
     assert before == after
 

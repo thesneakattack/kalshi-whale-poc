@@ -738,7 +738,7 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
     )
 
 
-def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
+async def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
     calls); callers that want it await it separately and merge the result."""
@@ -751,20 +751,20 @@ def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = No
     now_ts = now if now is not None else time.time()
     hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
     checks = [
-        check_threshold_integrity(cfg, since_ts, now),
-        check_price_band_adherence(cfg, since_ts, now),
-        check_runway_at_entry(cfg, since_ts, now),
-        check_config_bounds(cfg),
-        performance_by_epoch(since_ts, now),
-        selectivity_curve(since_ts=since_ts, now=now),
-        check_confidence_input_coverage(cfg, since_ts, now),
+        await check_threshold_integrity(cfg, since_ts, now),
+        await check_price_band_adherence(cfg, since_ts, now),
+        await check_runway_at_entry(cfg, since_ts, now),
+        check_config_bounds(cfg),  # unchanged - no DB access, stays sync
+        await performance_by_epoch(since_ts, now),
+        await selectivity_curve(since_ts=since_ts, now=now),
+        await check_confidence_input_coverage(cfg, since_ts, now),
     ]
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by
     # construction: a blended number across every series answers nobody's
     # question about a specific one.
     for series in series_watcher.watched_series(cfg):
-        checks.append(series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
+        checks.append(await series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
     worst = _OK
     for c in checks:
         if c.status == _FAIL:

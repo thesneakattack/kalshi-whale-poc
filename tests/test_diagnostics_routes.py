@@ -172,3 +172,28 @@ def test_get_account_diagnostics_degrades_to_an_explicit_error_when_a_read_fails
     assert result["api_key_attestation"]["status"] == "never_attested"
     assert len(recorded) == 1
     assert recorded[0][0][:2] == ("kalshi_account", "get_user_data_timestamp")
+
+
+# ---- GET /api/diagnostics and GET /api/diagnostics/series/{series} --------
+#
+# Event-loop-blocking-fix2-diagnostics-widening (Step 5) added `await` at
+# both of these routes' now-async calls into diagnostics.run_offline() /
+# series_watcher's funnel/reconcile/book_context_at_entry/capture_stats -
+# neither route had ANY test coverage anywhere in tests/ before this
+# (adversarial review finding G, 2026-09-01). Exercised through the real
+# route functions, same asyncio.run(...) convention as every other test in
+# this file (no TestClient here - that's test_quality_routes.py's
+# convention, not this file's), against tests/conftest.py's globally
+# runtime-isolated DB_PATHs, so nothing here can reach real data/*.db.
+
+def test_get_diagnostics_returns_run_offline_shape():
+    body = asyncio.run(diagnostics_routes.get_diagnostics())
+
+    assert "overall" in body
+    assert "checks" in body
+
+
+def test_get_series_watcher_returns_all_four_sections():
+    body = asyncio.run(diagnostics_routes.get_series_watcher("KXBTC15M"))
+
+    assert set(body.keys()) == {"funnel", "reconcile", "book_context", "capture"}
