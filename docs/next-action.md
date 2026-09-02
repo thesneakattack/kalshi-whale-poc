@@ -24,7 +24,16 @@ interaction compounds it). Full evidence posted to issue #410
 `/api/quality/summary` (services/quality/routes.py) hit 6 timeouts too,
 despite using its own dedicated `_diagnostics_pool.py` (NOT tick_executor,
 per PR #409 Task 8) - should be isolated from this specific mechanism, needs
-its own look before assuming the same cause. Use
+its own look before assuming the same cause. **Mechanism note (2026-09-02):**
+`_diagnostics_pool.py` no longer exists - PR #420 replaced it with
+`services/diagnostics/_aio_db.py`, and PR #424 (a separate, later live
+incident on the same route, post-#420) fixed one real unscoped-query cause
+of `/api/quality/summary` slowness. This original 2026-09-01 finding (from
+real WS traffic under `_diagnostics_pool.py`, before either PR existed) was
+never independently re-investigated against the current code path - don't
+assume PR #424 closed it without checking; it addressed a different
+symptom (5-concurrent stalls found live post-#420) via a different
+mechanism than whatever caused these 6 pre-#420 timeouts. Use
 `superpowers:systematic-debugging`: measure real per-call query cost for
 `population_gate_summary()`/`_build_report()` before choosing a fix shape
 (pool isolation vs. query-cost reduction - issue #410's own note is that
@@ -95,8 +104,44 @@ is needed for pre-existing root-owned leftovers in other worktrees (see
 below) — `ddev exec -s fastapi` can no longer force through them now that
 it runs as the host user.
 
-## Recently resolved (2026-09-01, this session)
+## Recently resolved (2026-09-02, this session)
 
+- **PR #420 merged and deployed** (event-loop-blocking-fix2, diagnostics
+  widening): converted `services/diagnostics/diagnostics.py` and
+  `services/series_watcher.py`'s read-only functions from sync `sqlite3` to
+  `aiosqlite`, via a new shared connection cache (`services/diagnostics/_aio_db.py`)
+  and deleted the now-redundant `_diagnostics_pool.py`. Full plan
+  (`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`)
+  now fully checked off, including Task 7's live smoke test — which is what
+  surfaced the real live incident below.
+- **PR #424 merged** (`fix/run-offline-cooperative-yield`, fast-follow to
+  PR #420): PR #420's own required 5-concurrent burst test found a genuine
+  live incident — 5 concurrent `GET /api/quality/summary` requests stalling
+  an unrelated `GET /api/state` for minutes. Root cause: `check_confidence_input_coverage`'s
+  previously-unscoped query against `signal_log.db` (127k+ rows and
+  growing), now bound to a purpose-matched 24h window (closes
+  `docs/open-decisions.md`'s Task 9 entry) — measured ~1.0s / ~30% saved
+  per `run_offline()` call. An elastic per-file connection pool was also
+  tried as a second fix, but a full-branch adversarial review measured
+  every variant of it as *worse* than no pool at all on the same
+  5-concurrent workload (26.5-28.0s wall / up to 1939ms worst co-resident
+  stall with the pool vs. 15.0-16.4s / 168-216ms without it) — reverted
+  `_aio_db.py` back to PR #420's original single-connection-per-file
+  design rather than keep a "should help" guard rail that measurably made
+  the incident worse. Combined final design (single connection + query
+  bound), independently re-measured twice against real production data:
+  single call ~2.7-2.8s warm, 5 concurrent calls ~13.2-14.3s wall — faster
+  than both the pre-branch baseline and the reverted pool. Full "nothing
+  advances on one pass" cycle at both branch stage (self-review →
+  adversarial review → consolidation → a second full-branch adversarial
+  review after 2 more commits landed mid-cycle, which returned NO-GO and
+  drove the revert) and PR stage (self-review + independent adversarial
+  review + consolidation, GO) —
+  `docs/superpowers/specs/2026-09-02-run-offline-cooperative-yield-*.md`.
+  Real lesson worth remembering: a well-evidenced, seemingly-fixed
+  concurrency guard rail can still be proven by rigorous re-measurement to
+  regress the exact metric it was built to protect — the fix was reverting
+  it, not defending it further.
 - **PR #417 merged** (`loop_watchdog` fault visibility) **+ PR #418** (a
   base-branch correction PR #417 itself needed). `services/loop_watchdog.py`
   has sampled the event loop for stalls every 0.1s since I13 P0 Task 1, but
