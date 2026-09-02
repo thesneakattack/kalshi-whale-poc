@@ -190,9 +190,30 @@ def _reset_aio_db_cache():
     verified with pytest --setup-show that only one same-named autouse
     fixture instance runs per test - the closer (per-module) definition
     shadows this one - so a file that already defines it locally keeps
-    doing exactly what it did before and simply never invokes this one."""
+    doing exactly what it did before and simply never invokes this one.
+
+    Guarded for a loop already running in this thread (CI regression caught
+    on the PR, pipeline 282, 2026-09-01): tests/test_browser_playwright_e2e.py's
+    Playwright-backed fixtures tear down while their own asyncio event loop
+    is still running in this thread, and asyncio.run()'s own source
+    (installed 3.13 asyncio/runners.py) checks
+    events._get_running_loop() is not None and, if so, raises
+    RuntimeError("asyncio.run() cannot be called from a running event
+    loop") before ever touching its argument - exactly the 8 failures CI
+    hit. Skipping the reset in that case is correct, not a compromise: a
+    test whose teardown already has a running loop never reached
+    connection_for() through this fixture's normal path either (the
+    Playwright suite doesn't touch _aio_db at all), so there is nothing
+    here for it to clean up."""
     yield
     import asyncio
 
     from services.diagnostics import _aio_db
-    asyncio.run(_aio_db.reset())
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_aio_db.reset())
+    # else: a loop is already running in this thread - nothing this fixture
+    # resets is reachable from a test in that shape, and asyncio.run() would
+    # raise unconditionally here regardless of what _aio_db actually holds.
