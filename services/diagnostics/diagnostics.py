@@ -306,7 +306,7 @@ async def check_price_band_adherence(cfg: dict, since_ts: float | None = None, n
 
 # ---------------------------------------------------------------- runway
 
-def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
+async def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float | None = None) -> Check:
     """How much time was left to manage each position when it opened, and
     what happened to the ones opened with almost none? This is ROADMAP #1's
     whole thesis, measured rather than asserted: a position opened seconds
@@ -323,24 +323,23 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
     floor = strat.get("min_seconds_to_close")
 
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            opens = conn.execute(
-                "SELECT ticker, side, price, size, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'whale print%' ORDER BY timestamp",
-                (since_ts,),
-            ).fetchall()
-            closes = conn.execute(
-                "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0 ORDER BY timestamp",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        opens = await conn.execute_fetchall(
+            "SELECT ticker, side, price, size, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'whale print%' ORDER BY timestamp",
+            (since_ts,),
+        )
+        closes = await conn.execute_fetchall(
+            "SELECT ticker, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0 ORDER BY timestamp",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("runway_at_entry", _UNKNOWN, f"paper_broker unreadable: {exc}")
     if not opens:
         return Check("runway_at_entry", _UNKNOWN, "no whale-follow entries in this window")
 
-    close_by_ticker = _close_ts_for_tickers([r["ticker"] for r in opens])
+    close_by_ticker = await _close_ts_for_tickers([r["ticker"] for r in opens])
 
     buckets = {"<60s": 0, "60-300s": 0, "300-900s": 0, ">900s": 0, "unknown": 0}
     short_entries = []
@@ -385,7 +384,7 @@ def check_runway_at_entry(cfg: dict, since_ts: float | None = None, now: float |
 
 # ---------------------------------------------------------------- attribution
 
-def config_epochs(since_ts: float | None = None, now: float | None = None) -> list[dict]:
+async def config_epochs(since_ts: float | None = None, now: float | None = None) -> list[dict]:
     """Reconstruct the real config timeline from
     config_performance.applied_changes - every live tuning change is already
     recorded there with applied_at/config_path/old_value/new_value, so
@@ -394,13 +393,12 @@ def config_epochs(since_ts: float | None = None, now: float | None = None) -> li
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 7 * 24 * 3600
     try:
-        with closing(sqlite3.connect(config_performance.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT applied_at, config_path, old_value, new_value, source "
-                "FROM applied_changes WHERE applied_at > ? ORDER BY applied_at",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(config_performance.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT applied_at, config_path, old_value, new_value, source "
+            "FROM applied_changes WHERE applied_at > ? ORDER BY applied_at",
+            (since_ts,),
+        )
     except sqlite3.Error:
         return []
     # collapse changes sharing a timestamp - one Config-tab save writes many rows
@@ -419,8 +417,8 @@ def config_epochs(since_ts: float | None = None, now: float | None = None) -> li
     return epochs
 
 
-def performance_by_epoch(since_ts: float | None = None, now: float | None = None,
-                         min_trades: int = 3) -> Check:
+async def performance_by_epoch(since_ts: float | None = None, now: float | None = None,
+                               min_trades: int = 3) -> Check:
     """Win rate and realized P&L per config epoch - the direct test of any
     "we used to win ~70%" claim, and of the 2026-08-17 hypothesis that the
     good stretch came from richer pre-rate-limit market coverage rather
@@ -434,18 +432,17 @@ def performance_by_epoch(since_ts: float | None = None, now: float | None = None
     import re
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 7 * 24 * 3600
-    epochs = config_epochs(since_ts, now)
+    epochs = await config_epochs(since_ts, now)
     if not epochs:
         return Check("performance_by_epoch", _UNKNOWN,
                      "no config changes recorded in this window — no epochs to compare")
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            closes = conn.execute(
-                "SELECT ticker, reason, timestamp FROM trades "
-                "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0",
-                (since_ts,),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        closes = await conn.execute_fetchall(
+            "SELECT ticker, reason, timestamp FROM trades "
+            "WHERE timestamp > ? AND reason LIKE 'closed:%' AND excluded = 0",
+            (since_ts,),
+        )
     except sqlite3.Error as exc:
         return Check("performance_by_epoch", _UNKNOWN, f"paper_broker unreadable: {exc}")
 

@@ -221,7 +221,7 @@ def test_runway_buckets_entries_by_time_to_close(dbs):
         # E-1 had 30s of runway at entry; E-2 had an hour.
         conn.execute("INSERT INTO markets (ticker, close_ts, updated_at) VALUES (?,?,?)", ("E-1", now - 70, now))
         conn.execute("INSERT INTO markets (ticker, close_ts, updated_at) VALUES (?,?,?)", ("E-2", now + 3500, now))
-    c = diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now))
     assert c.detail["buckets"]["<60s"] == 1
     assert c.detail["buckets"][">900s"] == 1
 
@@ -233,7 +233,7 @@ def test_runway_unknown_when_no_close_time_is_recorded(dbs):
     now = time.time()
     _seed_trades([("F-1", "yes", 0.6, "whale print 5000 @ 0.6 (conf 0.6)", now - 100)])
     mc_module._connect(mc_module.DB_PATH).close()
-    c = diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now)
+    c = asyncio.run(diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
     assert c.detail["buckets"]["unknown"] == 1
 
@@ -257,7 +257,7 @@ def test_performance_by_epoch_splits_trades_at_config_change_boundaries(dbs):
     for i in range(3):
         rows.append((f"H-{i}", "yes", 0.6, f"closed: stop-loss hit (realized -20.0)", now - 500 + i))
     _seed_trades(rows)
-    c = diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3)
+    c = asyncio.run(diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3))
     assert c.status == "ok"
     epochs = c.detail["epochs"]
     assert len(epochs) == 2
@@ -276,7 +276,7 @@ def test_performance_by_epoch_unknown_without_enough_trades(dbs):
             (now - 1000, "strategy.entry_threshold", "1", "2", "test", 0, "fp0", "fp1"),
         )
     _seed_trades([("I-1", "yes", 0.6, "closed: settled YES - position won (realized +5.0)", now - 500)])
-    c = diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3)
+    c = asyncio.run(diagnostics.performance_by_epoch(since_ts=now - 7200, now=now, min_trades=3))
     assert c.status == "unknown"
 
 
