@@ -32,7 +32,6 @@ reports status "unknown" with the reason, never a fabricated number. That
 matters more here than usual: this module exists to be trusted when other
 numbers are in doubt.
 """
-import asyncio
 import json
 import sqlite3
 import time
@@ -732,6 +731,7 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
 
     now = now if now is not None else time.time()
     since_ts = since_ts if since_ts is not None else now - 24 * 3600
+    window_hours = round((now - since_ts) / 3600, 1)
     cc_cfg = cfg.get("confidence_calibration") or {}
     min_resolved_signals = cc_cfg.get("min_resolved_signals", 50)
     # signal_log.py is out of this plan's scope (see Global Constraints) -
@@ -743,15 +743,18 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
         return Check(
             "confidence_input_coverage", _UNKNOWN,
             f"{resolved_count}/{min_resolved_signals} resolved real signals with a factor "
-            "breakdown - calibration activates once that's reached",
+            f"breakdown in the last {window_hours}h - a recency window, not the separate "
+            "all-history calibration-weight gate (which stays unscoped and may already be "
+            "active on far more rows than this window alone shows)",
+            detail={"window_hours": window_hours},
         )
     coverage = confidence_calibration.compute_input_coverage(rows, resolved_count)
     return Check(
         "confidence_input_coverage", _OK,
         f"depth {coverage['depth_factor']['absent_pct']}%, trend {coverage['trend_factor']['absent_pct']}%, "
         f"agreement {coverage['agreement_factor']['absent_pct']}%, spread {coverage['raw_spread']['absent_pct']}% "
-        f"absent (n={resolved_count})",
-        detail={"input_coverage": coverage},
+        f"absent (n={resolved_count}, last {window_hours}h)",
+        detail={"input_coverage": coverage, "window_hours": window_hours},
     )
 
 
@@ -775,21 +778,31 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
     # awaited calls in this function already yields control back to the loop
     # - measured at ~1,100 real yields per run_offline() call, with or
     # without the added sleep(0)s. The sleep(0) calls were removed as
-    # non-load-bearing rather than left in on a claim that didn't hold up;
-    # the actual fix for the live incident this fast-follow responds to (5
-    # concurrent GET /api/quality/summary requests stalling an unrelated
-    # GET /api/state) was the elastic connection pool (_aio_db.py) and
-    # bounding check_confidence_input_coverage's previously-unscoped query
-    # (both still in this branch) - see docs/open-decisions.md's Task 9
-    # entry and this file's _aio_db.py module docstring for what was
-    # actually measured.
-    checks = [await check_threshold_integrity(cfg, since_ts, now)]
-    checks.append(await check_price_band_adherence(cfg, since_ts, now))
-    checks.append(await check_runway_at_entry(cfg, since_ts, now))
-    checks.append(check_config_bounds(cfg))  # unchanged - no DB access, stays sync
-    checks.append(await performance_by_epoch(since_ts, now))
-    checks.append(await selectivity_curve(since_ts=since_ts, now=now))
-    checks.append(await check_confidence_input_coverage(cfg, since_ts, now))
+    # non-load-bearing rather than left in on a claim that didn't hold up.
+    #
+    # A second fast-follow idea - an elastic per-file connection pool in
+    # _aio_db.py - was tried, found to contain two Critical concurrency bugs,
+    # fixed, then independently re-measured against the same live incident
+    # and found to perform WORSE than the original PR #420 single-connection
+    # design on both wall time and worst-case co-resident latency (every pool
+    # variant tried lost to no pool at all). It was reverted rather than kept
+    # on the strength of "it should help", back to _aio_db.py's original
+    # PR #420 single-connection design (this comment is the record of that
+    # attempt and reversal; _aio_db.py itself carries no trace of it).
+    # The change that actually fixed the live incident (5 concurrent
+    # GET /api/quality/summary requests stalling an unrelated GET /api/state)
+    # was bounding check_confidence_input_coverage's previously-unscoped
+    # query to a purpose-matched 24h window - see docs/open-decisions.md's
+    # Task 9 entry for what was actually measured.
+    checks = [
+        await check_threshold_integrity(cfg, since_ts, now),
+        await check_price_band_adherence(cfg, since_ts, now),
+        await check_runway_at_entry(cfg, since_ts, now),
+        check_config_bounds(cfg),  # unchanged - no DB access, stays sync
+        await performance_by_epoch(since_ts, now),
+        await selectivity_curve(since_ts=since_ts, now=now),
+        await check_confidence_input_coverage(cfg, since_ts, now),
+    ]
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by
     # construction: a blended number across every series answers nobody's
