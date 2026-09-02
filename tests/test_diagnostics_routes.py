@@ -19,6 +19,23 @@ from fastapi import HTTPException
 from services.diagnostics import routes as diagnostics_routes
 
 
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    # Same fixture tests/test_diagnostics.py, tests/test_series_watcher.py and
+    # tests/test_main_tick_executor_wiring.py carry. Missing here, this file
+    # printed "7 passed" and then hung forever: aiosqlite gives every cached
+    # connection a NON-daemon OS thread and CPython's exit joins those
+    # (PR adversarial review finding C1, 2026-09-01). _aio_db now also closes
+    # them from a threading._register_atexit hook, so this is defence in
+    # depth rather than the only thing standing between the suite and a hang -
+    # but it still matters on its own: it stops one test's cached connection,
+    # opened against a tmp_path DB that is deleted at teardown, from being
+    # handed to the next test.
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
+
+
 class _FakeClient:
     instances: list["_FakeClient"] = []
 

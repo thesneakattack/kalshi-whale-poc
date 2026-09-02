@@ -3,6 +3,7 @@ connection cache services/diagnostics/diagnostics.py and
 services/series_watcher.py's read-only functions share.
 """
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -142,6 +143,80 @@ def test_connection_for_without_schema_init_does_not_require_a_preexisting_table
         return conn is not None
 
     assert asyncio.run(_run()) is True
+    asyncio.run(_aio_db.reset())
+
+
+def test_connection_for_reopens_a_connection_closed_out_from_under_it(tmp_path):
+    # Finding I1 (PR adversarial review, 2026-09-01): connection_for()'s
+    # docstring claimed the same contract as _scoring_pool's
+    # cached_read_connection(), which liveness-probes and evicts-and-reopens,
+    # while connection_for() returned whatever was cached forever. Before
+    # this module existed each call opened its own connection, so breakage
+    # self-healed; without the probe the diagnostics subsystem would report
+    # "unreadable" permanently and quietly instead.
+    db_path = tmp_path / "t.db"
+
+    async def _run():
+        first = await _aio_db.connection_for(db_path)
+        await first.execute("CREATE TABLE t (id INTEGER)")
+        await first.commit()
+
+        # Close it directly, bypassing _aio_db entirely, so the cache is left
+        # holding a dead connection object - "closed out from under us
+        # elsewhere", the case the sibling module recovers from.
+        await first.close()
+
+        second = await _aio_db.connection_for(db_path)
+        assert second is not first, "returned the dead cached connection instead of reopening"
+
+        # Not just a different object: a genuinely usable one, against the
+        # same file (the table opened above must be visible through it).
+        rows = await second.execute_fetchall("SELECT COUNT(*) FROM t")
+        return rows[0][0]
+
+    assert asyncio.run(_run()) == 0
+    asyncio.run(_aio_db.reset())
+
+
+def test_schema_init_failure_closes_the_connection_and_caches_nothing(tmp_path):
+    # Finding I2 (PR adversarial review, 2026-09-01): a raising schema_init
+    # left the connection neither cached nor closed, so its NON-daemon
+    # aiosqlite worker thread survived for the rest of the process - once per
+    # failed call, ~8 per run_offline() on a route polled every ~5s, while
+    # every caller degraded "honestly" through its except sqlite3.Error branch.
+    db_path = tmp_path / "t.db"
+    handed_to_schema_init = []
+
+    async def _boom(conn):
+        handed_to_schema_init.append(conn)
+        raise sqlite3.DatabaseError("simulated: disk image malformed")
+
+    async def _run():
+        with pytest.raises(sqlite3.DatabaseError):
+            await _aio_db.connection_for(db_path, schema_init=_boom)
+
+        # Nothing cached for THIS key, so a later call retries cleanly rather
+        # than being stuck with a half-initialised connection. Scoped to this
+        # db_path rather than asserting the whole dict is empty: an absolute
+        # assertion on a module global would couple this test to collection
+        # order and to any other test that left an entry behind.
+        assert not [k for k in _aio_db._connections if k[1] == db_path]
+
+        # And the connection really was closed, not merely dropped on the
+        # floor. Closing is what sends aiosqlite's worker thread its stop
+        # sentinel, so proving "closed" is proving the thread does not leak.
+        # A closed aiosqlite connection raises ValueError (not any
+        # sqlite3.Error) on reuse - verified against the installed 0.22.1.
+        assert len(handed_to_schema_init) == 1
+        with pytest.raises(ValueError):
+            await handed_to_schema_init[0].execute_fetchall("SELECT 1")
+
+        # The retry path genuinely works afterwards.
+        conn = await _aio_db.connection_for(db_path)
+        rows = await conn.execute_fetchall("SELECT 1")
+        return rows[0][0]
+
+    assert asyncio.run(_run()) == 1
     asyncio.run(_aio_db.reset())
 
 
