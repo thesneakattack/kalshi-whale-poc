@@ -63,6 +63,7 @@ import sqlite3
 import threading
 from contextlib import closing
 import time
+import asyncio
 from pathlib import Path
 
 from services import capture_writer
@@ -72,6 +73,7 @@ from services import signal_log
 from services.history import trade_analytics
 from services import paper_broker as pb_module
 from services.diagnostics.diagnostics import Check
+from services.diagnostics import _aio_db
 from services.kalshi.contracts.trade import resolve_taker_outcome_side, taker_notional_usd, trade_exchange_ts
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "series_watcher.db"
@@ -205,6 +207,65 @@ def _connect() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_book_ticker ON book_snapshots (ticker, observed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_book_series ON book_snapshots (series, observed_at)")
     return conn
+
+
+async def _ensure_schema_aio(conn) -> None:
+    """Same DDL as _connect() above, run once per (loop, db_path) key via
+    _aio_db.connection_for()'s schema_init hook - _connect() itself stays
+    untouched (still used by every write-path function this plan doesn't
+    convert). Duplicated rather than shared with _connect() because one is
+    sync (sqlite3.Connection) and one is async (aiosqlite.Connection) -
+    keep the two DDL blocks in sync by hand if this table's schema ever
+    changes; both are exercised by tests/test_series_watcher.py."""
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_trades (
+            trade_id TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            series TEXT NOT NULL,
+            observed_at REAL NOT NULL,
+            exchange_ts REAL,
+            taker_outcome_side TEXT,
+            taker_book_side TEXT,
+            taker_side_legacy TEXT,
+            resolved_side TEXT,
+            count_fp REAL,
+            yes_price_dollars REAL,
+            no_price_dollars REAL,
+            notional_usd REAL,
+            is_block_trade INTEGER,
+            excluded INTEGER NOT NULL DEFAULT 0,
+            raw_json TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS book_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            series TEXT NOT NULL,
+            observed_at REAL NOT NULL,
+            exchange_ts REAL,
+            price_dollars REAL,
+            yes_bid_dollars REAL,
+            yes_ask_dollars REAL,
+            yes_bid_size_fp REAL,
+            yes_ask_size_fp REAL,
+            volume_fp REAL,
+            open_interest_fp REAL,
+            dollar_volume REAL,
+            dollar_open_interest REAL,
+            last_trade_size_fp REAL,
+            raw_json TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_book_ticker ON book_snapshots (ticker, observed_at)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_book_series ON book_snapshots (series, observed_at)")
 
 
 def _cfg_section(cfg: dict | None) -> dict:
@@ -427,22 +488,24 @@ def prune(retention_hours: float = 168.0, now: float | None = None) -> dict:
         return {"book_snapshots_deleted": cur.rowcount, "cutoff": cutoff}
 
 
-def capture_stats(series: str | None = None) -> dict:
+async def capture_stats(series: str | None = None) -> dict:
     """What the capture half has actually collected — so a caller can tell
     "no whale prints happened" apart from "the watcher wasn't running,"
     which are the two explanations this whole module exists to
     distinguish."""
     series = series or DEFAULT_SERIES
     try:
-        with _connect() as conn:
-            trades, first_t, last_t = conn.execute(
-                "SELECT COUNT(*), MIN(observed_at), MAX(observed_at) FROM raw_trades WHERE series = ?",
-                (series,),
-            ).fetchone()
-            books, first_b, last_b = conn.execute(
-                "SELECT COUNT(*), MIN(observed_at), MAX(observed_at) FROM book_snapshots WHERE series = ?",
-                (series,),
-            ).fetchone()
+        conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+        trades_cursor = await conn.execute(
+            "SELECT COUNT(*), MIN(observed_at), MAX(observed_at) FROM raw_trades WHERE series = ?",
+            (series,),
+        )
+        trades, first_t, last_t = await trades_cursor.fetchone()
+        books_cursor = await conn.execute(
+            "SELECT COUNT(*), MIN(observed_at), MAX(observed_at) FROM book_snapshots WHERE series = ?",
+            (series,),
+        )
+        books, first_b, last_b = await books_cursor.fetchone()
     except sqlite3.Error as exc:
         return {"series": series, "error": str(exc)}
     return {
@@ -472,25 +535,24 @@ def capture_stats(series: str | None = None) -> dict:
 
 # ------------------------------------------------------------------ reading
 
-def _signals_for_series(series: str, since_ts: float, before_ts: float) -> list[dict]:
+async def _signals_for_series(series: str, since_ts: float, before_ts: float) -> list[dict]:
     """Non-excluded signals only — an experiment window is real data about
     the exchange but is not evidence about the strategy (see
     signal_log.mark_excluded_range)."""
     try:
-        with closing(sqlite3.connect(signal_log.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT ticker, side, size, confidence, seen_at, price, resolved, correct, "
-                "raw_notional_usd FROM signals "
-                "WHERE series = ? AND seen_at > ? AND seen_at <= ? AND excluded = 0",
-                (series, since_ts, before_ts),
-            ).fetchall()
+        conn = await _aio_db.connection_for(signal_log.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT ticker, side, size, confidence, seen_at, price, resolved, correct, "
+            "raw_notional_usd FROM signals "
+            "WHERE series = ? AND seen_at > ? AND seen_at <= ? AND excluded = 0",
+            (series, since_ts, before_ts),
+        )
     except sqlite3.Error:
         return []
     return [dict(r) for r in rows]
 
 
-def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[dict]:
+async def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[dict]:
     """Every paper trade on this series in the window, chronological — both
     entries and closes, since trade_analytics.build_trade_history pairs them
     itself and needs the entry that precedes each close.
@@ -499,14 +561,13 @@ def _trades_for_series(series: str, since_ts: float, before_ts: float) -> list[d
     before the window but closed inside it still finds its own entry;
     filtering happens on the close timestamp afterwards."""
     try:
-        with closing(sqlite3.connect(pb_module.DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
-                "fee, signal_seen_at FROM trades "
-                "WHERE ticker LIKE ? AND timestamp > ? AND timestamp <= ? AND excluded = 0 ORDER BY timestamp",
-                (f"{series}-%", since_ts - 7 * 86400, before_ts),
-            ).fetchall()
+        conn = await _aio_db.connection_for(pb_module.DB_PATH)
+        rows = await conn.execute_fetchall(
+            "SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
+            "fee, signal_seen_at FROM trades "
+            "WHERE ticker LIKE ? AND timestamp > ? AND timestamp <= ? AND excluded = 0 ORDER BY timestamp",
+            (f"{series}-%", since_ts - 7 * 86400, before_ts),
+        )
     except sqlite3.Error:
         return []
     # LIKE 'SERIES-%' is a prefix filter, not the series definition —
@@ -521,8 +582,8 @@ def _pct(numerator: int, denominator: int) -> float | None:
 
 # ------------------------------------------------------------------ funnel
 
-def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = None,
-           now: float | None = None) -> dict:
+async def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = None,
+                  now: float | None = None) -> dict:
     """Every stage from "a print happened on the exchange" to "a position
     closed", with the count at each — so a shortfall can be located at the
     stage it actually happened rather than blamed on whichever stage is
@@ -544,17 +605,20 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
     )
 
     try:
-        with _connect() as conn:
-            observed, whale_sized, capture_start = conn.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN count_fp >= ? THEN 1 ELSE 0 END), MIN(observed_at) "
-                "FROM raw_trades WHERE series = ? AND observed_at > ? AND excluded = 0",
-                (min_contracts, series, since_ts),
-            ).fetchone()
-            unreadable_side = conn.execute(
-                "SELECT COUNT(*) FROM raw_trades WHERE series = ? AND observed_at > ? "
-                "AND resolved_side IS NULL",
-                (series, since_ts),
-            ).fetchone()[0]
+        conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+        cursor = await conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN count_fp >= ? THEN 1 ELSE 0 END), MIN(observed_at) "
+            "FROM raw_trades WHERE series = ? AND observed_at > ? AND excluded = 0",
+            (min_contracts, series, since_ts),
+        )
+        observed, whale_sized, capture_start = await cursor.fetchone()
+        unreadable_cursor = await conn.execute(
+            "SELECT COUNT(*) FROM raw_trades WHERE series = ? AND observed_at > ? "
+            "AND resolved_side IS NULL",
+            (series, since_ts),
+        )
+        unreadable_row = await unreadable_cursor.fetchone()
+        unreadable_side = unreadable_row[0]
     except sqlite3.Error as exc:
         observed, whale_sized, unreadable_side, capture_start = None, None, None, None
         capture_error = str(exc)
@@ -576,11 +640,11 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
         if capture_start else "the watcher captured nothing in this window"
     )
 
-    signals = _signals_for_series(series, since_ts, now)
+    signals = await _signals_for_series(series, since_ts, now)
     resolved = [s for s in signals if s["resolved"]]
     correct = [s for s in resolved if s["correct"]]
 
-    raw = _trades_for_series(series, since_ts, now)
+    raw = await _trades_for_series(series, since_ts, now)
     entries = [t for t in raw if not t["reason"].startswith("closed:") and t["timestamp"] > since_ts]
     history = [r for r in trade_analytics.build_trade_history(raw) if r["exit_timestamp"] > since_ts]
     wins = [r for r in history if r["won"]]
@@ -657,8 +721,8 @@ def funnel(series: str | None = None, hours: float = 24.0, cfg: dict | None = No
 
 # ------------------------------------------------------------------ reconcile
 
-def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None = None,
-              now: float | None = None) -> dict:
+async def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None = None,
+                     now: float | None = None) -> dict:
     """The actual question: whales are right ~70% of the time, so why is my
     win rate ~40%?
 
@@ -691,8 +755,8 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
     now = now if now is not None else time.time()
     since_ts = now - hours * 3600
 
-    signals = _signals_for_series(series, since_ts, now)
-    raw = _trades_for_series(series, since_ts, now)
+    signals = await _signals_for_series(series, since_ts, now)
+    raw = await _trades_for_series(series, since_ts, now)
     history = [r for r in trade_analytics.build_trade_history(raw) if r["exit_timestamp"] > since_ts]
 
     resolved = [s for s in signals if s["resolved"]]
@@ -844,8 +908,8 @@ def reconcile(series: str | None = None, hours: float = 24.0, cfg: dict | None =
     }
 
 
-def book_context_at_entry(series: str | None = None, hours: float = 24.0,
-                          now: float | None = None) -> dict:
+async def book_context_at_entry(series: str | None = None, hours: float = 24.0,
+                                 now: float | None = None) -> dict:
     """Spread and resting depth at the moment each entry was opened, from
     the captured book snapshots — the question that was unanswerable before
     this module existed, because _process_stream_ticker kept only two of
@@ -858,36 +922,36 @@ def book_context_at_entry(series: str | None = None, hours: float = 24.0,
     now = now if now is not None else time.time()
     since_ts = now - hours * 3600
 
-    raw = _trades_for_series(series, since_ts, now)
+    raw = await _trades_for_series(series, since_ts, now)
     entries = [t for t in raw if not t["reason"].startswith("closed:") and t["timestamp"] > since_ts]
     if not entries:
         return {"series": series, "status": "unknown", "reason": "no entries in this window"}
 
     matched, spreads, depth_ratios = 0, [], []
     try:
-        with _connect() as conn:
-            conn.row_factory = sqlite3.Row
-            for t in entries:
-                snap = conn.execute(
-                    "SELECT yes_bid_dollars, yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, "
-                    "open_interest_fp FROM book_snapshots "
-                    "WHERE ticker = ? AND observed_at BETWEEN ? AND ? "
-                    "ORDER BY ABS(observed_at - ?) LIMIT 1",
-                    (t["ticker"], t["timestamp"] - _BOOK_MATCH_WINDOW_SEC,
-                     t["timestamp"] + _BOOK_MATCH_WINDOW_SEC, t["timestamp"]),
-                ).fetchone()
-                if snap is None:
-                    continue
-                matched += 1
-                bid, ask = snap["yes_bid_dollars"], snap["yes_ask_dollars"]
-                if bid is not None and ask is not None:
-                    spreads.append(ask - bid)
-                # Depth on the side I had to cross, against my own size —
-                # a ratio below 1 means the resting book could not fill me
-                # at the quoted price and the rest was paid up for.
-                resting = snap["yes_ask_size_fp"] if t["side"] == "yes" else snap["yes_bid_size_fp"]
-                if resting and t["size"]:
-                    depth_ratios.append(resting / t["size"])
+        conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+        for t in entries:
+            cursor = await conn.execute(
+                "SELECT yes_bid_dollars, yes_ask_dollars, yes_bid_size_fp, yes_ask_size_fp, "
+                "open_interest_fp FROM book_snapshots "
+                "WHERE ticker = ? AND observed_at BETWEEN ? AND ? "
+                "ORDER BY ABS(observed_at - ?) LIMIT 1",
+                (t["ticker"], t["timestamp"] - _BOOK_MATCH_WINDOW_SEC,
+                 t["timestamp"] + _BOOK_MATCH_WINDOW_SEC, t["timestamp"]),
+            )
+            snap = await cursor.fetchone()
+            if snap is None:
+                continue
+            matched += 1
+            bid, ask = snap["yes_bid_dollars"], snap["yes_ask_dollars"]
+            if bid is not None and ask is not None:
+                spreads.append(ask - bid)
+            # Depth on the side I had to cross, against my own size —
+            # a ratio below 1 means the resting book could not fill me
+            # at the quoted price and the rest was paid up for.
+            resting = snap["yes_ask_size_fp"] if t["side"] == "yes" else snap["yes_bid_size_fp"]
+            if resting and t["size"]:
+                depth_ratios.append(resting / t["size"])
     except sqlite3.Error as exc:
         return {"series": series, "status": "unknown", "reason": f"watcher store unreadable: {exc}"}
 
@@ -913,14 +977,14 @@ def book_context_at_entry(series: str | None = None, hours: float = 24.0,
 
 # ------------------------------------------------------------------ the Check
 
-def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.0,
-                        now: float | None = None) -> Check:
+async def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.0,
+                               now: float | None = None) -> Check:
     """diagnostics-compatible wrapper — this is the plug. Returns the same
     Check shape every other check in services/diagnostics/diagnostics.py returns, so
     run_offline can include it and /api/diagnostics renders it with no
     special-casing."""
     series = series or (watched_series(cfg) or [DEFAULT_SERIES])[0]
-    r = reconcile(series, hours=hours, cfg=cfg, now=now)
+    r = await reconcile(series, hours=hours, cfg=cfg, now=now)
 
     acc, win = r["signal_accuracy_pct"], r["realised_win_rate_pct"]
     if acc is None and win is None:
@@ -979,5 +1043,5 @@ def check_series_funnel(cfg: dict, series: str | None = None, hours: float = 24.
     return Check(
         f"series_funnel:{series}", status, headline,
         detail=r,
-        evidence=funnel(series, hours=hours, cfg=cfg, now=now)["stages"],
+        evidence=(await funnel(series, hours=hours, cfg=cfg, now=now))["stages"],
     )
