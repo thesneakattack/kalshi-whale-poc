@@ -3714,6 +3714,28 @@ def test_enrich_recent_trades_pairs_correctly_even_when_entry_is_outside_the_tai
     assert close_row["won"] is True
 
 
+def test_enrich_recent_trades_attaches_market_settlement_result_for_early_exits(tmp_path):
+    # close_type/won (above) only describe the position's OWN exit price -
+    # for an early exit (stop_loss here, not settled_win/settled_loss) the
+    # market keeps trading after the close and can resolve either way.
+    # market_result (services/market_history.py's real outcomes table) is
+    # the market's actual settled result, independent of that early close -
+    # what makes an early exit checkable in hindsight.
+    fresh_broker = pb_module.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "fresh_broker_mr.db")
+    fresh_broker.open_position(ticker="TICK-MR-A", side="yes", size=100, price=0.5, reason="test entry")
+    early_exit = fresh_broker.close_position("TICK-MR-A", 0.4, "stop-loss hit: unrealized loss 20% of cost basis")
+    fresh_broker.open_position(ticker="TICK-MR-B", side="no", size=50, price=0.3, reason="test entry, still open")
+    mh_module.record_outcome("TICK-MR-A", "yes", resolved_at=time.time())
+
+    enriched = main._enrich_recent_trades(fresh_broker)
+    settled_row = next(r for r in enriched if r["id"] == early_exit.id)
+    assert settled_row["close_type"] == "stop_loss"
+    assert settled_row["market_result"] == "yes"
+
+    open_row = next(r for r in enriched if r["ticker"] == "TICK-MR-B")
+    assert open_row["market_result"] is None
+
+
 # --- shadow un-halt route (2026-08-10) --------------------------------------
 # Real bug found live: services/shadow_mode.py's own risk manager had no
 # route to ever clear a tripped kill switch (confirmed live, dormant only

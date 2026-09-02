@@ -57,6 +57,19 @@ def test_record_outcome_is_idempotent_first_write_wins(tmp_path, monkeypatch):
     assert row == ("yes", 100.0)
 
 
+def test_outcomes_for_tickers_returns_only_resolved_tickers(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_outcome("TICK-A", "yes")
+    mh.record_outcome("TICK-B", "no")
+    result = mh.outcomes_for_tickers(["TICK-A", "TICK-B", "TICK-UNRESOLVED"])
+    assert result == {"TICK-A": "yes", "TICK-B": "no"}
+
+
+def test_outcomes_for_tickers_empty_list_returns_empty_dict(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    assert mh.outcomes_for_tickers([]) == {}
+
+
 def test_seconds_to_close_parses_iso_close_time():
     now = time.time()
     close_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))

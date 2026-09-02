@@ -221,6 +221,24 @@ def record_outcome(ticker: str, result: str, resolved_at: float | None = None):
         )
 
 
+def outcomes_for_tickers(tickers: list[str]) -> dict[str, str]:
+    """ticker -> its real settled result ("yes"/"no", Kalshi's own
+    market.result), for whichever of the given tickers have actually
+    resolved - a ticker with no row yet (still open, or never settled) is
+    simply absent from the returned dict. Bulk by design: the trade log's
+    recent-25 rows share this exact IN-clause shape already used elsewhere
+    in this app for small, bounded ticker sets."""
+    if not tickers:
+        return {}
+    with _connect(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in tickers)
+        rows = conn.execute(
+            f"SELECT ticker, result FROM outcomes WHERE ticker IN ({placeholders})",
+            list(tickers),
+        ).fetchall()
+    return {ticker: result for ticker, result in rows}
+
+
 def momentum(ticker: str, lookback_sec: float, as_of: float | None = None) -> dict | None:
     """Real price movement over the trailing lookback_sec window, from
     logged snapshots - None if there isn't yet enough history to trust a
