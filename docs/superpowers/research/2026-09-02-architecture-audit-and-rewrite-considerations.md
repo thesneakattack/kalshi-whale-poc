@@ -988,11 +988,31 @@ choice was correct**, not merely "already decided so don't reopen it":
   (`main.js:52-71`'s removed `refreshActiveViewPanels()`, which caused
   scroll resets and a laggy Apply button from duplicated fetches).
 
+**Correction, direct from the repo owner:** an earlier draft of this
+paragraph described "a deliberate single-command-esbuild-no-build-step
+constraint" as if it were an established rule. **No such rule exists
+anywhere** — not in `CLAUDE.md`, not in the frontend-modularization spec,
+not stated by the owner. It was an unverified inference stated as fact,
+which is exactly what this project's own "never guess; verify or falsify"
+HARD RULE exists to prevent, and it was also imprecise on its own terms:
+this repo already has a build step (`frontend/package.json`: "esbuild
+bundles \[`src/js/`\] into `static/js/dashboard.bundle.js`... edits need a
+rebuild"). Corrected, narrower, and actually cited: the frontend-
+modularization spec (`docs/superpowers/specs/2026-08-25-frontend-
+modularization-design.md` §10, "JSX escape hatch (documented, not used)")
+chose `htm` specifically so `.js` files stay plain JavaScript processable
+by the *existing* esbuild bundle, without adding a *second*,
+framework-specific compiler/transform stage (JSX, or a Vue/Svelte SFC
+compiler) on top of it. That's a real, narrower technical fact worth
+weighing — not a "constraint this repo has," just a cost/benefit point in
+Preact+htm's favor over Vue/Svelte, which still stands on its own once
+stated accurately.
+
 **Why Preact over the alternatives, re-derived independently:** React is
 the same model at ~5× the bundle for no benefit a solo local dashboard
-needs. Vue/Svelte would work but require a real compiler stage, which
-conflicts with this repo's deliberate single-command-esbuild-no-build-step
-constraint (`htm` was chosen specifically to avoid it). htmx is the wrong
+needs. Vue/Svelte would work but would add a second compiler/transform
+stage beyond the existing esbuild bundle (see the correction above) — a
+real cost, not a violated rule. htmx is the wrong
 shape — this backend is API-only by explicit standing design, and htmx
 means moving rendering back into FastAPI, reversing that decision. Alpine
 cleans up the inline-handler mess but has no keyed-list reconciliation, so
@@ -1293,8 +1313,9 @@ presenting a rewrite as equally supported would be dishonest to the
 evidence:
 
 - The **process/storage/frontend-tooling architecture** (single FastAPI
-  process, one SQLite file per concern in WAL mode, no ORM, esbuild
-  bundling with no framework build step) is independently validated as
+  process, one SQLite file per concern in WAL mode, no ORM, an esbuild
+  bundle without a second framework-specific compiler stage on top of
+  it — see §8.4's correction on this point) is independently validated as
   proportionate by direct comparison against three real open-source
   trading systems (§10.1) — including the most production-grade one
   surveyed. Rewriting this shape would be discarding something the
