@@ -100,30 +100,72 @@ function renderTradeLogTable() {
   }
 
   const cols = [['timestamp', 'Time'], ['ticker', 'Ticker'], ['side', 'Side'], ['size', 'Size'],
-    ['price', 'Price'], ['confidence', 'Confidence'], ['pnl', 'P&L'], ['close_type', 'Result']];
+    ['price', 'Price'], ['confidence', 'Confidence'], ['pnl', 'P&L'], ['close_type', 'Result'],
+    ['market_result', 'Market Settled']];
   const headerHtml = cols.map(([key, label]) =>
     sortHeaderHTML(tradeLogFilter, key, label, `toggleSort(tradeLogFilter,'${key}',renderTradeLogTable)`)
   ).join('');
 
+  // Row background is a P&L gradient - transparent near $0, ramping up to
+  // a shade of --yes (win) or --no (loss) capped at a max alpha chosen so
+  // --text stays readable on top of it even at the cap (WCAG contrast
+  // checked directly against this app's real panel/text/yes/no colors:
+  // 0.40 alpha still holds ~5.9:1 on --yes and ~7.5:1 on --no, both well
+  // past the 4.5:1 AA floor). Scaled per-render against the largest |P&L|
+  // in the currently filtered/sorted rows, not a hardcoded dollar figure,
+  // so the gradient stays meaningful as position sizing changes over time.
+  //
+  // Every cell that would otherwise render in --yes/--no/--muted (P&L,
+  // Result, Market Settled, the "Betting: ..." subline) switches to plain
+  // --text on a tinted row instead, via onTintColor() below - adversarial-
+  // review catch: checked in isolation, the cap only verified --text vs.
+  // the tint; --muted's own contrast against a bright same-hue tint drops
+  // below 4.5:1 well before the cap, and colored text on a matching-hue
+  // tint drops below it too past roughly the row's own midpoint alpha. The
+  // row background already carries the win/loss + magnitude signal, so
+  // this drops a redundant (and, it turns out, unsafe at this cap) second
+  // color encoding rather than losing any information.
+  const ROW_TINT_MIN_ALPHA = 0.06;
+  const ROW_TINT_MAX_ALPHA = 0.40;
+  const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
+  const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+  const maxAbsPnl = Math.max(1, ...rows.map(r => Math.abs(r.pnl)));
+
   const bodyRows = rows.map(r => {
     const rEt = (marketTitles[r.ticker] && marketTitles[r.ticker].event_ticker) || '';
+    const tintRgb = r.pnl > 0 ? ROW_TINT_YES_RGB : r.pnl < 0 ? ROW_TINT_NO_RGB : null;
+    const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(r.pnl) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
+    const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
+    const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
     const resultCell = r.isClose
-      ? `<span style="color:${r.won ? 'var(--yes)' : 'var(--no)'};">${r.won ? 'Won' : 'Lost'} · ${esc(HISTORY_CLOSE_TYPE_LABELS[r.close_type] || r.close_type)}</span>`
-      : '<span style="color:var(--muted);">open</span>';
+      ? `<span style="color:${onTintColor(r.won ? 'var(--yes)' : 'var(--no)')};">${r.won ? 'Won' : 'Lost'} · ${esc(HISTORY_CLOSE_TYPE_LABELS[r.close_type] || r.close_type)}</span>`
+      : `<span style="color:${onTintColor('var(--muted)')};">open</span>`;
+    // Independent of resultCell above: what the market itself ultimately
+    // settled as (services/market_history.py's real outcomes table), vs.
+    // resultCell's own won/lost-at-exit framing. Most useful for an early
+    // exit (stop-loss, take-profit, sentiment reversal, ...) - the market
+    // kept trading after this position closed, so this is what tells you
+    // whether that early exit was the right call in hindsight. "pending"
+    // covers both a still-open position and a closed one whose market
+    // hasn't settled yet - this app has no way to tell those apart here.
+    const marketResultCell = r.market_result
+      ? `<span style="color:${onTintColor(r.market_result === r.side ? 'var(--yes)' : 'var(--no)')};" title="Market settled ${esc(r.market_result.toUpperCase())} — this position held ${esc(String(r.side).toUpperCase())}">${esc(r.market_result.toUpperCase())} ${r.market_result === r.side ? '✓' : '✗'}</span>`
+      : `<span style="color:${onTintColor('var(--muted)')};">pending</span>`;
     // Smaller second line under the title (2026-08-10 report: "YES"/"NO"
     // alone not saying who/what it means, plus rows going extremely wide).
     const rCtx = marketContext(r.ticker, r.side);
     const rSubLine = rCtx.positionMeans
-      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(rCtx.positionMeans)}</div>` : '';
-    return `<tr title="${esc(marketLabel(r.ticker).full)} — click to view full market detail" style="cursor:pointer;" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
+      ? `<div style="font-size:10px; color:${onTintColor('var(--muted)')}; margin-top:2px;">Betting: ${esc(rCtx.positionMeans)}</div>` : '';
+    return `<tr title="${esc(marketLabel(r.ticker).full)} — click to view full market detail" style="cursor:pointer;${rowBg}" onclick="openMarketDetail('${esc(r.ticker)}', '${esc(rEt)}')">
     <td>${new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
     <td>${esc(marketLabel(r.ticker).short)}${rSubLine}</td>
     <td><span class="side-tag ${r.side}">${r.side}</span></td>
     <td>${r.size.toLocaleString()}</td>
     <td>${(r.price*100).toFixed(0)}¢</td>
     <td>${r.confidence != null ? (r.confidence*100).toFixed(0) + '%' : '—'}</td>
-    <td class="${r.pnl >= 0 ? 'pos' : 'neg'}">${fmt(r.pnl)}</td>
+    <td class="${r.pnl >= 0 ? 'pos' : 'neg'}"${tintRgb ? ' style="color:var(--text);"' : ''}>${fmt(r.pnl)}</td>
     <td>${resultCell}</td>
+    <td>${marketResultCell}</td>
   </tr>`;
   }).join('');
 

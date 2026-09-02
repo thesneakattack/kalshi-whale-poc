@@ -8,7 +8,7 @@ read by nearly every future module (position, history, and the /api/state
 builder itself), so they get their own shared home rather than being owned
 by any one of those.
 """
-from services import signal_log
+from services import market_history, signal_log
 from services.history import trade_analytics
 from services.position.account_positions import _real_account_position_tickers
 from services.app_state import broker, state
@@ -44,6 +44,18 @@ def _enrich_recent_trades(paper_broker_instance: PaperBroker) -> list[dict]:
             t["won"] = derived["won"]
             t["entry_price"] = derived["entry_price"]
             t["hold_sec"] = derived["hold_sec"]
+    # The market's own real settled result (services/market_history.py's
+    # outcomes table, Kalshi's market.result field), independent of
+    # close_type/won above - those describe THIS position's own exit
+    # (win/lose at whatever price it closed at), not what the market went
+    # on to actually resolve as. For an early-exit close_type (stop_loss,
+    # take_profit, sentiment_reversal, ...) the market kept trading after
+    # the position closed and can resolve either way; this is what makes an
+    # early exit checkable in hindsight against the ticker's real outcome.
+    # None for a still-open position or one that hasn't settled yet.
+    outcomes = market_history.outcomes_for_tickers([t["ticker"] for t in recent])
+    for t in recent:
+        t["market_result"] = outcomes.get(t["ticker"])
     return recent
 
 

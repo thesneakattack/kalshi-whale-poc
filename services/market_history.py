@@ -221,6 +221,25 @@ def record_outcome(ticker: str, result: str, resolved_at: float | None = None):
         )
 
 
+def outcomes_for_tickers(tickers: list[str]) -> dict[str, str]:
+    """ticker -> its real settled result ("yes"/"no", Kalshi's own
+    market.result), for whichever of the given tickers have actually
+    resolved - a ticker with no row yet (still open, or never settled) is
+    simply absent from the returned dict. Bulk by design, same dedupe-then-
+    IN-clause shape as this app's other bulk ticker lookups (see
+    trade_category.categories_for_tickers / diagnostics._close_ts_for_tickers)."""
+    unique = list({t for t in tickers if t})
+    if not unique:
+        return {}
+    with _connect(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT ticker, result FROM outcomes WHERE ticker IN ({placeholders})",
+            unique,
+        ).fetchall()
+    return {ticker: result for ticker, result in rows}
+
+
 def momentum(ticker: str, lookback_sec: float, as_of: float | None = None) -> dict | None:
     """Real price movement over the trailing lookback_sec window, from
     logged snapshots - None if there isn't yet enough history to trust a
