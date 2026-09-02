@@ -63,7 +63,6 @@ import sqlite3
 import threading
 from contextlib import closing
 import time
-import asyncio
 from pathlib import Path
 
 from services import capture_writer

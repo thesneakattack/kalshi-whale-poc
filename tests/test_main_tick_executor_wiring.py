@@ -11,6 +11,8 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from services import candidate_log as cl_module
 from services import risk_manager as rm_module
 from services.config import config_performance as cp_module
@@ -46,6 +48,24 @@ import main  # noqa: E402
 CFG = {
     "series_watcher": {"enabled": True, "series": ["KXBTC15M"], "book_snapshot_interval_sec": 5},
 }
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    """Same fixture as tests/test_series_watcher.py's — this file has no
+    other teardown for the shared _aio_db connection cache, and its own
+    single asyncio.run(sw_module.capture_stats(...)) call below (Task 5,
+    event-loop-blocking-elimination Fix 2) opens a fresh event loop that
+    is closed once asyncio.run() returns, leaving a cached
+    aiosqlite.Connection bound to a dead loop plus its own non-daemon
+    worker thread (aiosqlite/core.py) that only exits on .close() -
+    without this, that one leaked thread is enough to keep the whole test
+    process alive after pytest reports its results, exactly like the hang
+    tests/test_series_watcher.py's own missing version of this fixture
+    caused."""
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
 
 
 def _trade(trade_id, ticker="KXBTC15M-26AUG17-B1", outcome="yes", count="1000.00",
@@ -95,7 +115,7 @@ def test_flush_trade_capture_writes_the_same_rows_as_before_extraction(monkeypat
     # capture_writer flushes on its own thread's cadence, not synchronously
     # - force it for a deterministic assertion, same as test_series_watcher.py.
     cw_module.flush_now("raw_trades")
-    stats = sw_module.capture_stats("KXBTC15M")
+    stats = asyncio.run(sw_module.capture_stats("KXBTC15M"))
     assert stats.get("raw_trades") == 2
 
 
