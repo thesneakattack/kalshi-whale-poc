@@ -140,11 +140,28 @@ def _close_all_at_process_exit() -> None:
         _connections.clear()
         _locks.clear()
 
-    # Suppressed: this runs during interpreter shutdown, where a raised
-    # exception is unhelpful noise. A failure here costs a leaked thread
-    # (the pre-existing behaviour), never a crash on a working exit path.
-    with contextlib.suppress(Exception):
+    try:
         asyncio.run(_close_all())
+    except Exception:
+        # asyncio.run(_close_all()) failed - fall back to a loop-free close
+        # so this doesn't reproduce C1's hang. If left unclosed here, every
+        # cached connection keeps its non-daemon worker thread alive and
+        # threading._shutdown() joins it forever (see this function's own
+        # docstring above) - a raised exception here is NOT the benign
+        # "leaked thread" cost an earlier version of this comment claimed;
+        # it IS the hang. Connection.stop() (aiosqlite/core.py) needs no
+        # running event loop: it wraps the future creation in its own
+        # try/except and puts the stop sentinel on the connection's plain
+        # SimpleQueue regardless, so the worker thread still exits even
+        # though we can't cleanly await close() here. Reproduced/verified,
+        # not assumed (PR adversarial review finding F1, 2026-09-01): a
+        # forced asyncio.run failure hangs (EXIT=124) without this fallback
+        # and exits cleanly (EXIT=0) with it.
+        for conn in list(_connections.values()):
+            with contextlib.suppress(Exception):
+                conn.stop()
+        _connections.clear()
+        _locks.clear()
 
 
 # _register_atexit is CPython-internal (present since 3.9, used by
