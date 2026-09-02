@@ -90,19 +90,7 @@ Any arithmetic, unit conversion, or numeric derivation gets a `dimensional-analy
 ## `data/*.db` files are live and are a first-class asset
 
 - Never rm/mv a `data/*.db` while ddev is up; prefer `POST /api/reset` over deleting `paper_broker.db`.
-- Accumulated history is the dataset every sample-size-gated heuristic depends on: schema changes are additive only (`CREATE TABLE IF NOT EXISTS` + `_add_column_if_missing`); tests always `monkeypatch` `DB_PATH` to a tmp path; manual verification is read-only or a set-confirm-revert round trip.
-- Persistence idiom — one SQLite file per concern, no shared DB, no ORM:
-
-```python
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "X.db"
-
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS ... ")
-    return conn
-```
-
+- Accumulated history is the dataset every sample-size-gated heuristic depends on: don't discard it without saying so; tests always `monkeypatch` `DB_PATH` to a tmp path; manual verification is read-only or a set-confirm-revert round trip.
 - Moving a module one directory deeper changes `DB_PATH`'s `.parent` chain; fix it in the same edit and check `git status` for a stray `services/data/`.
 
 ## Safety invariants — never regress
@@ -115,10 +103,6 @@ def _connect() -> sqlite3.Connection:
 ## A displayed value must match its label
 
 - Trace every displayed financial figure to its backend definition (`PaperBroker.equity()` / `cost_basis()` / `mark_to_market()`); expose backend-computed fields rather than re-deriving client-side. Two shipped bugs of this shape: the no-side `1 - price` inversion and `equity - starting_bankroll` labeled as unrealized P&L; run `dimensional-analysis` per the HARD RULE above.
-
-## Workflow/tooling and application code never overlap
-
-- Tooling lives in `tools/`, never `services/` or `main.py`; its config is its own, never `config/settings.yaml`; it runs externally (human, cron, CI), never from the app's tick loop or state; the app never imports, configures, or schedules a tool (test isolation registries included); a tool may read the app through a real API.
 
 ## Kalshi API — `docs/kalshi/` is ground truth (HARD RULE)
 
