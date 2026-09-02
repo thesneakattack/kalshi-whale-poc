@@ -213,6 +213,17 @@
   .pnl.neg { color: var(--no); }
   .payout { font-size: 10px; color: var(--muted); }
   .cost { font-size: 10px; color: var(--muted); }
+  /* Simple Trade Log's P&L row-tint (trade-log-and-real.js's renderTrades) -
+     same contrast issue as the Advanced table's tinted rows (fixed in
+     PR #421): --muted/--yes/--no text loses contrast against a same-hue
+     tinted background. .tinted is only added to a row that actually gets
+     a background tint, so this never touches the untinted default case or
+     .trade-row's other callers (real fills/orders, which never add .tinted). */
+  .trade-row.tinted .cost,
+  .trade-row.tinted .payout,
+  .trade-row.tinted .context-line,
+  .trade-row.tinted .cat-tag,
+  .trade-row.tinted .scope-tag { color: var(--text); }
 
   .funnel-bar {
     display: flex;

@@ -3736,6 +3736,26 @@ def test_enrich_recent_trades_attaches_market_settlement_result_for_early_exits(
     assert open_row["market_result"] is None
 
 
+def test_trading_history_endpoint_attaches_market_settlement_result():
+    # Same market_result enrichment as _enrich_recent_trades above, but on
+    # the History tab's own separate endpoint/code path
+    # (services/history/routes.py's get_trading_history, which builds rows
+    # via trade_analytics.build_trade_history directly rather than through
+    # _enrich_recent_trades) - a real, separate gap: /api/trading-history's
+    # trades never carried this field at all before this fix.
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-HIST-A", "yes", size=10, price=0.5, reason="test entry")
+    main.broker.close_position("TICK-HIST-A", 0.4, "stop-loss hit: unrealized loss 20% of cost basis")
+    mh_module.record_outcome("TICK-HIST-A", "no", resolved_at=time.time())
+
+    resp = client.get("/api/trading-history")
+    assert resp.status_code == 200
+    trades = resp.json()["trades"]
+    row = next(t for t in trades if t["ticker"] == "TICK-HIST-A")
+    assert row["close_type"] == "stop_loss"
+    assert row["market_result"] == "no"
+
+
 # --- shadow un-halt route (2026-08-10) --------------------------------------
 # Real bug found live: services/shadow_mode.py's own risk manager had no
 # route to ever clear a tripped kill switch (confirmed live, dormant only

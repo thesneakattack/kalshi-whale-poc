@@ -14,11 +14,38 @@ function renderHistoryTrades() {
     el.innerHTML = '<div class="empty">No closed trades yet — once a position is closed (take-profit, stop-loss, sentiment reversal, auto-exit, or settlement) it will show up here.</div>';
     return;
   }
+  // Same P&L-magnitude row-tint gradient and market-settlement signal as
+  // the Portfolio tab's Trade Log (trade-log-and-real.js's renderTrades/
+  // renderTradeLogTable, PR #421) - direct request, 2026-09-02: History's
+  // own trade table never got either. Same constants/contrast-safe design
+  // already reviewed and fixed there - ported here, not reinvented. Every
+  // row here is a CLOSE row (this endpoint only ever returns closed
+  // trades - see build_trade_history's own docstring), so pnl is always
+  // realized_pnl, no mark-to-market branch needed.
+  const ROW_TINT_MIN_ALPHA = 0.06;
+  const ROW_TINT_MAX_ALPHA = 0.40;
+  const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
+  const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+  const maxAbsPnl = Math.max(1, ...historyTrades.map(t => Math.abs(t.realized_pnl || 0)));
   const rows = historyTrades.map(t => {
     const label = marketLabel(t.ticker);
     const pnl = t.realized_pnl;
-    const pnlColor = pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)');
+    const tintRgb = pnl > 0 ? ROW_TINT_YES_RGB : pnl < 0 ? ROW_TINT_NO_RGB : null;
+    const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(pnl || 0) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
+    const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
+    const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
+    const pnlColor = onTintColor(pnl > 0 ? 'var(--yes)' : (pnl < 0 ? 'var(--no)' : 'var(--text)'));
     const closeTypeLabel = HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type || 'unknown';
+    // The market's real settled result vs. this position's own side - same
+    // field as the Portfolio Trade Log's Market Settled column
+    // (services/market_history.py's outcomes table via
+    // services/history/routes.py's get_trading_history), useful for
+    // judging an early exit (stop-loss, take-profit, sentiment reversal,
+    // ...) in hindsight against what the market actually went on to
+    // resolve as.
+    const marketResultCell = t.market_result
+      ? `<span style="color:${onTintColor(t.market_result === t.side ? 'var(--yes)' : 'var(--no)')};" title="Market settled ${esc(t.market_result.toUpperCase())} — this position held ${esc(String(t.side).toUpperCase())}">${esc(t.market_result.toUpperCase())} ${t.market_result === t.side ? '✓' : '✗'}</span>`
+      : `<span style="color:${onTintColor('var(--muted)')};">pending</span>`;
     const conf = t.entry_confidence !== null && t.entry_confidence !== undefined ? `${(t.entry_confidence * 100).toFixed(0)}%` : '—';
     const title = `Entry: ${t.entry_reason || 'unknown'}\nExit: ${t.exit_reason} — click to view full market detail`;
     const et = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
@@ -31,7 +58,7 @@ function renderHistoryTrades() {
     // extremely wide, plus "YES"/"NO" alone not saying who/what it means).
     const ctx = marketContext(t.ticker, t.side);
     const subLine = ctx.positionMeans
-      ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Betting: ${esc(ctx.positionMeans)}</div>` : '';
+      ? `<div style="font-size:10px; color:${onTintColor('var(--muted)')}; margin-top:2px;">Betting: ${esc(ctx.positionMeans)}</div>` : '';
     // Side-aware unit cost, not raw yes-price (2026-08-17 direct report:
     // "wins are showing up as losses (0c exit when the result is 100c)").
     // entry_price/exit_price are always stored in the yes-price convention
@@ -48,7 +75,7 @@ function renderHistoryTrades() {
     const entryUnitCost = t.entry_price !== null && t.entry_price !== undefined
       ? sideAdjustedPrice(t.side, t.entry_price) : null;
     const exitUnitCost = sideAdjustedPrice(t.side, t.exit_price);
-    return `<tr title="${esc(title)}" style="cursor:pointer;" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
+    return `<tr title="${esc(title)}" style="cursor:pointer;${rowBg}" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(et)}')">
       <td>${esc(label.short)}${subLine}</td>
       <td><span class="side-tag ${t.side}">${esc(t.side)}</span></td>
       <td>${t.size.toLocaleString()}</td>
@@ -56,12 +83,13 @@ function renderHistoryTrades() {
       <td>${(exitUnitCost * 100).toFixed(0)}¢</td>
       <td>${t.cost_basis !== null && t.cost_basis !== undefined ? fmt(t.cost_basis) : '—'}</td>
       <td>${fmt(t.cash_back ?? 0)}</td>
-      <td style="color:var(--muted);">${fmt(t.fees_paid ?? 0)}</td>
+      <td style="color:${onTintColor('var(--muted)')};">${fmt(t.fees_paid ?? 0)}</td>
       <td>${esc(closeTypeLabel)}</td>
       <td>${historyDurationHTML(t.hold_sec)}</td>
       <td>${conf}</td>
       <td style="color:${pnlColor}">${pnl !== null ? fmt(pnl) : '—'}</td>
       <td>${t.left_on_table ? fmt(t.left_on_table) : '—'}</td>
+      <td>${marketResultCell}</td>
     </tr>`;
   }).join('');
 
@@ -84,6 +112,7 @@ function renderHistoryTrades() {
       <th title="Real Kalshi taker fees, both legs combined - already netted into Realized P&amp;L, shown separately here so the fee drag is visible on its own">Fees</th>
       <th>Closed By</th><th>Held</th><th title="Whale confidence at entry">Entry Conf.</th>
       <th>Realized P&amp;L</th><th title="Hypothetical: size*(1-exit price) for yes / size*exit price for no - what a full $1 win would have paid beyond what this early exit actually banked">Left on Table</th>
+      <th title="The market's real settled result vs. the side this position held - useful for judging an early exit in hindsight">Market Settled</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>` + pager;

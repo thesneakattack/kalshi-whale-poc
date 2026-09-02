@@ -19,29 +19,71 @@ function renderTrades(trades, prices) {
     return;
   }
   if (!isAdvanced('trade-log')) {
-    el.innerHTML = lastTradeLog.map(t => {
+    // Same P&L-magnitude row-tint gradient and market-settlement signal as
+    // the Advanced table (renderTradeLogTable below) - direct report,
+    // 2026-09-02: this Simple view is the default (isAdvanced defaults to
+    // false until a viewer clicks the toggle), and the gradient had shipped
+    // only in the Advanced table, so the default view a viewer actually
+    // sees never showed it. Same constants/contrast-safe design already
+    // reviewed and fixed there (PR #421) - ported here, not reinvented.
+    const ROW_TINT_MIN_ALPHA = 0.06;
+    const ROW_TINT_MAX_ALPHA = 0.40;
+    const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
+    const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+    const withPnl = lastTradeLog.map(t => {
+      const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
+      // Same close-vs-open P&L source as renderTradeLogTable: a close row's
+      // realized_pnl (server-side, main.py's _enrich_recent_trades) is the
+      // real number; an open row is marked to market against the latest
+      // price, direction-aware (a "no" position gains when price falls).
+      let pnl;
+      if (isClose) {
+        pnl = t.realized_pnl ?? 0;
+      } else {
+        const current = lastTradeLogPrices[t.ticker] ?? t.price;
+        const direction = t.side === 'yes' ? 1 : -1;
+        pnl = direction * (current - t.price) * t.size;
+      }
+      return { t, isClose, pnl };
+    });
+    const maxAbsPnl = Math.max(1, ...withPnl.map(r => Math.abs(r.pnl)));
+    el.innerHTML = withPnl.map(({ t, isClose, pnl }) => {
       const label = marketLabel(t.ticker);
       const when = new Date(t.timestamp * 1000).toLocaleTimeString();
       const tEt = (marketTitles[t.ticker] && marketTitles[t.ticker].event_ticker) || '';
+      const tintRgb = pnl > 0 ? ROW_TINT_YES_RGB : pnl < 0 ? ROW_TINT_NO_RGB : null;
+      const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(pnl) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
+      const rowBg = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
+      const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
       // A close trade (t.close_type set server-side - see main.py's
       // _enrich_recent_trades) gets its real result shown, not the entry-
       // style cost/payout framing that made every closed position look
       // identical to a still-open one (real bug, direct report 2026-08-10:
       // "not seeing the results of the positions in the trade log").
-      const isClose = t.close_type !== undefined && t.close_type !== null && t.close_type !== '';
       const resultHtml = isClose
-        ? `<span style="color:${t.won ? 'var(--yes)' : 'var(--no)'}; font-weight:600;">${t.won ? '✅ Won' : '❌ Lost'} ${fmt(t.realized_pnl ?? 0)}</span>
-           <span style="color:var(--muted); font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
+        ? `<span style="color:${onTintColor(t.won ? 'var(--yes)' : 'var(--no)')}; font-weight:600;">${t.won ? '✅ Won' : '❌ Lost'} ${fmt(t.realized_pnl ?? 0)}</span>
+           <span style="color:${onTintColor('var(--muted)')}; font-size:11px;">${esc(HISTORY_CLOSE_TYPE_LABELS[t.close_type] || t.close_type)}</span>`
         : `${costHTML(t.size, sideAdjustedPrice(t.side, t.price))} ${payoutHTML(t.size)}`;
+      // The market's real settled result vs. this position's own side -
+      // same "useful for judging an early exit in hindsight" field as the
+      // Advanced table's Market Settled column (services/market_history.py's
+      // outcomes table). Only shown for a closed trade - an open position
+      // has nothing to compare yet.
+      const marketResultHtml = isClose
+        ? (t.market_result
+          ? ` <span style="color:${onTintColor(t.market_result === t.side ? 'var(--yes)' : 'var(--no)')}; font-size:11px;" title="Market settled ${esc(t.market_result.toUpperCase())} — this position held ${esc(String(t.side).toUpperCase())}">market: ${esc(t.market_result.toUpperCase())} ${t.market_result === t.side ? '✓' : '✗'}</span>`
+          : ` <span style="color:${onTintColor('var(--muted)')}; font-size:11px;">market: pending</span>`)
+        : '';
       return `
-      <div class="trade-row" style="cursor:pointer;" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
+      <div class="trade-row${tintRgb ? ' tinted' : ''}" style="cursor:pointer;${rowBg}" title="${esc(label.full)} — click to view full market detail" onclick="openMarketDetail('${esc(t.ticker)}', '${esc(tEt)}')">
         <div class="name">${esc(label.short)} <span class="side-tag ${t.side}">${t.side}</span>
           ${contextLineHTML(t.ticker, t.side)}
         </div>
         <div class="nums">
           <span title="Contracts filled at this price">${t.size.toLocaleString()} contracts @ ${(t.price*100).toFixed(0)}¢ fill price</span>
-          <span style="color: var(--muted)">${when}</span>
+          <span style="color: ${onTintColor('var(--muted)')}">${when}</span>
           ${resultHtml}
+          ${marketResultHtml}
         </div>
       </div>`;
     }).join('');
