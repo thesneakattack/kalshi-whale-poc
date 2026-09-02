@@ -1,13 +1,43 @@
 # Next action
 
-**Root-cause and fix issue #410's tick_executor pool starvation - now
-MEASURED, not just predicted** (`analytics/routes.py`'s
-`get_candidate_log_summary` and `whale_calibration/routes.py`'s
-`get_confidence_calibration_report`, both `await tick_executor.run(...)`,
-confirmed against current source at `analytics/routes.py:103` and
-`whale_calibration/routes.py:117`). During PR #414's own required Task 5
-live-validation window (2026-09-01, 16 min, real WS traffic, no synthetic
-load), real browser traffic (nginx access log, client `172.18.0.2` via
+**Start the brainstorming/design cycle from tonight's comprehensive
+architecture audit** (`docs/superpowers/research/2026-09-02-architecture-
+audit-and-rewrite-considerations.md`, PR #430 + follow-up PR #431 —
+`phase:research`, full self-review + independent adversarial review +
+consolidation cycle at both the artifact stage and the PR stage, both GO).
+Direct request, overnight/autonomous session: audit DRY, hand-rolled-vs-
+framework tradeoffs, frontend framework choice, SQLite fitness, trade-
+critical/app-facing decoupling, polling load, comparison against real
+auto-trading systems, an audit of predictionmarketspicks.com's tooling,
+and whether the strategy should target edge/mispricing/confidence/size.
+**Verdict: no full rewrite needed** — every measured defect is localized
+and individually fixable. §13 gives a full prioritized action plan; Tier 1
+(do first, days not weeks): (1) stop polling `/api/quality/summary` and
+the two `tick_executor` routes on their fixed 6s dashboard timers — this
+absorbs and supersedes issue #410's original next-action item below with
+far deeper, corrected live measurement (§2, §4 of the audit); (2) fix 3
+real safety-adjacent DRY bugs found: the unsupervised auto-apply path
+silently skipping human-declined suggestions, `RiskManager` missing a
+zero-bankroll guard `ShadowTrader` already has, and duplicated table DDL
+against live multi-GB `.db` files; (3) a newly-found, previously-
+unreported data-plane defect from the audit's own adversarial review: 237
+`error`-severity `raw_trades` `flush` faults in the last 24h that **drop
+rows outright**, not just contend for a lock — root-cause via
+`superpowers:systematic-debugging` before any DuckDB migration. §14 lists
+several other open design questions this audit deliberately left for a
+human call, including one raised by a same-day, unrelated PR (#429, which
+removed CLAUDE.md's "one SQLite file per concern" mandate): does that
+change what §5's SQLite-fitness recommendations should be?
+
+**Issue #410's original next-action text (superseded in measurement depth
+by the audit above, not yet fixed in code)**: tick_executor pool
+starvation (`analytics/routes.py`'s `get_candidate_log_summary` and
+`whale_calibration/routes.py`'s `get_confidence_calibration_report`, both
+`await tick_executor.run(...)`, confirmed against current source at
+`analytics/routes.py:103` and `whale_calibration/routes.py:117`). During
+PR #414's own required Task 5 live-validation window (2026-09-01, 16 min,
+real WS traffic, no synthetic load), real browser traffic (nginx access
+log, client `172.18.0.2` via
 `autotrade.webfoundry.dev`) hit **9 upstream timeouts each** on
 `/api/confidence-calibration/report` and `/api/candidate-log/summary` in a
 ~4-minute window, correlated with `last_tick_duration_sec` spiking to
@@ -103,6 +133,25 @@ are in `docs/open-decisions.md`'s newest lines.
 is needed for pre-existing root-owned leftovers in other worktrees (see
 below) — `ddev exec -s fastapi` can no longer force through them now that
 it runs as the host user.
+
+## Recently resolved (2026-09-02, overnight autonomous audit session)
+
+- **Comprehensive architecture audit completed and merged** (PR #430 +
+  follow-up PR #431, `docs/superpowers/research/2026-09-02-architecture-
+  audit-and-rewrite-considerations.md` + companion consolidation doc).
+  Direct overnight request: audit whether the app has "gone off the
+  rails" architecturally — see the "Next action" section above for the
+  headline finding and top priorities. Built from a 15-minute live
+  diagnostic monitor, four parallel research agents, and this session's
+  own live probing; full self-review + independent adversarial review +
+  consolidation cycle at both the artifact stage (caught a misattributed
+  fault-file finding that also missed a real, previously-unreported
+  `raw_trades` row-dropping defect, plus several other corrections) and
+  the PR stage (GO, no fabricated fixes found). Unrelated to and not
+  overlapping with the same-day PR #429 (a separate cloud session, real
+  user-authored change removing 2 CLAUDE.md rules) — noted and accounted
+  for in the audit doc's post-merge addendum, since a few of its findings
+  cited those rules by name.
 
 ## Recently resolved (2026-09-02, this session)
 
