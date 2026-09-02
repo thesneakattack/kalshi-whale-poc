@@ -75,6 +75,15 @@ async def get_trading_history(limit: int = 50, offset: int = 0):
 
     newest_first = list(reversed(all_rows))
     page = newest_first[offset:offset + limit]
+    # Same market_result enrichment as /api/state's recent_trades
+    # (services/state_view.py's _enrich_recent_trades) - the market's real
+    # settled result vs. this row's own close_type/won framing, useful for
+    # judging an early exit in hindsight. Only the returned page, not the
+    # full (potentially unbounded) history - matches the same bounded-set
+    # bulk-lookup scale this function is already used at.
+    market_results = market_history.outcomes_for_tickers([r["ticker"] for r in page])
+    for r in page:
+        r["market_result"] = market_results.get(r["ticker"])
     return {
         "trades": page,
         "total": len(all_rows),

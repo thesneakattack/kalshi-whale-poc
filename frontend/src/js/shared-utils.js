@@ -119,6 +119,64 @@ function sideAdjustedPrice(side, price) {
   return side === 'no' ? (1 - price) : price;
 }
 
+// P&L-magnitude row-tint gradient, shared by every trade-row renderer
+// (trade-log-and-real.js's Advanced table + Simple view, equity-and-
+// cards.js's History tab). Extracted 2026-09-02 (direct request: "the
+// gradient solution should be scripted") - previously the same alpha
+// formula and constants were copy-pasted three times, which is exactly
+// how the row-tint's real contrast bug (PR #421: --muted/--yes/--no text
+// losing contrast against a same-hue tint) could silently reappear in a
+// fourth copy that forgot the onTintColor() override. One definition now.
+//
+// maxAbsPnl is the caller's own per-render-batch scale (typically
+// Math.max(1, ...rows.map(r => Math.abs(r.pnl)))) - kept as a parameter
+// rather than computed here since each caller's row shape/field name
+// differs (raw trade dicts vs. enriched row objects), so there's no one
+// array this function could reach into on its own.
+//
+// Cap chosen so --text stays readable on top of it even at the cap (WCAG
+// contrast checked directly against this app's real panel/text/yes/no
+// colors: 0.40 alpha still holds ~5.9:1 on --yes and ~7.5:1 on --no, both
+// past the 4.5:1 AA floor) - see PR #421/#422 for the full verification,
+// including the follow-up fix once contrast was checked against every
+// color actually rendered on a tinted row, not just --text.
+const ROW_TINT_MIN_ALPHA = 0.06;
+const ROW_TINT_MAX_ALPHA = 0.40;
+const ROW_TINT_YES_RGB = '45,212,191';  // --yes, #2DD4BF
+const ROW_TINT_NO_RGB = '249,112,102';  // --no, #F97066
+
+function pnlRowTint(pnl, maxAbsPnl) {
+  const p = pnl || 0;
+  const tintRgb = p > 0 ? ROW_TINT_YES_RGB : p < 0 ? ROW_TINT_NO_RGB : null;
+  const tintAlpha = ROW_TINT_MIN_ALPHA + Math.min(1, Math.abs(p) / maxAbsPnl) * (ROW_TINT_MAX_ALPHA - ROW_TINT_MIN_ALPHA);
+  const style = tintRgb ? `background:rgba(${tintRgb},${tintAlpha.toFixed(3)});` : '';
+  // Every cell that would otherwise render in --yes/--no/--muted on a
+  // tinted row switches to plain --text instead - the row background
+  // already carries the win/loss + magnitude signal, so a second color
+  // encoding on top of it is both redundant and (past a certain alpha,
+  // confirmed by direct contrast measurement) unsafe.
+  const onTintColor = (semanticColor) => tintRgb ? 'var(--text)' : semanticColor;
+  return { style, onTintColor, tinted: !!tintRgb };
+}
+
+// The market's real settled result vs. the side a position held - same
+// field across all three trade-row renderers (services/market_history.py's
+// outcomes table), useful for judging an early exit (stop-loss, take-
+// profit, sentiment reversal, ...) in hindsight against what the market
+// actually went on to resolve as. prefix/fontSize let a caller match its
+// own row's density (the Simple view's card rows want a "market: " label
+// and a smaller font that the two table views don't).
+function marketResultBadgeHTML(marketResult, side, onTintColor, opts) {
+  opts = opts || {};
+  const prefix = opts.prefix || '';
+  const fontSize = opts.fontSize ? ` font-size:${opts.fontSize};` : '';
+  if (!marketResult) {
+    return `<span style="color:${onTintColor('var(--muted)')};${fontSize}">${prefix}pending</span>`;
+  }
+  const matches = marketResult === side;
+  return `<span style="color:${onTintColor(matches ? 'var(--yes)' : 'var(--no)')};${fontSize}" title="Market settled ${esc(marketResult.toUpperCase())} — this position held ${esc(String(side).toUpperCase())}">${prefix}${esc(marketResult.toUpperCase())} ${matches ? '✓' : '✗'}</span>`;
+}
+
 // Shared Simple/Advanced toggle — see ROADMAP.md Phase 0.5. panelId is a
 // short stable key per panel (e.g. "positions", "orderbook-<ticker>"), not
 // tied to which tab it's on, so the choice persists independently per panel.
@@ -652,7 +710,7 @@ function renderMarkets(markets, prices) {
 // are visible or their order, and forcing a "smooth" diff onto that would
 // just be wrong, not smoother.
 
-export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sideAdjustedPrice, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
+export { $, _setAccountMode, accountMode, advToggleHTML, applyMarketPanelFilters, baselinePrices, comboLegsHTML, compactLiveValue, contextLineHTML, costHTML, cryptoLiveSummary, esc, eventLiveData, eventLiveDataForTicker, eventLiveDataLineHTML, eventLiveDataSummary, eventTitles, fetchJSON, fmt, formatConfigValue, formatTitle, formatTsMs, genericLiveSummary, isAdvanced, isLive, liveBadgeHTML, marketContext, marketLabel, marketPanelFilters, marketPanelState, marketResultBadgeHTML, marketRowHTML, marketTaxonomyHTML, marketTitles, parseConfidence, payoutHTML, pnlRowTint, priceChangeHTML, renderMarketCategorySuggestions, renderMarketPanelFilters, renderMarkets, rerenderMarketPanel, seriesLabel, seriesOf, sideAdjustedPrice, sortHeaderHTML, sortRows, sportsLiveSummary, toggleAdvanced, toggleSort, uniqueSorted, weatherLiveSummary };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
