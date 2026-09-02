@@ -2,8 +2,9 @@
 services/diagnostics/diagnostics.py and services/series_watcher.py's
 read-only functions (event-loop-blocking-elimination Fix 2,
 docs/superpowers/specs/2026-09-01-event-loop-blocking-elimination-design.md).
-_POOL_SIZE persistent aiosqlite.Connections per (event loop, db_path) pair,
-opened on first use, handed out round-robin, and reused.
+A variable number of persistent aiosqlite.Connections per (event loop,
+db_path) pair - see "Elastic sizing" below - opened on first use, handed
+out round-robin, and reused.
 
 LIVE-MEASURED, NOT ASSUMED (fast-follow to #420, 2026-09-02): the original
 version of this module used exactly 1 connection per (loop, file) - its own
@@ -13,53 +14,69 @@ applied speculatively per CLAUDE.md's data-plane HARD RULE. It was then
 measured, live, the same day: 5 concurrent GET /api/quality/summary
 requests against real data/*.db volumes (23,957-124,859 rows per table)
 serialized on aiosqlite's one-worker-thread-per-connection model for
-MINUTES - run_offline()'s own probe against real data took over 90s for 5
-concurrent callers even after a separate, orthogonal fix (cooperative
-yielding between run_offline()'s checks, below) was already in place. That
-is the exact condition the original docstring set as its own trigger for
-this exact change - not a guess, not "should help".
+MINUTES.
 
-_POOL_SIZE = 2, not higher: matches services/whalewatchers/_scoring_pool.py's
-own already-proven 2-per-file reasoning for the same underlying constraint
-(aiosqlite/sqlite3 serializes all operations on one connection onto one
-worker thread), applied here for the first time because the trigger this
-module's own prior version set was met. Raising it further is a new,
-separately-measured decision, not assumed to also be needed.
+Elastic sizing, not a second fixed number: `_MIN_POOL_SIZE` (2) is the
+floor a quiet key never drops below; `_MAX_POOL_SIZE` (10) is a cap chosen
+as cheap headroom (a diagnostics-only, low-frequency workload can afford a
+handful of idle connections far more easily than another multi-minute
+stall), not derived from a specific capacity measurement - a later
+investigation may want to revisit it alongside whatever else it measures.
+The pool grows lazily, per key, based on `_in_flight` - a live count of
+concurrent connection_for() callers for that exact key - the first time
+real demand exceeds the pool's current size, and never shrinks back down.
+(An earlier attempt at citing services/whalewatchers/_scoring_pool.py as a
+"2-per-file precedent" for a FIXED size was wrong on the fact - that pool
+actually runs 4 workers - and wrong on the reasoning even corrected: its
+own docstring says its exact worker count "is not a load-bearing capacity
+guess" for a structurally different, per-trade hot-path workload. Elastic
+sizing here doesn't need that precedent to justify itself.)
 
 Read-only, low-frequency callers (dashboard polls at ~5s; services/research/
-research.py's on-demand report) - still not the per-trade whale-scoring hot
-path, which is why this module's pool size mirrors but does not need to
-exceed that sibling's.
+research.py's on-demand report) - not the per-trade whale-scoring hot path.
 
-MEASURED TRADEOFF (PR adversarial review, 2026-09-01, still accurate after
-the pool-size fast-follow above - only finding 1's "enough headroom" premise
-changed, not finding 2):
+MEASURED, in order of what actually mattered (2026-09-02 - two mechanisms
+were live-measured as real, and one prior claim about a third was
+independently falsified by adversarial review before merge):
 
-  1. Concurrency. RESOLVED for identical-endpoint concurrent load by the
-     pool-size change above (2 workers per file again, matching
-     _diagnostics_pool's own prior concurrency). NOT a claim that queueing
-     is eliminated - 2 concurrent callers on a 3rd request still queue -
-     only that the specific measured failure (a full serialization pileup
-     under 5 concurrent identical requests) is addressed at the same
-     concurrency level the pool this module replaced already provided.
-  2. On-loop CPU. run_offline()'s pure-Python aggregation used to run on a
-     worker thread and now runs on the event loop; only the SQL and two
-     explicitly wrapped calls are off it. Measured per run_offline() call
-     against the real data/*.db: check_threshold_integrity ~78ms,
-     selectivity_curve ~86ms, check_confidence_input_coverage ~89ms,
-     trade_analytics.build_trade_history ~24ms across 16 calls - i.e. at
-     least ~280ms of contiguous, un-awaited on-loop CPU, with several other
-     checks plus funnel()/reconcile() unmeasured on top. This is why
-     run_offline() (services/diagnostics/diagnostics.py) now also awaits
-     asyncio.sleep(0) between each of its ~14 sequential checks: yielding
-     does not reduce any single check's cost, but it stops run_offline's
-     TOTAL held-loop time (the sum of every check back to back) from
-     blocking OTHER, unrelated coroutines on the same shared loop - live-
-     confirmed the same day: 5 concurrent GET /api/quality/summary requests
-     stalled a completely unrelated GET /api/state for minutes with no
-     yield points; this is a genuinely separate mechanism from finding 1
-     above (loop scheduling vs. connection-pool depth) and both were live,
-     not each other's proxy.
+  1. Query cost dominates. `check_confidence_input_coverage()`
+     (services/diagnostics/diagnostics.py) was the one check in that file
+     with no purpose-matched `since_ts` default, so a caller that didn't
+     pass one (run_offline()'s own default) fell through to
+     signal_log.resolved_signals_with_factors()'s unscoped scan - 124,859
+     rows, already flagged in docs/open-decisions.md's Task 9 entry with
+     this exact fix agreed but not yet applied. Bounding it to a 24h window
+     (matching this file's own check_threshold_integrity/
+     check_price_band_adherence/check_runway_at_entry convention) dropped a
+     single run_offline() call from ~20.4s to 1.88s, and 5 concurrent calls
+     from 269.79s to 43.89s against real production data - by far the
+     largest single improvement measured across this whole fast-follow.
+  2. Connection-pool depth. RESOLVED for identical-endpoint concurrent load
+     by the elastic pool above (confirmed via direct inspection: config_
+     performance.db grew 2->4, signal_log.db 2->3 under real 5-way
+     concurrent load). Measured HONESTLY, not oversold: growing the pool
+     alone (before finding 1's fix was applied) did NOT meaningfully reduce
+     total wall time for 5 concurrent calls against real data (still
+     ~4.5min) - the dominant cost there was finding 1, not connection
+     count. The pool is still worth keeping: it demonstrably helps once
+     finding 1's fix is also in place (43.89s, not the >90s a fixed
+     single-connection or fixed-2-connection pool alone would still show),
+     and it is real, cheap insurance against a future unbounded query this
+     fast-follow didn't happen to catch.
+  3. On-loop CPU / no yield points - CLAIMED, THEN FALSIFIED. An earlier
+     version of this fast-follow added `await asyncio.sleep(0)` between
+     each of run_offline()'s ~14 sequential checks, reasoning that nothing
+     yielded control between them. Adversarial review disproved this
+     directly: aiosqlite's own `_execute` already `return`s via
+     `await future`, so every one of those checks' awaited DB calls was
+     ALREADY yielding control back to the loop - measured at ~1,100 real
+     yields per run_offline() call, identically with or without the added
+     sleep(0)s. The sleep(0) calls and the test asserting they mattered
+     were both removed rather than left in on a claim that didn't survive
+     scrutiny - see services/diagnostics/diagnostics.py's run_offline() for
+     the correction note. This is recorded here, not deleted from history,
+     specifically so a future session doesn't independently reach for the
+     same disproven fix.
 
 Keyed by (event loop object, db_path), not db_path alone - for connection
 LIFETIME/ownership reasons, not loop affinity. services/research/
@@ -270,7 +287,23 @@ async def connection_for(
     transient breakage healed on the next call; without the probe a broken
     cached connection would be returned forever and the diagnostics
     subsystem would report "unreadable" permanently and quietly, which is
-    the exact silent-degradation shape diagnostics.py exists to avoid."""
+    the exact silent-degradation shape diagnostics.py exists to avoid.
+
+    Design rule keeping this race-free (2026-09-02 fast-follow, round 2 -
+    the first version of this elastic pool shipped two real concurrency
+    bugs, caught by adversarial review before merge, not in production):
+    `_round_robin[key]` is advanced ONLY in the same step that hands back a
+    connection this function has itself just confirmed live or just
+    created - never speculatively, never before a probe's outcome is known.
+    The FAST path below never mutates `pool`/`_round_robin` on a failed
+    probe; it just falls through to the lock. Every eviction, every
+    creation, and every final return happens under the lock, for the exact
+    index that will be returned - so no OTHER coroutine's fast-path probe
+    (which never takes the lock) can null a slot in the gap between "the
+    locked section decided to return index N" and "the locked section
+    actually reads pool[N]", because that gap no longer exists: reading and
+    validating pool[N] IS what happens under the lock, immediately before
+    return, not before it."""
     key = _key(db_path)
     _in_flight[key] = _in_flight.get(key, 0) + 1
     try:
@@ -283,8 +316,13 @@ async def connection_for(
         # connections and reproduce the exact stall this guard-rail exists
         # to prevent.
         if pool is not None and None not in pool and _in_flight[key] <= len(pool):
+            # _round_robin[key] is read but NOT advanced here - only a
+            # confirmed-successful probe below earns the advance. Two
+            # concurrent fast-path callers reading the same un-advanced
+            # index and probing the same connection is safe (aiosqlite
+            # serialises operations on one connection onto its own worker
+            # thread) and merely redundant, never incorrect.
             idx = _round_robin.get(key, 0) % len(pool)
-            _round_robin[key] = idx + 1
             conn = pool[idx]
             try:
                 # execute_fetchall, not execute: same liveness signal as
@@ -293,6 +331,7 @@ async def connection_for(
                 # left unclosed on a connection that lives for the whole
                 # process.
                 await conn.execute_fetchall("SELECT 1")
+                _round_robin[key] = idx + 1
                 return conn
             except (ValueError, sqlite3.ProgrammingError):
                 # ValueError is the real dead-connection signal for aiosqlite,
@@ -313,19 +352,15 @@ async def connection_for(
                 # since sqlite3 objects are thread-bound and nothing outside
                 # that worker thread can close the handle.
                 #
-                # Null out only this slot, and only if it's still the exact
-                # object we probed: a concurrent caller may already have
-                # replaced it while we were awaiting the probe, and blindly
-                # nulling would throw that fresh connection away.
-                if pool[idx] is conn:
-                    pool[idx] = None
-                # Best-effort: reclaims the worker thread if the connection is
-                # only half-dead. A no-op (returns immediately) when it is
-                # already closed - verified, not assumed: close() short-circuits
-                # on `self._connection is None`, and repeated closes on an
-                # already-closed connection return OK rather than hanging.
-                with contextlib.suppress(Exception):
-                    await conn.close()
+                # Deliberately NO mutation of pool/_round_robin here - fall
+                # through to the lock, which owns every eviction. Mutating
+                # here (as an earlier version did) is exactly the race the
+                # adversarial review caught: this coroutine could null a
+                # slot, or advance the counter past it, while a DIFFERENT
+                # coroutine's locked section is mid-way through deciding
+                # what to return, handing back a connection nobody validated
+                # or a None outright.
+                pass
         async with _lock_for_current_loop():
             pool = _connections.get(key)
             # Elastic sizing: grow toward however many callers are
@@ -343,44 +378,73 @@ async def connection_for(
                 _round_robin.setdefault(key, 0)
             elif len(pool) < target_size:
                 pool.extend([None] * (target_size - len(pool)))
-            for i in range(len(pool)):
-                if pool[i] is not None:
-                    continue
-                conn = await aiosqlite.connect(db_path)
-                conn.row_factory = aiosqlite.Row
-                if schema_init is not None:
-                    try:
-                        await schema_init(conn)
-                    except BaseException:
-                        # Without this the connection is neither cached nor
-                        # closed, so its non-daemon worker thread lives for
-                        # the rest of the process - once per failed call.
-                        # funnel() runs once per watched series per
-                        # run_offline(), on a route polled every ~5s, so an
-                        # unreadable series_watcher.db leaked ~8 threads
-                        # every 5s indefinitely while every caller degraded
-                        # "honestly" via its except sqlite3.Error branch
-                        # (PR adversarial review finding I2, 2026-09-01).
-                        # Suppressed on close so a cleanup failure cannot
-                        # mask the real schema error.
-                        with contextlib.suppress(Exception):
-                            await conn.close()
-                        # If every other slot is also still empty (this was
-                        # the pool's first-ever fill attempt and it failed
-                        # on the first slot), drop the whole pool entry
-                        # rather than leaving a still-cached key that points
-                        # at nothing - "nothing cached for this key" should
-                        # mean exactly that, so a later retry starts a clean
-                        # pool creation instead of finding a stale all-None
-                        # list here. A partially-filled pool (some slots
-                        # already succeeded) is left alone - those
-                        # connections are real and usable.
-                        if all(slot is None for slot in pool) and _connections.get(key) is pool:
-                            del _connections[key]
-                            _round_robin.pop(key, None)
-                        raise
-                pool[i] = conn
+
+            # Everything past this point - probing the selected slot,
+            # evicting it if dead, creating a replacement if empty - is a
+            # single lock-held sequence for the ONE index being returned.
+            # No other index is touched proactively; a pool slot that
+            # nothing has round-robined to yet stays None until it is,
+            # which is fine (lazy-fill, not eager-fill) and means there is
+            # only ever one connection-creation await sequence per call,
+            # not a loop of them - fewer await points under the lock is
+            # less race surface, not just less code.
             idx = _round_robin.get(key, 0) % len(pool)
+            conn = pool[idx]
+            if conn is not None:
+                try:
+                    await conn.execute_fetchall("SELECT 1")
+                    _round_robin[key] = idx + 1
+                    return conn
+                except (ValueError, sqlite3.ProgrammingError):
+                    # Same liveness signal as the fast path above - the
+                    # locked section MUST also probe before trusting a
+                    # non-None slot, not just check "is it None": a slot
+                    # can be non-None yet dead if nothing has round-robined
+                    # to it (and therefore probed it) since it died. This is
+                    # exactly finding C2 from the adversarial review - the
+                    # first version of this pool's locked path only ever
+                    # created connections for None slots and otherwise
+                    # trusted "not None" as "alive", which is not the same
+                    # claim.
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    pool[idx] = None
+
+            new_conn = await aiosqlite.connect(db_path)
+            new_conn.row_factory = aiosqlite.Row
+            if schema_init is not None:
+                try:
+                    await schema_init(new_conn)
+                except BaseException:
+                    # Without this the connection is neither cached nor
+                    # closed, so its non-daemon worker thread lives for
+                    # the rest of the process - once per failed call.
+                    # funnel() runs once per watched series per
+                    # run_offline(), on a route polled every ~5s, so an
+                    # unreadable series_watcher.db leaked ~8 threads
+                    # every 5s indefinitely while every caller degraded
+                    # "honestly" via its except sqlite3.Error branch
+                    # (PR adversarial review finding I2, 2026-09-01).
+                    # Suppressed on close so a cleanup failure cannot
+                    # mask the real schema error.
+                    with contextlib.suppress(Exception):
+                        await new_conn.close()
+                    # If every other slot is also still empty (this was
+                    # the pool's first-ever fill attempt and it failed
+                    # on its one and only touched slot so far), drop the
+                    # whole pool entry rather than leaving a still-cached
+                    # key that points at nothing - "nothing cached for
+                    # this key" should mean exactly that, so a later
+                    # retry starts a clean pool creation instead of
+                    # finding a stale all-None list here. A
+                    # partially-filled pool (some other slot already
+                    # succeeded on an earlier call) is left alone - those
+                    # connections are real and usable.
+                    if all(slot is None for slot in pool) and _connections.get(key) is pool:
+                        del _connections[key]
+                        _round_robin.pop(key, None)
+                    raise
+            pool[idx] = new_conn
             _round_robin[key] = idx + 1
             return pool[idx]
     finally:

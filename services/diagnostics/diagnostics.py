@@ -767,40 +767,35 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
 
     now_ts = now if now is not None else time.time()
     hours = (now_ts - since_ts) / 3600 if since_ts is not None else 24.0
-    # await asyncio.sleep(0) after every check below is a deliberate
-    # cooperative-yield point, not incidental: each check's own aggregation
-    # runs synchronously on the event loop once its aiosqlite I/O returns
-    # (measured ~80-90ms/check in isolation, PR #420's own adversarial
-    # review finding I4) - with no yield between checks, run_offline's own
-    # total held-loop time is the SUM of every check's CPU time back-to-back
-    # (5-25s+ observed live under concurrent load), during which every other
-    # request sharing this same event loop - including completely unrelated
-    # ones like GET /api/state - is blocked. Yielding here doesn't reduce
-    # any single check's cost; it breaks the total into per-check slices so
-    # another pending coroutine gets a scheduling turn between them, instead
-    # of only after the entire sequence finishes. Fast-follow to #420,
-    # confirmed live: 5 concurrent GET /api/quality/summary requests stalled
-    # unrelated /api/state/pipeline requests for minutes.
+    # NOTE (2026-09-02): an earlier fast-follow added `await asyncio.sleep(0)`
+    # between each check below, reasoning that run_offline() held the event
+    # loop continuously across its ~14 sequential checks with no yield point.
+    # That premise was FALSIFIED by adversarial review: aiosqlite's own
+    # `_execute` already `return`s via `await future`, so every one of the
+    # awaited calls in this function already yields control back to the loop
+    # - measured at ~1,100 real yields per run_offline() call, with or
+    # without the added sleep(0)s. The sleep(0) calls were removed as
+    # non-load-bearing rather than left in on a claim that didn't hold up;
+    # the actual fix for the live incident this fast-follow responds to (5
+    # concurrent GET /api/quality/summary requests stalling an unrelated
+    # GET /api/state) was the elastic connection pool (_aio_db.py) and
+    # bounding check_confidence_input_coverage's previously-unscoped query
+    # (both still in this branch) - see docs/open-decisions.md's Task 9
+    # entry and this file's _aio_db.py module docstring for what was
+    # actually measured.
     checks = [await check_threshold_integrity(cfg, since_ts, now)]
-    await asyncio.sleep(0)
     checks.append(await check_price_band_adherence(cfg, since_ts, now))
-    await asyncio.sleep(0)
     checks.append(await check_runway_at_entry(cfg, since_ts, now))
-    await asyncio.sleep(0)
     checks.append(check_config_bounds(cfg))  # unchanged - no DB access, stays sync
     checks.append(await performance_by_epoch(since_ts, now))
-    await asyncio.sleep(0)
     checks.append(await selectivity_curve(since_ts=since_ts, now=now))
-    await asyncio.sleep(0)
     checks.append(await check_confidence_input_coverage(cfg, since_ts, now))
-    await asyncio.sleep(0)
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by
     # construction: a blended number across every series answers nobody's
     # question about a specific one.
     for series in series_watcher.watched_series(cfg):
         checks.append(await series_watcher.check_series_funnel(cfg, series, hours=hours, now=now_ts))
-        await asyncio.sleep(0)
     worst = _OK
     for c in checks:
         if c.status == _FAIL:

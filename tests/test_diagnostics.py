@@ -298,48 +298,6 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
     }
 
 
-def test_run_offline_yields_between_checks_instead_of_holding_the_loop(dbs):
-    """Fast-follow to event-loop-blocking-fix2-diagnostics-widening (#420):
-    that PR moved run_offline()'s checks off _diagnostics_pool's dedicated
-    thread onto the event loop natively, which its own adversarial review
-    flagged (finding I4) as moving measured pure-Python aggregation time
-    onto the loop, unmeasured under concurrency. Live-confirmed the same
-    day: 5 concurrent GET /api/quality/summary requests stalled a
-    completely unrelated GET /api/state for minutes, because nothing
-    yielded control between run_offline()'s ~14 sequential awaited checks,
-    so its entire duration was one unbroken turn on the shared loop.
-
-    This asserts the actual cooperative property, not just "run_offline
-    still returns the right answer": a concurrently-running heartbeat
-    coroutine must get real scheduling turns WHILE run_offline is in
-    flight, not just before/after it."""
-    now = time.time()
-    _seed_signals([("J-1", "KXA", 5.0, now - 10)])
-
-    async def _race() -> int:
-        ticks = [0]
-
-        async def heartbeat():
-            while True:
-                ticks[0] += 1
-                await asyncio.sleep(0)
-
-        hb = asyncio.create_task(heartbeat())
-        await diagnostics.run_offline(_cfg(), since_ts=now - 3600, now=now)
-        hb.cancel()
-        return ticks[0]
-
-    ticks = asyncio.run(_race())
-    # >=10 is deliberately loose (real hardware speed varies) - the point is
-    # "clearly interleaved", not a magnitude a slow CI runner would flake on.
-    # Pre-fix this was 0 or 1: the heartbeat's own asyncio.sleep(0) never got
-    # a turn until run_offline's whole unbroken sequence finished.
-    assert ticks >= 10, (
-        f"heartbeat only ticked {ticks} times during run_offline() - "
-        "it is holding the event loop instead of yielding between checks"
-    )
-
-
 def test_read_paths_close_their_sqlite_connections(dbs):
     """Regression guard for a real flake root-caused 2026-08-25 (CI-only at
     first, then reproducible): every read helper in diagnostics.py/

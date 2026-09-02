@@ -3,6 +3,7 @@ connection cache services/diagnostics/diagnostics.py and
 services/series_watcher.py's read-only functions share.
 """
 import asyncio
+import contextlib
 import sqlite3
 
 import pytest
@@ -84,6 +85,96 @@ def test_connection_for_grows_the_pool_under_real_concurrent_demand(tmp_path):
         "genuinely concurrent callers - the pool did not grow past its floor"
     )
     assert distinct <= _aio_db._MAX_POOL_SIZE
+    asyncio.run(_aio_db.reset())
+
+
+def test_connection_for_heals_every_dead_slot_not_just_the_first_one_probed(tmp_path):
+    """Regression test for adversarial-review finding C2 (2026-09-02, round
+    1 of this elastic pool): the first version's locked-section fill loop
+    only ever CREATED connections for None slots and otherwise trusted any
+    non-None slot as alive without probing it. Reproduced sequentially,
+    with zero concurrency: fill a 2-slot pool, kill BOTH underlying
+    connections from outside _aio_db (simulating "closed elsewhere",
+    exactly what the liveness probe exists to catch), then confirm the
+    NEXT _MIN_POOL_SIZE calls each return a genuinely live, usable
+    connection - not a dead one that happened to not be the slot most
+    recently round-robined to and probed."""
+    db_path = tmp_path / "t.db"
+
+    async def _run():
+        # Fill exactly _MIN_POOL_SIZE slots (sequential calls never grow
+        # past the floor - see test_connection_for_is_cached_within_the_
+        # same_loop).
+        seeded = [await _aio_db.connection_for(db_path) for _ in range(_aio_db._MIN_POOL_SIZE)]
+        # Kill every one of them directly, bypassing _aio_db entirely - the
+        # exact "closed out from under us elsewhere" scenario the liveness
+        # probe exists for.
+        for conn in seeded:
+            await conn.close()
+        # Every subsequent call must hand back something genuinely usable,
+        # regardless of which slot round-robin lands on - not just the one
+        # slot a fast-path probe happens to have already evicted.
+        results = []
+        for _ in range(_aio_db._MIN_POOL_SIZE):
+            conn = await _aio_db.connection_for(db_path)
+            assert conn is not None, "connection_for() returned None"
+            rows = await conn.execute_fetchall("SELECT 1")
+            results.append(rows[0][0])
+        return results
+
+    assert asyncio.run(_run()) == [1] * _aio_db._MIN_POOL_SIZE
+    asyncio.run(_aio_db.reset())
+
+
+def test_connection_for_never_returns_none_or_a_dead_connection_under_concurrency(tmp_path):
+    """Regression test for adversarial-review finding C1 (2026-09-02, round
+    1 of this elastic pool): the fast path could null a slot (on a failed
+    probe) or advance _round_robin past it WITHOUT the lock, racing against
+    a different coroutine's locked section that had already decided to
+    return that exact index - the locked section's final `pool[idx]` read
+    could then observe None (AttributeError on use) or an unprobed dead
+    connection.
+
+    Statistical stress test, not a single deterministic interleaving (the
+    exact race is timing-dependent): repeatedly kill a random live slot
+    from outside _aio_db WHILE firing many genuinely concurrent
+    connection_for() calls via asyncio.gather, and assert every single
+    result is non-None and independently confirmed alive by a real query -
+    not just that the batch as a whole didn't raise."""
+    db_path = tmp_path / "t.db"
+    concurrency = _aio_db._MAX_POOL_SIZE
+
+    async def _one_round():
+        # Prime the pool close to its cap so most callers hit the fast
+        # path, then kill a couple of slots concurrently with a fresh
+        # burst of callers - the exact shape (an eviction racing a
+        # different coroutine's return decision) the finding describes.
+        await asyncio.gather(*[_aio_db.connection_for(db_path) for _ in range(concurrency)])
+        pool = _aio_db._connections.get(_aio_db._key(db_path))
+        assert pool is not None
+
+        async def _kill_a_slot(i):
+            conn = pool[i % len(pool)]
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    await conn.close()
+
+        async def _get_and_verify():
+            conn = await _aio_db.connection_for(db_path)
+            assert conn is not None, "connection_for() returned None under concurrency"
+            rows = await conn.execute_fetchall("SELECT 1")
+            assert rows[0][0] == 1
+
+        await asyncio.gather(
+            *[_kill_a_slot(i) for i in range(len(pool))],
+            *[_get_and_verify() for _ in range(concurrency)],
+        )
+
+    async def _run():
+        for _ in range(25):  # repeated rounds: the race is timing-dependent
+            await _one_round()
+
+    asyncio.run(_run())
     asyncio.run(_aio_db.reset())
 
 
