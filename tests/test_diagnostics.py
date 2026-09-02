@@ -344,6 +344,43 @@ def test_run_offline_never_writes_to_any_db(dbs):
     assert before == after
 
 
+# ---- selectivity_curve ----
+
+def test_selectivity_curve_computes_accuracy_curve_from_real_signals(dbs):
+    """Test that selectivity_curve correctly converts to aiosqlite and computes
+    a meaningful accuracy curve from seeded resolved signals."""
+    import json
+    now = time.time()
+    since_ts = now - 3600
+
+    # Seed 60 resolved signals with the columns selectivity_curve reads.
+    # Mix confidence scores (0.3-0.8 range) and correctness (0/1) to create
+    # a real curve with meaningful accuracy deltas across thresholds.
+    sl_module._connect().close()
+    with sqlite3.connect(sl_module.DB_PATH) as conn:
+        for i in range(60):
+            confidence = 0.3 + (i % 6) * 0.1  # 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
+            correct = (i + (i // 10)) % 2  # varies: ~50% correct overall
+            price = 0.4 + (i % 5) * 0.1  # 0.4-0.8 USD range
+            conn.execute(
+                "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+                "resolved, excluded, correct, raw_notional_usd, price, factors_json) "
+                "VALUES (?,?,?,?,?,?,?,1,0,?,?,?,?)",
+                ("T", "T", "yes", 100, confidence, "test", since_ts + i,
+                 correct, 5000.0 + i * 10, price, "{}"),
+            )
+
+    c = asyncio.run(diagnostics.selectivity_curve(min_notional=5000.0, since_ts=since_ts, now=now))
+    assert c.status == "ok"
+    assert "curve" in c.detail
+    assert len(c.detail["curve"]) > 0
+    # Verify curve has the expected structure
+    for entry in c.detail["curve"]:
+        assert "entry_threshold" in entry
+        assert "signals_kept" in entry
+        assert "accuracy_pct" in entry
+
+
 # ---- confidence input coverage ----
 
 def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypatch):
@@ -358,12 +395,12 @@ def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypat
                  json.dumps({"depth_factor": None, "unusualness_factor": 0.5})),
             )
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "ok"
     assert c.detail["input_coverage"]["depth_factor"]["absent_pct"] == 100.0
 
 
 def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
-    c = diagnostics.check_confidence_input_coverage(cfg)
+    c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "unknown"
