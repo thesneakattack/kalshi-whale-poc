@@ -275,6 +275,115 @@ def test_record_fault_stores_an_explicit_traceback():
     assert row["first_traceback"] == "Traceback (most recent call last):\n  fake stack\n"
 
 
+# --- issue #543: NULL exc_type defeats the UNIQUE constraint -----------
+
+def test_record_fault_with_the_same_message_dedupes_into_one_row():
+    """The bug: record_fault() always passes exc_type=None, and SQL NULL is
+    never equal to NULL for UNIQUE purposes, so the table-level constraint
+    never fired for this path - every call inserted a new row instead of
+    incrementing count. Confirmed live: loop_watchdog's stall fault alone
+    had 55,635 rows for 1 distinct message (issue #543)."""
+    for _ in range(500):
+        fl.record_fault("loop_watchdog", "stall", "event loop stalled")
+    rows = fl.recent()
+    assert len(rows) == 1
+    assert rows[0]["count"] == 500
+    assert rows[0]["exc_type"] is None
+
+
+def test_record_fault_different_messages_stay_distinct():
+    fl.record_fault("a", "op", "message one")
+    fl.record_fault("a", "op", "message two")
+    fl.record_fault("a", "op2", "message one")
+    fl.record_fault("b", "op", "message one")
+    assert len(fl.recent()) == 4
+
+
+def test_record_fault_dedup_coexists_with_record_dedup_on_the_same_key():
+    """Two independent dedup paths (the table's own UNIQUE constraint for
+    record()'s real exc_type, the new partial index for record_fault()'s
+    NULL exc_type) must not cross-contaminate rows that share component,
+    operation, and message but differ only in whether it's an exception."""
+    fl.record("shared", "op", _boom("same text"))
+    fl.record_fault("shared", "op", "same text")
+    fl.record("shared", "op", _boom("same text"))
+    fl.record_fault("shared", "op", "same text")
+    rows = fl.recent()
+    assert len(rows) == 2
+    by_type = {r["exc_type"]: r["count"] for r in rows}
+    assert by_type["OperationalError"] == 2
+    assert by_type[None] == 2
+
+
+def test_pre_existing_duplicate_null_exc_type_rows_are_merged_on_first_connect(monkeypatch, tmp_path):
+    """Simulates a real pre-fix production fault_log.db: many raw duplicate
+    NULL-exc_type rows already on disk, written before this fix existed.
+    CREATE UNIQUE INDEX itself raises IntegrityError against pre-existing
+    duplicates (verified directly, not assumed) - IF NOT EXISTS only skips
+    *re*-creation, not a first-creation constraint violation - so the module
+    must detect that, merge the duplicates, and retry, on its very first
+    _connect() after upgrading, not lose the fault store to a swallowed
+    exception."""
+    db_path = tmp_path / "legacy_fault_log.db"
+    monkeypatch.setattr(fl, "DB_PATH", db_path)
+
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        """
+        CREATE TABLE faults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL, operation TEXT NOT NULL, severity TEXT NOT NULL,
+            exc_type TEXT, message TEXT, first_traceback TEXT, context TEXT,
+            count INTEGER NOT NULL DEFAULT 1, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            UNIQUE (component, operation, exc_type, message)
+        )
+        """
+    )
+    now = time.time()
+    for i in range(50):
+        seed.execute(
+            "INSERT INTO faults (component, operation, severity, exc_type, message, "
+            "first_traceback, count, first_seen, last_seen) VALUES (?,?,?,?,?,?,1,?,?)",
+            ("loop_watchdog", "stall", "warn", None, "stalled",
+             "original-stack" if i == 0 else None, now - (50 - i), now - (50 - i)),
+        )
+    # a real exception row and a non-duplicated record_fault row, to confirm
+    # the merge only touches genuine NULL-exc_type duplicate groups
+    seed.execute(
+        "INSERT INTO faults (component, operation, severity, exc_type, message, "
+        "count, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+        ("other", "op", "error", "ValueError", "boom", 7, now - 5, now - 1),
+    )
+    seed.execute(
+        "INSERT INTO faults (component, operation, severity, exc_type, message, "
+        "count, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+        ("solo", "op", "warn", None, "only once", 1, now, now),
+    )
+    seed.commit()
+    seed.close()
+
+    # This call goes through the real module code path - it must trigger the
+    # guarded migration internally, not raise, and not silently swallow the
+    # store into "no rows" the way an unguarded IntegrityError would (every
+    # _connect() caller wraps exceptions broadly - see the module docstring).
+    assert fl.record_fault("loop_watchdog", "stall", "stalled") is True
+
+    rows = {r["component"]: r for r in fl.recent(limit=10)}
+    assert len(rows) == 3
+    assert rows["loop_watchdog"]["count"] == 51, "50 pre-existing + 1 new write must merge into one row"
+    assert rows["loop_watchdog"]["exc_type"] is None
+    assert rows["loop_watchdog"]["first_traceback"] == "original-stack", \
+        "the earliest row's traceback must survive the merge, not be discarded"
+    assert rows["other"]["count"] == 7 and rows["other"]["exc_type"] == "ValueError", \
+        "a real exception row must be untouched by the NULL-exc_type merge"
+    assert rows["solo"]["count"] == 1, "a non-duplicated record_fault row must be untouched"
+
+    # A second call must take the fast IF NOT EXISTS path (index already
+    # exists) and still dedupe correctly - the migration must not re-run.
+    assert fl.record_fault("loop_watchdog", "stall", "stalled") is True
+    assert fl.recent(component="loop_watchdog")[0]["count"] == 52
+
+
 def test_record_fault_tb_defaults_to_none_for_every_existing_caller():
     """Every one of this function's other 10+ call sites omits tb - this
     pins that omitting it still behaves exactly as before (first_traceback

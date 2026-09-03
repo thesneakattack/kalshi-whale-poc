@@ -96,10 +96,103 @@ def _connect():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
+        _ensure_null_exc_type_dedup_index(conn)
         with conn:
             yield conn
     finally:
         conn.close()
+
+
+def _ensure_null_exc_type_dedup_index(conn: sqlite3.Connection) -> None:
+    """Fixes issue #543: the table-level `UNIQUE (component, operation,
+    exc_type, message)` above never fires when `exc_type IS NULL` - SQL NULL
+    is never equal to NULL for uniqueness purposes - and `record_fault()`
+    always passes `exc_type=None` (it's the non-exception path). Every
+    `record_fault()` call with a fixed message therefore inserted a new row
+    instead of deduping (confirmed live: 55,635 rows / 1 distinct message for
+    `loop_watchdog`'s stall fault alone). `record()` (the exception path)
+    always passes a real `exc_type` and already dedupes correctly through the
+    constraint above - this only covers the gap that constraint can't reach.
+
+    A partial unique index scoped to `WHERE exc_type IS NULL` closes the gap
+    without touching the existing constraint or its rows: same table, same
+    key shape, just narrowed to the one case NULL breaks. Purely additive -
+    no ALTER, no table rebuild.
+
+    Guarded, not unconditional: a database that already has pre-fix duplicate
+    NULL-exc_type rows (any production `fault_log.db` older than this fix)
+    would make `CREATE UNIQUE INDEX` itself raise `IntegrityError` on first
+    creation - `IF NOT EXISTS` only skips *re*-creation once the index
+    exists, it does not skip a constraint violation on the first attempt
+    (verified directly, not assumed). So: try the cheap fast path first: if
+    it succeeds, either the index already exists (near-every call, negligible
+    cost) or the database was already clean. Only on IntegrityError -
+    meaning duplicates are actually present - does this run the one-time
+    merge below and retry; every _connect() after that first successful
+    creation takes the fast IF NOT EXISTS path forever, since the previously
+    running app process cannot be pointed at two different data/fault_log.db
+    files at once."""
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_dedup_null_exc_type "
+            "ON faults (component, operation, message) WHERE exc_type IS NULL"
+        )
+    except sqlite3.IntegrityError:
+        _merge_duplicate_null_exc_type_rows(conn)
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_faults_dedup_null_exc_type "
+            "ON faults (component, operation, message) WHERE exc_type IS NULL"
+        )
+
+
+def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
+    """One-time cleanup for rows `record_fault()` wrote before the dedup fix
+    above - never deletes information, only consolidates it, per CLAUDE.md's
+    "accumulated history" rule for data/*.db files: for each (component,
+    operation, message) group of exc_type-NULL rows, the earliest-inserted
+    row (lowest id, matching how `_write`'s own ON CONFLICT already treats
+    every field it doesn't explicitly recompute - first insert wins) is kept
+    and updated with count=SUM(count) and last_seen=MAX(last_seen) across the
+    whole group; the rest are dropped. first_traceback, context, and severity
+    are left exactly as the kept row already had them - unchanged, not
+    reselected - matching `_write`'s own ON CONFLICT, which never updates
+    those fields on a repeat either. Real exception rows (exc_type NOT NULL,
+    already deduped correctly by the table constraint) and already-unique
+    exc_type-NULL rows (HAVING COUNT(*) > 1 excludes them) are untouched."""
+    conn.execute(
+        """
+        CREATE TEMP TABLE _fault_dedupe_merge AS
+        SELECT component, operation, message,
+               MIN(id) AS keeper_id,
+               SUM(count) AS total_count,
+               MAX(last_seen) AS max_last_seen
+        FROM faults
+        WHERE exc_type IS NULL
+        GROUP BY component, operation, message
+        HAVING COUNT(*) > 1
+        """
+    )
+    conn.execute(
+        """
+        UPDATE faults
+        SET count = (SELECT total_count FROM _fault_dedupe_merge m WHERE m.keeper_id = faults.id),
+            last_seen = (SELECT max_last_seen FROM _fault_dedupe_merge m WHERE m.keeper_id = faults.id)
+        WHERE id IN (SELECT keeper_id FROM _fault_dedupe_merge)
+        """
+    )
+    conn.execute(
+        """
+        DELETE FROM faults
+        WHERE exc_type IS NULL
+          AND id NOT IN (SELECT keeper_id FROM _fault_dedupe_merge)
+          AND EXISTS (
+              SELECT 1 FROM _fault_dedupe_merge m
+              WHERE m.component = faults.component AND m.operation = faults.operation
+                AND m.message = faults.message
+          )
+        """
+    )
+    conn.execute("DROP TABLE _fault_dedupe_merge")
 
 
 def record(component: str, operation: str, exc: BaseException,
@@ -162,12 +255,24 @@ def _write(component: str, operation: str, severity: str, exc_type: str | None,
         # ON CONFLICT keeps the FIRST traceback (the one with the original
         # stack) and bumps the count - a repeat adds evidence of frequency,
         # not another copy of the same stack.
+        #
+        # Two ON CONFLICT targets, chained (issue #543): the table's own
+        # UNIQUE constraint never fires when exc_type IS NULL (record_fault()
+        # always passes None there - see _ensure_null_exc_type_dedup_index's
+        # docstring above), so a second target names the partial index that
+        # covers exactly that case. SQLite requires each target to name a
+        # real constraint/index verbatim, including a partial index's own
+        # WHERE clause - only one target ever actually matches a given row,
+        # the other is simply not triggered.
         conn.execute(
             """
             INSERT INTO faults (component, operation, severity, exc_type, message,
                                 first_traceback, context, count, first_seen, last_seen)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT (component, operation, exc_type, message) DO UPDATE SET
+                count = count + 1,
+                last_seen = excluded.last_seen
+            ON CONFLICT (component, operation, message) WHERE exc_type IS NULL DO UPDATE SET
                 count = count + 1,
                 last_seen = excluded.last_seen
             """,
