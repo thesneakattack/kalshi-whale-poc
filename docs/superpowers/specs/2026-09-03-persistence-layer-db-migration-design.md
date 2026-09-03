@@ -196,10 +196,6 @@ the full context of what it does and doesn't carry over, not decided in this des
 1. **Must-fix — silent schema-registration conflict.** Confirmed present in the prototype
    (`db.py:39-41`, first-write-wins, silent, no error/log line) and addressed directly in the
    reference shape above (`register_schema` raises on a genuine conflict). Real risk given
-
-1. **Must-fix — silent schema-registration conflict.** Confirmed present in the prototype
-   (`db.py:39-41`, first-write-wins, silent, no error/log line) and addressed directly in the
-   reference shape above (`register_schema` raises on a genuine conflict). Real risk given
    ~26 modules migrating, potentially across parallel sessions per this repo's own working
    pattern today — a silent collision would mask a real bug with no signal at all.
 2. **Must-fix — corrupted-DB-file handling has no test**, despite this being a real incident
