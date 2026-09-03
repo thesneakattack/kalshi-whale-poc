@@ -69,19 +69,33 @@ the CURRENT (un-fixed) source, not Tier 0's planned end state.
   fix the audit suggests would introduce a **new** correctness bug (orphaned
   stale keys in `whale_watcher_kalshi.min_contracts_by_series` when a user
   removes a series from that field), which shaped Task 5's actual design.
-- **New finding: `resolved_signals_with_factors()`/`population_gate_summary()`
-  cannot simply take a `since_ts` bound** the way the audit's citation (first
-  audit's Tier-1 item #3, not the second audit's §9.2) suggests — both
-  functions' own docstrings/callers establish they compute a gate against a
-  **minimum total sample count**, and every one of their currently-unscoped
-  callers is that same gate (confirmed by reading all 5 call sites of
-  `resolved_signals_with_factors` and the 1 call site of
-  `population_gate_summary`, Task 6 below). Scoping the query would silently
-  produce a wrong "insufficient" determination — an accuracy regression, not
-  a fix. Task 6 designs a route-level TTL cache instead, which the
-  `services/analytics/routes.py:95-98` comment's own live py-spy finding
-  (17-38s per call, "polled routinely by the dashboard") independently
-  supports as the real problem being solved.
+- **Corrected finding: `resolved_signals_with_factors()`/`population_gate_summary()`'s
+  currently-unscoped callers must not be given a `since_ts` bound** the way
+  the audit's citation (first audit's Tier-1 item #3, not the second audit's
+  §9.2) suggests — not because the capability doesn't exist (it does:
+  `resolved_signals_with_factors(since_ts: float | None = None)` already
+  carries this parameter, added 2026-09-01 by a separate, earlier initiative
+  for a different caller shape than this one), but because both functions'
+  own docstrings/callers establish they compute a gate against a **minimum
+  total sample count**, and every one of their currently-unscoped callers is
+  that same gate (confirmed by reading all 5 call sites of
+  `resolved_signals_with_factors` and both 2 call sites of
+  `population_gate_summary` — `services/analytics/routes.py:104` and
+  `services/research/research.py:221`, the second inside an
+  evidence-gated, infrequent sweep, Task 6 below). Passing `since_ts` to the
+  gate-computing callers specifically would silently produce a wrong
+  "insufficient" determination — an accuracy regression, not a fix; every
+  current caller including the gate route correctly leaves it unset. Task 6
+  designs a route-level TTL cache instead, which `services/candidate_log.py`'s
+  own `population_gate_summary()` docstring — documenting the 2026-08-26 fix
+  that took this function from an 18.2s per-row Python loop to a 4.8s SQL
+  `GROUP BY` for the same 6.2M rows — independently supports as still worth
+  caching even post-fix: a 4.8s compute cost on every dashboard poll (even
+  off the event loop) is real, ongoing cost. (The `services/analytics/
+  routes.py:95-98` comment's "17-38s" figure is the pre-fix range that
+  motivated that same 2026-08-26 commit, referenced there as a named
+  historical ROADMAP entry, not a current live measurement — cited
+  accurately as history, not as today's cost.)
 - **New finding: `event_live_data` is already scoped, and still 87.3% of
   the payload.** `services/state_view.py:198-200`'s `_scoped_event_live_data`
   (added 2026-08-21, predating both audits) already filters `state
@@ -251,13 +265,23 @@ the CURRENT (un-fixed) source, not Tier 0's planned end state.
   argument (currently hardcoded `None`).
 - `loop_watchdog._tick()` (private closure inside `start()`, unchanged
   external signature) gains one new behavior on the existing stall branch:
-  capture + record. `loop_watchdog.snapshot()`/`reset_window()` are
-  unchanged.
+  capture + fire-and-forget record. `loop_watchdog.snapshot()`/
+  `reset_window()` are unchanged.
+- New module-private helper `_record_stall_fault_background(tb: str) ->
+  None` and module-level `_pending_fault_writes: set[asyncio.Task]` —
+  dispatches the `fault_log.record_fault` write via a retained
+  `asyncio.create_task(asyncio.to_thread(...))` rather than an inline
+  `await`, so a slow write can neither block the loop nor delay `_tick()`'s
+  own next `asyncio.sleep()` (adversarial review Finding F13), while still
+  avoiding the weak-reference GC hazard Python's own `asyncio.create_task`
+  documentation warns about (the same "retain a reference, don't block on
+  it" idiom Task 8a below applies to `alerting.py`, implemented locally
+  here rather than shared since Task 8a hasn't landed when this task runs).
 
 - [ ] **Step 1: Read the exact current stall branch and `record_fault`
       before writing anything**
 
-`services/loop_watchdog.py` in full (46 lines) — the stall branch is:
+`services/loop_watchdog.py` in full (45 lines) — the stall branch is:
 
 ```python
             if late > _STALL_THRESHOLD_SEC:
@@ -445,7 +469,7 @@ import traceback
 from services import fault_log
 ```
 
-Add a module-level helper:
+Add module-level helpers:
 
 ```python
 def _capture_stall_traceback() -> str:
@@ -459,6 +483,26 @@ def _capture_stall_traceback() -> str:
     if frame is None:
         return "<main thread frame unavailable>"
     return "".join(traceback.format_stack(frame))
+
+
+_pending_fault_writes: set[asyncio.Task] = set()
+
+
+def _record_stall_fault_background(tb: str) -> None:
+    """Fire-and-forget the fault_log write so a slow SQLite write cannot
+    delay _tick()'s own next asyncio.sleep() and inflate stall_count with
+    a self-inflicted phantom stall (adversarial review of this plan,
+    Finding F13) - but still retain a reference to the created Task
+    (matching Task 8a's own 'retain a reference so it isn't GC'd, but
+    don't block on it' idiom, applied here rather than imported from it
+    since Task 8a hasn't landed yet when this task runs)."""
+    task = asyncio.create_task(asyncio.to_thread(
+        fault_log.record_fault, "loop_watchdog", "stall",
+        "event loop stall detected (see first_traceback for the "
+        "captured stack)", severity="warn", tb=tb,
+    ))
+    _pending_fault_writes.add(task)
+    task.add_done_callback(_pending_fault_writes.discard)
 ```
 
 Change the stall branch inside `start()`'s `_tick()` from:
@@ -480,8 +524,15 @@ to:
                 # incident had zero visibility into *what* was blocking the
                 # loop. Capture is synchronous and cheap (sys._current_
                 # frames/format_stack, no I/O); the fault_log WRITE is
-                # dispatched via asyncio.to_thread so this diagnostic can
-                # never itself become a blocking-sqlite-on-the-loop bug.
+                # fire-and-forget via _record_stall_fault_background() so
+                # this diagnostic can never itself become a blocking-sqlite-
+                # on-the-loop bug NOR delay this same _tick() coroutine's own
+                # next asyncio.sleep(), which an inline `await
+                # asyncio.to_thread(...)` would (adversarial review Finding
+                # F13: a slow write delaying the watchdog's own next sample
+                # could inflate stall_count with a self-inflicted phantom
+                # stall - exactly the metric this task exists to make more
+                # trustworthy).
                 # Message is a fixed string (not late-value-dependent) so
                 # fault_log's own dedup key (component, operation, exc_type,
                 # message) collapses every stall into ONE row that
@@ -491,11 +542,7 @@ to:
                 # not silently glossed over: see this task's own Global
                 # Constraints-adjacent note in the plan).
                 tb = _capture_stall_traceback()
-                await asyncio.to_thread(
-                    fault_log.record_fault, "loop_watchdog", "stall",
-                    "event loop stall detected (see first_traceback for the "
-                    "captured stack)", severity="warn", tb=tb,
-                )
+                _record_stall_fault_background(tb)
 ```
 
 **Known, stated limitation (not silently glossed over):** `fault_log`'s
@@ -2054,6 +2101,16 @@ to:
             self._merge_in_place(self._data, patch)
 ```
 
+**Note, explicit per adversarial review Finding F2:** the "to:" block above
+shows only the merge-loop being swapped for the new `_merge_in_place`
+call. It is not a complete replacement of `update()`'s current body —
+the atomic-write block that follows (`config_store.py:167-181`: `return
+dict(self._data)` plus the persist-to-disk logic) is unchanged and stays
+exactly where it is, immediately after the `with self._lock:` block
+shown here. Confirmed the old snippet is a unique substring of the
+current file, so a literal find/replace leaves that block correctly
+nested under the new code with no manual re-insertion needed.
+
 - [ ] **Step 4: Run both new tests, confirm the first now passes and the
       second still does**
 
@@ -2091,10 +2148,19 @@ has an unrelated finding #3). The correct citation, read directly:
 considerations.md` lines 1410-1411 ("Bound `resolved_signals_with_factors()`
 and `candidate_log`'s `population_gate_summary()` reads (§5.2) — the same
 pattern PR #424 already used for a sibling function") and its own §5.2
-(lines 638-657). **`git log --all --oneline | grep 424` shows PR #424 was
-titled "fix/run-offline-cooperative-yield," unrelated to signal_log/
-since_ts scoping — this citation could not be verified against real PR
-history and is flagged as unreliable, not repeated as fact.**
+(lines 638-657). **Verified via `gh pr view 424 --json title,body`
+(the authoritative check, not `git log`'s branch-name-derived subject
+line, which reads only "fix/run-offline-cooperative-yield"): PR #424's
+real title is "fix: revert regressive elastic pool, keep+correct
+query-bound fast-follow," and its body describes exactly the pattern
+the audit gestured at — `check_confidence_input_coverage`'s
+previously-unscoped query bound to a purpose-matched 24h window in
+`services/diagnostics/diagnostics.py`, measured savings ~1.0s/~30% per
+`run_offline()` call. This is a real, directly analogous precedent —
+just applied to a different sibling function than
+`resolved_signals_with_factors`/`population_gate_summary`, which this
+citation does not (and, per Research correction #2 below, must not)
+extend the same treatment to.**
 
 **Research correction #2, more consequential:** naively adding a
 `since_ts` bound to either function, as the audit's own one-line framing
@@ -2109,15 +2175,21 @@ like a SUFFICIENT one, or vice versa — a real accuracy regression, not a
 narrow perf fix. Verified by reading every one of `resolved_signals_with_
 factors`'s 5 call sites (`services/backtest/routes.py:21`, `services/
 research/research.py:155`, `services/whale_calibration/routes.py:112,147`,
-`main.py:490`) and `population_gate_summary`'s 1 call site (`services/
-analytics/routes.py:104`) — every single one is itself either the gate
-computation directly or an input to it. This task therefore does NOT touch
-either function's own signature or query; it caches the two ROUTES that
-are genuinely hit on a tight polling cadence, per the live evidence
-already recorded in `services/analytics/routes.py:95-98`'s own comment
+`main.py:490`) and `population_gate_summary`'s 2 call sites (`services/
+analytics/routes.py:104` and `services/research/research.py:221` — the
+second inside `research.py`'s evidence-gated, infrequent sweep, not a
+tight-polling caller, so it's unaffected by this task's design either
+way) — every single one is itself either the gate computation directly or
+an input to it. This task therefore does NOT touch either function's own
+signature or query; it caches the two ROUTES that are genuinely hit on a
+tight polling cadence. `services/analytics/routes.py:95-98`'s own comment
 ("proven via a live py-spy stack trace to block the event loop for
-17-38s on every call, since this route is polled routinely by the
-dashboard").
+17-38s on every call") documents the pre-fix range that motivated the
+2026-08-26 commit converting this function from an 18.2s per-row Python
+loop to a 4.8s SQL `GROUP BY` for the same 6.2M rows (`services/
+candidate_log.py`'s own `population_gate_summary()` docstring) — the
+current live cost is ~4.8s, not 17-38s, and this task caches that
+still-real ~4.8s-per-poll cost, not the pre-fix figure.
 
 #### Task 6a: `paginate()` FastAPI dependency for 6 confirmed-unbounded routes
 
@@ -2447,8 +2519,9 @@ run(_build_report)` line and what follows it changes shape.)
 
 Apply the identical pattern to `services/analytics/routes.py`'s
 `get_candidate_log_summary`, caching the `population_gates` value (the
-17-38s call) with its own `_population_gates_cache` dict and the same
-`_POPULATION_GATES_CACHE_TTL_SEC = 30` constant, same reasoning.
+~4.8s call, per §"Research correction" above — historically 17-38s
+pre-2026-08-26-fix) with its own `_population_gates_cache` dict and the
+same `_POPULATION_GATES_CACHE_TTL_SEC = 30` constant, same reasoning.
 
 - [ ] **Step 4: Run the new tests, confirm pass**
 
@@ -2803,7 +2876,7 @@ handles" using `asyncio.create_task`/`ensure_future` directly — `grep -n
 alerting.py` returns ZERO hits in current source. All 3 real call sites go
 through `task_supervisor.supervise(...)`, which itself calls
 `asyncio.create_task(_run())` internally
-(`services/task_supervisor.py:89`) and RETURNS the `Task` — but all 3 of
+(`services/task_supervisor.py:73`) and RETURNS the `Task` — but all 3 of
 `alerting.py`'s own call sites discard that return value (call `task_
 supervisor.supervise(...)` as a bare statement, never assigning it). The
 underlying hazard is the same one the audit names (Python's own
@@ -3115,8 +3188,9 @@ change):
 1. **Task 2**: nginx 504-rate over a comparable foreground window,
    before/after (per Task 2's own Step 5).
 2. **Task 6b**: `GET /api/candidate-log/summary` response time on a
-   SECOND call within 30s of the first (should be near-instant, not
-   17-38s).
+   SECOND call within 30s of the first (should be near-instant from
+   cache, vs. the ~4.8s uncached compute cost the first call still
+   pays).
 3. **Task 7**: `GET /api/state` twice ~2s apart during a quiet period,
    confirm a `304`; confirm `event_live_data`'s presence/absence pattern
    across a >60s window.
@@ -3142,13 +3216,16 @@ unrecorded.
 
 **Research coverage:** All 8 audit items (7-14, second-pass audit's own
 §8 Tier 1) are covered, each mapped to a Task above. Two of the audit's
-own citations were found to be wrong or unverifiable during this plan's
-own research and are corrected in-place rather than silently repeated:
-Task 6's "§9.2 finding #3" (the actual citation is the first audit's own
-Tier-1 items #3/#4, a different section) and its "PR #424" reference
-(confirmed via `git log` to be an unrelated PR, flagged as unreliable).
-Both corrections are load-bearing for how Task 6 is actually designed
-(a cache, not a `since_ts` bound), not cosmetic.
+own citations were found to be wrong or imprecise during this plan's own
+research and are corrected in-place rather than silently repeated: Task
+6's "§9.2 finding #3" (the actual citation is the first audit's own
+Tier-1 items #3/#4, a different section) and its "PR #424" reference —
+corrected during this plan's own adversarial review (a `git log`-only
+check had wrongly concluded the citation was unverifiable; `gh pr view
+424` shows it is a real, directly analogous precedent, just for a
+different sibling function, `check_confidence_input_coverage`). Both
+corrections are load-bearing for how Task 6 is actually designed (a
+cache, not a `since_ts` bound), not cosmetic.
 
 **Placeholder scan:** Every code block in Tasks 1, 2, 3b, 3c, 5, 7, 8a,
 8b is either a verbatim transcription of currently-read source or a
