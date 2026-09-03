@@ -53,16 +53,20 @@ trusted:
 - `config/settings.yaml`'s `strategy:` block (lines 71-105 in this
   worktree's own working copy) ends at `price_staleness_corroborate_sec`,
   immediately before `risk:` — this is where Task 1 appends the 8 new
-  fields. **This worktree's own `config/settings.yaml` is itself
-  uncommitted-`M`** against its own git HEAD (confirmed: `git status
-  --short config/settings.yaml`), and differs further from the primary
-  checkout's live file (confirmed: `diff` between the two shows
-  `markets_watchlist_mode`, `max_children_per_parent`, `kalshi.categories`,
-  and the analyst-factor-audit comment block all differ) — the same
-  already-tracked instability the design's own §0/Finding 7 documents
-  (second-pass audit §4.4, "third data-wipe of the same shape"). Task 1's
-  own Step 1 re-reads the live file immediately before editing rather than
-  trusting the line numbers stated here, for exactly this reason.
+  fields. **This worktree's own committed `config/settings.yaml` differs
+  from the primary checkout's live file** (confirmed: `diff` between the
+  two shows `markets_watchlist_mode`, `max_children_per_parent`,
+  `kalshi.categories`, and the analyst-factor-audit comment block all
+  differ) — the same already-tracked instability the design's own
+  §0/Finding 7 documents (second-pass audit §4.4, "third data-wipe of the
+  same shape"). (Corrected after independent adversarial review, should-fix
+  item 3: an earlier version of this line additionally claimed this
+  worktree's own copy was uncommitted-`M` against its own git HEAD — that
+  is not true; `git status --short config/settings.yaml` is clean in this
+  worktree. The divergence that matters is against the *primary checkout's
+  live file*, not this worktree's own history.) Task 1's own Step 1
+  re-reads the live file immediately before editing rather than trusting
+  the line numbers stated here, for exactly this reason.
 
 **Three concrete plumbing gaps this plan found that the design did not
 fully specify (its own self-review flagged bucket boundaries and this
@@ -680,11 +684,32 @@ def test_trades_since_returns_trades_after_the_given_timestamp(tmp_path, monkeyp
     assert len(trades) == 1
     assert trades[0].ticker == "TICK-A"
     assert broker.trades_since(after=time.time() + 100) == []  # nothing after the future
+
+
+def test_trades_since_excludes_close_rows(tmp_path, monkeypatch):
+    """Adversarial review Finding F4: open_position and close_position
+    write into the exact same trades table with no type/action
+    discriminator column - trades_since() must filter out close rows via
+    the already-established reason.startswith("closed:") convention
+    (services/history/trade_analytics.py's build_trade_history,
+    this module's own correct_erroneous_close), or a close row's own
+    exit price/timestamp would be fed into the markout-capture sweep as
+    if it were a fresh entry - pure noise in the exact population the
+    design's §6 decisive comparison depends on."""
+    monkeypatch.setattr(pb_module, "DB_PATH", tmp_path / "paper_broker.db")
+    broker = PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "paper_broker.db")
+    broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+    broker.close_position("TICK-A", 0.55, "test-close")
+    trades = broker.trades_since(after=None)
+    assert len(trades) == 1  # the close row is excluded, only the entry remains
+    assert not trades[0].reason.startswith("closed:")
 ```
 
 (Match this file's actual existing import aliases — `grep -n '^from
 services import paper_broker\|^import time' tests/test_paper_broker.py`
-first.)
+first; confirm `close_position`'s exact call signature with `grep -n
+"def close_position" services/paper_broker.py` before trusting the call
+shape above.)
 
 The main.py wiring test (file TBD per the `grep -rln` check in Files
 above):
@@ -701,7 +726,7 @@ def test_maybe_capture_markouts_writes_a_row_for_a_due_trade(monkeypatch):
 
     now = time.time()
     fake_trade = SimpleNamespace(id="t1", ticker="TICK-A", side="yes", price=0.6, timestamp=now - 400)
-    monkeypatch.setattr(main.state["broker"], "trades_since", lambda after: [fake_trade])
+    monkeypatch.setattr(main.broker, "trades_since", lambda after: [fake_trade])
     monkeypatch.setattr(mc, "close_ts_for_tickers", lambda tickers: {})
     monkeypatch.setattr(mh, "recent_price", lambda ticker, max_age_sec, as_of=None: 0.63)
     recorded = []
@@ -714,15 +739,18 @@ def test_maybe_capture_markouts_writes_a_row_for_a_due_trade(monkeypatch):
     assert recorded  # at least the due 300s offset was captured
 ```
 
-(This test's exact shape depends on how `main.state["broker"]` is
-initialized in test context — check `grep -n 'state\["broker"\]'
-main.py tests/*.py` first and match the established convention for
-patching it rather than guessing one; if no existing test patches
-`state["broker"]` this way, follow whatever pattern
-`tests/test_pipeline_health_cost.py`'s `import main` + monkeypatch style
-already establishes for this file.)
+(`main.broker` is the correct reference — `broker` is a standalone
+module-level name imported via `from services.app_state import ...
+broker ...` (`services/app_state.py:91`), never a key inside the
+separate `state` dict; `main.py` itself uses the bare `broker` name
+throughout, e.g. `_enriched_broker_state(broker, state["latest_prices"])`
+treats them as two distinct arguments. An earlier version of this task
+wrote `state["broker"]`, which does not exist anywhere in this codebase
+and would raise `KeyError` — corrected after independent adversarial
+review, Finding F3. Match `tests/test_pipeline_health_cost.py`'s `import
+main` + monkeypatch style for the rest of this test's shape.)
 
-Run all three: expected **fail** (functions/attributes don't exist yet).
+Run all four: expected **fail** (functions/attributes don't exist yet).
 
 - [ ] **Step 2: Read `upsert_markets`'s actual current signature and the raw `markets[i]` close-time field name before implementing `close_ts_for_tickers`**
 
@@ -765,25 +793,35 @@ Add near `count_trade_range`/`clear_trade_range` (`services/paper_broker.py:768`
 
 ```python
     def trades_since(self, after: float | None) -> list[Trade]:
-        """Every trade (real PaperBroker.open_position entry) with
-        timestamp > after, newest-filter-reused from _trade_range_where -
-        the markout-capture sweep's own read of 'what entries exist to
-        capture markouts for' (Task 4, strategy-edge-gate-implementation.md).
-        Unlike count_trade_range/clear_trade_range, this returns full rows,
-        not just a count."""
+        """Every real ENTRY (a PaperBroker.open_position row) with
+        timestamp > after - the markout-capture sweep's own read of 'what
+        entries exist to capture markouts for' (Task 4,
+        strategy-edge-gate-implementation.md). open_position and
+        close_position write into this exact same trades table with no
+        type/action discriminator column, so close rows are filtered out
+        here via the reason column's own established convention -
+        close_position always prefixes reason with "closed: "
+        (services/history/trade_analytics.py's build_trade_history and
+        this module's own correct_erroneous_close both already depend on
+        the identical convention). Without this filter a close row's own
+        exit price/timestamp would be fed into the markout sweep as a
+        phantom entry (adversarial review Finding F4). Unlike
+        count_trade_range/clear_trade_range, this returns full rows, not
+        just a count."""
         where, params = self._trade_range_where(before=None, after=after)
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
                 f"fee, signal_seen_at FROM trades {where} ORDER BY timestamp ASC", params,
             ).fetchall()
-        return [Trade(*row) for row in rows]
+        return [Trade(*row) for row in rows if not row[5].startswith("closed:")]
 ```
 
 (Confirm `Trade`'s exact field order matches this SELECT — `grep -n
 "^class Trade\|^Trade = " services/paper_broker.py` before trusting this
-column order; adjust to match exactly, don't assume the INSERT statement's
-column order from Task-writing time is still current.)
+column order, and confirm `reason` really is index 5 in that order — 
+adjust the filter's index to match exactly, don't assume the INSERT
+statement's column order from Task-writing time is still current.)
 
 - [ ] **Step 5: Implement and wire `_maybe_capture_markouts` in `main.py`**
 
@@ -807,7 +845,7 @@ def _maybe_capture_markouts(cfg: dict, now: float) -> None:
         )
         trades = [
             {"id": t.id, "ticker": t.ticker, "side": t.side, "price": t.price, "timestamp": t.timestamp}
-            for t in state["broker"].trades_since(after=now - 40 * 86400)  # 40d: covers close_window_sec's 32d default with margin
+            for t in broker.trades_since(after=now - 40 * 86400)  # 40d: covers close_window_sec's 32d default with margin
         ]
         if not trades:
             return
@@ -844,18 +882,47 @@ Expected: all pass, including the new ones.
 
 This sweep is new, unconditional cost on the tick-loop maintenance path
 (not the exchange-wide hot path itself, but still measured, not assumed
-cheap). After deploying to the running dev app
-(`https://kalshi-whale-poc.ddev.site:8443`), let it run for at least one
-full `_MARKOUT_CAPTURE_INTERVAL_SEC` cycle with real open positions
-present, then read `GET /api/health/pipeline`'s `last_tick_duration_sec`
-before/after this sweep first starts firing (compare against a baseline
-captured immediately before this deploy). Record the actual measured
-delta in this task's own commit message and in `docs/next-action.md` if
-it's non-trivial (a rough guideline, not a hard gate this plan invents:
-anything under ~50ms added to `last_tick_duration_sec` is consistent with
-"a few extra SQLite reads/writes on a background maintenance path," not a
-new bottleneck; if it's materially larger, that's a real finding for
-`docs/open-decisions.md`, not something this task silently ships past).
+cheap). **Measured directly, not inferred from whole-tick before/after
+noise** (corrected after independent adversarial review, Finding F6: a
+whole-tick `last_tick_duration_sec` comparison is a weak signal here
+since the sweep only fires once per `_MARKOUT_CAPTURE_INTERVAL_SEC` —
+most individual ticks won't include its cost at all, and ordinary
+tick-to-tick variance can exceed the ~50ms guideline on its own,
+independent of the sweep) — bracket `_maybe_capture_markouts`'s own body
+directly with `time.perf_counter()`, the same technique Task 8 Step 6
+already uses for its own new DB reads:
+
+```python
+def _maybe_capture_markouts(cfg: dict, now: float) -> None:
+    global _last_markout_capture_at
+    if now - _last_markout_capture_at < _MARKOUT_CAPTURE_INTERVAL_SEC:
+        return
+    _last_markout_capture_at = now
+    _t0 = time.perf_counter()
+    try:
+        ...  # Step 5's body, unchanged
+    except Exception as exc:
+        fault_log.record("market_history", "capture_markouts", exc)
+    finally:
+        _elapsed_ms = (time.perf_counter() - _t0) * 1000
+        if _elapsed_ms > 50:
+            fault_log.record(
+                "market_history", "capture_markouts_slow",
+                f"{_elapsed_ms:.1f}ms", severity="warn",
+            )
+```
+
+(This wraps Step 5's existing `try/except` body — merge into that
+implementation rather than duplicating it; the `finally` block is new.)
+Deploy to the running dev app (`https://kalshi-whale-poc.ddev.site:8443`),
+let it run for at least one full `_MARKOUT_CAPTURE_INTERVAL_SEC` cycle
+with real open positions present, then check `fault_log` for any
+`capture_markouts_slow` rows and record the actual measured delta in this
+task's own commit message. Anything under ~50ms is consistent with "a few
+extra SQLite reads/writes on a background maintenance path," not a new
+bottleneck (a rough guideline, not a hard gate this plan invents); if
+it's materially larger, that's a real finding for
+`docs/open-decisions.md`, not something this task silently ships past.
 
 **Safety:** Reads only `paper_broker.db` (trades) and `market_catalog.db`
 (close times) and writes only the new `markouts` table in
@@ -1521,7 +1588,15 @@ kwargs yet, `_edge_gate_check` doesn't exist.
 Run: `sed -n '141,202p' services/strategy_engine.py` and
 `sed -n '575,586p;700,712p' services/strategy_engine.py`. Confirm they
 still match what's quoted in this plan's "What changed" section — if not,
-re-derive the diff from current source before proceeding.
+re-derive the diff from current source before proceeding. **This check
+matters more than usual for this specific task:** PR #482
+(`fix/watchlist-entry-gate`, open/unmerged as of this plan's own review
+cycle) adds a new watchlist-gate block into `evaluate()` between the
+`excluded_series` check and the `_validate_entry_price` call site — if it
+merges before this task runs, line 579's exact number shifts. This step's
+`sed`-and-confirm already defends against that mechanically; called out
+explicitly here (per independent adversarial review) so a stale line
+number isn't a surprise if it happens.
 
 - [ ] **Step 3: Apply the signature change, the new helper, and both call-site updates**
 
@@ -1717,14 +1792,38 @@ fault component (`edge_gate`, `capture_markouts`,
 during deploy/reload is not itself a failure; a sustained, repeating one
 is).
 
-- [ ] **Step 4: Push and confirm CI**
+- [ ] **Step 4: Check the `t+close` markout population for the `close_ts`-tier-4-only gap Task 4 flagged**
+
+**Gives Task 4's "honest gap" a real detection step, not only prose**
+(corrected after independent adversarial review, Finding F5: the plan's
+own self-review named a detection trigger — "flag if Task 10's live
+validation shows this materially distorting the `t+close` numbers" — but
+no step anywhere actually checked for it, which made the trigger easy to
+silently never fire). After Step 3's live cycle has run long enough for
+at least a few `t+close` markout rows to exist: query
+`market_history.db`'s `markouts` table for `offset_label='close'` rows
+and compute each one's `target_ts - entry_ts` in days. If any exceeds a
+generous threshold (30 days — `close_window_sec`'s own 32-day default is
+the app's own stated upper bound for how far out a market can legitimately
+close, so a `t+close` gap materially beyond that is a signal `close_ts`'s
+tier-4-only imprecision, not a real long-dated market, is driving the
+number), add an explicit line to `docs/open-decisions.md` naming the
+affected ticker(s) and the measured gap — per the design's own
+`effective_close_time` precedence (design read directly: a real,
+live-confirmed example exists where raw `close_time` was 359.5 days out
+while the actual event outcome was already 5.5 days in the past). If no
+row exceeds the threshold, record that explicitly too (a checked, passing
+condition, not silence) — either outcome is a real finding, not a
+skippable step.
+
+- [ ] **Step 5: Push and confirm CI**
 
 Push this branch, open the PR, confirm Woodpecker's real result via `gh
 api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status` — per
 CLAUDE.md's CI-authority note, this is the full-suite confirmation this
 plan relies on, not a duplicate local run.
 
-- [ ] **Step 5: Record the result**
+- [ ] **Step 6: Record the result**
 
 Update `docs/next-action.md` with the outcome (this plan's own tasks
 done; the next action being "decide whether/when to flip
