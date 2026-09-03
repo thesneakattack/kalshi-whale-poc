@@ -156,6 +156,7 @@ _MARKOUT_CAPTURE_INTERVAL_SEC = 300  # matches edge_gate_markout_offsets_sec's
 # implementation.md Task 4. Runs unconditionally (design SS5/SS8's stated
 # exception to the opt-in pattern - markout data has to exist before
 # there's anything to decide whether to turn edge_gate_enabled on with).
+_last_edge_gate_delta_recompute_at = 0.0  # Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md
 
 # In-memory cache of series tags: {series_ticker: list[str]} — built from
 # state["series_cache"]["series"] each tick, invalidated when series_cache
@@ -274,6 +275,25 @@ def _maybe_capture_markouts(cfg: dict, now: float) -> None:
                 "market_history", "capture_markouts_slow",
                 f"{_elapsed_ms:.1f}ms", severity="warn",
             )
+def _maybe_recompute_edge_gate_deltas(cfg: dict, now: float) -> None:
+    """Hourly Delta_calibrated recompute sweep (Task 7 of docs/superpowers/
+    plans/2026-09-03-strategy-edge-gate-implementation.md). Same interval-
+    guard idiom as _maybe_prune_capture_stores above; interval from
+    strategy.edge_gate_recompute_interval_sec (default 3600s, design §5).
+    Deliberately NOT gated behind edge_gate_enabled - recomputing an
+    unused cache is cheap and harmless, and this keeps
+    confidence_calibration.delta_calibrated_for populated from the moment
+    edge_gate_enabled is eventually flipped true, rather than needing a
+    cold-start warm-up delay the first time someone turns the gate on."""
+    global _last_edge_gate_delta_recompute_at
+    interval = (cfg.get("strategy") or {}).get("edge_gate_recompute_interval_sec", 3600)
+    if now - _last_edge_gate_delta_recompute_at < interval:
+        return
+    _last_edge_gate_delta_recompute_at = now
+    try:
+        confidence_calibration.recompute_deltas(cfg, now)
+    except Exception as exc:
+        fault_log.record("whale_calibration", "recompute_edge_gate_deltas", exc)
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -432,6 +452,7 @@ def _flush_secondary_capture_stores(cfg: dict, now: float) -> dict:
     game_state_result = game_state.flush()
     _maybe_prune_capture_stores(cfg, now)
     _maybe_capture_markouts(cfg, now)
+    _maybe_recompute_edge_gate_deltas(cfg, now)
     return {"index_feed": index_result, "settlement_edge": settlement_result, "game_state": game_state_result}
 
 

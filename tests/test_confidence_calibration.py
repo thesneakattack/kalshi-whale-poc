@@ -429,3 +429,18 @@ def test_bucket_delta_omits_cells_under_min_bucket_n():
     rows = [_edge_row("Sports", 0.55, True)] * 10  # under min_bucket_n=50
     deltas = cc._bucket_delta_by_category_price_band(rows, min_bucket_n=50)
     assert ("Sports", "50-60%") not in deltas
+
+
+def test_delta_calibrated_for_returns_zero_when_cache_is_empty():
+    from services.whale_calibration import confidence_calibration as cc
+    cc._delta_cache.clear()
+    assert cc.delta_calibrated_for("Crypto", 0.7) == 0.0
+
+
+def test_delta_calibrated_for_returns_cached_value_for_matching_cell():
+    from services.whale_calibration import confidence_calibration as cc
+    cc._delta_cache.clear()
+    cc._delta_cache[("Crypto", "70-80%")] = -0.05
+    assert cc.delta_calibrated_for("Crypto", 0.72) == -0.05
+    assert cc.delta_calibrated_for("Crypto", 0.30) == 0.0  # different band, not cached
+    assert cc.delta_calibrated_for(None, 0.72) == 0.0  # no category, fail-safe neutral

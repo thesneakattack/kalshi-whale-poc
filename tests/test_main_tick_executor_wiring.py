@@ -184,6 +184,67 @@ def test_flush_secondary_capture_stores_flushes_all_three_and_prunes(monkeypatch
     }
 
 
+# --- Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+# implementation.md: hourly Delta_calibrated recompute-and-cache sweep,
+# wired next to _maybe_prune_capture_stores (same interval-guard idiom,
+# same call site inside _flush_secondary_capture_stores) -----------------
+
+
+def test_maybe_recompute_edge_gate_deltas_calls_recompute_when_due(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+    calls = []
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda cfg, now: calls.append((cfg, now)),
+    )
+    cfg = {"strategy": {"edge_gate_recompute_interval_sec": 3600}}
+    main._maybe_recompute_edge_gate_deltas(cfg, 1_755_000_000.0)
+    assert calls == [(cfg, 1_755_000_000.0)]
+
+
+def test_maybe_recompute_edge_gate_deltas_skips_when_not_due(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 1_755_000_000.0)
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    cfg = {"strategy": {"edge_gate_recompute_interval_sec": 3600}}
+    main._maybe_recompute_edge_gate_deltas(cfg, 1_755_000_100.0)  # only 100s later, not due yet
+
+
+def test_maybe_recompute_edge_gate_deltas_swallows_exceptions_into_fault_log(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+
+    def _boom(cfg, now):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main.confidence_calibration, "recompute_deltas", _boom)
+    recorded = []
+    monkeypatch.setattr(
+        main.fault_log, "record",
+        lambda component, operation, exc: recorded.append((component, operation, type(exc))),
+    )
+    main._maybe_recompute_edge_gate_deltas({}, 1_755_000_000.0)  # must not raise
+    assert recorded == [("whale_calibration", "recompute_edge_gate_deltas", RuntimeError)]
+
+
+def test_flush_secondary_capture_stores_recomputes_edge_gate_deltas(monkeypatch):
+    """Pins Task 7's own wiring point: _maybe_recompute_edge_gate_deltas
+    runs from inside _flush_secondary_capture_stores, next to
+    _maybe_prune_capture_stores - unconditionally, not gated behind
+    edge_gate_enabled (design's own stated exception: recomputing an
+    unused cache is cheap and harmless, and keeps delta_calibrated_for
+    warm from the moment the gate is eventually flipped on)."""
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+    calls = []
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda cfg, now: calls.append((cfg, now)),
+    )
+    asyncio.run(main._flush_secondary_capture_stores_async(CFG, 1_755_000_000.0))
+    assert calls == [(CFG, 1_755_000_000.0)]
+
+
 def test_resolve_and_record_settlements_runs_via_tick_executor(monkeypatch):
     calls = []
 
