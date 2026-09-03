@@ -156,27 +156,76 @@ def test_connect_sets_explicit_busy_timeout_pragma():
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
-def test_connect_does_not_leak_file_descriptors():
-    """The actual point of this migration, measured rather than inferred
-    from the close-tracking spy above: repeated _connect() cycles must not
-    grow the process's open fd count. Adversarial review on PR #540 asked
-    for this as a committed artifact, not review-comment prose - manual
-    measurement (600 cycles, fd count flat at 4) is reproduced here at a
-    smaller N so the assertion runs on every CI pass, not just once by
-    hand. /proc/self/fd is Linux-specific; this suite only ever runs
-    inside the fastapi container (ddev/Docker), never on a bare host."""
-    import os
+def test_connect_closes_every_connection_across_repeated_calls(monkeypatch):
+    """Was originally written as an OS-level /proc/self/fd count diff
+    (matching PR #540's own fix-list ask, and passed at the time - manual
+    measurement plus 600 in-process cycles both showed flat at 4). That
+    exact pattern, copied unmodified onto series_evaluator.py/
+    trade_category.py (Tasks 9-10, PR #545), produced a REAL CI failure
+    under pytest-xdist's full-suite run: 89 != 161, a DROP, not a rise, on
+    a run where the migrated module genuinely does not leak. Root-caused
+    per CLAUDE.md's no-flake-classification-ever rule, not dismissed:
 
-    def _open_fd_count():
-        return len(os.listdir("/proc/self/fd"))
+    An un-.close()'d sqlite3.Connection does NOT release its fd via
+    CPython refcounting alone (verified directly: dropping the last
+    reference with the cyclic GC disabled leaves the fd open) - it sits
+    until the next GC pass. In a long-running xdist worker that has
+    already executed hundreds of prior tests, an unrelated GC cycle can
+    fire at any point (allocation-threshold-driven, not test-boundary-
+    driven) and reap OTHER tests' lingering garbage mid-measurement,
+    moving this test's fd count for reasons having nothing to do with
+    this module. This module's own version of the test happened not to
+    trip on that PR's run - not because the pattern is safe, but because
+    no unrelated GC cycle happened to land inside its measurement window
+    that particular time; the risk was identical and latent.
 
-    before = _open_fd_count()
+    The "obvious" fix (pin gc.collect() at both snapshot points) was
+    tested and rejected on the sibling PR before being applied here: run
+    against genuinely-leaking pre-migration code, gc.collect()-pinning
+    makes before==after too - it reaps the leaked-but-now-unreferenced
+    connections along with the ambient noise, silently masking the exact
+    defect this test exists to catch.
+
+    This version sidesteps OS process state entirely: extends the
+    close-tracking spy above (test_connect_closes_its_connection) across
+    many calls, asserting opened == closed, instead of reading ambient
+    fd-table state. Deterministic regardless of any other test or the
+    GC's own scheduling."""
+    import sqlite3
+
+    opened = []
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        conn = _RecordingConnection(real_connect(*args, **kwargs))
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(observability.db.sqlite3, "connect", _tracking_connect)
     for i in range(50):
         observability.record_sample("fd_leak_probe", float(i), observed_at=1000.0 + i)
     for _ in range(50):
         observability.history("fd_leak_probe", since_ts=0.0)
-    after = _open_fd_count()
-    assert after == before
+    assert len(opened) == len(closed) == 100
 
 
 def test_connect_index_creation_runs_in_autocommit_not_a_transaction():
