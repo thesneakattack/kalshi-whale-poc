@@ -246,11 +246,15 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   own `cancel_info` via the API before assuming it failed or is still
   running.
 
-  (Note, added 2026-09-03: the server's pipeline-number sequence was reset
-  on 2026-08-31 — pipelines 240/241 and other pre-reset numbers cited
-  elsewhere in this doc no longer resolve via the live API. The incident
+  (Note, added 2026-09-03, corrected 2026-09-03: the server's pipeline-
+  number sequence was reset on 2026-08-31. Checked live: pipeline 241 now
+  404s, but pipeline 240 has been reused and returns a real, unrelated
+  `pull_request`/`main` pipeline from 2026-09-01 — not this incident. So
+  pre-reset numbers cited in this doc are worse than merely unresolvable;
+  240 specifically now silently points at different content. The incident
   and its lesson above are still accurate history, just no longer
-  independently re-verifiable by number.)
+  independently re-verifiable by number — don't follow either number as a
+  live link.)
 - `main` has real GitHub branch protection, configured 2026-08-25 (was
   unconfigured/404 before that) — see
   `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" section
