@@ -9,7 +9,7 @@ The doc's central claim - zero production callers of `services/db.py` - was re-c
 ## Internal consistency
 
 - The "Confidence level" section's claim (medium-high on the mechanism, low on "ready without changes") is supported by the three numbered gaps immediately above it - re-checked that each of the three gaps is actually present in the risk list before the confidence line references "three of the five gaps," not four or two.
-- The two lower-severity notes (schema re-run cost, event-loop-blocking exposure) are correctly kept separate from the three "must-fix" gaps in both the body and the confidence-level framing - not conflated into one undifferentiated list.
+- The two lower-severity notes (schema re-run cost, event-loop-blocking exposure) are correctly distinguished from the three "must-fix" gaps by their own prose and by the confidence-level framing (adversarial-review correction: the main doc's "Real risks / gaps" section is one continuous numbered list, not two separate subsections - the differentiation is in wording, not structure; the original "kept separate... not conflated" phrasing overstated how the doc is organized).
 
 ## What this audit does NOT cover, stated so a reader doesn't assume otherwise
 
