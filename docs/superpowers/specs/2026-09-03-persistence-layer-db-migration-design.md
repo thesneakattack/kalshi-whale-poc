@@ -3,11 +3,12 @@
 **Stage:** design/spec, per CLAUDE.md's "nothing advances on one pass" pipeline
 (research → design/spec → implementation plan). Input: the research doc
 (`docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`, PR #504,
-merged, PR-stage review GO) plus two assigned feeder documents not yet merged —
-`docs/persistence-layer-baseline-2026-09-03.md` (`feat/persistence-layer-baseline-measurement`,
-commit `4130eb6`) and `docs/db-foundation-audit-2026-09-03.md` (`feat/db-foundation-audit`,
-commit `d783877`). Output of this stage: a design this document's own review cycle clears GO,
-which a later, separate implementation-plan stage then turns into ordered, testable tasks.
+merged, PR-stage review GO) plus two assigned feeder documents — originally cited as unmerged
+at drafting time, **now also merged** (PR-stage correction): `docs/persistence-layer-baseline-2026-09-03.md`
+(PR #509, merge commit `bbebbbe`) and `docs/db-foundation-audit-2026-09-03.md` (PR #507, merge
+commit `6635815`) — both now on `main` alongside their own review cycles. Output of this stage:
+a design this document's own review cycle clears GO, which a later, separate implementation-plan
+stage then turns into ordered, testable tasks.
 
 **PR-stage correction — a fourth input this document should have cited from the start, found by
 this PR's own required adversarial review reading the whole document end to end**: `main`
@@ -181,7 +182,20 @@ implementation plan should explicitly re-target Tasks 3/5/6 (or their equivalent
 The db-foundation-audit and this document's own adversarial review, both reading `services/db.py`
 at `17b2e8f` directly (not assumed), found the following. Since the reference shape above is not
 a straight adoption of the prototype, each item is restated against the reference shape, not the
-prototype verbatim:
+prototype verbatim.
+
+**Pointer, deliberately not expanded here**: a follow-on branch off the same prototype,
+`fix/db-foundation-must-fix-tests` (commit `e74096a`, confirmed one commit ahead of `17b2e8f`),
+already attempts fixes for some of the items below — but it is still built on the prototype's
+original path-keyed registry (still carries the C2 defect this document's own revision exists to
+avoid) and pre-dates this document's reference-shape decision. It is **input to the
+implementation plan's Task 1, not itself Task 1** — which parts of its work are reusable (its
+test *scenarios*, not its registry implementation) is a plan-stage judgment call, made there with
+the full context of what it does and doesn't carry over, not decided in this design document.
+
+1. **Must-fix — silent schema-registration conflict.** Confirmed present in the prototype
+   (`db.py:39-41`, first-write-wins, silent, no error/log line) and addressed directly in the
+   reference shape above (`register_schema` raises on a genuine conflict). Real risk given
 
 1. **Must-fix — silent schema-registration conflict.** Confirmed present in the prototype
    (`db.py:39-41`, first-write-wins, silent, no error/log line) and addressed directly in the
@@ -292,16 +306,17 @@ undercounts the true footprint slightly, but not the way the first draft claimed
   `tools/quality_coordination.py` is itself confirmed a standalone CLI tool too (`python -m
   tools.quality_coordination`, zero references from `main.py` or `services/` — never imported
   into the long-running FastAPI process), so the priority reasoning is unaffected, but the
-  migration task's own scope spans three files (`coordination_engine.py`,
-  `tools/quality_coordination.py`, `tests/test_coordination_engine.py`), not one module plus its
-  tests. This is the one module in scope whose call-site *shape* (not just its schema/DDL) must
+  migration task's own scope spans six files (`coordination_engine.py`,
+  `tools/quality_coordination.py`, and the four test files named in the Gate 1 addition below),
+  not one module plus a single test file. This is the one module in scope whose call-site
+  *shape* (not just its schema/DDL) must
   be part of its own migration task — Gate 1
   below is updated to say so explicitly rather than assuming "leaking" implies the same
   with-statement shape every other module uses. **Add to migration scope, lowest priority**
   (opportunistic, same tracking treatment as the general bucket, not urgent) — the priority
   ranking is unchanged (this is still not a production fd-exhaustion risk to the long-running
-  app), only the migration task's own scope (touch `tools/quality_coordination.py` and
-  `tests/test_coordination_engine.py` too, not just the module itself) is corrected.
+  app), only the migration task's own scope (touch `tools/quality_coordination.py` and all four
+  test files named below, not just the module itself and one test file) is corrected.
 - **`services/backup/backup.py`** — split-pattern (its primary `_connect()` leaks; a separate
   `src_conn`/`dest_conn` pair used for the backup-copy operation already closes correctly).
   **Already in PR #484's Task 7 tracking list** — confirmed by reading that list directly
@@ -456,15 +471,20 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
   own equivalent) before assuming the migration is call-site-transparent. The sign-off census
   behind this design (111/111 with-shape call sites) covered production call sites within the
   26 in-scope modules' own files only — it does not cover a case like
-  `tools/coordination_engine.py`'s, whose 24 real callers (22 in `tests/test_coordination_engine.py`,
-  2 in a separate production file, `tools/quality_coordination.py:584,657`) all use a **bare
-  assignment** (`conn = ce._connect()`), not a `with` block. Migrating that module to a
-  context-manager-returning `_connect()` without updating all 24 call sites across all three
-  files would break every one of them (`conn.execute(...)` on a generator-context-manager
-  object, not a connection) — the one module in scope where this gate's own default assumption
-  doesn't hold, and where a same-directory-only or tests-only grep would have missed real
-  callers (confirmed the hard way: an earlier revision of this very document made exactly that
-  mistake before an independent peer session's direct read caught it).
+  `tools/coordination_engine.py`'s, whose 24 real callers, **verified by repo-wide grep, not
+  assumed** (`grep -rn '_connect()' tests/ tools/ --include='*.py' | grep coordination | grep -v
+  'def _connect'`), span **six** files, not one module plus one test file: 2 production sites in
+  `tools/quality_coordination.py` (`:584`, `:657`) and 22 test sites spread across **four**
+  separate test files — `tests/test_coordination_engine.py` (15), `tests/test_quality_coordination_branch_domain.py`
+  (4), `tests/test_quality_coordination_cli.py` (2), `tests/test_quality_coordination_cleanup_actions.py`
+  (1) — all 24 using a **bare assignment** (`conn = ce._connect()`), not a `with` block. Migrating
+  that module to a context-manager-returning `_connect()` without updating all 24 call sites
+  across all six files would break every one of them (`conn.execute(...)` on a
+  generator-context-manager object, not a connection) — the one module in scope where this
+  gate's own default assumption doesn't hold, and where a same-directory-only or single-test-file
+  grep would have missed real callers (confirmed the hard way, twice: two successive revisions
+  of this very document each corrected the count while still under-scoping which files it
+  actually touched, before independent peer sessions' direct reads caught both).
 - Confirm whether the module's connect function is ever called from the FastAPI event loop
   directly; if so, the migrated call site must keep routing through `tick_executor.run()` or
   equivalent — this migration must not reintroduce the event-loop-blocking bug class Tier0/P1
