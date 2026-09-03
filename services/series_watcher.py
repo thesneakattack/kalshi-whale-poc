@@ -58,6 +58,7 @@ Everything degrades honestly: a stage that cannot be computed reports None
 with a stated reason, never a filled-in guess. This module exists to be
 trusted when the dashboard's numbers are already in doubt.
 """
+import contextlib
 import json
 import sqlite3
 import threading
@@ -65,6 +66,7 @@ import time
 from pathlib import Path
 
 from services import capture_writer
+from services import db
 from services import fault_log
 from services import kalshi_fees
 from services import signal_log
@@ -148,83 +150,108 @@ _dropped_rows = 0
 _quarantine_cache: tuple[float, bool] | None = None
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # Same WAL rationale as signal_log/paper_broker: this table is written
-    # from the websocket hot path, which is exactly the bursty-writer
-    # pattern that took the app down under rollback-journal mode on
-    # 2026-08-11.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(capture_writer.RAW_TRADES_DDL_SQL)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS book_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,
-            series TEXT NOT NULL,
-            observed_at REAL NOT NULL,
-            exchange_ts REAL,
-            price_dollars REAL,
-            yes_bid_dollars REAL,
-            yes_ask_dollars REAL,
-            yes_bid_size_fp REAL,
-            yes_ask_size_fp REAL,
-            volume_fp REAL,
-            open_interest_fp REAL,
-            dollar_volume REAL,
-            dollar_open_interest REAL,
-            last_trade_size_fp REAL,
-            raw_json TEXT NOT NULL
-        )
-        """
+# 2026-09-03, Task 4 of the persistence-layer db.py migration: extracted
+# from what were two hand-duplicated inline copies (one in the old sync
+# _connect(), one in _ensure_schema_aio below) - pre-existing duplication,
+# not introduced by this migration. D1 says _ensure_schema_aio stays
+# untouched by this migration; this extraction is a deliberate, named
+# exception to that (one-line-per-statement substitution, no behavior
+# change) because migrating only the sync side onto a registered init_fn
+# while leaving the async side's copy in place would have split the
+# existing duplication across two different mechanisms - a registered
+# callback vs. a hand-kept-in-sync function - which is a worse drift
+# hazard than today's "duplicated but adjacent in one file" state. Flagged
+# explicitly in this task's own PR for the reviewer to weigh, not slid
+# past silently.
+_BOOK_SNAPSHOTS_DDL_SQL = """
+    CREATE TABLE IF NOT EXISTS book_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        series TEXT NOT NULL,
+        observed_at REAL NOT NULL,
+        exchange_ts REAL,
+        price_dollars REAL,
+        yes_bid_dollars REAL,
+        yes_ask_dollars REAL,
+        yes_bid_size_fp REAL,
+        yes_ask_size_fp REAL,
+        volume_fp REAL,
+        open_interest_fp REAL,
+        dollar_volume REAL,
+        dollar_open_interest REAL,
+        last_trade_size_fp REAL,
+        raw_json TEXT NOT NULL
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_book_ticker ON book_snapshots (ticker, observed_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_book_series ON book_snapshots (series, observed_at)")
-    return conn
+"""
+_IDX_BOOK_TICKER_SQL = "CREATE INDEX IF NOT EXISTS idx_book_ticker ON book_snapshots (ticker, observed_at)"
+_IDX_BOOK_SERIES_SQL = "CREATE INDEX IF NOT EXISTS idx_book_series ON book_snapshots (series, observed_at)"
+_IDX_RAW_TRADES_SERIES_SQL = "CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)"
+_IDX_RAW_TRADES_TICKER_SQL = "CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)"
+
+
+def _init_book_snapshots(conn: sqlite3.Connection) -> None:
+    conn.execute(_BOOK_SNAPSHOTS_DDL_SQL)
+
+
+db.register_schema("raw_trades", capture_writer.init_raw_trades)
+db.register_schema("book_snapshots", _init_book_snapshots)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). The four
+    CREATE INDEX statements aren't expressible in a table's registered
+    init_fn (index creation isn't table schema), so this wrapper still runs
+    them itself. _ensure_schema_aio() below (async, _aio_db.connection_for()'s
+    cached path) is functionally untouched by this migration - same DDL,
+    same behavior - except its inline book_snapshots copy now references
+    the shared _BOOK_SNAPSHOTS_DDL_SQL constant above instead of a second
+    hand-kept-in-sync literal; see that constant's own comment for why.
+
+    Correction to this task's own original commit message, which claimed
+    "execution order unchanged" - that was true for _ensure_schema_aio (its
+    own statement order was verified unchanged) but not for this function:
+    db.connect()'s own `for table in tables: _SCHEMAS[table](conn)` loop
+    runs BOTH registered init_fns (raw_trades' CREATE TABLE, then
+    book_snapshots' CREATE TABLE) before this function's own body - the
+    four CREATE INDEX statements below - ever runs. The pre-migration order
+    interleaved each table with its own indexes (raw_trades, its 2
+    indexes, book_snapshots, its 2 indexes); the post-migration order is
+    both CREATE TABLEs first, then all four indexes. Confirmed safe: every
+    statement here is IF NOT EXISTS-guarded, no index has a foreign-key or
+    other cross-table dependency on execution order, and
+    test_connect_still_creates_both_tables_and_all_four_indexes passes
+    regardless of order since it only asserts final-state existence, not
+    a specific creation sequence."""
+    with db.connect(DB_PATH, tables=("raw_trades", "book_snapshots")) as conn:
+        conn.execute(_IDX_RAW_TRADES_SERIES_SQL)
+        conn.execute(_IDX_RAW_TRADES_TICKER_SQL)
+        conn.execute(_IDX_BOOK_TICKER_SQL)
+        conn.execute(_IDX_BOOK_SERIES_SQL)
+        yield conn
 
 
 async def _ensure_schema_aio(conn) -> None:
     """Same DDL as _connect() above, run once per (loop, db_path) key via
-    _aio_db.connection_for()'s schema_init hook - _connect() itself stays
-    untouched (still used by every write-path function this plan doesn't
-    convert). Shares capture_writer.RAW_TRADES_DDL_SQL with _connect()
-    (2026-09-03, Task 3c of docs/superpowers/plans/2026-09-03-tier1-
-    backend-hygiene.md) rather than a hand-kept-in-sync second copy - the
-    plain SQL string works identically for both conn.execute(sql) (sync)
-    and await conn.execute(sql) (aiosqlite), since only the caller's
-    execute differs, not the string itself; both paths are exercised by
+    _aio_db.connection_for()'s schema_init hook. Shares
+    capture_writer.RAW_TRADES_DDL_SQL and this module's own
+    _BOOK_SNAPSHOTS_DDL_SQL/_IDX_*_SQL constants with _connect() (2026-09-03,
+    Task 4 of the persistence-layer db.py migration - see those constants'
+    own comment for why this function's book_snapshots copy was extracted
+    too, a deliberate, named exception to D1's "async path stays untouched"
+    default) rather than a hand-kept-in-sync second copy - the plain SQL
+    string works identically for both conn.execute(sql) (sync) and await
+    conn.execute(sql) (aiosqlite), since only the caller's execute differs,
+    not the string itself; both paths are exercised by
     tests/test_series_watcher.py."""
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(capture_writer.RAW_TRADES_DDL_SQL)
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS book_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,
-            series TEXT NOT NULL,
-            observed_at REAL NOT NULL,
-            exchange_ts REAL,
-            price_dollars REAL,
-            yes_bid_dollars REAL,
-            yes_ask_dollars REAL,
-            yes_bid_size_fp REAL,
-            yes_ask_size_fp REAL,
-            volume_fp REAL,
-            open_interest_fp REAL,
-            dollar_volume REAL,
-            dollar_open_interest REAL,
-            last_trade_size_fp REAL,
-            raw_json TEXT NOT NULL
-        )
-        """
-    )
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_book_ticker ON book_snapshots (ticker, observed_at)")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_book_series ON book_snapshots (series, observed_at)")
+    await conn.execute(_IDX_RAW_TRADES_SERIES_SQL)
+    await conn.execute(_IDX_RAW_TRADES_TICKER_SQL)
+    await conn.execute(_BOOK_SNAPSHOTS_DDL_SQL)
+    await conn.execute(_IDX_BOOK_TICKER_SQL)
+    await conn.execute(_IDX_BOOK_SERIES_SQL)
 
 
 def _cfg_section(cfg: dict | None) -> dict:

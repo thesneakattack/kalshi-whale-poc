@@ -678,3 +678,90 @@ def test_connect_uses_the_shared_raw_trades_ddl(tmp_path, monkeypatch):
     with sw._connect() as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(raw_trades)").fetchall()]
     assert "trade_id" in cols and "raw_json" in cols and len(cols) == 16
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "series_watcher.db")
+    monkeypatch.setattr(sw.db.sqlite3, "connect", _tracking_connect)
+    with sw._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_both_tables_and_all_four_indexes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "sw.db")
+    with sw._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert {"raw_trades", "book_snapshots"} <= tables
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+        assert {
+            "idx_raw_trades_series", "idx_raw_trades_ticker",
+            "idx_book_ticker", "idx_book_series",
+        } <= indexes
+
+
+def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "sw.db")
+    with sw._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_sync_and_async_schema_paths_share_the_same_book_snapshots_ddl(tmp_path, monkeypatch):
+    """The book_snapshots DDL (table + both indexes) must come from the same
+    module-level constants on both the sync init_fn and _ensure_schema_aio -
+    a real, pre-existing hand-duplication (not introduced by this migration,
+    confirmed via the coordinator's own review of the pre-flight) that this
+    task's extraction removes as a side effect, per D1's tension explicitly
+    named in this PR: _ensure_schema_aio is touched (one substitution, no
+    behavior change) specifically to stop the duplication from surviving
+    split across two different mechanisms post-migration."""
+    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "sync.db")
+    with sw._connect() as conn:
+        sync_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_snapshots'"
+        ).fetchone()[0]
+
+    async def _run_async():
+        monkeypatch.setattr(sw, "DB_PATH", tmp_path / "async.db")
+        aio_conn = await sw._aio_db.connection_for(sw.DB_PATH, schema_init=sw._ensure_schema_aio)
+        row = await aio_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='book_snapshots'"
+        )
+        return (await row.fetchone())[0]
+
+    async_sql = asyncio.run(_run_async())
+    assert sync_sql == async_sql
