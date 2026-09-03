@@ -45,7 +45,7 @@ The audit flagged this as unresolved and explicitly warned against inferring it 
 `grep` (§12 open question 1, §3.4). Verified here against the actual call graphs, not a
 `grep` count.
 
-**`strategy_engine.evaluate()` itself (`services/strategy_engine.py:285-683`, read in
+**`strategy_engine.evaluate()` itself (`services/strategy_engine.py:285-684`, read in
 full): zero calls into `market_analyst_agent`.** The only reference to `market_analyst` in
 the file is `services/strategy_engine.py:63`, inside `kelly_scaled_max_size`'s docstring,
 listing `market_analyst.enabled` as an example of the "ships fully built, opt-in"
@@ -63,20 +63,29 @@ both the entry and exit paths — with materially different live weight on each 
   `analyst_factor`. That composite becomes `signal.confidence`, which
   `_validate_entry_price` gates on and `kelly_scaled_max_size` sizes with — so this *is*
   a real path into `evaluate()`'s decision, structurally. **But the live, currently
-  deployed weight is `config/settings.yaml:214`'s `whale_confidence_weights.analyst_factor:
+  deployed weight is `config/settings.yaml`'s `whale_confidence_weights.analyst_factor:
   0.0`** (vs. the code's own `DEFAULT_WEIGHTS["analyst_factor"] = 0.13`,
   `services/confidence_scoring.py:132`) — a deliberate override, not an oversight (the
-  same config block's comment, `config/settings.yaml:181-205`, documents a 2026-08-30
-  factor-by-factor audit that re-floored several other factors and left `analyst_factor`
-  at 0 "pending a human decision," `docs/open-decisions.md`). **Net effect: the code path
+  same config block carried a comment documenting a 2026-08-30 factor-by-factor audit
+  that re-floored several other factors and left `analyst_factor` at 0 "pending a human
+  decision," `docs/open-decisions.md` — **that comment is currently absent from the live
+  primary-repo `config/settings.yaml`, per an uncommitted in-progress edit already tracked
+  as "the third data-wipe of the same shape" in
+  `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §4.4; a reader
+  of the live file today would not find this justification written down, only in git
+  history/this worktree's checkout — the underlying `0.0` value itself is unaffected and
+  still confirmed live**). **Net effect: the code path
   runs on every print, but its output cannot currently move `signal.confidence` by even
-  one part in a thousand** — the weight is exactly zero, not merely small.
+  one part in a thousand** — the weight is exactly zero, not merely small. (Line numbers
+  for these `config/settings.yaml` keys are intentionally omitted throughout this
+  document — the file has already shifted twice under uncommitted UI-driven edits during
+  this design's own authoring window, per the adversarial review that checked this
+  section against the live primary-repo file, not just this worktree's committed copy.)
 - **Exit side (`auto_exit_enabled`, a real automated position-closing decision):**
-  `services/exits/exit_engine.py:571-578`'s `_exit_confidence()` reads the same
+  `services/exits/exit_engine.py:570-578`'s `_exit_confidence()` reads the same
   `analyst_lean()` (cached per-tick) into an `analyst_divergence` factor, weighted by
-  `strategy.auto_exit_analyst_weight`, **live-configured to `0.5`**
-  (`config/settings.yaml:97`) — not zero. `strategy.auto_exit_enabled` is also
-  **live `true`** (`config/settings.yaml:92`). So when `analyst_lean()` returns a value,
+  `strategy.auto_exit_analyst_weight`, **live-configured to `0.5`** — not zero.
+  `strategy.auto_exit_enabled` is also **live `true`**. So when `analyst_lean()` returns a value,
   it currently carries real, non-trivial weight (tied with `auto_exit_pnl_weight: 0.85`
   and `auto_exit_sentiment_weight: 1.5` in the same weighted average) in a decision that
   actually closes paper positions.
@@ -87,7 +96,7 @@ both the entry and exit paths — with materially different live weight on each 
   **only** by a human clicking "Analyze" on one specific market — "replaces the earlier
   automatic per-tick background scan ... nothing runs on a schedule anymore." Both call
   sites' own docstrings independently describe the neutral/absent case as "the
-  overwhelmingly common case, not an edge case" (`services/confidence_scoring.py:311`) —
+  overwhelmingly common case, not an edge case" (`services/confidence_scoring.py:312`) —
   i.e., in practice `analyst_lean()` returns `None` for the vast majority of ticks on the
   vast majority of tickers, regardless of either weight.
 
@@ -157,7 +166,7 @@ Re-checked directly for this document, not trusted from the audit's citation:
   directly, not merely cited: there is no rounding-fee or rebate arithmetic anywhere in
   that module. **`f(P)` as currently computed is a lower bound on net fee, confirmed
   against the primary source, not just the audit's paraphrase of it.**
-- **`docs/kalshi/get-series-list.md:172-183`** (read in full): the `FeeType` schema
+- **`docs/kalshi/get-series-list.md:198-208,260-271`** (read in full): the `FeeType` schema
   documents four values — `quadratic`, `quadratic_with_maker_fees`,
   `quadratic_with_combo_maker_fees` (all three described by the same "General Trading Fees
   Table," i.e., the 0.07·P·(1−P) formula, differing only in maker treatment — confirmed by
@@ -198,7 +207,8 @@ Three separate, additive measures — none of them alone is sufficient, which is
    `edge` against a threshold `min_edge`, where `min_edge` is deliberately set with the
    known lower-bound gap in mind, not at the fee formula's own value. `fee_rounding.md`'s
    worked example (a $0.055 fill) shows the rounding-fee component landing at roughly a
-   quarter of the trade fee's own magnitude in that example — not a general bound, just
+   third of the trade fee's own magnitude in that example ($0.001361/$0.003639 ≈ 0.374) —
+   not a general bound, just
    evidence the gap is a real, non-negligible fraction of the modeled fee, not a rounding
    artifact safe to ignore. Config field `strategy.edge_gate_fee_buffer_usd` (§5) adds a
    fixed per-contract pad to `f(ask_now)` before the comparison — conservative in the
@@ -216,11 +226,10 @@ Three separate, additive measures — none of them alone is sufficient, which is
    pre-existing confidence-only gates untouched — i.e., a `flat`-type market can still
    trade exactly as it does today (this design's other config field,
    `strategy.edge_gate_enabled`, governs whether the new gate applies at all; §5), it just
-   never gets to claim a positive-edge admission it cannot actually support. As of
-   2026-08-16's live sample this affects an unknown, currently-unmeasured number of series
-   (`kalshi_fees.py`'s own docstring: "no market/event in this app's own data has ever
-   resolved to it" as of that check) — worth re-confirming with a live count before this
-   ships to a plan, not assumed still true.
+   never gets to claim a positive-edge admission it cannot actually support. This affects
+   an unknown, currently-unmeasured number of series — `kalshi_fees.py`'s own docstring
+   states, undated, "no market/event in this app's own data has ever resolved to it" — worth
+   re-confirming with a live count before this ships to a plan, not assumed still true.
 
 What this explicitly does **not** do: claim to compute the true net fee. The rounding-fee
 and rebate components depend on the account's own accumulated per-order rounding state
@@ -398,7 +407,7 @@ from before the gate has run.
 
 ### 3.3 Placement relative to the existing gates, read from `evaluate()`'s actual current order
 
-Read in full (`services/strategy_engine.py:285-683`); the existing order is: (1) daily-loss
+Read in full (`services/strategy_engine.py:285-684`); the existing order is: (1) daily-loss
 kill switch, (2) already-resolved-market skip, (3) `live_markets_only`, (4)
 `close_window_sec` upper bound, (5) `min_seconds_to_close` lower bound, (6) the special-
 market (early-close/mutually-exclusive) conservative gate, (7) `excluded_series`, (8)
@@ -436,7 +445,10 @@ changes that. `evaluate()` already does other SQLite reads on this same path
 (`signal_log.series_stats`, `candidate_log.record_rejection`), so this isn't a new category
 of cost on this function, but it is worth measuring once implemented, per the data-plane
 HARD RULE's "any diagnostic or abstraction on the exchange-wide hot path is measured for
-runtime cost before it ships" — not asserted safe by analogy alone.
+runtime cost before it ships" — not asserted safe by analogy alone. **The same measurement
+requirement applies to §4's markout-capture sweep** (see §5's note on why that sweep is the
+one piece of this design's new surface that is *not* gated behind `edge_gate_enabled` and
+therefore runs, and costs something, unconditionally from ship day).
 
 ---
 
@@ -518,11 +530,21 @@ sweep exists.
 New fields under the existing `strategy:` block, following the flat, prefixed-key
 convention already established there (`auto_exit_*`, `longshot_*`) rather than a nested
 sub-object — matching `config/settings.yaml:71-120`'s existing shape, not inventing a new
-one. Every field defaults to a value that changes nothing about current behavior until
-deliberately turned on, the same "ships fully built, opt-in" precedent
-`kelly_fraction_of_cap: 0.0`(off) already sets and `strategy_engine.py:55-68`'s own
-docstring states explicitly ("At 0.0 (the default) this returns max_size unchanged -
-nothing about existing behavior changes unless deliberately turned on").
+one. Every one of the 8 fields in the table below defaults to a value that changes nothing
+about `_validate_entry_price`'s current gating/sizing behavior until deliberately turned
+on, the same "ships fully built, opt-in" precedent `kelly_fraction_of_cap: 0.0` (off)
+already sets and `strategy_engine.py:55-68`'s own docstring states explicitly ("At 0.0 (the
+default) this returns max_size unchanged - nothing about existing behavior changes unless
+deliberately turned on"). **This opt-in framing does not cover §4's markout-capture sweep**
+— per §8's own Risks disclosure, that sweep (the new `markouts` table plus `signal_log`/
+`candidate_log` extensions) runs unconditionally on its own interval from the moment this
+ships, regardless of `edge_gate_enabled`, costing one scheduled sweep's worth of SQLite
+writes. That is a deliberate exception to the opt-in pattern, not an oversight: markout
+data has to exist before there's anything to decide whether to turn the gate on with. It is
+still new, always-on runtime cost and needs its own `dimensional-analysis`-adjacent
+runtime-cost measurement before it ships, exactly as §3.3 already requires for
+`_validate_entry_price`'s new DB reads — both are new per-tick-or-per-print costs on the
+data-plane hot path, not only the gated ones.
 
 | field | default | why this default |
 |---|---|---|
@@ -693,8 +715,8 @@ implementation-stage work, not design-stage:**
   ordering on the same WS connection; this is stated as an assumption, per the never-guess
   HARD RULE, not asserted as checked.
 - I did not verify a live count of how many currently-tradeable series have `fee_type ==
-  "flat"` — `kalshi_fees.py`'s own docstring says "no market/event in this app's own data
-  has ever resolved to it" as of 2026-08-16, and I did not re-run that check against
+  "flat"` — `kalshi_fees.py`'s own docstring says, undated, "no market/event in this app's
+  own data has ever resolved to it," and I did not re-run that check against
   current `series_cache.db` data for this document (it would have required either a live
   DB query against the running app or a scan I judged out of scope for a design document
   that doesn't touch data) — flagged explicitly in §1.3 rather than left implicit.
