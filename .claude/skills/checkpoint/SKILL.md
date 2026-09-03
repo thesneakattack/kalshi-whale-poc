@@ -11,9 +11,16 @@ description: This skill should be used at natural breakpoints in a long working 
    implementation work pending, stop and create an initiative branch first
    (`.claude/rules/branching-and-ci.md`).
 
-2. **Verify.** The per-edit hook already ran each edited module's tests. Run
-   whatever else the change warrants — the full suite locally is fine when the
-   change is broad or risky; CI runs it regardless.
+2. **Verify.** The per-edit hook already ran each edited module's tests.
+   Run a targeted extra check if something specific still needs confirming
+   (a narrow set of tests, actively being debugged) — but don't run the
+   full suite locally for a broad/risky change "to be sure" (2026-09-03:
+   this was happening routinely, duplicating what step 6 already confirms
+   for free). If full-suite confidence is wanted before pushing, trigger it
+   on Woodpecker instead of locally: `scripts/woodpecker-trigger`, then
+   `scripts/woodpecker-status --pipeline N` (see CLAUDE.md's "Branching, CI,
+   sessions" section). CI runs the full suite regardless of what happens
+   here.
 
 3. **Review scope.** `git status` and `git diff --stat`: nothing unexpected
    staged (a stray `data/*.db`, `.env`, session scratch, unverified
