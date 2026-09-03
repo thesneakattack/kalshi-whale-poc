@@ -17,10 +17,19 @@ called by both `GET /api/reset/preview?candidate_log=true` and
 `SELECT COUNT(*) FROM rejection_events` with no `WHERE` clause when no range
 is given. **Measured directly, read-only, against the live
 `data/candidate_log.db`**: `rejection_events` has **22,596,141 rows**, and
-that one `COUNT(*)` takes **34,129.54 ms** — over 34 seconds. Since this
-route has no `await`/`tick_executor` anywhere, that entire 34 seconds runs
-synchronously on the FastAPI event loop: the trading loop, every WebSocket
-reader, and every other in-flight HTTP request are frozen for the duration,
+that one `COUNT(*)` took **34,129.54 ms** on a cold read — over 34 seconds.
+(Adversarial-review recheck, independently re-measured: a cold-cache run
+took 17,027 ms; two immediate repeats in the same warm process took 433 ms
+and 370 ms — this cost is real but genuinely cache-state-sensitive, not a
+fixed 34-second constant every time; both cold measurements land in the
+same "tens of seconds" severity band, and a companion route hitting the
+same table was independently, separately proven via live py-spy to block
+17-38s — see the `analytics/routes.py` precedent below — so "tens of
+seconds on a cold path" is the right characterization, not a precise single
+number.) Since this route has no `await`/`tick_executor` anywhere, that
+whole cost runs synchronously on the FastAPI event loop whenever it lands
+cold: the trading loop, every WebSocket reader, and every other in-flight
+HTTP request are frozen for the duration,
 identical in shape to the confirmed 13-minute stall PR #414 fixed for the
 capture-write path (different modules, same underlying bug class: a plain
 sync function with real disk I/O and no `await` point, called from `async
@@ -157,6 +166,27 @@ in-repo demonstration that "just offload it to more workers" is not
 free and has already been tried and measured worse once in this exact
 problem class.
 
+**An even closer precedent than PR #424, found on adversarial-review recheck
+and independently confirmed: `services/analytics/routes.py:104-129` already
+hit this exact bug, on this exact table.** `candidate_log.population_gate_summary()`
+(a different function, same `rejection_events` table) was "proven via a live
+py-spy stack trace to block the event loop for 17-38s on every call" (that
+route's own comment, `:105-107`) — the same order of magnitude as this
+doc's own 34-second `count_range()` measurement. The fix that shipped:
+`await tick_executor.run(lambda: candidate_log.population_gate_summary(...))`
+(`:127-129`) plus a 30-second TTL cache layered on top, because "offloading
+moved the ~4.8s scan off the event loop but didn't stop every dashboard poll
+from paying it" (`:114-116`). **This is a real, in-repo precedent for the
+exact table and exact severity this doc found — but it uses the plain,
+shared `services.tick_executor` pool** (`analytics/routes.py:26`'s import,
+confirmed directly), **not an isolated one**, which per PR #409's own logic
+means this existing route may *already* carry the starvation risk described
+above, just not yet identified as such. Whether that's an accepted,
+already-reasoned-through tradeoff (analytics polling vs. trading writes) or
+an open gap is a genuine open question for the fix/plan stage to resolve
+explicitly — not something this research pass concludes either way, but too
+directly relevant to leave unmentioned.
+
 **This reframes the real question `candidate_log.count_range()`/
 `clear_range()` need answered, not "which executor."** Why does a preview
 endpoint compute an *exact* `COUNT(*)` over all 22.6M `rejection_events`
@@ -184,18 +214,21 @@ own review cycle did — rather than defaulting to an awaited
 ## Realistic hit rate (nginx access log)
 
 Checked the live web container's retained log buffer directly (`docker logs
-ddev-kalshi-whale-poc-web`, 13,128 lines, spanning roughly 04:24–06:37 UTC
-today per the timestamps visible in the sample): **zero occurrences of
-`/api/reset`, `/api/reset/preview`, or `/api/reset/history` in that entire
-window.** Consistent with this being a deliberately-triggered "Danger Zone"
+ddev-kalshi-whale-poc-web`, 13,128 lines; adversarial-review recheck
+corrected the window — it actually spans **2026-09-02 16:38:45 to
+2026-09-03 06:37:14, roughly 14 hours**, not the ~2h originally stated
+here): **zero occurrences of `/api/reset`, `/api/reset/preview`, or
+`/api/reset/history` in that entire 14-hour window.** Consistent with this
+being a deliberately-triggered "Danger Zone"
 UI action (per this module's own docstring/`ResetBody` comments) rather than
 anything polled routinely — unlike `/api/candidate-log/summary` or
 `/api/quality/summary`, which the earlier de-polling work found firing
 every 6 seconds. **Low frequency, not low severity**: a real user opening
 the Danger Zone panel with the candidate-log checkbox on, or confirming a
-reset with it set, pays the full 34+ second freeze every single time they
-do — it just hasn't happened to be captured in this particular ~2-hour
-log window, not evidence it doesn't happen at all.
+reset with it set, pays a freeze on the order of tens of seconds cold (or
+low-hundreds-of-ms warm, per the cache-state re-measurement above) every
+time they do — it just hasn't happened to be captured in this particular
+14-hour log window, not evidence it doesn't happen at all.
 
 ## Summary for whoever picks up the fix/plan stage
 
@@ -223,6 +256,7 @@ log window, not evidence it doesn't happen at all.
   approximate-count convention is a real, already-shipped model for this —
   and only reach for a **dedicated** pool (never `tick_executor`'s shared
   one) if an offload is still needed after that.
-- Low observed real-traffic frequency (zero in a ~2-hour window) doesn't
-  reduce the severity of a single occurrence — worth fixing on its own
-  merits, not deprioritized because it's rare.
+- Low observed real-traffic frequency (zero in a ~14-hour window,
+  2026-09-02 16:38:45 → 2026-09-03 06:37:14) doesn't reduce the severity
+  of a single occurrence — worth fixing on its own merits, not
+  deprioritized because it's rare.
