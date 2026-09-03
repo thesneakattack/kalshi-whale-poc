@@ -84,22 +84,36 @@ across four test files.
   backlog starved every other coroutine including the tick loop's own
   continuation. Fixed in PR #526 by a global min-interval throttle
   (`kalshi.ticker_exit_check_min_interval_sec`, default 2.0) around that block;
-  measured 608 ms → 25 ms of blocking cost per simulated second. Worst-case exit
+  **at least an order-of-magnitude reduction in aggregate blocking cost**,
+  confirmed by two independent benchmarks (500-call synthetic loop) that agree
+  exactly on the call-count mechanism — 500/500 invocations reach the block
+  before the fix, 1/500 after, in both runs — but whose after-fix wall-clock
+  times diverge 8.3× (1.25 s vs 0.150 s for the same loop), attributed to
+  container-load variance between runs rather than a methodology difference.
+  Don't quote a specific multiplier (24×/230×) as fact. Worst-case exit
   latency is **unchanged** — `main.py`'s `safety_net_interval_sec` (30 s) already
   bounded it and shares no state with the throttle. Historical peak symptoms, for
   recognising a recurrence: a **1,251 s tick**, positions stale 23 min, ingest
   `queue_depth` 19,656 against a 20,000 cap, `queue_wait` averaging 912 s.
-- **Issue #530 — 58 of 89 async route handlers block the event loop.** A census
-  of all 17 `routes.py` files plus `main.py` found blocking is the *dominant*
-  pattern in the route layer, not an exception. Worst confirmed: **`/api/quality/summary`
-  — 358 calls × ~30 s = ~3 h of blocked time, 15.4 % of a 19.6 h window with
-  nothing else served** (undispatched `alerting.active_alerts()`,
-  `fault_log.summary()`, `research.latest()`; note `diagnostics.run_offline()` is
-  **not** implicated — PR #424 already made it async). **Severity is not uniform
-  and the count is a poor guide:** `/api/state` is the most-polled endpoint yet
-  costs 0.06–0.52 s. Prioritise by cost × call-frequency. **Fixing all 58 is
-  explicitly not the recommendation** — see `tick_executor.connection_for()`'s
-  deliberate non-wiring and PR #424's built-then-reverted pool.
+- **Issue #530 — at least 63 of 88 async route handlers block the event loop**
+  (corrected from an earlier 58/89: the adversarial review found undercounts in
+  3 of 7 spot-checked files; "at least" because the detection method is pattern
+  matching and cannot see indirect calls — `services/quality/routes.py:40` reaches
+  a blocking read through `observability.runtime_findings()`, one level removed
+  from what the grep matched). A census of all 17 `routes.py` files plus `main.py`
+  found blocking is the *dominant* pattern in the route layer, not an exception.
+  Worst confirmed: **`/api/quality/summary` — 358 calls (18.3/hr) at 11.59–33.35 s
+  across 3 independent measurements, no caching found, ~1.2–3.3 event-loop-blocked
+  hours (6–17 % of the 19.6 h observation window) — a range built on variable
+  per-call cost, not a fixed constant** (undispatched `alerting.active_alerts()`,
+  `fault_log.summary()`, `research.latest()`, and the indirect `runtime_findings()`
+  path above; note `diagnostics.run_offline()` is **not** implicated — PR #424
+  already made it async). **Severity is not uniform and the count is a poor
+  guide:** `/api/state` is the most-polled endpoint yet costs 0.06–0.52 s.
+  Prioritise by cost × call-frequency, using the nginx access log for frequency,
+  not intuition. **Fixing all 63 is explicitly not the recommendation** — see
+  `tick_executor.connection_for()`'s deliberate non-wiring and PR #424's
+  built-then-reverted pool. Full census: PR #537 (open).
 - **Issue #532 — `rejection_events` (22.6 M rows) is one table outgrowing three
   access patterns**, not three independent findings: the 34 s `count_range`
   (#510/#512), a `population_gate_summary()` scan that went ~4.8 s → 24–31 s as
@@ -129,14 +143,28 @@ twice and replacing the worker. Diagnose any unexplained reload with
 **Merging is not deploying.** `gh pr merge` is remote-side; the live app runs
 from the primary's working tree, which only changes when someone pulls — and
 that pull *is* the deploy, since it rewrites the bind mount and fires the
-reload. A merged PR can sit un-deployed indefinitely. This already caused a full
-Gate 2 fd-verification to run against un-migrated code and nearly record a pass.
-Verify a deploy with **both** `git merge-base --is-ancestor <merge sha> HEAD`
-**and** a `WatchFiles detected changes in … <file>` line in `ddev logs -s fastapi`
-— only the log line proves the running process picked it up. Wait for the merge
-commit's own CI (it is a new, untested combination, not the already-green PR
-head), and never measure a worker in its first few minutes: `last_tick_duration_sec`
-reads `None` and `open_fds` is artificially low during warm-up.
+reload. A merged PR can sit un-deployed indefinitely. **This already happened**:
+after PR #522 merged, a coordinator-directed fd-leak check on `candidate_log.db`
+was run and read against a worker process that had already exited — the check's
+own PID-liveness method (inode ctime, which drifts and can misreport a running
+process's age) misidentified which process was current. The mistake was caught
+by cross-checking `/proc/<pid>/stat` field 22 (real start time) against
+`/proc/stat`'s `btime`, which identified the actual deployed worker; the check
+was then redone against that PID and passed cleanly. **This exchange lived only
+in cross-session chat, never a PR comment or doc** — exactly the gap the
+"persist code-PR reviews as comments" practice below exists to close; an
+adversarial reviewer of a later doc citing this could not corroborate it from
+the repo alone, which is itself evidence for why it needs saying here with this
+much specificity. Verify a deploy with **both**
+`git merge-base --is-ancestor <merge sha> HEAD` **and** a `WatchFiles detected
+changes in … <file>` line in `ddev logs -s fastapi` — only the log line proves
+the running process picked it up. Wait for the merge commit's own CI (it is a
+new, untested combination, not the already-green PR head), and never measure a
+worker in its first few minutes: `last_tick_duration_sec` reads `None` and
+`open_fds` is artificially low during warm-up. When identifying *which* process
+is the current worker, use `/proc/<pid>/stat` field 22 + `/proc/stat`'s `btime`
+for real start time — not inode ctime, and not a `docker top`-reported PID
+without confirming it resolves inside the container's own PID namespace.
 
 `docs/SESSION_CRASH_RECOVERY.md` holds the per-role onboarding procedure if a
 session is lost.
