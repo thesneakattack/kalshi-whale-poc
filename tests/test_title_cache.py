@@ -6,6 +6,109 @@ def _tc(tmp_path, monkeypatch):
     return tc
 
 
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as market_history.py's Task 2 - five call sites
+    in this module share one non-closing _connect(), and the live fd
+    census (2026-09-02) measured this file's handle count growing fastest
+    of any store (5 -> 148+ in under an hour).
+
+    Deviation from the plan's literal test body (docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md, Task 3 Step 1): the
+    plan's snippet monkeypatches the real connection's `.close` as an
+    instance attribute (`conn.close = _close`), which raises
+    `AttributeError: 'sqlite3.Connection' object attribute 'close' is
+    read-only` - verified directly against this repo's actual sqlite3
+    module (Python 3.13.15 in the fastapi container, same failure on the
+    host's 3.12.3, so not a version quirk of one environment), not merely
+    assumed from the plan text. This module's own tests/
+    test_pipeline_health_cost.py already established the working
+    alternative for tracking a real sqlite3 connection's close() calls: a
+    thin wrapper delegating everything via __getattr__ instead of
+    reassigning an attribute the C extension type won't allow."""
+    import sqlite3
+    tc_mod = _tc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _CloseTrackingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _CloseTrackingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(tc_mod.sqlite3, "connect", _tracking_connect)
+
+    with tc_mod._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    the try/finally only wraps `with conn: yield conn`, not the PRAGMA/
+    CREATE TABLE/_add_column_if_missing setup before it - a setup failure
+    would otherwise leave `conn` open with nothing left to close it. This
+    module has no single _init_schema() to monkeypatch (setup is inline
+    conn.execute() calls plus several _add_column_if_missing() calls), so
+    this test makes the very first execute() (the PRAGMA) raise."""
+    import sqlite3
+    tc_mod = _tc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _CloseTrackingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _CloseTrackingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(tc_mod.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with tc_mod._connect():
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"
+
+
 # --- market_title_fields() - the shared title/sub-title builder --------------
 # Previously reimplemented independently in three places (main.py's
 # new_market_titles builder, /api/markets/search, and market_catalog.

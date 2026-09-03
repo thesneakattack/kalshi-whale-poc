@@ -225,3 +225,73 @@ def test_update_preserves_comments_on_an_untouched_section(tmp_path):
     store.update({"settlement_edge_entry": {"enabled": True}})
 
     assert "# a completely unrelated section" in path.read_text()
+
+
+def test_update_preserves_a_comment_trailing_a_nested_dict_field(tmp_path):
+    """The real incident (docs/open-decisions.md, 3 documented comment
+    wipes; §4.4 of docs/superpowers/research/2026-09-02-architecture-audit-
+    second-pass.md): a comment sitting immediately after a NESTED dict
+    field's last entry (not a top-level scalar - the two existing comment
+    tests above don't cover this shape) was destroyed because update()'s
+    one-level dict.update() replaces that nested dict's VALUE wholesale
+    with a brand-new plain dict object, even though the PARENT map object
+    is never replaced. Reproduces the real config-panel.js patch shape for
+    whale_watcher_kalshi.min_contracts_by_series exactly."""
+    path = tmp_path / "settings.yaml"
+    _write_text(path, (
+        "whale_watcher_kalshi:\n"
+        "  enabled: true\n"
+        "  min_contracts: 5000\n"
+        "  min_contracts_by_series:\n"
+        "    KXBTC15M: 100\n"
+        "    KXETH15M: 90\n"
+        "# calibration-audit comment block\n"
+        "# second line\n"
+        "whale_confidence_weights:\n"
+        "  depth_factor: 0.04\n"
+    ))
+    store = ConfigStore(path=path)
+
+    store.update({
+        "whale_watcher_kalshi": {
+            "min_contracts": 5000.0,
+            "min_contracts_by_series": {"KXBTC15M": 100.0, "KXETH15M": 90.0},
+        },
+    })
+
+    on_disk = path.read_text()
+    assert "# calibration-audit comment block" in on_disk
+    # The values really did round-trip through the patch, not a no-op.
+    assert store.get()["whale_watcher_kalshi"]["min_contracts_by_series"]["KXBTC15M"] == 100.0
+    # enabled (untouched by this patch, and not part of the
+    # min_contracts_by_series allowlist) must survive unchanged - the
+    # regression this task's own second experiment found in a naive
+    # "delete every stale key at every level" fix.
+    assert store.get()["whale_watcher_kalshi"]["enabled"] is True
+
+
+def test_update_replaces_min_contracts_by_series_keys_entirely_not_merges_them(tmp_path):
+    """whale_watcher_kalshi.min_contracts_by_series is the one field
+    config-panel.js always resends as a complete rebuilt map from a text
+    input (Object.fromEntries over the whole comma-separated field) - a
+    series removed from that field must actually disappear from the saved
+    config, not linger as an orphaned stale key (which a naive "merge,
+    never delete" fix at every level would produce)."""
+    path = tmp_path / "settings.yaml"
+    _write_text(path, (
+        "whale_watcher_kalshi:\n"
+        "  min_contracts_by_series:\n"
+        "    KXBTC15M: 100\n"
+        "    KXETH15M: 90\n"
+    ))
+    store = ConfigStore(path=path)
+
+    store.update({
+        "whale_watcher_kalshi": {
+            "min_contracts_by_series": {"KXBTC15M": 200.0, "KXSOL15M": 50.0},
+        },
+    })
+
+    result = store.get()["whale_watcher_kalshi"]["min_contracts_by_series"]
+    assert result == {"KXBTC15M": 200.0, "KXSOL15M": 50.0}
+    assert "KXETH15M" not in result

@@ -156,3 +156,130 @@ def test_prune_returns_the_deleted_row_count():
     fl.record("c", "op", _boom("fresh"), now=now - 1 * 3600)
 
     assert fl.prune(retention_hours=336, now=now) == 2
+
+
+def test_connect_closes_its_connection(monkeypatch):
+    """Same fd-leak class as Tasks 2-5 - fault_log.py's own _connect() had
+    the identical non-closing shape, and this module is the one CLAUDE.md
+    tells every session to read first (services/fault_log.py's own callers
+    include GET /api/health/faults, one of only two routes this plan's own
+    live re-verification found stuck). DB_PATH is already redirected by
+    this file's autouse _isolated fixture - no need to set it here.
+
+    Deviates from the plan's literal snippet (`conn.close = _close`
+    monkeypatched directly onto the connection instance): verified live in
+    this container (Python 3.13.15, sqlite3 module 2.6.0) that
+    `sqlite3.Connection` instances have no `__dict__`
+    (`'sqlite3.Connection' object has no attribute 'foo' and no __dict__
+    for setting new attributes`), so instance-attribute assignment of
+    `close` raises `AttributeError: attribute 'close' is read-only` before
+    the test body even runs - not the intended `closed == []` assertion
+    failure. Patching `sqlite3.Connection.close` at the class level also
+    fails (`TypeError: cannot set 'close' attribute of immutable type
+    'sqlite3.Connection'` - it's a non-heap C type). A thin wrapper
+    returned in place of the real connection is the only working
+    substitute that still exercises the exact call sequence `_connect()`
+    performs (`with conn: yield conn` then `conn.close()` in `finally`)."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConn:
+        def __init__(self, real):
+            self.__dict__["_real"] = real
+
+        def __getattr__(self, name):
+            return getattr(self.__dict__["_real"], name)
+
+        def __enter__(self):
+            self.__dict__["_real"].__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.__dict__["_real"].__exit__(*exc)
+
+        def close(self):
+            closed.append(True)
+            self.__dict__["_real"].close()
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConn(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(fl.sqlite3, "connect", _tracking_connect)
+
+    with fl._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    fault_log.py's _connect() has no separate _init_schema() to monkeypatch
+    (its CREATE TABLE/INDEX statements are inline conn.execute() calls), so
+    this test makes the very first execute() (the PRAGMA) raise instead -
+    the try/finally must still close the connection even when the first
+    setup statement fails, not just when yield's body raises."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConn:
+        def __init__(self, real):
+            self.__dict__["_real"] = real
+
+        def __getattr__(self, name):
+            return getattr(self.__dict__["_real"], name)
+
+        def __enter__(self):
+            self.__dict__["_real"].__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.__dict__["_real"].__exit__(*exc)
+
+        def close(self):
+            closed.append(True)
+            self.__dict__["_real"].close()
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConn(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(fl.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with fl._connect():
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"
+
+
+def test_record_fault_stores_an_explicit_traceback():
+    """record_fault's tb param (added by Task 1 of docs/superpowers/plans/
+    2026-09-03-tier1-backend-hygiene.md) stores a pre-formatted stack/
+    traceback string into the same first_traceback slot record() populates
+    from a real exception - for a captured stack (loop_watchdog's stall
+    attribution), not a raised one."""
+    fl.record_fault("test_component", "test_op", "something worth knowing",
+                     tb="Traceback (most recent call last):\n  fake stack\n")
+    row = fl.recent(component="test_component", limit=1)[0]
+    assert row["first_traceback"] == "Traceback (most recent call last):\n  fake stack\n"
+
+
+def test_record_fault_tb_defaults_to_none_for_every_existing_caller():
+    """Every one of this function's other 10+ call sites omits tb - this
+    pins that omitting it still behaves exactly as before (first_traceback
+    stays NULL), so this additive param cannot be a silent behavior change
+    for anything that doesn't pass it."""
+    fl.record_fault("test_component2", "test_op2", "no traceback here")
+    row = fl.recent(component="test_component2", limit=1)[0]
+    assert row["first_traceback"] is None

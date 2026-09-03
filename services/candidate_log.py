@@ -83,44 +83,12 @@ def _connect() -> sqlite3.Connection:
     # that took the app down (trade-tape volume overwhelming a per-call
     # sqlite3.connect()). idempotent - safe to run on every connect.
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rejected_candidates (
-            ticker TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            gate_name TEXT NOT NULL,
-            observed_value REAL,
-            threshold_value REAL,
-            side TEXT,
-            rejected_at REAL NOT NULL,
-            resolved INTEGER NOT NULL DEFAULT 0,
-            result TEXT,
-            resolved_at REAL,
-            PRIMARY KEY (ticker, strategy, gate_name)
-        )
-        """
-    )
+    conn.execute(capture_writer.REJECTED_CANDIDATES_DDL_SQL)
     # No PRIMARY KEY / dedup on (ticker, strategy, gate_name) - deliberately
     # the opposite of rejected_candidates above, so this is the true
     # population every individual rejection, not one row per key. See this
     # module's own "POPULATION STATISTICS" docstring section.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rejection_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            gate_name TEXT NOT NULL,
-            observed_value REAL,
-            threshold_value REAL,
-            side TEXT,
-            rejected_at REAL NOT NULL,
-            resolved INTEGER NOT NULL DEFAULT 0,
-            result TEXT,
-            resolved_at REAL
-        )
-        """
-    )
+    conn.execute(capture_writer.REJECTION_EVENTS_DDL_SQL)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
     )

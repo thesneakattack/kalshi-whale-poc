@@ -154,7 +154,42 @@ def test_backfill_index_stores_the_returned_points_and_updates_stats():
     async def fetch_history(index_id, start_ts, end_ts):
         return points
 
-    result = asyncio.run(backfill.backfill_index("BRTI", gap, fetch_history))
+    async def scenario():
+        res = await backfill.backfill_index("BRTI", gap, fetch_history)
+        # The flush is scheduled via asyncio.create_task (event-loop-
+        # blocking elimination Fix 1) rather than run inline or awaited -
+        # backfill_index returns before it has necessarily run at all.
+        # issue #485: a bare `asyncio.run()` around just backfill_index,
+        # followed by an unconditional `ingestion.flush()` "safety net"
+        # call, is NOT a reliable substitute for actually waiting on that
+        # task - real, root-caused race (not a flake): the scheduled task
+        # can get far enough under real scheduling pressure to grab-and-
+        # clear ingestion._tick_buffer (tick_executor.run's
+        # loop.run_in_executor dispatches to a real background OS thread
+        # that keeps running independent of the event loop's own
+        # lifecycle) without having finished its SQLite write/commit yet,
+        # by the time asyncio.run() tears the loop down and the
+        # fallback flush()+DB read run immediately after on the main
+        # thread - the fallback then correctly sees an already-emptied
+        # buffer and no-ops, and the read can land before the background
+        # thread's write actually commits. Confirmed via direct
+        # instrumentation (thread name + timestamp at every flush() call)
+        # that in an unloaded environment the scheduled task never gets a
+        # turn before the fallback handles it (30/30 local passes); under
+        # real CI parallel-worker CPU contention the window widens enough
+        # to occasionally land the other way (reproduced live in CI
+        # pipeline 416, gw3, commit 0b69117).
+        #
+        # The actual fix: explicitly await whatever backfill_index
+        # scheduled, inside the SAME event loop, before this coroutine
+        # (and the loop) winds down - not a race against a fire-and-forget
+        # task, a real wait for it.
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            await asyncio.gather(*pending)
+        return res
+
+    result = asyncio.run(scenario())
 
     assert result["rows"] == 2
     assert result["error"] is None
@@ -162,13 +197,6 @@ def test_backfill_index_stores_the_returned_points_and_updates_stats():
     assert s["attempts"] == 1 and s["successes"] == 1 and s["failures"] == 0
     assert s["rows_backfilled"] == 2
     assert s["last_result"]["rows"] == 2
-
-    # The flush is scheduled via asyncio.create_task (event-loop-blocking
-    # elimination Fix 1) rather than run inline - asyncio.run() above
-    # doesn't wait for outstanding tasks once backfill_index itself
-    # returns, so call flush() explicitly here to check real persistence
-    # (harmless/idempotent if the scheduled task already ran first).
-    ingestion.flush()
 
     with __import__("sqlite3").connect(ingestion.DB_PATH) as conn:
         conn.row_factory = __import__("sqlite3").Row

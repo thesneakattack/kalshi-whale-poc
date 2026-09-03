@@ -57,6 +57,24 @@ def test_recent_returns_newest_first():
     assert [r["message"] for r in rows] == ["second", "first"]
 
 
+def test_record_alert_retains_a_strong_reference_to_its_dispatch_task():
+    """Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
+    hygiene.md - Python's own asyncio.create_task() docs: 'Save a
+    reference to the result... a task that isn't referenced elsewhere may
+    get garbage collected at any time, even before it's done.'
+    task_supervisor.supervise() already returns a real Task; alerting.py's
+    3 call sites all discarded it. This is the fix for all 3, verified via
+    the one it's cheapest to check directly."""
+    async def run():
+        alerting.record_alert("kill_switch", "critical", "test", now=1000.0)
+        assert len(alerting._background_tasks) == 1
+        task = next(iter(alerting._background_tasks))
+        await task
+        assert task not in alerting._background_tasks
+
+    asyncio.run(run())
+
+
 # --- _check_transition: the real edge-detection logic --------------------
 
 def test_transition_fires_once_on_going_bad():

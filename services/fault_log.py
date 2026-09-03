@@ -42,6 +42,7 @@ DESIGN
   arrived unparseable, a projection refused for want of data, a market that
   couldn't be resolved.
 """
+import contextlib
 import sqlite3
 import time
 import traceback
@@ -55,31 +56,50 @@ _MAX_TRACEBACK_CHARS = 4000
 _MAX_MESSAGE_CHARS = 500
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site (4 of them -
+    services/fault_log.py:129, 153, 191, 203) keeps working unchanged -
+    this yields the same conn as before, but now closes it on exit
+    (2026-09-03, Task 6 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    commits/rolls back a transaction, it never closes the connection. This
+    module is one of Tier 0's two confirmed-stuck live routes
+    (GET /api/health/faults) and, per CLAUDE.md, the store every other
+    diagnostic in this app writes to - so it is exercised constantly.
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS faults (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            component TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            exc_type TEXT,
-            message TEXT,
-            first_traceback TEXT,
-            context TEXT,
-            count INTEGER NOT NULL DEFAULT 1,
-            first_seen REAL NOT NULL,
-            last_seen REAL NOT NULL,
-            UNIQUE (component, operation, exc_type, message)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS faults (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                component TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                exc_type TEXT,
+                message TEXT,
+                first_traceback TEXT,
+                context TEXT,
+                count INTEGER NOT NULL DEFAULT 1,
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL,
+                UNIQUE (component, operation, exc_type, message)
+            )
+            """
         )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
-    return conn
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def record(component: str, operation: str, exc: BaseException,
@@ -110,14 +130,26 @@ def record(component: str, operation: str, exc: BaseException,
 
 def record_fault(component: str, operation: str, message: str,
                  context: str | None = None, severity: str = "warn",
-                 now: float | None = None) -> bool:
+                 now: float | None = None, tb: str | None = None) -> bool:
     """Log something worth knowing that isn't an exception - a field that
     arrived unparseable, a projection refused for want of data, a market
     that couldn't be resolved. Same deduplication, same never-raises
-    contract."""
+    contract.
+
+    tb (2026-09-03, Task 1 of docs/superpowers/plans/2026-09-03-tier1-
+    backend-hygiene.md): stores a pre-formatted traceback/stack string into
+    the same first_traceback slot record() populates from a real
+    exception - added for services/loop_watchdog.py's stall-attribution
+    capture, a non-exception event (a captured stack, not a raised one)
+    that still needs a first_traceback for attribution. Every existing
+    call site omits it and behaves exactly as before (None -> unchanged
+    null column, since _write's ON CONFLICT never updates first_traceback
+    on a repeat anyway - see this module's own module docstring)."""
     try:
         return _write(component, operation, severity, None,
-                      str(message)[:_MAX_MESSAGE_CHARS], None, context, now)
+                      str(message)[:_MAX_MESSAGE_CHARS],
+                      tb[:_MAX_TRACEBACK_CHARS] if tb else None,
+                      context, now)
     except Exception:
         return False
 

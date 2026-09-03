@@ -151,14 +151,52 @@ class ConfigStore:
                 pass
             return dict(self._data)
 
+    # Full-replace-with-deletion paths (2026-09-03, Task 5 of docs/
+    # superpowers/plans/2026-09-03-tier1-backend-hygiene.md): the general
+    # merge below never deletes a key the incoming patch doesn't mention
+    # (same safety property update() has always had, just extended past
+    # one level - see this task's own experiment log in the plan for why a
+    # uniform "delete stale keys everywhere" policy is unsafe). Exactly one
+    # field needs the opposite: whale_watcher_kalshi.min_contracts_by_series
+    # is always resent as a complete, freshly-rebuilt map by config-
+    # panel.js's own Object.fromEntries(...) over a single text input - a
+    # series a user removes from that field must actually disappear, not
+    # linger as an orphaned stale key. Dotted-path strings, checked at each
+    # recursion level by the (current key path) tuple joined with ".".
+    _FULL_REPLACE_PATHS = {"whale_watcher_kalshi.min_contracts_by_series"}
+
+    def _merge_in_place(self, dst: dict, patch: dict, _path: str = "") -> None:
+        for key, value in patch.items():
+            key_path = f"{_path}.{key}" if _path else key
+            if isinstance(value, dict) and isinstance(dst.get(key), dict):
+                existing = dst[key]
+                if key_path in self._FULL_REPLACE_PATHS:
+                    # Delete-then-merge-in-place: the incoming dict becomes
+                    # the complete truth for this one key, but the
+                    # EXISTING ruamel map object is mutated (del/setitem),
+                    # never replaced wholesale - replacing the object
+                    # reference is what destroys an attached comment;
+                    # mutating it in place does not (verified experimentally,
+                    # see this task's own header).
+                    for stale_key in [k for k in list(existing.keys()) if k not in value]:
+                        del existing[stale_key]
+                self._merge_in_place(existing, value, key_path)
+            else:
+                dst[key] = value
+
     def update(self, patch: dict):
-        """Shallow-merge a patch into the top-level config and persist it."""
+        """Recursive merge (2026-09-03, Task 5): every nested dict field is
+        merged key-by-key into the EXISTING object rather than replaced
+        wholesale, which is what let ruamel's attached comments survive a
+        real, 3-times-repeated live incident (docs/open-decisions.md) -
+        replacing a child map's object reference is what discards a
+        comment ruamel attached to it, even when the PARENT object is never
+        touched. Never deletes a key the patch doesn't mention, at any
+        level, except the one explicit path in _FULL_REPLACE_PATHS above.
+        Does not itself restore config/settings.yaml's already-wiped
+        comment - see docs/open-decisions.md for that (human) decision."""
         with self._lock:
-            for key, value in patch.items():
-                if isinstance(value, dict) and isinstance(self._data.get(key), dict):
-                    self._data[key].update(value)
-                else:
-                    self._data[key] = value
+            self._merge_in_place(self._data, patch)
             # Atomic write (2026-08-17, real live incident: a background
             # task's cfg["kalshi"]["base_url"] raised KeyError mid-session,
             # right after this exact write path ran). open(path, "w")

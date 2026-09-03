@@ -398,11 +398,33 @@ state = {
 }
 
 
+# 2026-09-03, Task 7 of docs/superpowers/plans/2026-09-03-tier1-backend-
+# hygiene.md: bump_generation() fires on every processed trade message
+# (confirmed live - services/whale_stream/whale_stream_handlers.py's
+# _process_stream_trade calls it unconditionally on all 3 exit paths),
+# which made state["generation"] (the literal /api/state ETag value)
+# change far more often than the response BODY actually did, defeating
+# the ETag's whole purpose. 1.0s is an estimate: far below every poll
+# cadence in this app (5-30s) and far below human perceptual granularity
+# for a dashboard - stated as a data-plane tradeoff (see this plan's Task
+# 7 header for the verified zero-trading-decision-dependency argument),
+# not assumed correct without that reasoning.
+_GENERATION_BUMP_MIN_INTERVAL_SEC = 1.0
+_last_bump_ts = 0.0
+
+
 def bump_generation() -> None:
     """Marks a real change to anything /api/state reports - see
-    state["generation"]'s own comment above. Lives here (not in main.py)
-    so every router/module that mutates `state` can call it without
-    reaching back into main.py - main.py's modularization pass (2026-08-21)
-    moved this alongside `state` itself since it's called from nearly every
-    bucket main.py is being split into."""
+    state["generation"]'s own comment above. Coarsened (2026-09-03) to at
+    most once per _GENERATION_BUMP_MIN_INTERVAL_SEC - see that constant's
+    own comment for why. Lives here (not in main.py) so every router/
+    module that mutates `state` can call it without reaching back into
+    main.py - main.py's modularization pass (2026-08-21) moved this
+    alongside `state` itself since it's called from nearly every bucket
+    main.py is being split into."""
+    global _last_bump_ts
+    now = time.time()
+    if now - _last_bump_ts < _GENERATION_BUMP_MIN_INTERVAL_SEC:
+        return
+    _last_bump_ts = now
     state["generation"] += 1

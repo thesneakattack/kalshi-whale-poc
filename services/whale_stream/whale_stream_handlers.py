@@ -331,11 +331,28 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
                 spread = max(float(yes_ask_raw) - float(yes_bid_raw), 0.0)
             except (TypeError, ValueError):
                 spread = None
-        market_history.record_snapshot_from_ticker(
-            ticker, state["latest_prices"][ticker], spread=spread,
-            volume_24h=float(matched_market.get("volume_24h_fp") or 0.0),
-            close_time=matched_market.get("close_time"), now=now,
-        )
+        # 2026-09-03, Task 4 of docs/superpowers/plans/2026-09-03-tier1-
+        # backend-hygiene.md (§4.5 of the architecture-audit-second-pass
+        # research): record_snapshot_from_ticker's own `with
+        # _connect(DB_PATH)` SQLite write ran synchronously on the event
+        # loop, per throttled ticker message - the same bug class PR #414
+        # fixed for 4 sibling functions. Unlike those, this function has no
+        # accumulation buffer to flush later, so the fix is here at the
+        # call site: schedule the WHOLE call via tick_executor.run(),
+        # capturing every argument as a plain value first (not inside the
+        # lambda) so the deferred call on the tick-executor worker thread
+        # never reads a possibly-mutated state["latest_prices"][ticker] or
+        # matched_market by the time it actually runs.
+        snapshot_price = state["latest_prices"][ticker]
+        snapshot_volume_24h = float(matched_market.get("volume_24h_fp") or 0.0)
+        snapshot_close_time = matched_market.get("close_time")
+        asyncio.create_task(tick_executor.run(
+            lambda: market_history.record_snapshot_from_ticker(
+                ticker, snapshot_price, spread=spread,
+                volume_24h=snapshot_volume_24h,
+                close_time=snapshot_close_time, now=now,
+            )
+        ))
     if state["running"]:
         cfg_now = config_store.get()
         # check_exits keeps its own pre-existing signal_feed gate - it

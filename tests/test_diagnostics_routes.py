@@ -214,3 +214,41 @@ def test_get_series_watcher_returns_all_four_sections():
     body = asyncio.run(diagnostics_routes.get_series_watcher("KXBTC15M"))
 
     assert set(body.keys()) == {"funnel", "reconcile", "book_context", "capture"}
+
+
+# ---- GET /api/health/faults -------------------------------------------
+
+def test_get_faults_runs_off_the_event_loop(monkeypatch):
+    """Same #210 bug class as /api/health/pipeline's store probes
+    (tests/test_pipeline_health_cost.py) - fl.summary()/fl.recent() must
+    not run synchronously inside this async def route, or a slow fault_log
+    query blocks every other request this process is serving."""
+    from services import fault_log
+
+    on_loop = []
+
+    def _summary(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append("summary")
+        except RuntimeError:
+            pass
+        return {"distinct_faults": 0, "total_occurrences": 0, "by_component": {},
+                "by_severity": {}, "most_frequent": []}
+
+    def _recent(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append("recent")
+        except RuntimeError:
+            pass
+        return []
+
+    monkeypatch.setattr(fault_log, "summary", _summary)
+    monkeypatch.setattr(fault_log, "recent", _recent)
+
+    body = asyncio.run(diagnostics_routes.get_faults())
+
+    assert on_loop == []
+    assert body["summary"]["distinct_faults"] == 0
+    assert body["faults"] == []

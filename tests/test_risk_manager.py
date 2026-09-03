@@ -39,6 +39,23 @@ def test_check_daily_loss_trips_kill_switch_past_threshold(tmp_path, monkeypatch
     assert "11.0%" in risk.halt_reason
 
 
+def test_check_daily_loss_zero_bankroll_baseline_does_not_crash(tmp_path, monkeypatch):
+    """RiskManager's own missing guard (services/shadow_mode.py's
+    ShadowTrader already has it: `if not self.day_start_bankroll: return
+    True`) - the reachable path is reset_day(current_bankroll) setting the
+    baseline from the live bankroll at each UTC date rollover, so a
+    bankroll of exactly 0 at rollover would raise ZeroDivisionError in the
+    REAL kill switch (the inert shadow copy was already protected - the
+    safety asymmetry ran backwards). Task 3b of docs/superpowers/plans/
+    2026-09-03-tier1-backend-hygiene.md."""
+    risk = _risk(tmp_path, monkeypatch, starting_bankroll=0.0, max_daily_loss_pct=0.1)
+    # Must not raise ZeroDivisionError, and must not halt on a baseline
+    # that was never really a baseline (matches ShadowTrader's own
+    # documented "return True" - trading continues, same forgiving default).
+    assert risk.check_daily_loss(0.0) is True
+    assert risk.halted is False
+
+
 def test_check_daily_loss_stays_halted_once_tripped(tmp_path, monkeypatch):
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=1000.0, max_daily_loss_pct=0.1)
     risk.check_daily_loss(890.0)

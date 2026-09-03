@@ -15,8 +15,9 @@ market_analyst_orchestrator.py, imported here - these route handlers are
 thin wrappers, same shape as every other route in this file.
 """
 import os
+import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services import (
@@ -34,9 +35,18 @@ from services.app_state import broker, bump_generation
 from services.config.config_paths import _config_value_at_path
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
+from services.pagination import paginate
 
 router = APIRouter()
 
+_POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/
+# superpowers/plans/2026-09-03-tier1-backend-hygiene.md: population_gate_
+# summary() cannot be query-bounded (it's a total-sample gate, not a
+# recency-scoped read - same reasoning as whale_calibration/routes.py's
+# _REPORT_CACHE_TTL_SEC, verified in this task's own research). 30s
+# matches Task 2's own History-tab de-poll interval for this exact route -
+# coordinated, not independently chosen.
+_population_gates_cache: dict = {"cached_at": None, "value": None}
 
 
 class DeclineSuggestionBody(BaseModel):
@@ -72,7 +82,7 @@ async def undecline_suggestion(body: UndeclineSuggestionBody):
 
 
 @router.get("/api/suggestions/declined")
-async def get_declined_suggestions(limit: int = 50):
+async def get_declined_suggestions(limit: int = Depends(paginate(max_limit=200))):
     return {"declined": suggestion_decisions.list_declined(limit)}
 
 
@@ -100,9 +110,25 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # calls already are. gate_summary() reads the much smaller (62K-row),
     # deduped rejected_candidates table - not implicated by that trace, so
     # left inline rather than offloaded speculatively.
-    population_gates = await tick_executor.run(
-        lambda: candidate_log.population_gate_summary(min_population_samples)
-    )
+    #
+    # 30s TTL cache on top of the tick_executor offload above (2026-09-03,
+    # Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md)
+    # - offloading moved the ~4.8s scan off the event loop but didn't stop
+    # every dashboard poll from paying it; caching the route response is
+    # the fix, not a since_ts bound on population_gate_summary() itself
+    # (it computes a total-sample gate, not a recency-scoped read).
+    now = time.time()
+    if (
+        _population_gates_cache["cached_at"] is not None
+        and (now - _population_gates_cache["cached_at"]) < _POPULATION_GATES_CACHE_TTL_SEC
+    ):
+        population_gates = _population_gates_cache["value"]
+    else:
+        population_gates = await tick_executor.run(
+            lambda: candidate_log.population_gate_summary(min_population_samples)
+        )
+        _population_gates_cache["cached_at"] = now
+        _population_gates_cache["value"] = population_gates
     return {
         "gates": candidate_log.gate_summary(),
         "population_gates": population_gates,
@@ -190,7 +216,9 @@ async def post_market_analyst_analyze(body: MarketAnalystAnalyzeBody):
 
 
 @router.get("/api/market-analyst/analyses")
-async def get_market_analyst_analyses(limit: int = 25, offset: int = 0, resolved_only: bool = False):
+async def get_market_analyst_analyses(
+    limit: int = Depends(paginate(max_limit=200)), offset: int = 0, resolved_only: bool = False,
+):
     # Always safe to call regardless of market_analyst.enabled - past
     # analyses stay visible/inspectable even after the feature's turned off,
     # same as every other history panel in this app.

@@ -598,3 +598,119 @@ def test_upsert_mve_markets_empty_list_is_a_noop(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     cat.upsert_mve_markets([], updated_at=time.time())
     assert cat.scan_progress()["total_markets"] == 0
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as Tasks 2-3 - eleven call sites in this module
+    share one non-closing _connect(), on the file the live markets_watched:
+    0 incident's own open hypothesis names as a possible cause.
+
+    Deviates from the plan's literal instance-attribute-patching snippet
+    (`conn.close = _close`): on this repo's actual runtime (Python 3.13.15,
+    verified via `docker exec ... python -c "..."` against
+    ddev-kalshi-whale-poc-fastapi), sqlite3.Connection is an immutable
+    C-level type with no per-instance __dict__ - `conn.close = _close`
+    raises `AttributeError: 'sqlite3.Connection' object attribute 'close'
+    is read-only`, and `sqlite3.Connection.close = ...` (class-level) raises
+    `TypeError: cannot set 'close' attribute of immutable type
+    'sqlite3.Connection'`. Both confirmed by direct probe, not assumed.
+    A Connection subclass supplied via sqlite3.connect(factory=...) is the
+    standard workaround: subclasses are real heap types and can override
+    close(), while isinstance(conn, sqlite3.Connection) and `with conn:`
+    (via inherited __enter__/__exit__) still behave identically to the
+    plain connection this module's _connect() actually returns."""
+    import sqlite3
+
+    cat = _mc(tmp_path, monkeypatch)
+    closed = []
+
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    real_connect = sqlite3.connect
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(cat.sqlite3, "connect", _tracking_connect)
+
+    with cat._connect(cat.DB_PATH) as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    the try/finally only wraps `with conn: yield conn`, not the PRAGMA/
+    CREATE TABLE/_add_column_if_missing setup before it - a setup failure
+    would otherwise leave `conn` open with nothing left to close it.
+
+    Uses a wrapper/proxy, not the factory=subclass pattern the test above
+    uses. Correction (this PR's own review caught an inaccurate claim in an
+    earlier version of this docstring - flagged and re-verified, not
+    silently fixed): a bare, isolated script confirmed sqlite3.connect()
+    with a factory=subclass whose execute() always raises DOES complete
+    normally and the override only fires on this module's own first
+    conn.execute() call inside try:, exactly as intended - so there is no
+    general CPython/sqlite3 mechanism where connect() itself invokes a
+    subclass's execute(). But the identical scenario, run as an actual
+    pytest test in this file (not a standalone script), reproducibly showed
+    conn.close() never firing (closed == [] instead of [True]), twice
+    independently. The two reproductions disagree, and the specific
+    interaction has not been root-caused (a plausible but unconfirmed
+    suspect: this test's monkeypatch replaces the process-wide
+    sqlite3.connect for its duration, and a pytest plugin doing its own
+    sqlite3 I/O mid-test - e.g. pytest-testmon, present in this repo's
+    plugin list - could be an unintended second caller of the poisoned
+    connect()). Rather than ship a guessed mechanism as fact, this test
+    sidesteps the ambiguity entirely: a proxy that calls the real connect()
+    to completion first, then wraps only the result, never forces
+    factory= onto any caller other than this test's own explicit
+    `mc._connect(mc.DB_PATH)` call - matching title_cache.py's and
+    fault_log.py's analogous tests, which use the same proxy shape and have
+    not shown this discrepancy."""
+    import sqlite3
+
+    cat = _mc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConnProxy:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(cat.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with cat._connect(cat.DB_PATH):
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"

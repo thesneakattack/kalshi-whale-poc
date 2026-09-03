@@ -30,6 +30,7 @@ from services import settlement_resolver
 from services import capture_writer
 from services.diagnostics import diagnostics
 from services.history import regime_analytics
+from services.history import suggestion_decisions
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
 from services.market_events import event_schedule
@@ -591,6 +592,13 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 last_applied_by_path=config_performance.all_last_applied_by_path(),
                 series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
                 category_rows=regime_analytics.by_category(adv_all_rows),
+                # 2026-09-03, Task 3a of docs/superpowers/plans/2026-09-03-
+                # tier1-backend-hygiene.md: this is the one UNSUPERVISED
+                # call site (no human between a suggestion and applying it)
+                # - the one that most needs to honor a decline, and
+                # previously didn't (advisory_engine.py's declined_ids
+                # docstring, :926-929).
+                declined_ids=suggestion_decisions.declined_ids(),
             )
             min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
             # Direct report (2026-08-11): "auto apply should wait for a
@@ -1521,6 +1529,15 @@ class FlattenAllBody(BaseModel):
 
 _state_body_cache = {"generation": None, "body": None}  # see get_state()
 
+_last_event_live_data_sent_at = 0.0  # 2026-09-03, Task 7 of docs/
+# superpowers/plans/2026-09-03-tier1-backend-hygiene.md: event_live_data
+# is 87.3% of /api/state's payload (live-measured) despite already being
+# event-scoped; the underlying data only refreshes once every
+# _EVENT_LIVE_DATA_REPOLL_SEC (60s, services/market_watch/event_metadata.py),
+# so resending it every poll resends unchanged data most of the time.
+# Reuses that existing constant directly rather than picking an
+# independent number.
+
 
 def _build_state_body() -> dict:
     # Rebuilding this means running signal_log.stats()/shadow.recent()/
@@ -1533,11 +1550,19 @@ def _build_state_body() -> dict:
     # that would change the response actually happened, see _bump_generation.
     if _state_body_cache["generation"] == state["generation"]:
         return _state_body_cache["body"]
+    global _last_event_live_data_sent_at
     scoped_market_titles = _scoped_market_titles(_relevant_tickers())
     # Augment market_titles with any event-level flags (so the UI can read
     # `mutually_exclusive` / `collateral_return_type` without an extra lookup)
     event_info = _scoped_event_titles(scoped_market_titles)
-    event_live_data = _scoped_event_live_data(scoped_market_titles)
+    now_for_eld = time.time()
+    if now_for_eld - _last_event_live_data_sent_at >= _EVENT_LIVE_DATA_REPOLL_SEC:
+        event_live_data = _scoped_event_live_data(scoped_market_titles)
+        _last_event_live_data_sent_at = now_for_eld
+    else:
+        event_live_data = {}  # client already Object.assign-merges rather
+        # than replaces (polling-and-websocket.js:87) - an empty dict here
+        # is a safe no-op, not missing data.
     live_game_state = _scoped_live_game_state(scoped_market_titles)
     augmented_market_titles = {}
     for t, mt in scoped_market_titles.items():

@@ -366,3 +366,112 @@ def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(t
     assert result is not None
     assert result["from_price"] == 0.50
     assert result["to_price"] == 0.55
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """with sqlite3.connect(...) commits a transaction, it does not close
+    the connection - 26 of 30 _connect()-owning modules in this app had
+    this shape, and it produced a real 6.8-hour file-descriptor-exhaustion
+    incident (2026-09-02) once enough of them piled up. This module was
+    one of the four confirmed leaking live.
+
+    Deviation from the plan's literal Step 1 test (docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md Task 2): the plan assigns
+    `conn.close = _close` directly on a live sqlite3.Connection instance.
+    Verified by direct reproduction (host Python 3.12.3 and the ddev
+    fastapi container's Python 3.13.15, both) that sqlite3.Connection is an
+    immutable C-extension type with no instance __dict__ - both instance-
+    and class-level attribute assignment raise `AttributeError: 'sqlite3.
+    Connection' object attribute 'close' is read-only` / `TypeError: cannot
+    set 'close' attribute of immutable type 'sqlite3.Connection'`. A thin
+    delegating proxy stands in for the connection object itself (returned
+    by the patched sqlite3.connect) instead, preserving the same
+    closed-was-called assertion without mutating the C type."""
+    import sqlite3
+    from services import market_history as mh
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConnProxy:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(mh.sqlite3, "connect", _tracking_connect)
+
+    with mh._connect(mh.DB_PATH) as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """The 2026-09-03 tier0 fix's try/finally only wraps `with conn: yield
+    conn`, not the sqlite3.connect() + PRAGMA + _init_schema(conn) setup
+    that runs before it - so if that setup raises (e.g. a corrupted db
+    file, or disk/fd pressure - exactly the conditions the fd-exhaustion
+    incident this fix exists for), the connection object is never closed.
+    Found by this task's own review, confirmed present in main's shipped
+    version too, not specific to any one implementation."""
+    import sqlite3
+    from services import market_history as mh
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConnProxy:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(mh.sqlite3, "connect", _tracking_connect)
+
+    def _boom(conn):
+        raise RuntimeError("schema init failed")
+
+    monkeypatch.setattr(mh, "_init_schema", _boom)
+
+    raised = None
+    try:
+        with mh._connect(mh.DB_PATH):
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "schema init failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (PRAGMA/_init_schema) raises before the try block"

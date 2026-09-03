@@ -30,6 +30,7 @@ close_time are stored as parsed unix timestamps (not the original ISO
 strings) specifically so window queries are cheap SQL range comparisons,
 not per-row Python parsing on every call.
 """
+import contextlib
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -62,51 +63,70 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(db_path: Path):
+    """Every existing `with _connect(DB_PATH) as conn:` call site keeps
+    working unchanged - this yields the same conn as before, but now
+    closes it on exit (2026-09-03, Task 4 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    commits/rolls back a transaction, it never closes the connection, and
+    this module has eleven call sites (:136, 162, 208, 218, 233, 362, 403,
+    504, 566, 605, 616) sharing this one non-closing _connect(), on
+    market_catalog.db - the store the live markets_watched: 0 incident's
+    own open hypothesis named as a possible discovery-path blocker.
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS markets (
-            ticker TEXT PRIMARY KEY,
-            event_ticker TEXT,
-            series_ticker TEXT,
-            category TEXT,
-            volume_24h_fp REAL,
-            occurrence_ts REAL,
-            close_ts REAL,
-            status TEXT,
-            updated_at REAL NOT NULL
+    try:
+        # WAL mode (2026-08-11, real live incident): rollback-journal mode
+        # serializes ALL writers and readers against each other for the whole
+        # transaction; WAL lets readers proceed concurrently with a writer and
+        # is the standard hardening step for exactly the bursty-write scenario
+        # that took the app down (trade-tape volume overwhelming a per-call
+        # sqlite3.connect()). idempotent - safe to run on every connect.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS markets (
+                ticker TEXT PRIMARY KEY,
+                event_ticker TEXT,
+                series_ticker TEXT,
+                category TEXT,
+                volume_24h_fp REAL,
+                occurrence_ts REAL,
+                close_ts REAL,
+                status TEXT,
+                updated_at REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_occurrence ON markets (occurrence_ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_series ON markets (series_ticker)")
-    # Real display text - direct report of a regression caught live: catalog-
-    # sourced markets were missing these entirely, so main.py's title-
-    # building (`m.get("title") or m.get("yes_sub_title") or m["ticker"]`)
-    # fell all the way through to the raw ticker for anything discovered via
-    # the catalog instead of a fresh per-tick fetch. Added after the table
-    # above already had live rows, hence the guarded ALTER TABLE.
-    _add_column_if_missing(conn, "markets", "title", "TEXT")
-    _add_column_if_missing(conn, "markets", "yes_sub_title", "TEXT")
-    _add_column_if_missing(conn, "markets", "no_sub_title", "TEXT")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS series_scan_state (
-            series_ticker TEXT PRIMARY KEY,
-            last_scanned_at REAL NOT NULL
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_occurrence ON markets (occurrence_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_markets_series ON markets (series_ticker)")
+        # Real display text - direct report of a regression caught live: catalog-
+        # sourced markets were missing these entirely, so main.py's title-
+        # building (`m.get("title") or m.get("yes_sub_title") or m["ticker"]`)
+        # fell all the way through to the raw ticker for anything discovered via
+        # the catalog instead of a fresh per-tick fetch. Added after the table
+        # above already had live rows, hence the guarded ALTER TABLE.
+        _add_column_if_missing(conn, "markets", "title", "TEXT")
+        _add_column_if_missing(conn, "markets", "yes_sub_title", "TEXT")
+        _add_column_if_missing(conn, "markets", "no_sub_title", "TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS series_scan_state (
+                series_ticker TEXT PRIMARY KEY,
+                last_scanned_at REAL NOT NULL
+            )
+            """
         )
-        """
-    )
-    return conn
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _parse_ts(value: str | None) -> float | None:
