@@ -298,3 +298,33 @@ def test_add_column_if_missing_is_idempotent_on_a_pre_existing_table(tmp_path, m
     assert result["EVT-OLD"]["title"] == "Old Event"
     assert result["EVT-OLD"]["mutually_exclusive"] is None  # pre-existing row, column was NULL by default
     assert result["EVT-NEW"]["mutually_exclusive"] is True
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as market_history.py's Task 2 - five call sites
+    in this module share one non-closing _connect(), and the live fd
+    census (2026-09-02) measured this file's handle count growing fastest
+    of any store (5 -> 148+ in under an hour)."""
+    import sqlite3
+    tc = _tc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection instances have no __dict__, so `conn.close = ...`
+    # raises "attribute 'close' is read-only" - track via a Connection
+    # subclass passed as sqlite3.connect's `factory=` instead.
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(tc.sqlite3, "connect", _tracking_connect)
+
+    with tc._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
