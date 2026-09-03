@@ -50,7 +50,7 @@ mkdir -p "$CACHE_DIR"
 if [ -f "$CACHE_DIR/.testmondata" ]; then
   cp "$CACHE_DIR/.testmondata" .testmondata
 fi
-python -m pytest --testmon -n 4 -m "not slow"
+python -m pytest --testmon --testmon-forceselect -n 4 -m "not slow"
 STATUS=$?
 cp .testmondata "$CACHE_DIR/.testmondata"
 exit "$STATUS"
