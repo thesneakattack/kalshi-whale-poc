@@ -98,7 +98,7 @@ Calls `reset_log.recent(limit=...)` (`:147`, `reset_log.py:67-73`) — a plain
 whole module writes to, not a reset target) and trivially cheap at this
 file size. Same bug *class* (no `await`), zero real severity today.
 
-## Does PR #414's `tick_executor.run(...)` pattern apply unchanged?
+## Does PR #414's `tick_executor.run(...)` pattern apply unchanged? (No — and neither does a naive awaited offload)
 
 **No — the mechanism is the same, but the usage shape has to be different,
 not a drop-in copy.** PR #414's fix is specifically shaped for a
@@ -117,19 +117,69 @@ fire-and-forget `create_task` would return an HTTP response with no data (or
 stale/wrong data) before the real work finished — silently wrong, not just
 slow.
 
-The correct fix shape reuses the same underlying primitive
-(`services/tick_executor.py`'s `run()`, already used elsewhere in this app
-off the event loop) but **awaited**, not fired-and-forgotten:
-`await tick_executor.run(lambda: _reset_domain_counts(body))` for the
-preview route, and similarly for each blocking call inside `reset_broker`
-(or one `await tick_executor.run(...)` wrapping the whole handler body,
-given `POST /api/reset` is a rare, deliberate, effectively-single-threaded
-action with no real concurrency to preserve inside it). This is the same
-class of fix PR #501's `market_catalog.py`/`fault_log.py` follow-up and this
-session's own `db-foundation-must-fix-tests` branch both already establish
-as a pattern in this codebase (offload the blocking call, await the result)
-— just not literally PR #414's specific fire-and-forget shape, which would
-be the wrong tool for a route that has to return real data.
+An **awaited** `tick_executor.run(...)` (reusing the same primitive as PR
+#414, just not fired-and-forgotten) is the naive next step from that
+observation — but it's a trap, not the recommended fix, per a real
+precedent already in this codebase:
+
+**Awaiting the 34-second query on `tick_executor`'s shared pool would
+reintroduce PR #409's exact incident class, just from a different call
+site.** `services/tick_executor.py:80` is
+`ThreadPoolExecutor(max_workers=2, thread_name_prefix="tick-executor")` —
+only 2 workers, and that pool also serves trading-critical writes
+(`capture_writer`, `candidate_log`'s own claim/record paths, among others).
+PR #409 (confirmed via `gh pr view 409`) fixed a **live, confirmed**
+incident with this exact shape: non-critical diagnostics work sharing this
+same 2-worker pool "confirmed live: both `tick_executor` workers pinned for
+5h10m+, recurring `capture_writer` lock faults" — and PR #409's whole fix
+was isolating non-critical work onto its *own* dedicated pool specifically
+so it could never again starve trading-critical writes of the shared one.
+`await tick_executor.run(candidate_log.count_range)` would put a 34-second
+job on that same 2-worker pool — occupying half of it for 34 seconds — the
+identical starvation risk PR #409 exists to prevent, just triggered by a
+Danger Zone preview instead of a diagnostics probe. This would trade one
+severe symptom (a 34-second app-wide freeze) for a related severe symptom
+(a 34-second trading-write stall), not fix the underlying problem.
+
+**The real precedent is PR #424, not PR #414 or a naive offload.** PR #424
+(confirmed via `gh pr view 424`) hit a structurally identical problem —
+`check_confidence_input_coverage`'s query was unscoped against
+`signal_log.db` — and the fix that actually shipped was **bounding the
+query itself**, not offloading it: adding a purpose-matched time window,
+measured savings ~1.0s/~30% per call (1.187-1.264s unscoped/127,285 rows
+vs 0.239-0.252s scoped/23,594 rows, read-only measurement against real
+`signal_log.db`). The same PR also tried an elastic connection-pool
+alternative and **reverted it after hard measurement proved it regressed
+the exact incident it targeted** (thundering-herd collapse onto one
+connection: 26.5-28.0s wall / up to 1939ms worst-case stall under 5
+concurrent callers, versus 15.0-16.4s without the pool) — a direct,
+in-repo demonstration that "just offload it to more workers" is not
+free and has already been tried and measured worse once in this exact
+problem class.
+
+**This reframes the real question `candidate_log.count_range()`/
+`clear_range()` need answered, not "which executor."** Why does a preview
+endpoint compute an *exact* `COUNT(*)` over all 22.6M `rejection_events`
+rows at all, when `services/diagnostics/store_stats.py` (see the
+persistence-layer baseline research, merged) already establishes a cheaper
+approximate-count convention (`MAX(rowid)` as an upper bound, labeled
+approximate, above a row-count threshold) for exactly this kind of
+"how many rows are in this store" question elsewhere in this app? A bounded
+or approximate count, following either `store_stats.py`'s or PR #424's
+precedent, would very plausibly take the 34-second cost down to
+sub-second — at which point the event-loop-blocking question becomes far
+less urgent (a sub-second synchronous call is a much smaller problem than
+34 seconds), and if an offload is still judged worth doing after that,
+the precedent is a **new, dedicated** thread pool
+(`services/whalewatchers/_scoring_pool.py`'s shape — `max_workers=4`,
+confirmed via direct read, built by PR #409 for exactly this "don't share
+tick_executor's pool with trading-critical work" reason), never
+`tick_executor`'s shared 2 workers.
+
+The fix/plan stage should compare "bound or approximate the query" against
+"dedicated pool" on mechanism and real measurement — the same way PR #424's
+own review cycle did — rather than defaulting to an awaited
+`tick_executor.run()` call as if it were a safe, context-free drop-in.
 
 ## Realistic hit rate (nginx access log)
 
@@ -160,11 +210,19 @@ log window, not evidence it doesn't happen at all.
   `rejection_events` population table) problem, with the other 8 modules
   along for the ride architecturally (same missing-`await` bug class) but
   not currently causing real-world pain at their current sizes.
-- PR #414's exact fire-and-forget pattern is the wrong shape here; the fix
-  needs an *awaited* `tick_executor.run(...)` per blocking call (or one
-  wrapping the whole `POST /api/reset` handler), since every one of these
-  three routes' HTTP responses depends on the blocking call's actual
-  result.
+- PR #414's exact fire-and-forget pattern is the wrong shape here (every
+  route's response depends on the blocking call's result), but an awaited
+  `tick_executor.run(...)` is also the wrong fix, not just "the fix, minus
+  fire-and-forget" — `tick_executor`'s pool is only 2 workers and also
+  serves trading-critical writes; PR #409 already fixed a confirmed live
+  incident (both workers pinned 5h10m+) caused by exactly this shape of
+  non-critical work sharing that pool. The precedented direction (PR #424:
+  bound/approximate the query, ~1.0s/~30% saved measured; an elastic-pool
+  alternative was tried and measured worse in the same PR) is to make
+  `count_range()`/`clear_range()` cheap first — `store_stats.py`'s
+  approximate-count convention is a real, already-shipped model for this —
+  and only reach for a **dedicated** pool (never `tick_executor`'s shared
+  one) if an offload is still needed after that.
 - Low observed real-traffic frequency (zero in a ~2-hour window) doesn't
   reduce the severity of a single occurrence — worth fixing on its own
   merits, not deprioritized because it's rare.
