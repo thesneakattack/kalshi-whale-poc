@@ -6,12 +6,13 @@ manager, or data sources.
 import time
 from typing import NamedTuple
 
-from services import candidate_log, fault_log, kalshi_fees, market_history, signal_log
+from services import candidate_log, fault_log, kalshi_fees, market_history, series_cache, signal_log
 from services.config import config_overrides
 from services.confidence_scoring import WhaleSignal
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.exits import exit_engine
+from services.whale_calibration import confidence_calibration
 
 # One shared definition with the provider, which refuses to LOG such a
 # print in the first place - see config_bounds for the full reasoning.
@@ -149,6 +150,7 @@ class EntryValidation(NamedTuple):
 def _validate_entry_price(
     side: str, price: float, confidence: float, effective_threshold: float,
     strat_cfg: dict, is_longshot: bool = False,
+    ticker: str | None = None, category: str | None = None, as_of: float | None = None,
 ) -> EntryValidation:
     """Every price/confidence/band-dependent admission check a signal must
     clear before it becomes a position - shared by evaluate()'s market-
@@ -161,7 +163,12 @@ def _validate_entry_price(
     real entries at unit costs 0.97, 1.00, 0.20, 0.97, one of them at conf
     0.25 against a 0.495 threshold - check_pending_fills previously called
     open_position() with none of this re-checked at all, only whatever the
-    order looked like at placement time."""
+    order looked like at placement time.
+
+    ticker/category/as_of (strategy-edge-gate-implementation, Task 8) are
+    all defaulted to None so every pre-existing caller/test keeps working
+    unchanged - ticker=None skips the edge/EV gate entirely (nothing to
+    look up P_pre/fee_type against)."""
     if confidence < effective_threshold:
         reason = f"confidence {confidence} below threshold ({effective_threshold:.2f}"
         reason += " - longshot zone)" if is_longshot else ")"
@@ -197,6 +204,81 @@ def _validate_entry_price(
             f"price {unit_cost:.2f} is above the maximum unit cost of {max_unit_cost:.2f}",
         )
 
+    if strat_cfg.get("edge_gate_enabled") and ticker is not None:
+        edge_result = _edge_gate_check(side, price, ticker, category, as_of, strat_cfg)
+        if edge_result is not None and not edge_result.ok:
+            return edge_result
+        # edge_result is None: gate could not be evaluated (missing P_pre,
+        # or flat fee_type) - fails open per design §5, falls through to
+        # return EntryValidation(True) below like every other pass.
+
+    return EntryValidation(True)
+
+
+def _edge_gate_check(
+    side: str, price: float, ticker: str, category: str | None,
+    as_of: float | None, strat_cfg: dict,
+) -> EntryValidation | None:
+    """The edge/EV gate (docs/superpowers/specs/2026-09-03-strategy-edge-
+    gate-design.md §3.2), appended inside _validate_entry_price rather
+    than called separately from evaluate() so a resting limit order's
+    fill-time re-check is held to the same bar (validate_pending_fill's
+    call site) - same reasoning as the existing price-band checks this
+    function already applies (see this function's own docstring, the
+    "four-entry gate bypass" fix).
+
+    Returns None when the gate cannot be evaluated at all (missing P_pre,
+    or a flat-type series whose fee this app doesn't model) - the caller
+    treats None as fail-open, per design §5's explicit statement that this
+    is a stated, not-yet-settled judgment call (docs/open-decisions.md).
+    Returns an EntryValidation with ok=False when it CAN be evaluated and
+    the computed edge is below strategy.edge_gate_min_edge."""
+    as_of = as_of if as_of is not None else time.time()
+    series_ticker = signal_log.series_of(ticker)
+
+    fee_type = series_cache.get_fee_type(series_ticker)
+    if fee_type == "flat":
+        # Fail-closed for THIS gate specifically (design §1.3 point 3) -
+        # this app's fee model (kalshi_fees.taker_fee_per_contract) doesn't
+        # cover the flat FeeType's own "Specific Trading Fees Table",
+        # which docs/kalshi/ doesn't actually contain under that or any
+        # recognizable name (design's adversarial review, Finding 2,
+        # independently re-derived from the raw PDF bytes). Not evaluated,
+        # not admitted through this mechanism - other gates are untouched.
+        return None
+
+    pre_print_offset = strat_cfg.get("edge_gate_pre_print_offset_sec", 10.0)
+    p_pre_max_age_sec = strat_cfg.get("edge_gate_p_pre_max_age_sec", 600.0)
+    p_pre = market_history.recent_price(
+        ticker, max_age_sec=p_pre_max_age_sec, as_of=as_of - pre_print_offset,
+    )
+    if p_pre is None:
+        # Fails open (design §5's stated default; docs/open-decisions.md
+        # carries the "should this instead fail closed" question forward
+        # for revisit once real markout data exists, per this plan's
+        # Global Constraints note).
+        return None
+
+    q_pre_now = kalshi_fees.unit_cost(side, p_pre)
+    if q_pre_now is None:
+        return None
+    delta = confidence_calibration.delta_calibrated_for(category, q_pre_now)
+    p_est_side = min(max(q_pre_now + delta, 1e-6), 1 - 1e-6)  # clamped to (0, 1), design §2.2
+
+    ask_now = kalshi_fees.unit_cost(side, price)
+    if ask_now is None:
+        return None
+    fee_buffer = strat_cfg.get("edge_gate_fee_buffer_usd", 0.005)
+    fee = kalshi_fees.taker_fee_per_contract(price, ticker) + fee_buffer
+    edge = p_est_side - ask_now - fee
+
+    min_edge = strat_cfg.get("edge_gate_min_edge", 0.04)
+    if edge < min_edge:
+        return EntryValidation(
+            False, "edge_gate", edge, min_edge,
+            f"edge {edge:.4f} is below the minimum edge of {min_edge:.4f} "
+            f"(p_est={p_est_side:.4f}, ask={ask_now:.4f}, fee={fee:.4f})",
+        )
     return EntryValidation(True)
 
 
@@ -618,6 +700,7 @@ class FollowTheWhaleStrategy:
         # 0.20, 0.97) this whole fix closes the remaining gap on.
         validation = _validate_entry_price(
             signal.side, signal.price, signal.confidence, effective_threshold, strat_cfg, is_longshot=is_longshot,
+            ticker=signal.ticker, category=category, as_of=signal.timestamp,
         )
         if not validation.ok:
             candidate_log.record_rejection(
@@ -742,7 +825,10 @@ class FollowTheWhaleStrategy:
         series = signal_log.series_of(ticker)
         strat_cfg = config_overrides.resolve(cfg["strategy"], cfg.get("strategy_overrides"), category=category, series=series)
         effective_threshold, is_longshot = _effective_entry_threshold(strat_cfg, price, is_live, seconds_to_close)
-        validation = _validate_entry_price(side, price, confidence or 0.0, effective_threshold, strat_cfg, is_longshot=is_longshot)
+        validation = _validate_entry_price(
+            side, price, confidence or 0.0, effective_threshold, strat_cfg, is_longshot=is_longshot,
+            ticker=ticker, category=category, as_of=time.time(),
+        )
         if not validation.ok:
             unit_cost = kalshi_fees.unit_cost(side, price)
             candidate_log.record_rejection(
