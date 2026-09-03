@@ -1,18 +1,35 @@
 # Next action
 
-**Single next action: finish the persistence-layer db.py migration's planning
-pipeline.** PR #505 (design spec, `phase:spec`) is at its PR-stage
-consolidation, written by `autotrade-a7`, citing `autotrade-3b`'s two review
-artifacts. When that says GO: merge #505, then a7 writes the implementation
-plan (`docs/superpowers/plans/`), with `autotrade-a3` as its independent
-adversarial reviewer. **No code has been written for this migration and none
-should be until that plan clears its own review cycle** — CLAUDE.md's "nothing
-advances on one pass" governs, and `autotrade-73`'s
-`fix/db-foundation-must-fix-tests` branch is deliberately held unmerged for
-exactly this reason (it is input to the plan's Task 1, not Task 1 itself, and
-it still carries the path-keyed design the spec rejected).
+**Single next action: execute
+`docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`**
+(merged, PR #516 — 15 tasks, full review cycle at both artifact and PR stage).
+Its planning pipeline is complete: research, design/spec, and implementation
+plan are all merged, and the API-shape decision is signed off.
 
-## State as of 2026-09-03 ~12:15 UTC
+**Do not read a task list out of this file.** The plan is the task list, and
+`gh pr list` plus `git log origin/main` are the only current record of what has
+shipped. This section names the stage; it does not track progress inside it,
+because a status snapshot in a file every session reads goes stale within the
+hour and then actively misleads — that has now happened twice in one day.
+
+**Gates that hold regardless of where execution has got to:**
+
+- **Task 1 (`services/db.py`) blocks every other task.** It is Gate 0: the
+  module plus its 16 tests must land before any module migrates onto it.
+- **Tasks 6, 7 and 8 — `risk_manager.py`, `paper_broker.py`,
+  `candidate_ledger.py` — are safety-adjacent and need a human go-ahead before
+  starting**, not just at review. They touch the daily-loss kill switch and the
+  broker. Each gets its own dedicated PR and a full diff review; "the pattern
+  was mechanical for the last five modules" is exactly the reasoning that walks
+  something past scrutiny, and it is not sufficient here.
+- **Author and reviewer stay separate**, for code as for documents: whoever
+  implements a task does not review it, and the adversarial pass is a fresh
+  agent with no memory of writing it.
+- `autotrade-73`'s `fix/db-foundation-must-fix-tests` (`e74096a`) is **input to
+  Task 1, not Task 1** — Task 1 adopts its tests (including the lock-contention
+  one) but not its path-keyed registry, which the design rejected.
+
+## Reference state — 2026-09-03 ~12:15 UTC (facts, not progress)
 
 **Merged today, on `main`:** Tier0 live-incident remediation (PR #501, fd-leak
 fixes in five modules, verified live), Tier1 backend-hygiene/de-polling
