@@ -111,6 +111,14 @@ def _run_stream_ticker(msg):
     from services.kalshi.contracts import ticker as ticker_contract
     if isinstance(msg, tuple):
         (msg,) = msg
+    # 2026-09-03 live-incident fix: check_exits/check_pending_fills/
+    # position_netting.review is now throttled by a module-level
+    # last-run timestamp (ticker_exit_check_min_interval_sec). Reset it
+    # before every call so existing tests, written against the pre-
+    # throttle behavior of "the block runs every call", keep seeing
+    # that - a test of the throttle itself sets this timestamp deliberately
+    # instead of going through this helper.
+    wsh_module._last_ticker_exit_check_at = 0.0
     asyncio.run(main._process_stream_ticker(ticker_contract.normalize_ticker(msg)))
 from fastapi.testclient import TestClient  # noqa: E402
 from services.position import account_positions  # noqa: E402
@@ -2682,6 +2690,171 @@ def test_process_stream_ticker_position_netting_is_a_noop_when_disabled(monkeypa
     _run_stream_ticker({"market_ticker": "TICK-A", "yes_bid_dollars": "0.6"})
 
     assert set(main.broker.positions) == {"TICK-A", "TICK-B"}  # position_netting.enabled defaults False
+
+
+# --- _process_stream_ticker: ticker_exit_check_min_interval_sec throttle
+# (2026-09-03 live-incident fix). check_exits/check_pending_fills/
+# position_netting.review used to run on every ticker message; these tests
+# go around _run_stream_ticker's own per-call reset (that reset exists so
+# every OTHER test in this file keeps seeing pre-throttle behavior) to
+# exercise the throttle directly.
+
+def test_process_stream_ticker_throttles_repeat_calls_within_the_interval(monkeypatch):
+    # No config_store.get() monkeypatch: relies on the real, currently
+    # committed config/settings.yaml default (kalshi.
+    # ticker_exit_check_min_interval_sec: 2.0) - check_pending_fills'
+    # validate_fn needs a real, full "strategy" section to resolve
+    # against, which a hand-rolled partial dict wouldn't have.
+    wsh_module._last_ticker_exit_check_at = 0.0
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    # First call: throttle gate is at 0.0, so `now - 0.0 >= 2.0` is true -
+    # the block runs and fills the order.
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-A", "yes_bid_dollars": "0.48"}))
+    assert "TICK-A" in main.broker.positions
+
+    # Second call, immediately after: within the 2.0s window, so the block
+    # must be skipped entirely - place a new pending order and confirm it
+    # is NOT filled even though the same fillable ask is present.
+    main.broker.place_limit_order("TICK-B", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+    main.state["latest_asks"]["TICK-B"] = 0.50
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-B", "yes_bid_dollars": "0.48"}))
+    assert "TICK-B" not in main.broker.positions
+    assert "TICK-B" in main.broker.pending_orders
+
+
+def test_process_stream_ticker_runs_again_once_the_interval_elapses(monkeypatch):
+    # No config_store.get() monkeypatch - same reasoning as the test above.
+    # Simulate "2+ seconds have already passed" the same way sibling
+    # _maybe_* throttle tests do (test_main_tick_executor_wiring.py) -
+    # backdate the module's last-run timestamp rather than sleeping.
+    wsh_module._last_ticker_exit_check_at = time.time() - 5.0
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-A", "yes_bid_dollars": "0.48"}))
+
+    assert "TICK-A" in main.broker.positions  # gate was open - block ran
+
+
+def test_process_stream_ticker_throttle_reads_the_config_value_live(monkeypatch):
+    """A 0.0 interval (or any interval already elapsed) must never block -
+    proves the gate reads config_store.get() fresh each call rather than a
+    module-level constant, matching this file's other live-reloadable
+    kalshi.* settings."""
+    # Merge onto the real config (not a hand-rolled partial dict) -
+    # check_pending_fills' validate_fn needs a real "strategy" section.
+    _cfg = dict(main.config_store.get())
+    _cfg["kalshi"] = {**_cfg["kalshi"], "ticker_exit_check_min_interval_sec": 0.0}
+    monkeypatch.setattr(main.config_store, "get", lambda: _cfg)
+    wsh_module._last_ticker_exit_check_at = time.time()  # "just ran" - would block a >0 interval
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-A", "yes_bid_dollars": "0.48"}))
+
+    assert "TICK-A" in main.broker.positions
+
+
+def test_process_stream_ticker_missing_kalshi_config_falls_back_to_default(monkeypatch):
+    """Several tests in this file monkeypatch config_store.get() to a
+    partial dict with no "kalshi" key at all - the throttle must fail open
+    to the documented 2.0s default (config/settings.yaml's own value)
+    rather than raising, exactly as _run_stream_ticker_calls_position_
+    netting_review_when_enabled already does above."""
+    # Merge onto the real config, just drop "kalshi" - check_pending_fills'
+    # validate_fn still needs a real "strategy" section to resolve against.
+    _cfg = {k: v for k, v in main.config_store.get().items() if k != "kalshi"}
+    monkeypatch.setattr(main.config_store, "get", lambda: _cfg)
+    wsh_module._last_ticker_exit_check_at = 0.0
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {"TICK-A": 0.50}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.place_limit_order("TICK-A", "yes", size=10, limit_price=0.55, reason="r", expires_at=time.time() + 60, confidence=0.95)
+
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-A", "yes_bid_dollars": "0.48"}))
+
+    assert "TICK-A" in main.broker.positions  # no KeyError, gate defaulted to open
+
+
+def test_process_stream_trade_check_exits_is_not_throttled(monkeypatch):
+    """_process_stream_trade's own check_exits call (line ~231) is
+    deliberately NOT gated by ticker_exit_check_min_interval_sec - it only
+    fires when fetch_signals returns a signal, already self-throttled by
+    construction. Back-to-back calls within the 2.0s window must both
+    reach check_exits, unlike the ticker path above."""
+    calls = []
+    real_check_exits = main.strategy.check_exits
+
+    def _spy_check_exits(*args, **kwargs):
+        calls.append(1)
+        return real_check_exits(*args, **kwargs)
+
+    monkeypatch.setattr(main.strategy, "check_exits", _spy_check_exits)
+    monkeypatch.setattr(wsh_module, "_streaming_trade_tape_enabled", lambda: True)
+
+    async def _noop_handle_signal(*args, **kwargs):
+        return None
+
+    # Stubbed so this test doesn't also need a fully valid whale-signal
+    # dict shape (open_position/evaluate/etc.) just to reach check_exits -
+    # only the "was check_exits reached, and how many times" question is
+    # in scope here.
+    monkeypatch.setattr(wsh_module, "_handle_signal", _noop_handle_signal)
+
+    class _StubProvider:
+        async def fetch_signals(self, since_ts=None, market_context=None):
+            return [{
+                "ticker": "TICK-A", "side": "yes", "confidence": 0.9, "source": "whale_trade",
+                "price": 0.5, "size": 10, "reason": "r",
+            }]
+
+    monkeypatch.setattr(wsh_module, "whale_provider", _StubProvider())
+    main.state["running"] = True
+    main.state["signal_feed"] = []
+    main.state["markets"] = []
+    main.state["latest_prices"] = {"TICK-A": 0.5}
+    main.state["latest_asks"] = {}
+    main.state["market_titles"] = {}
+    main.state["event_titles"] = {}
+    main.state["trade_tape"] = []
+    main.broker.reset(starting_bankroll=10000.0)
+
+    trade_msg = {
+        "trade_id": "T-1", "market_ticker": "TICK-A", "yes_price_dollars": "0.5",
+        "count": 10, "taker_side": "yes",
+    }
+    asyncio.run(main._process_stream_trade(dict(trade_msg)))
+    asyncio.run(main._process_stream_trade(dict(trade_msg)))
+
+    assert len(calls) == 2  # both calls reached check_exits - no throttle applied
 
 
 # --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,
