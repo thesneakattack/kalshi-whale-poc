@@ -72,7 +72,7 @@ expression) unconditionally deactivates selection unless
 `--testmon-forceselect` or `--testmon-noselect` is also passed. This
 script already passes `-m "not slow"` without either flag.
 
-- [ ] **Step 1: Confirm current (broken) behavior locally**
+- [x] **Step 1: Confirm current (broken) behavior locally**
 
 Run inside the ddev `fastapi` container, from the repo root (this container
 has no cached `.testmondata` for this branch, so this simulates a branch
@@ -94,7 +94,7 @@ Expected: the first line of output is
 word "deactivated"). This confirms the bug reproduces on this exact branch
 before the fix.
 
-- [ ] **Step 2: Apply the fix**
+- [x] **Step 2: Apply the fix**
 
 In `scripts/ci-testmon-run.sh`, line 53, change:
 
@@ -114,7 +114,7 @@ and satisfying pytest selectors at the same time" — this is the exact flag
 `configure.py`'s deactivation check looks for first, before it ever gets to
 the `-m`-triggered deactivation branch.
 
-- [ ] **Step 3: Confirm the fix locally**
+- [x] **Step 3: Confirm the fix locally**
 
 Same command as Step 1, run again (still no cached `.testmondata`, so this
 is testmon's honest "everything is new, run it all" first-run behavior —
@@ -132,7 +132,7 @@ This is the same first-push behavior the spec already documents as expected
 and safe — the fix is about every push *after* the first one on a branch,
 which needs a real prior `.testmondata` to demonstrate live (see Step 4).
 
-- [ ] **Step 4: Demonstrate real selection (not just the flag) locally**
+- [x] **Step 4: Demonstrate real selection (not just the flag) locally**
 
 Run once more with the `.testmondata` this second run just produced still
 in place, but touch a file with no executable-line changes a covered test
@@ -165,7 +165,7 @@ before this fix on any of the 27 CI logs the audit sampled) and a much
 smaller subset of tests actually running, not all 3058. This is the
 concrete "it now works" proof the audit's own recommendation asked for.
 
-- [ ] **Step 5: Clean up local experiment artifacts**
+- [x] **Step 5: Clean up local experiment artifacts**
 
 ```
 docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-audit-tier1-fixes && rm -f .testmondata'
@@ -176,7 +176,7 @@ Expected: clean except for the one-line change to `scripts/ci-testmon-run.sh`
 (the `.testmondata` file and `tools/soak_analyzer.py`'s noop edit are both
 git-ignored/reverted — confirm neither shows up in `git status`).
 
-- [ ] **Step 6: Run the full local suite to confirm no regression**
+- [x] **Step 6: Run the full local suite to confirm no regression**
 
 ```
 docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-audit-tier1-fixes && python3 -m pytest -n 4 -m "not slow" -p no:testmon -q 2>&1 | tail -5'
@@ -186,7 +186,7 @@ Expected: `3058 passed, 16 skipped` (unchanged from the audit's own
 baseline — this task changes nothing about which tests exist, only how
 `--testmon` decides to run them on a real push).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add scripts/ci-testmon-run.sh
@@ -232,7 +232,7 @@ IMMEDIATE`/`SQLITE_BUSY` semantics, which is why `test_capture_writer.py`'s
 lock-retention tests are unaffected (independently confirmed by the
 audit's adversarial review).
 
-- [ ] **Step 1: Read the current function**
+- [x] **Step 1: Read the current function**
 
 Read `tests/support/runtime_isolation.py` lines 240-256 (already open from
 the audit — `_original_connect`, `_guarded_connect`, `_install_sqlite_guard`)
@@ -242,7 +242,7 @@ changed on `main` in the meantime — check with `grep -n "_guarded_connect"
 tests/support/runtime_isolation.py` first and use the real line number, not
 a hardcoded assumption).
 
-- [ ] **Step 2: Measure the current (slow) baseline for the two
+- [x] **Step 2: Measure the current (slow) baseline for the two
 representative files**
 
 ```
@@ -254,7 +254,7 @@ audit's own last-measured 4-13s range for the heaviest test in each file —
 exact numbers vary run to run under host load, that's expected and not a
 regression signal).
 
-- [ ] **Step 3: Apply the fix**
+- [x] **Step 3: Apply the fix**
 
 In `tests/support/runtime_isolation.py`, inside `_guarded_connect` (the
 function that currently reads, per the audit's citation of `:245-250`):
@@ -288,7 +288,7 @@ function returns from is a connection this process just opened itself, so
 the pragma cannot fail in a way worth silently swallowing; a failure here
 should surface exactly like any other test-infra breakage.
 
-- [ ] **Step 4: Re-measure the same two files**
+- [x] **Step 4: Re-measure the same two files**
 
 ```
 docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-audit-tier1-fixes && python3 -m pytest tests/test_fault_log.py tests/test_signal_resolution.py -p no:testmon -q --durations=3'
@@ -301,7 +301,7 @@ different host load — treat "roughly 10x or more" as the pass bar, not an
 exact number, per this repo's dimensional-analysis discipline: don't assert
 a precise multiplier you haven't just measured on this exact run).
 
-- [ ] **Step 5: Run the full local suite and time it**
+- [x] **Step 5: Run the full local suite and time it**
 
 ```
 docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-audit-tier1-fixes && time python3 -m pytest -n 4 -m "not slow" -p no:testmon -q 2>&1 | tail -8'
@@ -318,7 +318,7 @@ If any test fails that passed before, stop and investigate under
 `superpowers:systematic-debugging` before proceeding — do not weaken the
 assertion or catch the failure to force a green run.
 
-- [ ] **Step 6: Confirm the safety property by construction one more time**
+- [x] **Step 6: Confirm the safety property by construction one more time**
 
 ```
 grep -n "_is_repo_data_path\|PRAGMA synchronous" tests/support/runtime_isolation.py
@@ -328,7 +328,7 @@ Confirm the `PRAGMA` line appears strictly after the `_is_repo_data_path`
 check in the function body (i.e., it can only execute once a connection has
 already been proven not to target real repo data).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add tests/support/runtime_isolation.py
@@ -348,6 +348,17 @@ docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #2."
 ---
 
 ### Task 3: Mark the four whole-repo-scan tests `slow`
+
+**Correction (2026-09-03, found during this task's own review):** only 2
+of these 4 tests turned out to be genuinely duplicated by required CI
+coverage — see
+`docs/superpowers/research/2026-09-02-ci-pipeline-audit.md`'s Tier 1 #3
+addendum and this plan's own SDD ledger
+(`.superpowers/sdd/2026-09-03-ci-pipeline-audit-tier1-fixes/progress.md`,
+gitignored) for the full account. The task's steps below are preserved as
+originally written for the historical record of what was planned; the
+actual commit (`e5b43b2`) marks only `test_unit_cost_scanner_is_clean_on_this_repo`
+and `test_module_never_reads_deprecated_direction_aliases_directly`.
 
 **Files:**
 - Modify: `tests/test_kalshi_census.py` (add `import pytest`; add
@@ -375,7 +386,7 @@ runs on every push/PR — the adversarial review confirmed that job's
 `_SCANNERS` registration covers the same scanners these tests re-invoke,
 and confirmed none of the four are currently marked `slow`.
 
-- [ ] **Step 1: Confirm current (unmarked) state and current selected-test
+- [x] **Step 1: Confirm current (unmarked) state and current selected-test
 count**
 
 ```
@@ -390,7 +401,7 @@ line (read a few lines above each match if unsure), and record the
 "N/M tests collected (K deselected)" line from the collect-only run as the
 before-count.
 
-- [ ] **Step 2: Add the missing import in `test_kalshi_census.py`**
+- [x] **Step 2: Add the missing import in `test_kalshi_census.py`**
 
 That file has no `import pytest` today. Add it alongside the existing
 imports near the top of the file:
@@ -410,7 +421,7 @@ shown above; check the exact current import block with
 plan's line numbers are from the audit and may have drifted by the time
 this task runs).
 
-- [ ] **Step 3: Mark the two `test_kalshi_census.py` tests**
+- [x] **Step 3: Mark the two `test_kalshi_census.py` tests**
 
 Immediately above each of these two `def` lines, add `@pytest.mark.slow`
 on its own line directly preceding the `def` (matching the exact style
@@ -427,21 +438,21 @@ def test_real_repo_census_runs_and_legacy_caller_count_stays_zero():
 def test_real_repo_fixtures_all_have_existing_source_docs():
 ```
 
-- [ ] **Step 4: Mark the `test_quality_audit.py` test**
+- [x] **Step 4: Mark the `test_quality_audit.py` test**
 
 ```python
 @pytest.mark.slow
 def test_unit_cost_scanner_is_clean_on_this_repo():
 ```
 
-- [ ] **Step 5: Mark the `test_historical_data_backfill.py` test**
+- [x] **Step 5: Mark the `test_historical_data_backfill.py` test**
 
 ```python
 @pytest.mark.slow
 def test_module_never_reads_deprecated_direction_aliases_directly():
 ```
 
-- [ ] **Step 6: Confirm the four tests are now excluded by default and
+- [x] **Step 6: Confirm the four tests are now excluded by default and
 still pass under `-m slow`**
 
 ```
@@ -455,7 +466,7 @@ command runs and **passes** at least these four tests (it will also
 include the two pre-existing `slow` tests from `test_quality_audit.py` —
 that's correct, not a bug).
 
-- [ ] **Step 7: Run the full default-marker suite to confirm the expected
+- [x] **Step 7: Run the full default-marker suite to confirm the expected
 reduction and zero regressions**
 
 ```
@@ -465,7 +476,7 @@ docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-au
 Expected: pass count drops by exactly 4 from the `3058 passed` baseline
 (the four now-excluded tests), skip count unchanged at 16, zero failures.
 
-- [ ] **Step 8: Confirm `quality-architecture-audit.yml` still covers the
+- [x] **Step 8: Confirm `quality-architecture-audit.yml` still covers the
 same checks independently (no coverage loss)**
 
 ```
@@ -478,7 +489,7 @@ Confirm both scanners this task's tests exercise are still wired into
 provided moves from "duplicated in two places" to "covered once, where it
 was already independently required," it does not disappear.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add tests/test_kalshi_census.py tests/test_quality_audit.py tests/test_historical_data_backfill.py
@@ -517,7 +528,7 @@ the server's pipeline-number sequence was reset on 2026-08-31 — the
 narrative itself is still accurate history, it just can no longer be
 verified by clicking through to those exact numbers today.
 
-- [ ] **Step 1: Locate and read the current text around each claim**
+- [x] **Step 1: Locate and read the current text around each claim**
 
 ```
 grep -n "A manually triggered pipeline\|trusted:.*network.*volumes.*security\|pipelines 240" docs/woodpecker-ci.md
@@ -526,7 +537,7 @@ grep -n "A manually triggered pipeline\|trusted:.*network.*volumes.*security\|pi
 Read 10 lines of context around each match before editing, since exact
 wording/line numbers may have shifted since the audit.
 
-- [ ] **Step 2: Fix the manual-trigger claim**
+- [x] **Step 2: Fix the manual-trigger claim**
 
 Find the paragraph beginning "**A manually triggered pipeline
 (`scripts/woodpecker-trigger`, the "Run pipeline" UI button, or a raw
@@ -551,7 +562,7 @@ temporarily broadening a workflow's `when:` to include `event: manual`
 while testing.
 ```
 
-- [ ] **Step 3: Fix the trusted-network claim**
+- [x] **Step 3: Fix the trusted-network claim**
 
 Find "shows `trusted: {network, volumes, security}` all true)." and replace
 with:
@@ -563,7 +574,7 @@ step containers; re-check live if a future step needs outbound network
 access).
 ```
 
-- [ ] **Step 4: Add a resolvability caveat to the pipeline-number
+- [x] **Step 4: Add a resolvability caveat to the pipeline-number
 narrative**
 
 Find the sentence citing "pipelines 240 and 241" and add, immediately
@@ -578,7 +589,7 @@ sentence — the historical narrative itself stays accurate and unchanged):
   independently re-verifiable by number.)
 ```
 
-- [ ] **Step 5: Confirm the edits render correctly and nothing else nearby
+- [x] **Step 5: Confirm the edits render correctly and nothing else nearby
 broke**
 
 ```
@@ -590,7 +601,7 @@ grep -n "pipelines 240" docs/woodpecker-ci.md
 Read the output and confirm each section reads coherently in context (no
 dangling markdown, no orphaned sentence fragments from the replacement).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/woodpecker-ci.md
@@ -608,15 +619,16 @@ docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #4."
 
 ## Final integration step (after all four tasks land)
 
-- [ ] Run the full local suite one more time on the fully-integrated
+- [x] Run the full local suite one more time on the fully-integrated
   branch (all four commits applied) to confirm the tasks compose cleanly:
 
 ```
 docker exec ddev-kalshi-whale-poc-fastapi sh -c 'cd /app/.claude/worktrees/ci-audit-tier1-fixes && python3 -m pytest -n 4 -m "not slow" -p no:testmon -q 2>&1 | tail -5'
 ```
 
-Expected: `3054 passed, 16 skipped` (3058 minus the 4 tests Task 3 moved
-behind `-m slow`), zero failures.
+Expected: `3056 passed, 16 skipped` (corrected 2026-09-03 — see the
+addendum after Task 3's heading below: only 2 of the originally-planned 4
+tests were actually marked slow, not 4), zero failures.
 
 - [ ] Push the branch, open a PR, confirm CI green on all 5 required
   contexts (`gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status`),

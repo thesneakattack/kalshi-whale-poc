@@ -232,20 +232,24 @@ explains was a deliberate choice.
    **Correction (2026-09-03, found during implementation):** only 2 of these
    4 tests are actually duplicated by `quality-architecture-audit.yml`'s
    required job. `tools/quality_audit/kalshi_boundary.py` imports just 4 of
-   `kalshi_census.py`'s scan functions (lines 40-45: `_scan_direct_host_usage`,
+   `kalshi_census.py`'s scan functions (lines 40-46: `_scan_direct_host_usage`,
    `_scan_known_field_reads`, `_scan_legacy_wrapper`, `_scan_sdk_imports`)
    and never calls `_scan_wrapper_method_calls`, `_scan_fixtures`, or
    `build_census()`'s hot/cold classification — so
    `test_real_repo_census_runs_and_legacy_caller_count_stays_zero` and
    `test_real_repo_fixtures_all_have_existing_source_docs` (both in
-   `test_kalshi_census.py`) check real properties nothing else in the
-   required CI pipeline covers and were NOT marked `slow`. Only
+   `test_kalshi_census.py`) check real properties only partly covered
+   elsewhere — e.g. `legacy_caller_count == 0` and fixture `source_doc`
+   *key* presence overlap with existing required checks, but the
+   file-existence and wrapper-call/hot-cold-table assertions do not — and
+   were NOT marked `slow`. Only
    `test_unit_cost_scanner_is_clean_on_this_repo` (uses the
    `scan_unit_cost_derivations` registered in CI's `_SCANNERS`) and
    `test_module_never_reads_deprecated_direction_aliases_directly` (uses
    `_scan_known_field_reads` called at `kalshi_boundary.py:145`) were
-   genuinely redundant and are marked. Recovered time is ~21.7s, not the
-   originally-claimed 43.6s.
+   genuinely redundant and are marked. Recovered time is ~7.6s summed test
+   time (≈1.9s wall at `-n 4`), not the originally-claimed 43.6s — the two
+   tests left unmarked account for the other ~36.4s.
 4. **`docs/woodpecker-ci.md` drift pass**: correct the manual-trigger
    section for `tests-pytest` (now `event: manual`-enabled, not filtered),
    the trusted-network line (`false`, not `true`), and the now-unresolvable

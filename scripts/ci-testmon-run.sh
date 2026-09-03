@@ -27,12 +27,16 @@ if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_PIPELINE_EVENT:-}" =
   # just-merged main push - always full, unscoped, never testmon-selected.
   # See tests-pytest.yml's header, tiers 2 and 4.
   #
-  # -m "not slow" (2026-08-26): excludes tests/test_quality_audit.py's two
-  # real-repo-tree scans, which run the identical checks
-  # .woodpecker/quality-architecture-audit.yml's own `architecture-audit`
-  # step already runs, independently, as its own required PR-gate context
-  # - measured at 73.7s + 11.77s of this suite's wall time for zero
-  # coverage beyond what that dedicated job already enforces. That job is
+  # -m "not slow" (2026-08-26): excludes two tests
+  # (`tests/test_quality_audit.py::test_unit_cost_scanner_is_clean_on_this_repo`,
+  # `tests/test_historical_data_backfill.py::test_module_never_reads_deprecated_direction_aliases_directly`)
+  # that duplicate checks `.woodpecker/quality-architecture-audit.yml`'s own
+  # required job already runs independently - together ~7.6s of this
+  # suite's wall time for zero coverage beyond what that dedicated job
+  # already enforces (corrected 2026-09-03: two other candidate tests in
+  # tests/test_kalshi_census.py were found NOT to be duplicated and were
+  # left unmarked - see docs/superpowers/research/2026-09-02-ci-pipeline-audit.md's
+  # Tier 1 #3 addendum). That job is
   # unaffected by this change; it doesn't invoke pytest at all.
   exec python -m pytest -n 4 -m "not slow"
 fi
@@ -50,6 +54,11 @@ mkdir -p "$CACHE_DIR"
 if [ -f "$CACHE_DIR/.testmondata" ]; then
   cp "$CACHE_DIR/.testmondata" .testmondata
 fi
+# --testmon-forceselect (2026-09-03): without it, `-m` alone silently
+# deactivates testmon's selection entirely (testmon's own configure.py
+# checks this flag before its `-m`-triggered deactivation branch) - every
+# push since this script shipped 2026-08-26 had been running the full
+# suite under testmon for nothing; this restores real per-push selection.
 python -m pytest --testmon --testmon-forceselect -n 4 -m "not slow"
 STATUS=$?
 cp .testmondata "$CACHE_DIR/.testmondata"
