@@ -4,24 +4,30 @@
 # "did the tests pass." Reads pinned versions straight from the
 # requirements files - doesn't need the packages installed first.
 #
-# Docs-only fast path added 2026-09-03 (CI pipeline audit finding: this
-# workflow never checked build/.ci-skip-verdict, unlike tests-pytest.yml/
-# quality-browser-e2e.yml - a pure docs/.claude-only PR still paid the full
-# pip-audit cost every time, confirmed live at a 32s median in the audit's
-# own dataset). Requirements files can never live under docs/.claude, so a
-# verdict of SKIP here is exactly as safe as tests-pytest.yml's own use of
-# it - this workflow still runs and still posts its required status
+# Path-scoped fast path added 2026-09-03 (real gap, confirmed live: PR #445
+# touched only .gitignore and still paid the full pip-audit cost, because
+# this workflow never checked any skip verdict at all - not even the
+# docs-only one). pip-audit reads pinned version strings straight from
+# requirements*.txt and never executes any application code, so unlike
+# tests-pytest.yml/kalshi-contract-fixtures.yml (where a narrow path filter
+# would risk missing a real regression via an untraced transitive
+# dependency - confirmed the hard way for kalshi-contract-fixtures.yml,
+# see its own comment) this workflow's real dependency surface is exactly
+# the requirements files themselves, nothing transitive to trace. Uses
+# scripts/ci-skip-if-unaffected.sh (not ci-skip-heavy-suite.sh's docs-only
+# check) since "did requirements*.txt change" is a strictly more permissive,
+# still-safe SKIP condition than "is this a docs-only change" for this one
+# workflow specifically. Still runs and still posts its required status
 # (`ci/woodpecker/{push,pr}/tests-dependency-audit`), only the pip-audit
-# work inside it becomes a no-op, same shape as the pattern already proven
-# there.
+# work inside becomes a no-op.
 when:
   - event: [push, pull_request]
 
 # Full-history clone override, required by ci-fast-path-check below - same
 # reasoning as tests-pytest.yml's own identical block (its own comment has
 # the full story: Woodpecker's default clone plugin silently forces
-# --depth=1 unless partial:false is also set, and ci-skip-heavy-suite.sh's
-# git merge-base/HEAD^1 diff needs real ancestor history to work at all).
+# --depth=1 unless partial:false is also set, and the skip script's git
+# merge-base/HEAD^1 diff needs real ancestor history to work at all).
 clone:
   - name: git
     image: woodpeckerci/plugin-git
@@ -32,16 +38,18 @@ clone:
 steps:
   - name: ci-fast-path-check
     image: alpine/git
+    environment:
+      RELEVANT_PATTERN: '^(requirements.*\.txt$|\.woodpecker/tests-dependency-audit\.yml$|scripts/ci-skip-if-unaffected\.sh$)'
     commands:
       - mkdir -p build
-      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+      - sh scripts/ci-skip-if-unaffected.sh | tee build/.ci-skip-verdict
 
   - name: pip-audit
     image: python:3.13-slim
     commands:
       - |
         if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
-          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping pip-audit"
+          echo "no requirements*.txt change (scripts/ci-skip-if-unaffected.sh) - skipping pip-audit"
         else
           pip install pip-audit
           pip-audit -r requirements.txt -r requirements-dev.txt
