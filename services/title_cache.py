@@ -63,70 +63,75 @@ def _connect():
     alone commits/rolls back a transaction, it never closes the
     connection, and the live fd census (2026-09-02) measured this file's
     handle count growing fastest of any store (5 -> 148+ in under an
-    hour)."""
+    hour).
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS market_titles (
-            ticker TEXT PRIMARY KEY,
-            title TEXT,
-            yes_sub_title TEXT,
-            no_sub_title TEXT,
-            event_ticker TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS event_titles (
-            event_ticker TEXT PRIMARY KEY,
-            title TEXT,
-            sub_title TEXT,
-            category TEXT
-        )
-        """
-    )
-    # Real Kalshi field, already fetched on every get_event() call but
-    # previously discarded - lets a 2-outcome event ("Toronto vs
-    # Philadelphia Winner") be told apart from a genuine multi-outcome one
-    # ("Wyndham Championship Winner", 60+ golfers) or an event whose
-    # sibling markets are independent props (not one mutually-exclusive
-    # question at all - e.g. "Max Scherzer 15+ outs" and "Aaron Nola 18+
-    # outs" sharing an event). Added after the table above already had live
-    # rows, hence the guarded ALTER TABLE.
-    _add_column_if_missing(conn, "event_titles", "mutually_exclusive", "INTEGER")
-    # product_metadata.competition/competition_scope - real Kalshi fields,
-    # already fetched on every get_event() call but previously discarded.
-    # Direct display value: "Wyndham Championship" for a golf pairing card,
-    # confirmed live - not used for grouping (that's series_of/round_robin_
-    # select's job, and this field is too generic for that on some series -
-    # see ROADMAP.md), just shown as real context on the event card.
-    _add_column_if_missing(conn, "event_titles", "competition", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "competition_scope", "TEXT")
-    # The rest of main.py._fetch_event_titles' required_event_fields set -
-    # see this module's own docstring for the restart-drops-them-silently
-    # gap this closes. product_metadata/settlement_sources are real nested
-    # structures (a dict and a list of dicts respectively), stored as JSON
-    # text same as every other non-scalar field this app persists.
-    _add_column_if_missing(conn, "event_titles", "series_ticker", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "available_on_brokers", "INTEGER")
-    _add_column_if_missing(conn, "event_titles", "collateral_return_type", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "strike_date", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "strike_period", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "fee_type_override", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "fee_multiplier_override", "REAL")
-    _add_column_if_missing(conn, "event_titles", "last_updated_ts", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "product_metadata_json", "TEXT")
-    _add_column_if_missing(conn, "event_titles", "settlement_sources_json", "TEXT")
     try:
+        # WAL mode (2026-08-11, real live incident): rollback-journal mode
+        # serializes ALL writers and readers against each other for the whole
+        # transaction; WAL lets readers proceed concurrently with a writer and
+        # is the standard hardening step for exactly the bursty-write scenario
+        # that took the app down (trade-tape volume overwhelming a per-call
+        # sqlite3.connect()). idempotent - safe to run on every connect.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_titles (
+                ticker TEXT PRIMARY KEY,
+                title TEXT,
+                yes_sub_title TEXT,
+                no_sub_title TEXT,
+                event_ticker TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_titles (
+                event_ticker TEXT PRIMARY KEY,
+                title TEXT,
+                sub_title TEXT,
+                category TEXT
+            )
+            """
+        )
+        # Real Kalshi field, already fetched on every get_event() call but
+        # previously discarded - lets a 2-outcome event ("Toronto vs
+        # Philadelphia Winner") be told apart from a genuine multi-outcome one
+        # ("Wyndham Championship Winner", 60+ golfers) or an event whose
+        # sibling markets are independent props (not one mutually-exclusive
+        # question at all - e.g. "Max Scherzer 15+ outs" and "Aaron Nola 18+
+        # outs" sharing an event). Added after the table above already had live
+        # rows, hence the guarded ALTER TABLE.
+        _add_column_if_missing(conn, "event_titles", "mutually_exclusive", "INTEGER")
+        # product_metadata.competition/competition_scope - real Kalshi fields,
+        # already fetched on every get_event() call but previously discarded.
+        # Direct display value: "Wyndham Championship" for a golf pairing card,
+        # confirmed live - not used for grouping (that's series_of/round_robin_
+        # select's job, and this field is too generic for that on some series -
+        # see ROADMAP.md), just shown as real context on the event card.
+        _add_column_if_missing(conn, "event_titles", "competition", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "competition_scope", "TEXT")
+        # The rest of main.py._fetch_event_titles' required_event_fields set -
+        # see this module's own docstring for the restart-drops-them-silently
+        # gap this closes. product_metadata/settlement_sources are real nested
+        # structures (a dict and a list of dicts respectively), stored as JSON
+        # text same as every other non-scalar field this app persists.
+        _add_column_if_missing(conn, "event_titles", "series_ticker", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "available_on_brokers", "INTEGER")
+        _add_column_if_missing(conn, "event_titles", "collateral_return_type", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "strike_date", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "strike_period", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "fee_type_override", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "fee_multiplier_override", "REAL")
+        _add_column_if_missing(conn, "event_titles", "last_updated_ts", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "product_metadata_json", "TEXT")
+        _add_column_if_missing(conn, "event_titles", "settlement_sources_json", "TEXT")
         with conn:
             yield conn
     finally:

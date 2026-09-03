@@ -154,18 +154,23 @@ def _connect():
     keeps working unchanged - this yields the same conn as before, but now
     closes it on exit (2026-09-03, Task 5 of docs/superpowers/plans/
     2026-09-03-tier0-live-incident-remediation.md), same fix and same
-    reasoning as market_history.py's Task 2."""
+    reasoning as market_history.py's Task 2.
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
     try:
+        # WAL mode (2026-08-11, real live incident): rollback-journal mode
+        # serializes ALL writers and readers against each other for the whole
+        # transaction; WAL lets readers proceed concurrently with a writer and
+        # is the standard hardening step for exactly the bursty-write scenario
+        # that took the app down (trade-tape volume overwhelming a per-call
+        # sqlite3.connect()). idempotent - safe to run on every connect.
+        conn.execute("PRAGMA journal_mode=WAL")
+        _init_schema(conn)
         with conn:
             yield conn
     finally:

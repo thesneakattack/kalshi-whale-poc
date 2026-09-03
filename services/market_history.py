@@ -92,18 +92,24 @@ def _connect(db_path: Path):
     2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
     commits/rolls back a transaction, it never closes the connection, and
     this module was one of four confirmed leaking descriptors in the
-    2026-09-02 fd-exhaustion incident."""
+    2026-09-02 fd-exhaustion incident.
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure - a corrupted db file, or disk/fd pressure, exactly the
+    conditions the fd-exhaustion incident created - would otherwise leave
+    `conn` open with nothing left to close it."""
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
-    _init_schema(conn)
     try:
+        # WAL mode (2026-08-11, real live incident): rollback-journal mode
+        # serializes ALL writers and readers against each other for the whole
+        # transaction; WAL lets readers proceed concurrently with a writer and
+        # is the standard hardening step for exactly the bursty-write scenario
+        # that took the app down (trade-tape volume overwhelming a per-call
+        # sqlite3.connect()). idempotent - safe to run on every connect.
+        conn.execute("PRAGMA journal_mode=WAL")
+        _init_schema(conn)
         with conn:
             yield conn
     finally:
