@@ -21,6 +21,8 @@ with respect to trading, and each degrades to an explicit "unknown" rather
 than a fabricated number.
 """
 import asyncio
+import os
+import resource
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -43,6 +45,64 @@ from services.kalshi.account import classify_api_key_attestation, user_data_age_
 from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
+
+# Task 1 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
+# remediation.md: no individual probe below had a timeout, so one store
+# whose blocking sqlite3 call never returns hung the whole route forever
+# (live incident, 2026-09-03 - GET /api/health/pipeline stopped responding
+# while every other route kept serving). 10.0s is an estimate: Python's
+# sqlite3 default busy-timeout is 5.0s, so an ordinary SQLITE_BUSY wait
+# resolves (success or OperationalError) well inside 10s; a probe that
+# still hasn't returned past that is not ordinary lock contention and
+# this task's own live-validation step (Task 1 Step 4) is where that
+# number gets checked against real behavior, not assumed correct.
+STORE_PROBE_TIMEOUT_SEC = 10.0
+
+
+async def _bounded(coro, *, timeout: float | None = None) -> dict:
+    """Runs one probe coroutine with a hard wall-clock bound, converting a
+    timeout into the same {"error": ...} shape store_stats.store_stats()
+    already returns for every other failure - callers of this route never
+    see a schema difference between "the store errored" and "the store
+    never answered in time." Cancelling the wait_for() here unblocks this
+    HTTP response; it cannot forcibly stop the underlying OS thread if the
+    wrapped asyncio.to_thread() call is genuinely stuck (not just slow) -
+    see this plan's Architecture section.
+
+    `timeout` reads STORE_PROBE_TIMEOUT_SEC live, inside the function body,
+    rather than capturing it as a default-parameter expression - a default
+    argument's value is frozen once, at `async def` (module-import) time,
+    so a test that reassigns the module attribute afterward (e.g.
+    `monkeypatch.setattr(routes, "STORE_PROBE_TIMEOUT_SEC", 0.2)`) would
+    silently have no effect on an already-bound default (caught by this
+    plan's own adversarial review, deterministically reproduced - a bare
+    `timeout: float = STORE_PROBE_TIMEOUT_SEC` default looks identical at
+    every production call site but breaks exactly this kind of test)."""
+    if timeout is None:
+        timeout = STORE_PROBE_TIMEOUT_SEC
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        return {"error": f"timed out after {timeout:.0f}s"}
+
+
+# Task 9 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
+# remediation.md: the 2026-09-02 fd-exhaustion incident had zero
+# visibility anywhere until the container was already at its ceiling.
+# 80% is an estimate - enough lead time to notice before the 1,024-fd
+# limit this incident actually hit, without firing on ordinary variation;
+# Task 10's live validation is where that gets checked against real
+# behavior, not assumed correct on landing.
+FD_BUDGET_WARN_FRACTION = 0.8
+
+
+def _current_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _fd_soft_limit() -> int:
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
 
 @router.get("/api/diagnostics")
 async def get_diagnostics(hours: float = 24.0):
@@ -369,19 +429,31 @@ async def get_pipeline_health(exact_rows: bool = False):
 
     probe_started = time.perf_counter()
     results = await asyncio.gather(
-        asyncio.to_thread(_blocking_extras, now),
+        _bounded(asyncio.to_thread(_blocking_extras, now)),
         *(
-            asyncio.to_thread(
+            _bounded(asyncio.to_thread(
                 store_stats.store_stats, db_path, table, col, now, exact=exact_rows
-            )
+            ))
             for db_path, table, col in specs.values()
         ),
     )
     extras, store_results = results[0], results[1:]
     stores_probe_ms = round((time.perf_counter() - probe_started) * 1000.0, 2)
 
+    from services import fault_log
+
+    fd_count = _current_fd_count()
+    fd_limit = _fd_soft_limit()
+    if fd_limit and fd_count / fd_limit >= FD_BUDGET_WARN_FRACTION:
+        fault_log.record(
+            "fd_budget", "approaching_limit",
+            RuntimeError(f"{fd_count}/{fd_limit} file descriptors in use"),
+            severity="warn",
+        )
+
     return {
         "generated_at": now,
+        "open_fds": {"count": fd_count, "soft_limit": fd_limit},
         "running": state.get("running"),
         "last_tick_duration_sec": state.get("last_tick_duration_sec"),
         "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
@@ -394,7 +466,7 @@ async def get_pipeline_health(exact_rows: bool = False):
         "price_staleness": _price_staleness(now),
         # P8 Task 36: per-scheduler liveness now that none of them are
         # called from the tick - see _scheduler_status.
-        "schedulers": extras["schedulers"],
+        "schedulers": extras.get("schedulers"),
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a
@@ -463,7 +535,10 @@ async def get_pipeline_health(exact_rows: bool = False):
         # A non-empty value here is the difference between "quiet market"
         # and "broken component" - the distinction that cost game_state
         # every row it should have written on 2026-08-17.
-        "faults_last_24h": extras["faults_last_24h"],
+        "faults_last_24h": extras.get("faults_last_24h"),
+        # Visible rather than a silent row of nulls when _blocking_extras
+        # itself timed out (Task 1) - None on the success path.
+        "extras_error": extras.get("error"),
         "buffered_unwritten": {
             # capture_writer owns the raw_trades queue (series_watcher's own
             # capture_stats() only forwards this integer, and pays two
@@ -471,8 +546,8 @@ async def get_pipeline_health(exact_rows: bool = False):
             # 2026-08-30). Read the owner directly.
             "series_watcher_trades": capture_writer.depth().get("raw_trades", 0),
             "index_feed_ticks": index_feed.snapshot().get("buffered_ticks"),
-            "settlement_edge": extras["settlement_edge_buffered"],
-            "game_state": extras["game_state_buffered"],
+            "settlement_edge": extras.get("settlement_edge_buffered"),
+            "game_state": extras.get("game_state_buffered"),
         },
         # Rows the capture daemon LOST, by cause and store, for the process
         # lifetime (services/capture_writer.loss_snapshot, issue #211):
@@ -493,8 +568,11 @@ async def get_faults(limit: int = 50, component: str | None = None, hours: float
     recent `last_seen` means something is failing right now, silently."""
     from services import fault_log as fl
 
-    return {"summary": fl.summary(since_ts=time.time() - hours * 3600),
-            "faults": fl.recent(limit=limit, component=component)}
+    summary, faults = await asyncio.gather(
+        asyncio.to_thread(fl.summary, since_ts=time.time() - hours * 3600),
+        asyncio.to_thread(fl.recent, limit=limit, component=component),
+    )
+    return {"summary": summary, "faults": faults}
 
 
 @router.get("/api/index")

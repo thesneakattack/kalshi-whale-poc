@@ -57,7 +57,8 @@ def _seed_signals(rows):
     "is this a real whale_watcher row" filter - the same factors_json IS
     NOT NULL idiom services/signal_log.py's resolved_signals_with_factors
     already uses."""
-    sl_module._connect().close()  # ensure schema
+    with sl_module._connect():
+        pass  # ensure schema
     with sqlite3.connect(sl_module.DB_PATH) as conn:
         for ticker, series, size, seen_at in rows:
             conn.execute(
@@ -110,7 +111,8 @@ def test_threshold_integrity_respects_per_series_overrides(dbs):
 
 def test_threshold_integrity_unknown_when_no_data(dbs):
     now = time.time()
-    sl_module._connect().close()
+    with sl_module._connect():
+        pass
     c = asyncio.run(diagnostics.check_threshold_integrity(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
 
@@ -215,7 +217,8 @@ def test_runway_buckets_entries_by_time_to_close(dbs):
         ("E-1", "yes", 0.6, "whale print 5000 @ 0.6 (conf 0.6)", now - 100),
         ("E-2", "yes", 0.6, "whale print 5000 @ 0.6 (conf 0.6)", now - 100),
     ])
-    mc_module._connect(mc_module.DB_PATH).close()
+    with mc_module._connect(mc_module.DB_PATH):
+        pass
     with sqlite3.connect(mc_module.DB_PATH) as conn:
         # E-1 had 30s of runway at entry; E-2 had an hour.
         conn.execute("INSERT INTO markets (ticker, close_ts, updated_at) VALUES (?,?,?)", ("E-1", now - 70, now))
@@ -231,7 +234,8 @@ def test_runway_unknown_when_no_close_time_is_recorded(dbs):
     # guarantee, and close_time is mutable upstream anyway.
     now = time.time()
     _seed_trades([("F-1", "yes", 0.6, "whale print 5000 @ 0.6 (conf 0.6)", now - 100)])
-    mc_module._connect(mc_module.DB_PATH).close()
+    with mc_module._connect(mc_module.DB_PATH):
+        pass
     c = asyncio.run(diagnostics.check_runway_at_entry(_cfg(), since_ts=now - 3600, now=now))
     assert c.status == "unknown"
     assert c.detail["buckets"]["unknown"] == 1
@@ -365,7 +369,8 @@ def test_selectivity_curve_computes_accuracy_curve_from_real_signals(dbs):
     # Seed 60 resolved signals with the columns selectivity_curve reads.
     # Mix confidence scores (0.3-0.8 range) and correctness (0/1) to create
     # a real curve with meaningful accuracy deltas across thresholds.
-    sl_module._connect().close()
+    with sl_module._connect():
+        pass
     with sqlite3.connect(sl_module.DB_PATH) as conn:
         for i in range(60):
             confidence = 0.3 + (i % 6) * 0.1  # 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
@@ -394,7 +399,8 @@ def test_selectivity_curve_computes_accuracy_curve_from_real_signals(dbs):
 
 def test_confidence_input_coverage_ok_once_calibration_is_ungated(dbs, monkeypatch):
     import json
-    sl_module._connect().close()
+    with sl_module._connect():
+        pass
     with sqlite3.connect(sl_module.DB_PATH) as conn:
         for i in range(60):
             conn.execute(
@@ -422,7 +428,8 @@ def test_confidence_input_coverage_defaults_to_a_24h_window_not_full_history(dbs
     is already exercised elsewhere in this file."""
     import json
     now = time.time()
-    sl_module._connect().close()
+    with sl_module._connect():
+        pass
     with sqlite3.connect(sl_module.DB_PATH) as conn:
         for i in range(60):  # inside the 24h window - must be counted
             conn.execute(

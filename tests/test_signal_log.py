@@ -610,3 +610,57 @@ def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(t
     log.log_signal("KXTEST-VIS", "yes", 100, 0.9, "test", 12345.0)
     sides = log.recent_sides_for_ticker("KXTEST-VIS", since_ts=0)
     assert "yes" in sides
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as Tasks 2-4 - 21 call sites in this module
+    share one non-closing _connect().
+
+    Deviation from the plan's literal Step 1 test (docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md, Task 5): the plan's own
+    text monkeypatches `conn.close` directly on a real sqlite3.Connection
+    instance, but that raises `AttributeError: 'sqlite3.Connection' object
+    attribute 'close' is read-only` on this container's Python (3.13.15,
+    confirmed empirically, not assumed) - `close` is not instance-settable
+    on that C type. This repo already has a working pattern for this exact
+    fix shape (tests/test_pipeline_health_cost.py's `_RecordingConnection`,
+    used by `test_probe_closes_its_connection` for Task 1's analogous
+    close-tracking assertion): wrap the real connection instead of mutating
+    it, delegate everything else via `__getattr__`, and also delegate
+    `__enter__`/`__exit__` since `_connect()`'s body does `with conn:` for
+    its own commit/rollback semantics (the fd-closing `finally: conn.
+    close()` is a separate, outer step - see the fix itself)."""
+    import sqlite3
+    from services import signal_log as sl
+
+    monkeypatch.setattr(sl, "DB_PATH", tmp_path / "signal_log.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sl.sqlite3, "connect", _tracking_connect)
+
+    with sl._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]

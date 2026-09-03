@@ -156,3 +156,59 @@ def test_prune_returns_the_deleted_row_count():
     fl.record("c", "op", _boom("fresh"), now=now - 1 * 3600)
 
     assert fl.prune(retention_hours=336, now=now) == 2
+
+
+def test_connect_closes_its_connection(monkeypatch):
+    """Same fd-leak class as Tasks 2-5 - fault_log.py's own _connect() had
+    the identical non-closing shape, and this module is the one CLAUDE.md
+    tells every session to read first (services/fault_log.py's own callers
+    include GET /api/health/faults, one of only two routes this plan's own
+    live re-verification found stuck). DB_PATH is already redirected by
+    this file's autouse _isolated fixture - no need to set it here.
+
+    Deviates from the plan's literal snippet (`conn.close = _close`
+    monkeypatched directly onto the connection instance): verified live in
+    this container (Python 3.13.15, sqlite3 module 2.6.0) that
+    `sqlite3.Connection` instances have no `__dict__`
+    (`'sqlite3.Connection' object has no attribute 'foo' and no __dict__
+    for setting new attributes`), so instance-attribute assignment of
+    `close` raises `AttributeError: attribute 'close' is read-only` before
+    the test body even runs - not the intended `closed == []` assertion
+    failure. Patching `sqlite3.Connection.close` at the class level also
+    fails (`TypeError: cannot set 'close' attribute of immutable type
+    'sqlite3.Connection'` - it's a non-heap C type). A thin wrapper
+    returned in place of the real connection is the only working
+    substitute that still exercises the exact call sequence `_connect()`
+    performs (`with conn: yield conn` then `conn.close()` in `finally`)."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConn:
+        def __init__(self, real):
+            self.__dict__["_real"] = real
+
+        def __getattr__(self, name):
+            return getattr(self.__dict__["_real"], name)
+
+        def __enter__(self):
+            self.__dict__["_real"].__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.__dict__["_real"].__exit__(*exc)
+
+        def close(self):
+            closed.append(True)
+            self.__dict__["_real"].close()
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConn(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(fl.sqlite3, "connect", _tracking_connect)
+
+    with fl._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]

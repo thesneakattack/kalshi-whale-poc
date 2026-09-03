@@ -34,6 +34,7 @@ all), so losing it every restart wasn't just wasted calls, it was silently
 degrading that feature's best source back to its fallbacks after every
 reload.
 """
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -53,7 +54,16 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site (five in this
+    module) keeps working unchanged - this yields the same conn as before,
+    but now closes it on exit (2026-09-03, Task 3 of docs/superpowers/
+    plans/2026-09-03-tier0-live-incident-remediation.md): `with conn:`
+    alone commits/rolls back a transaction, it never closes the
+    connection, and the live fd census (2026-09-02) measured this file's
+    handle count growing fastest of any store (5 -> 148+ in under an
+    hour)."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     # WAL mode (2026-08-11, real live incident): rollback-journal mode
@@ -116,7 +126,11 @@ def _connect() -> sqlite3.Connection:
     _add_column_if_missing(conn, "event_titles", "last_updated_ts", "TEXT")
     _add_column_if_missing(conn, "event_titles", "product_metadata_json", "TEXT")
     _add_column_if_missing(conn, "event_titles", "settlement_sources_json", "TEXT")
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def market_title_fields(m: dict) -> dict:

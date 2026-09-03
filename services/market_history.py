@@ -22,6 +22,7 @@ Two jobs:
 SQLite file: data/market_history.db - gitignored, same one-file-per-concern
 pattern as every other services/*.py persistence module.
 """
+import contextlib
 import sqlite3
 import time
 from datetime import datetime
@@ -83,7 +84,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(db_path: Path):
+    """Every existing `with _connect(DB_PATH) as conn:` call site keeps
+    working unchanged - this yields the same conn as before, but now
+    closes it on exit (2026-09-03, Task 2 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    commits/rolls back a transaction, it never closes the connection, and
+    this module was one of four confirmed leaking descriptors in the
+    2026-09-02 fd-exhaustion incident."""
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)
     # WAL mode (2026-08-11, real live incident): rollback-journal mode
@@ -94,7 +103,11 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # sqlite3.connect()). idempotent - safe to run on every connect.
     conn.execute("PRAGMA journal_mode=WAL")
     _init_schema(conn)
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _scoring_read_connection(db_path: Path) -> sqlite3.Connection:

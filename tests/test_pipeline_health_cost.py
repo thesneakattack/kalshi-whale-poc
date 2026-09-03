@@ -283,3 +283,125 @@ def test_pipeline_health_reports_total_store_probe_cost(monkeypatch):
 
     assert isinstance(body["stores_probe_ms"], float)
     assert body["stores_exact_rows"] is False
+
+
+def test_pipeline_health_bounds_a_hung_store_probe(monkeypatch):
+    """The live incident this task fixes: one store probe that never
+    returns must not hang the whole route. A monkeypatched store_stats
+    that blocks forever must still let the route respond, with that one
+    store's slot showing a timeout error instead of a value.
+
+    Asserts on the route's own self-reported stores_probe_ms rather than
+    TestClient's wall-clock .get() duration (a deviation from this task's
+    plan document, made after deterministically reproducing why the
+    plan's literal `elapsed < 5.0` around TestClient(...).get(...) fails
+    even against a correct fix): TestClient tears down a fresh event loop
+    per call (unless used as a `with` context manager), and that teardown
+    runs asyncio.run()'s shutdown_default_executor(), which BLOCKS until
+    every thread in the default executor finishes - including the
+    still-running, uncancellable OS thread behind this test's blocked
+    probe (asyncio can cancel the *coroutine* awaiting a thread-pool
+    future, per _bounded()'s docstring, but not the OS thread itself).
+    Reproduced standalone (scratch scripts, not kept in-repo): the same
+    monkeypatched route called directly via `asyncio.run(routes.
+    get_pipeline_health())` returns its dict with `stores_probe_ms` ~
+    204ms - matching the 0.2s bound - while the *process's* own exit is
+    delayed ~5.2s by the leaked thread; TestClient exhibits the identical
+    per-call delay for the same reason. That delay is a property of the
+    test harness's own loop teardown, never of the real long-lived server
+    process (which does not tear its loop down per request, so the HTTP
+    response the plan's docstring describes - fast, with the OS thread
+    merely leaking in the background - is what a live request actually
+    gets). stores_probe_ms is computed inside the coroutine immediately
+    after `await asyncio.gather(...)` returns, before any of that
+    teardown machinery runs, so it reflects the real bound uncontaminated
+    by it - and it is already the field this file's own
+    test_pipeline_health_reports_total_store_probe_cost asserts on for
+    the same reason.
+
+    Second deviation, also verified rather than assumed: the plan's own
+    version of _hangs_for_rejections() delegates every non-target table to
+    the real store_stats.store_stats(), expecting those real reads to
+    succeed. This worktree's data/ has no signal_log.db/series_watcher.db/
+    etc. (confirmed via `ls data/` - only config_performance.db,
+    event_schedule.db, fault_log.db, game_state.db, paper_broker.db,
+    risk_state.db, series_cache.db, settlement_edge.db, shadow_mode.db,
+    title_cache.db), so that real call returns store_stats's own documented
+    "missing store" shape (test_probe_opens_read_only_and_does_not_create_a_
+    missing_store, above in this file: {"error": "unable to open database
+    file"}) - a real, correct, unrelated-to-this-task behavior that just
+    happens to also satisfy `"error" in ...`, breaking the plan's `"error"
+    not in body["stores"]["signals"]` assertion for a reason that has
+    nothing to do with whether the timeout bound works. Replaced with a
+    fixed valid dict (same shape services/diagnostics/store_stats.py
+    documents and this file's own test_pipeline_health_runs_store_probes_
+    off_the_event_loop already uses) for every non-target table, so the
+    test no longer depends on which data/*.db files happen to exist in
+    whatever environment runs it."""
+    import main
+    from fastapi.testclient import TestClient
+    from services.diagnostics import routes
+
+    def _hangs_for_rejections(db_path, table, col, now, **kwargs):
+        if table == "rejected_candidates":
+            time.sleep(routes.STORE_PROBE_TIMEOUT_SEC + 5)  # longer than the bound
+            raise AssertionError("should have been cancelled/timed out before returning")
+        return {"rows": 0, "rows_exact": True, "rows_method": "count",
+                "last_write_sec_ago": None, "last_write_exact": True,
+                "last_write_method": "max", "probe_ms": 0.0}
+
+    monkeypatch.setattr(routes.store_stats, "store_stats", _hangs_for_rejections)
+    monkeypatch.setattr(routes, "STORE_PROBE_TIMEOUT_SEC", 0.2)  # bound the test's own wall time
+
+    body = TestClient(main.app).get("/api/health/pipeline").json()
+
+    assert body["stores_probe_ms"] < 5000.0, (
+        f"probe block should return near the 0.2s bound, took {body['stores_probe_ms']}ms"
+    )
+    assert "error" in body["stores"]["rejections"]
+    assert "timed out" in body["stores"]["rejections"]["error"]
+    # every other store still answered normally, proving one hung probe
+    # doesn't take the others down with it
+    assert "error" not in body["stores"]["signals"]
+
+
+def test_pipeline_health_reports_open_fd_count():
+    """The 2026-09-02 fd-exhaustion incident had no visibility anywhere in
+    this route until the container was already at its 1,024-descriptor
+    ceiling. This field is the lead-time signal that incident had none of."""
+    import main
+    from fastapi.testclient import TestClient
+
+    body = TestClient(main.app).get("/api/health/pipeline").json()
+
+    assert isinstance(body["open_fds"], dict)
+    assert isinstance(body["open_fds"]["count"], int)
+    assert body["open_fds"]["count"] > 0
+    assert isinstance(body["open_fds"]["soft_limit"], int)
+
+
+def test_fd_budget_fault_fires_past_80_percent(monkeypatch):
+    """Permanent recurrence detection for the incident's own root symptom -
+    a fault_log row should exist before the ceiling is hit, not only after,
+    unlike 2026-09-02's real incident which had zero warning. fault_log.record's
+    real signature (services/fault_log.py:85-87, confirmed against current
+    source before writing this test) is
+    record(component, operation, exc: BaseException, context=None,
+    severity="error", now=None) -> bool - there is no record_message."""
+    import main
+    from fastapi.testclient import TestClient
+    from services import fault_log
+    from services.diagnostics import routes
+
+    monkeypatch.setattr(routes, "_current_fd_count", lambda: 900)
+    monkeypatch.setattr(routes, "_fd_soft_limit", lambda: 1024)  # 900/1024 = 87.9%, over the 80% threshold
+
+    recorded = []
+    monkeypatch.setattr(fault_log, "record", lambda *a, **kw: recorded.append((a, kw)) or True)
+
+    TestClient(main.app).get("/api/health/pipeline")
+
+    assert recorded, "expected a fault_log.record() call once open fds crossed 80% of the soft limit"
+    (component, operation, exc), kwargs = recorded[0]
+    assert (component, operation) == ("fd_budget", "approaching_limit")
+    assert kwargs.get("severity") == "warn"
