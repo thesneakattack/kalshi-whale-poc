@@ -649,16 +649,30 @@ def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
     CREATE TABLE/_add_column_if_missing setup before it - a setup failure
     would otherwise leave `conn` open with nothing left to close it.
 
-    Uses a wrapper/proxy (not the factory=subclass pattern the test above
-    uses) deliberately: empirically, sqlite3.connect(factory=Subclass)
-    itself invokes the subclass's overridden execute() internally as part
-    of connecting (confirmed by reproduction - overriding execute() on a
-    real sqlite3.Connection subclass made connect() itself raise, before
-    this module's own _connect() body ever ran), which would test "connect()
-    itself fails" instead of the intended "setup after a successful
-    connect() fails." A proxy that calls the real connect() to completion
-    first, then wraps the result, avoids that interference - matching
-    title_cache.py's and fault_log.py's analogous tests."""
+    Uses a wrapper/proxy, not the factory=subclass pattern the test above
+    uses. Correction (this PR's own review caught an inaccurate claim in an
+    earlier version of this docstring - flagged and re-verified, not
+    silently fixed): a bare, isolated script confirmed sqlite3.connect()
+    with a factory=subclass whose execute() always raises DOES complete
+    normally and the override only fires on this module's own first
+    conn.execute() call inside try:, exactly as intended - so there is no
+    general CPython/sqlite3 mechanism where connect() itself invokes a
+    subclass's execute(). But the identical scenario, run as an actual
+    pytest test in this file (not a standalone script), reproducibly showed
+    conn.close() never firing (closed == [] instead of [True]), twice
+    independently. The two reproductions disagree, and the specific
+    interaction has not been root-caused (a plausible but unconfirmed
+    suspect: this test's monkeypatch replaces the process-wide
+    sqlite3.connect for its duration, and a pytest plugin doing its own
+    sqlite3 I/O mid-test - e.g. pytest-testmon, present in this repo's
+    plugin list - could be an unintended second caller of the poisoned
+    connect()). Rather than ship a guessed mechanism as fact, this test
+    sidesteps the ambiguity entirely: a proxy that calls the real connect()
+    to completion first, then wraps only the result, never forces
+    factory= onto any caller other than this test's own explicit
+    `mc._connect(mc.DB_PATH)` call - matching title_cache.py's and
+    fault_log.py's analogous tests, which use the same proxy shape and have
+    not shown this discrepancy."""
     import sqlite3
 
     cat = _mc(tmp_path, monkeypatch)
