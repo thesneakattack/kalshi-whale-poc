@@ -1,3 +1,5 @@
+import contextlib
+
 import pytest
 
 from services import candidate_log as cl
@@ -108,13 +110,6 @@ class _CountingConn:
         self._note(sql)
         return self._real.executemany(sql, *args, **kwargs)
 
-    def __enter__(self):
-        self._real.__enter__()
-        return self
-
-    def __exit__(self, *exc):
-        return self._real.__exit__(*exc)
-
     def __getattr__(self, name):
         return getattr(self._real, name)
 
@@ -137,10 +132,17 @@ def test_resolve_from_market_results_batches_updates_instead_of_one_per_row(monk
     real_connect = cl._connect
     wrapped = []
 
+    @contextlib.contextmanager
     def _spy_connect(*args, **kwargs):
-        conn = _CountingConn(real_connect(*args, **kwargs))
-        wrapped.append(conn)
-        return conn
+        # real_connect is itself a @contextlib.contextmanager (services/db.py
+        # migration) - calling it directly returns a _GeneratorContextManager,
+        # not a connection, so this spy must enter it properly (`with`) to
+        # get the actual connection before wrapping it, rather than wrapping
+        # the context-manager object itself.
+        with real_connect(*args, **kwargs) as real_conn:
+            conn = _CountingConn(real_conn)
+            wrapped.append(conn)
+            yield conn
 
     monkeypatch.setattr(cl, "_connect", _spy_connect)
 
@@ -374,3 +376,64 @@ def test_population_gate_summary_includes_edge_gate_rejections(tmp_path, monkeyp
     summary = cl.population_gate_summary(min_samples=1)
     gate_names = {row["gate_name"] for row in summary}
     assert "edge_gate" in gate_names
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch, _redirect_db):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(cl.db.sqlite3, "connect", _tracking_connect)
+    with cl._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_both_tables_indexes_and_unit_cost_columns(tmp_path, monkeypatch, _redirect_db):
+    with cl._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert {"rejected_candidates", "rejection_events"} <= tables
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+        assert "idx_rejection_events_gate" in indexes
+        assert "idx_rejection_events_unresolved" in indexes
+        rc_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejected_candidates)")}
+        re_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejection_events)")}
+        assert "unit_cost" in rc_cols
+        assert "unit_cost" in re_cols
+
+
+def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch, _redirect_db):
+    with cl._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

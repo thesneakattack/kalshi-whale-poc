@@ -55,62 +55,38 @@ delaying when it lands on disk - population_gate_summary()/clear_all()/
 count_range()/clear_range() each flush the buffer first so no caller ever
 sees a stale undercount or an incomplete wipe.
 """
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
 
-from services import capture_writer
+from services import capture_writer, db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
-
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
-    # Same idiom as services/risk_manager.py/paper_broker.py - CREATE TABLE
-    # IF NOT EXISTS alone doesn't add a column to an existing table with
-    # existing rows.
-    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+db.register_schema("rejected_candidates", capture_writer.init_rejected_candidates)
+db.register_schema("rejection_events", capture_writer.init_rejection_events)
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(capture_writer.REJECTED_CANDIDATES_DDL_SQL)
-    # No PRIMARY KEY / dedup on (ticker, strategy, gate_name) - deliberately
-    # the opposite of rejected_candidates above, so this is the true
-    # population every individual rejection, not one row per key. See this
-    # module's own "POPULATION STATISTICS" docstring section.
-    conn.execute(capture_writer.REJECTION_EVENTS_DDL_SQL)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
-    )
-    # Resolution below is driven by ticker, once per market_results entry -
-    # this index is what keeps that an indexed UPDATE instead of a full
-    # table scan once the table grows past a trivial size.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
-        "WHERE resolved = 0"
-    )
-    # 2026-08-23: closes the cost-blindness gap population_gate_summary()'s
-    # own docstring flags - the rejected candidate's unit_cost (0-1, YES-
-    # side-adjusted per side, same convention as PaperBroker's own trades)
-    # at the moment it was rejected, so a future pass can bucket hypothetical
-    # win rate by unit_cost band instead of averaging across all of them (the
-    # same trap CLAUDE.md's HARD COMMANDMENT table already proved: the
-    # >=0.95 band wins 96.3% of the time and *loses* money, forever).
-    # Nullable - not every rejection can supply this (e.g. unparseable_price
-    # itself, by definition).
-    _add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
-    _add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
-    return conn
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). The two
+    CREATE INDEX statements and two add_column_if_missing calls aren't
+    expressible in a single table's registered init_fn (they span both
+    tables / aren't CREATE TABLE at all), so this wrapper still runs them
+    itself on the yielded connection."""
+    with db.connect(DB_PATH, tables=("rejected_candidates", "rejection_events")) as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
+            "WHERE resolved = 0"
+        )
+        db.add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
+        db.add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
+        yield conn
 
 
 def record_rejection(
