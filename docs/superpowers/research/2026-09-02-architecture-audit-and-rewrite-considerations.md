@@ -14,6 +14,20 @@ end up becoming a comprehensive rewrite of the application entirely" — that
 question is addressed head-on in §12, with a specific, evidence-backed
 answer that is *not* "yes."
 
+**Second pass (2026-09-02, later the same day):** a follow-up pass over
+this document — re-deriving its conclusions under the rule set as it
+stands after PR #429 and PR #436, re-measuring the live app, and adding
+what happened after this document's monitor window — is
+`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`.
+Read it alongside this one: it corrects Tier-1 item 3 and §5.2's
+`raw_trades` finding (a lifetime fault row misread as 24 h — the last
+occurrence was 2026-08-30), separates the event-loop stalls from the
+dashboard-polling timeouts, answers the browser-tab question §6.2 left
+open (a tab was open, background-throttled), and records a 6.8-hour
+file-descriptor-exhaustion data-loss incident that began at 08:24 UTC,
+twenty minutes after this document's monitor ended. This document is
+otherwise left as merged.
+
 **Post-merge note (2026-09-02, added the same day, after this document's
 own review cycle completed and it was merged as PR #430):** while this
 audit's research and review cycle were in progress, the repository owner
