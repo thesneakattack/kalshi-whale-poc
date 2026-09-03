@@ -5,7 +5,7 @@ measurement of PR #526 (`services/whale_stream/whale_stream_handlers.py`'s ticke
 throttle) surfaced a second, distinct, previously-unnamed blocking mechanism on the
 trade-message path (issue #542), plus a correlated data-plane completeness loss
 (issue #541, 140,495 dropped trade messages). Both were root-caused with source
-state-transition proof and confirmed against live 24h metric history; #542's own
+state-transition proof and confirmed against live 24h metric history; #541's own
 comment thread ties the two together with a reconnect-free 33-minute saturation
 window that the "restart resubscribe surge" alternative cannot explain. This document
 does not re-litigate that root cause — it takes #542's finding as given and answers
@@ -61,9 +61,11 @@ one consumer task is spawned per queue (`websocket.py:665-695`). So for the dura
 of one resolve call, the sole consumer cannot dequeue the next message — of any class.
 
 Verified live, 1:1, no batching ever occurs on this path: `whale_pipeline.counter.offlist_candidates`
-== `resolve_calls` == `kalshi_rest_class.critical_whale.calls`, all **87** in the same
-~9-minute post-restart window (`/api/observability/summary?hours=0.15`, current
-generation started `2026-09-03T21:20:25Z` per `docker logs ddev-kalshi-whale-poc-fastapi`).
+== `resolve_calls` == `kalshi_rest_class.critical_whale.calls` — not just their averages
+but `min`, `max`, and `avg` all identical across all three metrics (67.0 / 110.0 / 87.0,
+6 samples each) in the same ~9-minute post-restart window
+(`/api/observability/summary?hours=0.15`, current generation started
+`2026-09-03T21:20:25Z` per `docker logs ddev-kalshi-whale-poc-fastapi`).
 `trade_tape` is never longer than 1 in the streaming path, so `wanted` (the resolve
 batch) is never longer than 1 either — "batched via `get_markets_by_tickers`" is true
 of the client method's signature, never exercised as batching in production.
@@ -204,7 +206,7 @@ the prescan-gate cost alone (sub-millisecond, unmeasured directly here but bound
 prints averaged in) — the resolve latency is moved entirely off the consumer's
 critical path. Queue depth should then track inbound message rate rather than being
 gated by resolve latency, which is the actual mechanism #541's drops depend on (§1,
-and #542's own reconnect-free-window falsifier result). N=4 concurrent resolves
+and #541's own reconnect-free-window falsifier result). N=4 concurrent resolves
 against the shared 8 req/s burst-8 token bucket (`http_client.py:323`, shared with 5
 other classes) claims up to half the burst capacity at once during a spike — this
 interacts with Option A below and is not free; sized conservatively here, not
@@ -240,7 +242,7 @@ happen, and which has never actually happened on the streaming path (§1, verifi
 1:1 live).
 
 There is a live, closely analogous precedent in this exact file for "coalesce
-multiple pending updates for the same key" — `_coalesce_ticker` (§2 above). It is
+multiple pending updates for the same key" — `_coalesce_ticker` (§1.1 above). It is
 *not* directly reusable, and the distinction matters: `_coalesce_ticker` is
 correct specifically because a ticker update is safely supersedable level-state (an
 older price is simply stale once a newer one arrives). A trade print is not — Option
@@ -265,9 +267,12 @@ decoupling (B) is what keeps the consumer free regardless of how many calls are 
 flight. Presented alone, without B's decoupling, Option A only reduces call *count*,
 not blocking.
 
-**Benchmark (analytical).** At the measured steady-state resolve-triggering rate
-(530 events / 525s ≈ 1.01/s in the freshest measured generation, §1's live counters),
-a 100-250ms batch window typically accumulates 0.1-0.25 distinct tickers — often
+**Benchmark (analytical).** At the measured steady-state resolve-triggering rate —
+530 `whale_sized_offlist` events over 525s of generation uptime ≈ 1.01/s
+(`GET /api/health/pipeline` at `2026-09-03T21:29:10Z` against the generation that
+started `21:20:25Z`, consistent with §1's independently-measured ~1/s from the
+6-sample `offlist_candidates` window) — a 100-250ms batch window typically
+accumulates 0.1-0.25 distinct tickers — often
 zero or one, meaning **under normal load batching amortizes almost nothing**: most
 windows have at most one call to make regardless. The real payoff is
 counter-cyclical: during the exact kind of backlog #541 measured (queue pinned near
@@ -317,7 +322,7 @@ measured 78.79-290.02ms (two different windows measured; both far below the curr
 But it does **not** touch the tail: `critical_whale.network.window_max_ms` measured
 up to 44,580ms over 24h, pure Kalshi-side response latency that a local rate-limiter
 change cannot affect. The single worst correlated event in the whole incident (the
-8,854.6ms resolve spike lined up with the sharpest queue-depth jump, #542's own
+8,854.6ms resolve spike lined up with the sharpest queue-depth jump, #541's own
 comment thread) sits inside that tail, not the median — meaning **Option C alone
 would likely have left the worst moment of the actual incident essentially
 unchanged**, even though it measurably helps the common case.
@@ -388,10 +393,20 @@ this recommendation stands.
 ## Appendix — evidence log
 
 - `curl -sk 'https://kalshi-whale-poc.ddev.site:8443/api/observability/summary?hours=0.15'`
-  → §1's live 1:1 `offlist_candidates`/`resolve_calls`/`critical_whale.calls` = 87
-  confirmation; §5's `background_catalog` (84) vs `critical_whale` (87) comparison
+  → §1's live 1:1 `offlist_candidates`/`resolve_calls`/`critical_whale.calls`
+  (min/max/avg = 67.0/110.0/87.0, all three metrics) confirmation; §5's
+  `background_catalog` (84.17) vs `critical_whale` (87.00) comparison
+- `curl -sk 'https://kalshi-whale-poc.ddev.site:8443/api/observability/summary'`
+  (default `hours=24`) → §1.2's `critical_whale.network.window_avg_ms` (avg 290.02ms)
+  and §5's `critical_whale.network.window_max_ms` (avg 742.46ms, **max 44,580.24ms** —
+  the tail figure Option C's analysis turns on)
 - `curl -sk 'https://kalshi-whale-poc.ddev.site:8443/api/observability/history?metric=whale_pipeline.stage.resolve.window_avg_ms&hours=24&limit=1000'`
   and the same for `window_max_ms` → §1.2's median/p90/max table (n=633 samples each)
+- `curl -sk 'https://kalshi-whale-poc.ddev.site:8443/api/health/pipeline'` at
+  `2026-09-03T21:29:10Z`, `ingest.provider_stats` field (`prescanned: 73337,
+  whale_sized_offlist: 530, markets_resolved: 487, resolve_failures: 0`), read
+  against the `21:20:25Z` generation-start timestamp from the `docker logs` pull
+  above → §4's 530-events/525s ≈ 1.01/s rate figure
 - `docker logs -t ddev-kalshi-whale-poc-fastapi 2>&1 | grep 'WatchFiles detected\|Started server process'`
   → current generation start time (`2026-09-03T21:20:25Z`, PID 90095), used to bound
   the "freshest measured generation" window cited in §4's rate calculation
