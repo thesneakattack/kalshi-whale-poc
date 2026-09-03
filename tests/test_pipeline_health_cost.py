@@ -283,3 +283,64 @@ def test_pipeline_health_reports_total_store_probe_cost(monkeypatch):
 
     assert isinstance(body["stores_probe_ms"], float)
     assert body["stores_exact_rows"] is False
+
+
+def test_pipeline_health_bounds_a_hung_store_probe(tmp_path, monkeypatch):
+    """The live incident this task fixes: one store probe that never
+    returns must not hang the whole route. A monkeypatched store_stats
+    that blocks forever must still let the route respond, with that one
+    store's slot showing a timeout error instead of a value."""
+    import main
+    from fastapi.testclient import TestClient
+    from services import signal_log
+    from services.diagnostics import routes
+
+    # Seed a real, valid signal_log DB so the "signals" assertion below
+    # exercises store_stats.store_stats()'s genuine success path rather than
+    # depending on this environment happening to already have a live
+    # data/signal_log.db - data/*.db is gitignored (see .gitignore) and a
+    # fresh git worktree starts with none (verified empty here), which would
+    # otherwise make store_stats correctly - see
+    # test_probe_opens_read_only_and_does_not_create_a_missing_store above -
+    # return {"error": "unable to open database file"} for reasons that have
+    # nothing to do with this task's timeout bound.
+    signal_db = tmp_path / "signal_log.db"
+    conn = sqlite3.connect(signal_db)
+    signal_log._init_schema(conn)
+    conn.close()
+    monkeypatch.setattr(signal_log, "DB_PATH", signal_db)
+
+    real_probe = routes.store_stats.store_stats
+
+    def _hangs_for_rejections(db_path, table, col, now, **kwargs):
+        if table == "rejected_candidates":
+            time.sleep(routes.STORE_PROBE_TIMEOUT_SEC + 5)  # longer than the bound
+            raise AssertionError("should have been cancelled/timed out before returning")
+        return real_probe(db_path, table, col, now, **kwargs)
+
+    monkeypatch.setattr(routes.store_stats, "store_stats", _hangs_for_rejections)
+    monkeypatch.setattr(routes, "STORE_PROBE_TIMEOUT_SEC", 0.2)  # bound the test's own wall time
+
+    # Context-manager form matters here, not just style: TestClient(app).get(...)
+    # without `with` opens a *fresh* anyio blocking portal per call and joins its
+    # thread on exit, which - per asyncio.run()'s own shutdown semantics - blocks
+    # until the loop's default ThreadPoolExecutor drains, i.e. until the leaked
+    # to_thread(time.sleep(...)) thread above actually finishes (verified with a
+    # standalone asyncio.wait_for()/to_thread() repro: the coroutine itself
+    # returns at the 0.2s bound, but a non-context-manager TestClient call still
+    # measured the full ~5.2s because of this portal teardown, not because the
+    # route's own timeout failed to fire). Holding the portal open across the
+    # call avoids that unrelated teardown wait so `elapsed` measures the route,
+    # not portal cleanup; the leaked thread is still reaped, just at portal
+    # close (test process exit) rather than blocking this assertion.
+    with TestClient(main.app) as client:
+        started = time.perf_counter()
+        body = client.get("/api/health/pipeline").json()
+        elapsed = time.perf_counter() - started
+
+    assert elapsed < 5.0, f"route should return near the 0.2s bound, took {elapsed:.1f}s"
+    assert "error" in body["stores"]["rejections"]
+    assert "timed out" in body["stores"]["rejections"]["error"]
+    # every other store still answered normally, proving one hung probe
+    # doesn't take the others down with it
+    assert "error" not in body["stores"]["signals"]

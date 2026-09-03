@@ -44,6 +44,46 @@ from services.kalshi.public import KalshiPublicGateway
 
 router = APIRouter()
 
+# Task 1 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
+# remediation.md: no individual probe below had a timeout, so one store
+# whose blocking sqlite3 call never returns hung the whole route forever
+# (live incident, 2026-09-03 - GET /api/health/pipeline stopped responding
+# while every other route kept serving). 10.0s is an estimate: Python's
+# sqlite3 default busy-timeout is 5.0s, so an ordinary SQLITE_BUSY wait
+# resolves (success or OperationalError) well inside 10s; a probe that
+# still hasn't returned past that is not ordinary lock contention and
+# this task's own live-validation step (Task 1 Step 4) is where that
+# number gets checked against real behavior, not assumed correct.
+STORE_PROBE_TIMEOUT_SEC = 10.0
+
+
+async def _bounded(coro, *, timeout: float | None = None) -> dict:
+    """Runs one probe coroutine with a hard wall-clock bound, converting a
+    timeout into the same {"error": ...} shape store_stats.store_stats()
+    already returns for every other failure - callers of this route never
+    see a schema difference between "the store errored" and "the store
+    never answered in time." Cancelling the wait_for() here unblocks this
+    HTTP response; it cannot forcibly stop the underlying OS thread if the
+    wrapped asyncio.to_thread() call is genuinely stuck (not just slow) -
+    see this plan's Architecture section.
+
+    `timeout` reads STORE_PROBE_TIMEOUT_SEC live, inside the function body,
+    rather than capturing it as a default-parameter expression - a default
+    argument's value is frozen once, at `async def` (module-import) time,
+    so a test that reassigns the module attribute afterward (e.g.
+    `monkeypatch.setattr(routes, "STORE_PROBE_TIMEOUT_SEC", 0.2)`) would
+    silently have no effect on an already-bound default (caught by this
+    plan's own adversarial review, deterministically reproduced - a bare
+    `timeout: float = STORE_PROBE_TIMEOUT_SEC` default looks identical at
+    every production call site but breaks exactly this kind of test)."""
+    if timeout is None:
+        timeout = STORE_PROBE_TIMEOUT_SEC
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        return {"error": f"timed out after {timeout:.0f}s"}
+
+
 @router.get("/api/diagnostics")
 async def get_diagnostics(hours: float = 24.0):
     """Read-only performance/integrity report - services/diagnostics/diagnostics.py.
@@ -369,11 +409,11 @@ async def get_pipeline_health(exact_rows: bool = False):
 
     probe_started = time.perf_counter()
     results = await asyncio.gather(
-        asyncio.to_thread(_blocking_extras, now),
+        _bounded(asyncio.to_thread(_blocking_extras, now)),
         *(
-            asyncio.to_thread(
+            _bounded(asyncio.to_thread(
                 store_stats.store_stats, db_path, table, col, now, exact=exact_rows
-            )
+            ))
             for db_path, table, col in specs.values()
         ),
     )
@@ -394,7 +434,7 @@ async def get_pipeline_health(exact_rows: bool = False):
         "price_staleness": _price_staleness(now),
         # P8 Task 36: per-scheduler liveness now that none of them are
         # called from the tick - see _scheduler_status.
-        "schedulers": extras["schedulers"],
+        "schedulers": extras.get("schedulers"),
         "trade_stream": state.get("trade_stream_status"),
         # Real ingest counters from the LIVE objects - the only place these
         # are readable. Measuring them from a separate process returns a
@@ -463,7 +503,13 @@ async def get_pipeline_health(exact_rows: bool = False):
         # A non-empty value here is the difference between "quiet market"
         # and "broken component" - the distinction that cost game_state
         # every row it should have written on 2026-08-17.
-        "faults_last_24h": extras["faults_last_24h"],
+        "faults_last_24h": extras.get("faults_last_24h"),
+        # A timeout on _blocking_extras itself would otherwise silently
+        # collapse the four fields above into null - this makes that case
+        # visible instead of indistinguishable from "value happens to be
+        # null" (Task 1, docs/superpowers/plans/2026-09-03-tier0-live-
+        # incident-remediation.md).
+        "extras_error": extras.get("error"),
         "buffered_unwritten": {
             # capture_writer owns the raw_trades queue (series_watcher's own
             # capture_stats() only forwards this integer, and pays two
@@ -471,8 +517,8 @@ async def get_pipeline_health(exact_rows: bool = False):
             # 2026-08-30). Read the owner directly.
             "series_watcher_trades": capture_writer.depth().get("raw_trades", 0),
             "index_feed_ticks": index_feed.snapshot().get("buffered_ticks"),
-            "settlement_edge": extras["settlement_edge_buffered"],
-            "game_state": extras["game_state_buffered"],
+            "settlement_edge": extras.get("settlement_edge_buffered"),
+            "game_state": extras.get("game_state_buffered"),
         },
         # Rows the capture daemon LOST, by cause and store, for the process
         # lifetime (services/capture_writer.loss_snapshot, issue #211):
