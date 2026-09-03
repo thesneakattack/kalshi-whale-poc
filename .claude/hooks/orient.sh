@@ -31,10 +31,15 @@ python3 .claude/hooks/guard_workflow.py --sessions 2>/dev/null \
   | awk -F'\t' '$2 == "other" {print "live session pid " $1 " works in " $3 " - never checkout/stash/reset/commit there; ListAgents + SendMessage before touching files it names"}'
 
 n=$(git worktree list --porcelain 2>/dev/null | grep -c '^worktree ')
-if [ "$n" -gt 1 ]; then
-  echo "worktrees: $((n - 1)) besides the primary - scripts/cleanup-worktrees.sh --dry-run reports the stale ones; /checkpoint removes the provably merged ones after a merge"
-  if [ "$n" -gt 12 ]; then
-    echo "  WARNING: that is a lot, and each one costs LIVE APP cpu - the uvicorn --reload watcher polls (no inotify under wsl2 bind mounts) so it stats every worktree's files each cycle. Measured 2026-09-03 (issue #513): 34 worktrees = 47k files = 42.9% of a core; cleaning to 10 halved it. Remove yours when done."
+# One quantity, used for both the message and the threshold: n counts the
+# primary, so every comparison below is against `linked`, never raw n (the
+# first version tested raw n and so fired one worktree earlier than its own
+# message claimed - caught in PR #515's review).
+linked=$((n - 1))
+if [ "$linked" -gt 0 ]; then
+  echo "worktrees: $linked besides the primary - scripts/cleanup-worktrees.sh --dry-run reports the stale ones; /checkpoint removes the provably merged ones after a merge"
+  if [ "$linked" -gt 12 ]; then
+    echo "  WARNING: $linked is a lot, and each one costs LIVE APP cpu - watchfiles force-polls on any WSL kernel (it checks for 'microsoft-standard' in uname -r, so no inotify regardless of mounts) and --reload-exclude only discards events the walk already paid for. Measured 2026-09-03 (issue #513): 34 worktrees = 47k files = 42.9% of a core; cleaning to 10 took it to ~21%. Remove yours when done."
   fi
 fi
 
