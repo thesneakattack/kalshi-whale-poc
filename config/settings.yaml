@@ -85,7 +85,7 @@ strategy:
   close_window_sec: 2764800
   special_market_min_seconds_to_close: 120
   max_open_positions_per_series: 0
-  kelly_fraction_of_cap: 0.3
+  kelly_fraction_of_cap: 1
   min_unit_cost: 0.25
   max_unit_cost: 0.9
   min_whale_winrate_pct: 40
@@ -206,6 +206,7 @@ whale_watcher_kalshi:
     KXSILVERH: 33
     KXGOLD15M: 82
     KXSILVER15M: 75
+    KXBTC15M: 2500
 whale_confidence_weights:
   depth_factor: 0.0404
   unusualness_factor: 0.0404
