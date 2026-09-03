@@ -156,10 +156,12 @@ arithmetic, shown explicitly so a reviewer can check it in one line rather than 
 - **Event-loop-blocking exposure found in Gate-1 pre-audit is documented, not fixed, by this
   plan** — `services/reset/routes.py`'s `async def reset_broker(...)` calls at least 7 of this
   migration's modules synchronously with no dispatch (accounts_store.py, candidate_log.py's
-  `clear_range()`, market_analyst_agent/_db.py, reset_log.py, trade_archive.py,
+  `clear_range()` and `count_range()`, market_analyst_agent/_db.py, reset_log.py, trade_archive.py,
   series_evaluator.py, trade_category.py, shadow_mode.py, calibration_history.py — per both
-  pre-audits' PR-stage adversarial-review findings). This is a real, pre-existing, separately
-  tracked gap (issue #510, autotrade-73's research in PR #512) — this migration's job is closing
+  pre-audits' PR-stage adversarial-review findings). **`candidate_log.py`'s `count_range()` is
+  this list's most severe instance by far** — measured at 34,129.54ms against 22.6M rows (issue
+  #510's research, PR #512); see Task 3's own event-loop note for the full citation. This is a
+  real, pre-existing, separately tracked gap (issue #510) — this migration's job is closing
   each connection on exit, not routing callers through `tick_executor.run()`. A migrated
   `_connect()` still blocks the event loop for at least as long as before (plus `close()`'s own
   cost) when called this way; that is a **pre-existing** property this plan must not make worse,
@@ -196,6 +198,38 @@ existing module imports `services/db.py` yet, so this task changes zero runtime 
 `tools/quality_audit/persistence.py`'s `PERSISTENCE_MODULE_PATHS` scanner (same reasoning PR
 #484's Task 1 already established, still correct — this module still takes `db_path` as a
 parameter).
+
+**Disposition of `fix/db-foundation-must-fix-tests` (`e74096a`) — prior art, not silently
+orphaned.** That branch is a follow-on off the prototype (`17b2e8f`) with its own test suite for
+`services/db.py`. This task's own test list below converges independently on three of its
+tests — `test_connect_closes_on_setup_failure_before_yield`,
+`test_register_schema_raises_on_genuine_conflict` +
+`test_register_schema_same_callable_twice_is_not_a_conflict`, and
+`test_connect_on_corrupted_db_file_still_closes` correspond to `e74096a`'s
+`test_connect_closes_its_connection_even_when_an_exception_is_raised_inside`,
+`test_schema_registration_conflict_raises_instead_of_silently_dropping`, and
+`test_connect_against_corrupted_db_file_raises_database_error` — two authors reaching the same
+test set independently is evidence the set is right, not a coincidence to ignore. **Explicit
+disposition, found missing by this plan's own PR-stage review (coordinator autotrade-1d's
+sign-off-condition-3 check) and now stated rather than left implicit:**
+- **Adopted, verbatim in spirit:** `e74096a`'s
+  `test_lock_contention_raises_operational_error_matching_capture_writer_pattern` — a genuine
+  `EXCLUSIVE` lock taken from a second raw connection, confirming `db.connect(busy_timeout_ms=50)`
+  raises a catchable `sqlite3.OperationalError` with `"locked"` in the message (matching
+  `capture_writer.py`'s existing catch-and-retain pattern), and that a normal `connect()` succeeds
+  once the lock releases (nothing left stuck). The design spec classified this **should-fix, not
+  blocking** ("worth adding before `db.py` is trusted at scale, not before the first migration") —
+  but it already exists, passes, and costs nothing to include, so this task adopts it now rather
+  than deferring it. Included in this task's own test list below.
+- **Not adopted:** `e74096a`'s underlying `_SCHEMAS` registry shape (`db_path`-keyed, per-path
+  linear-scan list) — this is exactly what the design spec's C2 finding rejected (breaks this
+  repo's `monkeypatch.setattr(mod, "DB_PATH", ...)` convention). Only `e74096a`'s **tests** carry
+  over; its **implementation** does not. `e74096a`'s `busy_timeout_ms` parameter is consistent
+  with (not a source for) this task's own — the design spec's reference shape already specifies
+  `busy_timeout_ms` independently.
+- **Branch fate:** `fix/db-foundation-must-fix-tests` is superseded by this task once it lands;
+  no further code from it is pulled in beyond the one adopted test's assertions, transcribed
+  fresh against this task's own table-name-keyed API rather than merged/rebased.
 
 - [ ] **Step 1: Write the failing tests first**
 
@@ -473,7 +507,47 @@ def test_table_name_uniqueness_across_full_migration_scope():
     assert len(table_names) == len(set(table_names)), (
         "duplicate table name across this migration's own planned registrations"
     )
+
+
+def test_lock_contention_raises_operational_error_matching_capture_writer_pattern(monkeypatch):
+    """Adopted from fix/db-foundation-must-fix-tests (e74096a) - see this task's own
+    'Disposition' note above. capture_writer.py's _flush_store already handles exactly
+    this shape live (real "database is locked" faults in data/fault_log.db): catch
+    sqlite3.OperationalError, retain the batch for the next flush cycle rather than
+    blocking or crashing. Verifies db.connect() raises a real, catchable
+    OperationalError under genuine lock contention (not something else, not a hang)
+    and that busy_timeout_ms is actually overridable per call - capture_writer's own
+    _CALLER_BUSY_TIMEOUT_MS (50ms) is 100x shorter than db.py's 5000ms default by
+    design (fail-fast, not block-then-retry)."""
+    _fresh_registry(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "t.db"
+        with db.connect(db_path):
+            pass  # create the file first
+
+        locker = sqlite3.connect(str(db_path), timeout=0)
+        locker.execute("BEGIN EXCLUSIVE")
+        try:
+            retained = []
+            try:
+                with db.connect(db_path, busy_timeout_ms=50) as conn:
+                    conn.execute("CREATE TABLE never_reached (id INTEGER)")
+            except sqlite3.OperationalError as exc:
+                retained.append(exc)
+            assert retained, "expected db.connect() to raise OperationalError under a held exclusive lock"
+            assert "locked" in str(retained[0]).lower()
+        finally:
+            locker.rollback()
+            locker.close()
+
+        # Lock released - a normal connect() now succeeds, confirming the
+        # failed attempt above didn't leave anything stuck.
+        with db.connect(db_path) as conn:
+            conn.execute("SELECT 1")
 ```
+
+(Needs `import tempfile` and `from pathlib import Path` added to `tests/test_db.py`'s import
+block alongside the existing `import sqlite3`/`import contextlib`/`import threading`.)
 
 Run: `ddev exec -s fastapi python -m pytest tests/test_db.py -q`
 Expected: **collection error** (`services.db` does not exist yet).
@@ -573,7 +647,7 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col
 - [ ] **Step 3: Confirm all tests pass**
 
 Run: `ddev exec -s fastapi python -m pytest tests/test_db.py -q`
-Expected: all 15 tests pass.
+Expected: all 16 tests pass.
 
 - [ ] **Step 4: `import main` sanity check**
 
@@ -705,14 +779,25 @@ def _connect() -> sqlite3.Connection:  # :76-113
 Six call sites (`:207, 255, 355, 407, 429, 449`), all `with _connect() as conn:` — verified via
 `grep -n "_connect(" services/candidate_log.py`.
 
-**Event-loop note (Gate 1 requirement):** `resolve_from_market_results()` (the main write path)
-runs off-loop via `tick_executor.run()` from `settlement_resolver.py:270-271` — unaffected by
-this migration. `clear_range()` (`:435`) is called directly, synchronously, from
-`services/reset/routes.py`'s `async def reset_broker(...)` — this is the pre-existing,
-separately tracked exposure named in Global Constraints (issue #510); this task does not fix
-it, only avoids making it worse (the migrated `_connect()` still returns promptly for a call
-this small — a single-row `DELETE`, not a schema-init-heavy path — so the added `close()` cost
-is negligible relative to the pre-existing blocking exposure).
+**Event-loop note (Gate 1 requirement) — corrected during this plan's PR-stage adversarial
+review (autotrade-a3), which found the first draft's framing misleading about severity:**
+`resolve_from_market_results()` (the main write path) runs off-loop via `tick_executor.run()`
+from `settlement_resolver.py:270-271` — unaffected by this migration. `clear_range()` (`:435`)
+is called directly, synchronously, from `services/reset/routes.py`'s `async def
+reset_broker(...)` — pre-existing, tracked (issue #510); this task does not fix it, and the
+added `close()` cost for that specific call is negligible (a single-row `DELETE`, not a
+schema-init-heavy path). **But `count_range()` (`:412`, one of this task's own six migrated call
+sites — the `with _connect() as conn:` at `:429` cited above is inside its body) is the single
+most severe finding in the whole `/api/reset` event-loop investigation, not a minor one:**
+issue #510's research (PR #512, merged) measured it directly at **34,129.54ms** — over 34
+seconds of full app-wide event-loop freeze — against `rejection_events`'s 22,596,141 rows,
+reachable from both `GET /api/reset/preview?candidate_log=true` and `POST /api/reset` with
+`candidate_log:true` (`services/reset/routes.py:79`'s `_reset_domain_counts` calls
+`candidate_log.count_range()` directly, verified at `routes.py:110`). This migration still does
+not fix it — the fix (routing through `tick_executor.run()` or equivalent) is #510's job, not
+this task's, per Global Constraints — but a reader of this task alone must not come away
+believing this module's event-loop exposure is minor: it is the worst-measured instance of the
+issue #510 pattern anywhere in this migration's scope, and it ships unchanged by this task.
 
 - [ ] **Step 1: Write the failing tests first**
 
