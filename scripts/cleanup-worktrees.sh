@@ -9,11 +9,11 @@
 #      sources_worktree.py treats CLOSED-without-merge as "still live
 #      work", and this script stays consistent with that judgment rather
 #      than guessing).
-#   2. `git merge-base --is-ancestor <branch> refs/remotes/origin/main` -
+#   2. `git merge-base --is-ancestor refs/heads/<branch> refs/remotes/origin/main` -
 #      the branch's tip is already fully contained in origin/main, freshly
-#      fetched first. Not local main: local main is only fast-forwarded
-#      when the primary checkout happens to be on main itself, so it can
-#      be arbitrarily stale (2026-08-28: an idle worktree held local main
+#      fetched first. Not local main: this script never touches local main
+#      (#535 - it used to fast-forward it, which deployed the live app), so
+#      it can be arbitrarily stale (2026-08-28: an idle worktree held local main
 #      65 commits behind and every merged branch read as "not merged").
 #   3. The worktree's working tree is clean (`git status --porcelain`
 #      empty) - nothing uncommitted sitting there.
@@ -205,12 +205,17 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     is_merged=1
   fi
 
-  # refs/remotes/origin/main, fully qualified: git resolves refs/heads/<name>
-  # before refs/remotes/<name> (gitrevisions(7)), so a bare `origin/main`
-  # would silently resolve to a local branch literally named that if one
-  # ever existed - turning a false "not merged" into a worse false "merged".
+  # Both sides fully qualified: git resolves refs/tags/<name>, then
+  # refs/heads/<name>, before refs/remotes/<name> (gitrevisions(7)), so a
+  # bare `$branch` or `origin/main` would silently resolve to a tag or local
+  # branch of the same name if one ever existed - turning a false "not
+  # merged" into a worse false "merged". This is the sole guard against
+  # deleting a branch with commits not yet in origin/main now that branch
+  # deletion below uses -D (#535's PR review, scenario: a same-named tag
+  # made an unmerged branch's tip resolve to the tag's - merged - commit
+  # instead), so it must resolve $branch as a branch, never ambiguously.
   is_ancestor=0
-  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" refs/remotes/origin/main 2>/dev/null; then
+  if git -C "$PRIMARY" merge-base --is-ancestor "refs/heads/$branch" refs/remotes/origin/main 2>/dev/null; then
     is_ancestor=1
   fi
 
@@ -272,7 +277,8 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     # vacuous when the branch's own upstream is itself unmerged (git deletes
     # anyway, with only a warning), and wrong - refusing a genuinely merged
     # branch - when local main is stale and no upstream is configured
-    # (docs/open-decisions.md #35, hit live 2026-08-31). is_ancestor already
+    # (issue #535's fix, hit live 2026-08-31; see docs/open-decisions.md's
+    # RESOLVED entry for this script's branch-deletion behavior). is_ancestor already
     # proved this branch is fully contained in origin/main before this line
     # is ever reached; -D trusts that proof instead of re-deriving a weaker
     # one from whatever HEAD happens to be.

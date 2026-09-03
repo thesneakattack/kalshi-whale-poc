@@ -1,10 +1,12 @@
 """scripts/cleanup-worktrees.sh against a disposable synthetic repository - one case
 per failure the script already shipped a fix for on 2026-08-28 (bf532e1 unlock-before-
 remove, 06a6c6c never-unlock-a-live-session's-worktree, 82834dc origin/main-not-stale-
-local-main, 4f35ea5 ff-only-failure-must-not-abort) plus the root-owned-cache shape
-that leaves a dangling directory. `gh` and `ddev` are shims on PATH; the session lister
-is a stand-in via CLEANUP_WORKTREES_GUARD. Needs real git and bash (host, CI - the
-fastapi container has neither)."""
+local-main, 4f35ea5 ff-only-failure-must-not-abort - superseded 2026-09-03 (#535): the
+ff-only merge that fix guarded was itself removed for silently deploying the live app,
+so its test now covers what replaced it, a diverged-local-main notice) plus the
+root-owned-cache shape that leaves a dangling directory. `gh` and `ddev` are shims on
+PATH; the session lister is a stand-in via CLEANUP_WORKTREES_GUARD. Needs real git and
+bash (host, CI - the fastapi container has neither)."""
 import json
 import os
 import shutil
@@ -211,8 +213,9 @@ def test_the_default_guard_is_the_one_shipped_beside_the_script(tmp_path):
 
 
 def test_stale_local_main_does_not_hide_a_branch_merged_into_origin_main(tmp_path):
-    """82834dc: local main is only fast-forwarded when the primary is on main; an idle
-    checkout of main left it 65 commits behind and every merged branch read as unmerged."""
+    """82834dc: is_ancestor must compare against origin/main, never local main - which
+    this script doesn't touch (#535) and so can be arbitrarily stale; an idle checkout
+    of main once left it 65 commits behind and every merged branch read as unmerged."""
     primary, wt, env = _setup(tmp_path)
     initial = _git(["rev-list", "--max-parents=0", "HEAD"], primary)
     _git(["checkout", "-q", "-b", "other"], primary)
@@ -302,10 +305,10 @@ def test_no_upstream_branch_with_stale_local_head_is_still_removed(tmp_path):
 
 
 def test_a_branch_whose_tip_has_commits_not_yet_in_origin_main_is_kept_even_with_a_merged_pr(tmp_path):
-    """AR-3: under -D, this refusal ('branch has commits not yet in main', :252-253)
-    is the ONLY guard left between a gh-reported MERGED PR and deleting commits
-    that aren't actually in origin/main yet - unlike -d, -D has no independent
-    merge check of its own to fall back on."""
+    """AR-3: under -D, this refusal ('branch has commits not yet in main') is the
+    ONLY guard left between a gh-reported MERGED PR and deleting commits that
+    aren't actually in origin/main yet - unlike -d, -D has no independent merge
+    check of its own to fall back on."""
     primary, wt, env = _setup(tmp_path)
     (wt / "y.txt").write_text("y\n")
     _git(["add", "y.txt"], wt)
@@ -318,6 +321,27 @@ def test_a_branch_whose_tip_has_commits_not_yet_in_origin_main_is_kept_even_with
     r2 = _run(primary, env)
     assert r2.returncode == 0, r2.stderr
     assert wt.exists() and "feat/x" in _branches(primary) and "0 removed, 1 kept" in r2.stdout
+
+
+def test_a_same_named_tag_does_not_make_an_unmerged_branch_look_merged(tmp_path):
+    """PR-AR-3 (adversarial review of #535's fix): merge-base --is-ancestor resolves a
+    bare name as a tag before a branch (gitrevisions(7)), so a tag named the same as the
+    worktree branch - here pointing at origin/main, i.e. definitely merged - would make
+    the ancestry check pass for the TAG while feat/x itself still has an unmerged
+    commit. Under -D this check is the only guard, so it must resolve feat/x as
+    refs/heads/feat/x explicitly rather than ambiguously."""
+    primary, wt, env = _setup(tmp_path)
+    _git(["tag", "feat/x", "main"], primary)
+    (wt / "y.txt").write_text("y\n")
+    _git(["add", "y.txt"], wt)
+    _git(["commit", "-q", "-m", "unmerged followup"], wt)
+
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    # branch --format=%(refname:short) disambiguates the branch/tag name clash by
+    # printing "heads/feat/x" instead of the usual bare "feat/x" - the branch (not
+    # just the ref) surviving is what this test is actually checking.
+    assert wt.exists() and "heads/feat/x" in _branches(primary) and "0 removed, 1 kept" in r.stdout
 
 
 def test_undeletable_cache_falls_back_to_ddev_and_leaves_no_dangling_worktree(tmp_path):
