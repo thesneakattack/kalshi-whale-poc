@@ -9,7 +9,17 @@ commit `4130eb6`) and `docs/db-foundation-audit-2026-09-03.md` (`feat/db-foundat
 commit `d783877`). Output of this stage: a design this document's own review cycle clears GO,
 which a later, separate implementation-plan stage then turns into ordered, testable tasks.
 
-**Goal:** decide HOW the remaining ~25 `_connect()`-owning modules migrate onto a shared,
+**Revision note (this document's own required PR/artifact-stage adversarial review found 2
+Critical + 5 Important + 7 Minor findings against the first draft — all applied below, not a
+silent rewrite):** the first draft's headline scope finding (`services/store_stats.py`) was a
+grep artifact — the reviewer opened the actual file and found it already correctly closes its
+one connection; the match was a docstring quoting old, already-deleted code. And the first
+draft's recommended API design (path-keyed schema registry) was independently demonstrated,
+by actually running it, to break this repo's universal `monkeypatch.setattr(mod, "DB_PATH",
+tmp_path/...)` test convention used by 64 test files. Both are fixed below; see "Revision log"
+at the end of this document for the full, itemized disposition of every finding.
+
+**Goal:** decide HOW the remaining 26 `_connect()`-owning modules migrate onto a shared,
 closing SQLite helper — resolving a real API-shape conflict between two independently-designed
 `db.py` implementations that now both exist in this repo, fixing the concrete gaps a direct
 audit already found in the more complete of the two, and defining migration gates precise
@@ -27,13 +37,21 @@ same day, by different sessions, neither aware of the other until now:
    non-table-DDL setup (indexes, `add_column_if_missing` calls) has to run separately, on the
    yielded connection, after `db.connect()` returns — the registry can't express it, so every
    migrated module's `_connect()` wrapper ends up doing `with db.connect(...) as conn: conn.execute("CREATE INDEX ..."); ...; yield conn` around the registry call. Verified directly in PR
-   #484's own Tasks 3/5/6.
+   #484's own Tasks 3/5/6 (all three needed the escape hatch — 3 of 3, confirmed by this
+   document's own adversarial review reading the merged plan text directly, not assumed).
 2. **The prototype** (`feat/persistence-layer-unified-connect`, commit `17b2e8f`, real code,
-   8 passing tests, not merged, not on `main`): `db.connect(db_path)` (no `tables` kwarg) +
+   8 passing tests — independently re-executed twice now, once by PR #504's PR-stage review and
+   again by this document's own adversarial review, both times `8 passed`): `db.connect(db_path)`
+   (no `tables` kwarg, no `busy_timeout_ms` override — hardcoded to 5000) +
    `db.register_schema(db_path: Path, table_name: str, init_fn: Callable) -> None` — schema
-   registered as a **callback function**, keyed by **`(db_path, table_name)`**. A callback can
-   run `CREATE TABLE` + `CREATE INDEX` + `add_column_if_missing` together in one registration,
-   with no separate post-`connect()` step needed.
+   registered as a **callback function**. **Correction from this document's first draft**: this
+   is not keyed by `(db_path, table_name)` as a composite dict key — `services/db.py:27` at
+   `17b2e8f` is `_SCHEMAS: dict[Path, list[tuple[str, Callable]]]`, a `db_path`-keyed dict of
+   ordered lists, checked with a linear scan. The practical collision scope is the same
+   (a genuine conflict is still only possible between two registrations for the same table in
+   the same file), but registration order — not stated anywhere in the module — determines
+   schema-init replay order, which matters if one table's `init_fn` ever depends on another's
+   existing.
 
 **Neither is implemented as running code on `main` yet** — PR #484 is a plan document (Task 1's
 `services/db.py` has not been written), and the prototype sits unmerged in
@@ -42,147 +60,202 @@ question of picking between two things already shipped.
 
 ### Comparison
 
-| | String-DDL / table-name-keyed (PR #484) | Callback / path+table-keyed (prototype) |
+| | String-DDL / table-name-keyed (PR #484) | Callback / `db_path`-keyed (prototype, `17b2e8f`) |
 |---|---|---|
 | Expresses `CREATE TABLE` alone | Yes | Yes |
-| Expresses `CREATE TABLE` + indexes + `add_column_if_missing` in one registration | **No** — needs a second, manual step per migrated module (verified: every one of PR #484's Tasks 3/5/6 needed this) | **Yes** — the callback does whatever the module needs |
-| Collision surface | Global table-name key — **two unrelated modules with same-named tables in different DB files would collide**, worse than the prototype's scope (not yet observed in practice, since table names have stayed distinct so far, but structurally wider) | `(db_path, table_name)` key — collision only possible between two registrations for the *same* table in the *same* file |
-| Collision behavior, either design | Not applicable to PR #484's registry as designed (last-write-wins on a plain dict `_DDL_REGISTRY[table] = ddl`, silent) | **Confirmed real defect** (db-foundation-audit finding 3): first registration silently wins on a genuine `(db_path, table_name)` conflict, no error, no log line |
+| Expresses `CREATE TABLE` + indexes + `add_column_if_missing` in one registration | **No** — needs a second, manual step per migrated module (verified: every one of PR #484's Tasks 3/5/6 needed this, 3 of 3) | **Yes** — the callback does whatever the module needs |
+| `busy_timeout_ms` override per call | **Yes** — `connect(db_path, *, busy_timeout_ms=5000)` | **No** — hardcoded `_DEFAULT_BUSY_TIMEOUT_MS = 5000` at `db.py:31`, no override parameter at all |
+| `tables=()` opt-out for read-only/diagnostic callers (run no DDL) | **Yes**, explicit default | **No** — `connect()` replays every registered `init_fn` for that `db_path` on every call, no way to skip |
+| Behavior under this repo's `monkeypatch.setattr(mod, "DB_PATH", tmp_path/...)` test convention (used in 64 test files, per direct grep) | **Works** — `tables=` is passed explicitly at each `connect()` call, so a monkeypatched path never depends on what was registered against the real path | **Broken, demonstrated by actually running it**: registering against the real `DB_PATH` at import time, then calling `db.connect()` against a `monkeypatch`-substituted path, silently finds an empty schema list for that path and fails downstream with `no such table` — no error at registration or connect time |
+| Collision surface | Global table-name key | `db_path` + table-name (narrower in principle, but see "under test convention" row above — this is the axis that actually matters for a 26-module migration, and it inverts the ranking) |
+| Collision behavior, either design | `_DDL_REGISTRY[table] = ddl` — last-write-wins, silent | `if not any(name == table_name ...): append(...)` — **first**-write-wins, silent (confirmed at `db.py:39-41`) |
 | Compatibility with `capture_writer.py`'s existing `RAW_TRADES_DDL_SQL` etc. constants | Direct — `db.register_ddl(table, capture_writer.X_DDL_SQL)` is exactly what PR #484's own PR-stage review fixed Tasks 3/5 to do | Also direct — a callback can do `conn.execute(capture_writer.X_DDL_SQL)` equally easily |
-| Real, passing test suite already | No (Task 1 unimplemented) | Yes — 8 tests, independently re-executed by PR #504's PR-stage review (not merely read), confirmed `8 passed in 0.18s` |
-| Already incorporates the PR #501 setup-time-failure lesson (`try:` starts right after `connect()`, before pragma/schema-init) | Yes, by design (PR #484's own Task 1 code block does this) | Yes, independently confirmed by the db-foundation-audit's direct source read |
+| Already incorporates the PR #501 setup-time-failure lesson (`try:` starts right after `connect()`, before pragma/schema-init) | Yes, by design | Yes — confirmed by direct source read: `db.py:51` `conn = sqlite3.connect(...)`, `:53` `try:` on the very next statement, PRAGMAs and schema-init both inside it |
 
-**Decision: adopt the prototype's shape — callback-based `register_schema(db_path, table_name,
-init_fn)` — as the design this spec's downstream implementation plan builds `services/db.py`
-around, not PR #484's `register_ddl(table, ddl_string)`.**
+**Decision, revised from this document's first draft: adopt neither design as-is.** Take the
+callback (`init_fn`) from the prototype — it is the prototype's genuine, load-bearing strength,
+confirmed necessary by all three of PR #484's own migrated modules needing a workaround without
+it. Take PR #484's **addressing model** (explicit `tables=` selection passed at each `connect()`
+call, plus a `busy_timeout_ms` override) instead of the prototype's `db_path`-keyed registry —
+because the prototype's registry, run for real against this repo's own standard test pattern,
+produces a silent `no such table` failure with no error at either registration or connect time.
+This is not a hypothetical edge case: `monkeypatch.setattr(mod, "DB_PATH", ...)` is how every one
+of this repo's 64 relevant test files isolates its database, and it would hit on first contact
+with the migration's own test suite, not in some rare production scenario.
 
-Reasoning, weighted by mechanism and failure behavior per this repo's own standard for
-comparing competing solution families:
+**Reference shape** (illustrative, not a full implementation — the downstream implementation
+plan's own Task 1 writes the real code and its own tests):
 
-- The callback shape structurally eliminates the "run extra DDL on the yielded connection after
-  `connect()` returns" workaround every one of PR #484's three migrated modules needed — that
-  workaround is not a hypothetical future problem, it already happened three times in the first
-  three modules migrated under the string-DDL design, and the research/baseline docs both
-  describe several of the remaining 25 modules (`series_watcher.py` sampled directly:
-  `raw_trades` + `book_snapshots`, four indexes) as having the identical need. A design that
-  needs a manual escape hatch in 3 of its first 3 real uses is a signal the primitive is
-  under-scoped, not that the escape hatch is fine.
-- The `(db_path, table_name)` collision surface is strictly narrower than PR #484's
-  table-name-only surface, and — this is the more load-bearing point — **the prototype's
-  collision bug is fixable in isolation** (raise or warn on a genuine conflict instead of
-  silently keeping the first registration; db-foundation-audit's own suggested mitigation),
-  whereas PR #484's design's *wider* collision surface (global table name, no path
-  qualification at all) is a structural property of the chosen key, not a bug to patch.
-- The prototype already has a real, independently-re-executed test suite; PR #484's Task 1 has
-  none yet, since it was never implemented.
+```python
+_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {}
+
+def register_schema(table_name: str, init_fn: Callable[[sqlite3.Connection], None]) -> None:
+    """Registered once, at import time, keyed by table name alone (not db_path) - so a
+    caller's later db.connect(monkeypatched_path, tables=("t",)) finds the same registered
+    init_fn regardless of which literal path is passed at connect time. Raises on a genuine
+    conflict (a different init_fn already registered for this table name) rather than
+    silently keeping the first one - the db-foundation-audit's own must-fix #1, applied here
+    at the table-name granularity this design actually uses."""
+    existing = _SCHEMAS.get(table_name)
+    if existing is not None and existing is not init_fn:
+        raise ValueError(f"conflicting schema registration for table {table_name!r}")
+    _SCHEMAS[table_name] = init_fn
+
+
+@contextlib.contextmanager
+def connect(db_path: Path, *, tables: tuple[str, ...] = (), busy_timeout_ms: int = 5000):
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+        for table in tables:
+            _SCHEMAS[table](conn)
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+```
+
+This combines: the callback's expressiveness (no post-`connect()` escape hatch needed — a
+callback runs `CREATE TABLE` + indexes + `add_column_if_missing` together, exactly like the
+prototype); PR #484's explicit `tables=()` default (no DDL runs for read-only/diagnostic
+callers) and `busy_timeout_ms` override (this repo already differentiates busy timeouts by call
+context today — `capture_writer.py`'s `_DAEMON_BUSY_TIMEOUT_MS = 1000` vs.
+`_CALLER_BUSY_TIMEOUT_MS = 50`, `tick_executor.py`'s `busy_timeout = 50` — a fixed 5000ms with no
+override cannot express what this repo already does); and a raise-on-conflict registration,
+closing the silent-collision gap at the granularity this design actually uses (table name).
+
+**A real, already-shipped precedent for the callback shape, missed in this document's first
+draft**: `services/diagnostics/_aio_db.py:187-191` already has a `schema_init: Callable[...] |
+None` parameter that "runs exactly once — only on this key's first connect." This is direct,
+in-production evidence the callback approach is not a new, unproven idea for this codebase —
+it's already shipped and operating. Whether the new `services/db.py` should adopt this same
+"run once, not every connect" semantic (closing the schema-replay-per-connect cost named below)
+is left to the implementation plan to decide and test, rather than specified here as part of
+this spec's own reference shape — doing so correctly requires its own cache-invalidation
+reasoning (what happens on a fresh `tmp_path` per test run, whether a process-lifetime cache is
+even desirable for a module that legitimately reconnects to different paths) that this spec has
+not verified and should not assert as safe without that verification.
 
 **This does not undo or contradict PR #484's own merged plan.** PR #484's Tasks 3/5/6 were
 themselves already gated on Task 1 landing first ("Depends on: Task 1"), and Task 1 — build
 `services/db.py` — has not been implemented. This spec's downstream implementation plan
-supersedes PR #484's Task 1 with the callback-based design instead; Tasks 3/5/6's *actual*
-migrations (which three specific modules move first, preserving every index/column-add call)
-remain valid and are not re-litigated — only the underlying primitive they'd call changes shape.
-A future implementation plan should explicitly re-target Tasks 3/5/6 (or their equivalent) at
-`db.register_schema`/`db.connect(db_path)` instead of `db.register_ddl`/
-`db.connect(db_path, tables=...)`.
+supersedes PR #484's Task 1 with the reference shape above; Tasks 3/5/6's *actual* migrations
+(which three specific modules move first, preserving every index/column-add call) remain valid
+and are not re-litigated — only the underlying primitive they'd call changes. A future
+implementation plan should explicitly re-target Tasks 3/5/6 (or their equivalent) at
+`db.register_schema`/`db.connect(db_path, tables=..., busy_timeout_ms=...)` instead of
+`db.register_ddl`.
 
 ## Required fixes to the prototype before any module migrates onto it
 
-The db-foundation-audit (direct source read + test execution, not assumed) found five gaps.
-Three are must-fix before the first real module migration; two are should-fix, tracked but not
-blocking:
+The db-foundation-audit and this document's own adversarial review, both reading `services/db.py`
+at `17b2e8f` directly (not assumed), found the following. Since the reference shape above is not
+a straight adoption of the prototype, each item is restated against the reference shape, not the
+prototype verbatim:
 
-1. **Must-fix — silent schema-registration conflict** (audit finding 3, independently confirmed
-   by autotrade-73's separate audit pass reaching the same conclusion). Change
-   `register_schema` to raise (preferred) or at minimum log a warning when a second
-   registration for the same `(db_path, table_name)` arrives with a **different** `init_fn`
-   than the first. With ~25 modules migrating, several potentially in parallel sessions per
-   this repo's own working pattern today, a silent first-wins collision would mask a real bug
-   with no error and no log line — exactly the failure shape this repo's own incidents this
-   session have repeatedly been about (uncoordinated parallel work silently overwriting or
-   contradicting other work). Cheap to add; blocks nothing else.
+1. **Must-fix — silent schema-registration conflict.** Confirmed present in the prototype
+   (`db.py:39-41`, first-write-wins, silent, no error/log line) and addressed directly in the
+   reference shape above (`register_schema` raises on a genuine conflict). Real risk given
+   ~26 modules migrating, potentially across parallel sessions per this repo's own working
+   pattern today — a silent collision would mask a real bug with no signal at all.
 2. **Must-fix — corrupted-DB-file handling has no test**, despite this being a real incident
-   this app already had (`market_history.db`, `sqlite3.DatabaseError: database disk image is
-   malformed`, 2026-09-03, `docs/next-action.md`). The code path should already handle it
-   correctly by construction (the exception propagates through `finally: conn.close()` the same
-   as any other exception, per PR #501's own already-incorporated lesson) — but "should" is not
-   "verified," and this app has already needed to trust that exact code path once for real. Add
-   a test: open `db.connect()` against a file with garbage bytes written to it, assert `close()`
-   still ran regardless of when in the open/pragma/schema-init sequence the corruption is
-   detected.
-3. **Must-fix, documentation not code — capture_writer.py's retry wrapper must NOT be dropped
-   during its migration.** `db.py` has no retry logic of its own beyond the single
-   `busy_timeout` wait; `capture_writer.py`'s existing `flush_retained_on_lock` retry path
-   (429+ real "database is locked" faults over 4+ days, per the baseline measurement) has to
-   keep wrapping calls into `db.connect()`, not be silently assumed redundant because
-   `db.connect()` "handles locking now." This is a real, concrete risk specific to this one
-   module given its measured contention rate — the implementation plan's task for
-   `capture_writer.py`'s own eventual migration (if and when it's picked up; it is not one of
-   PR #484's three, and is not explicitly in the research doc's 30-module list either — see the
-   scope-count correction below) must state this explicitly as an acceptance criterion, not
-   leave it implicit.
-4. **Should-fix, not blocking — no test for real lock contention.** `busy_timeout=5000` is set
-   but nothing drives two genuine connections into contention to confirm the PRAGMA is doing
-   what's intended at the SQLite-engine level, versus being an unverified value. Worth adding
-   before `db.py` is trusted at scale, not before the first migration.
-5. **Should-fix, not blocking, tradeoff to document — schema re-runs every `connect()` call**,
-   not once per process. Each `CREATE TABLE IF NOT EXISTS` is itself a real disk check; for a
-   `db_path` with several registered tables (e.g. `signal_log.py`'s multiple tables), this
-   partially works against `db.py`'s own stated goal (per its docstring) of eliminating
-   per-call connect overhead. Not a correctness bug. The implementation plan should name this
-   as an accepted tradeoff (simplicity over micro-optimizing an already-cheap idempotent check)
-   rather than silently assume it's free — matching the data-plane HARD RULE's "never change …
-   because it 'should help' … identify the measured bottleneck first": there is no measurement
-   yet showing this matters at this repo's actual table counts and connect frequency, so no
-   change is proposed here, only the tradeoff is named for whoever later measures it.
+   this app already had. **Citation correction from this document's first draft**: the
+   authoritative record is `data/fault_log.db`, not `docs/next-action.md` (which contains no
+   mention of this incident) — `market_history/record_snapshot_from_ticker`, `DatabaseError`,
+   "database disk image is malformed," count 45, **2026-09-02 18:21 → 20:44 UTC** (not
+   2026-09-03). The code path should already handle this correctly by construction (the
+   exception propagates through `finally: conn.close()` the same as any other exception, per
+   PR #501's own already-incorporated lesson, confirmed present in the reference shape above
+   too) — but "should" is not "verified," and this app has already needed to trust that exact
+   code path once for real. Add a test: open `connect()` against a file with garbage bytes
+   written to it, assert `close()` still ran regardless of when in the sequence the corruption
+   is detected.
+3. **Must-fix, documentation not code — `capture_writer.py`'s existing retry mechanism must NOT
+   be dropped during its own eventual migration.** **Correction from this document's first
+   draft**: the fault name is `flush_retained_on_lock`; the retry mechanism itself is
+   `capture_writer.py`'s `_retain()` function (`:403-414`), not a function literally named
+   `flush_retained_on_lock` — that string is the fault-log label, not the code path.
+   `services/db.py` (either design) has no retry logic of its own beyond the single
+   `busy_timeout` wait, so `capture_writer.py`'s existing retain-and-retry-next-cycle behavior
+   has to keep wrapping calls into `connect()`, not be assumed redundant. **Correction to the
+   contention figure**: the commonly-cited "429 over 4+ days" combines two sequential code eras
+   across an 11-minute boundary where the fault was renamed (`capture_writer/flush`, 237
+   occurrences, ends 2026-08-30 16:08 UTC; `capture_writer/flush_retained_on_lock`, 192
+   occurrences, begins 2026-08-30 16:19 UTC — the issue #211 retain-on-lock fix landing).
+   The *current-regime* rate is 192 over roughly 3.6 days since that fix (~53/day), not 429 over
+   4 — still real, still supports this must-fix, but an implementation plan sizing a
+   post-migration re-check window off the combined figure would size off the wrong number. This
+   module is not one of PR #484's three migrated modules and is not in the research doc's
+   30-module list (it already closes its connections correctly — see the scope section below);
+   this item applies only if/when `capture_writer.py` is itself migrated onto `db.py` for some
+   other reason (e.g. consistency), which is not proposed by this spec.
+4. **Should-fix, not blocking — no test for real lock contention.** `busy_timeout=5000` (or the
+   reference shape's `busy_timeout_ms` default) is set but nothing drives two genuine
+   connections into contention to confirm the PRAGMA does what's intended at the SQLite-engine
+   level. Worth adding before `db.py` is trusted at scale, not before the first migration.
+5. **Should-fix, not blocking, tradeoff to document — schema re-runs every `connect()` call.**
+   Each `CREATE TABLE IF NOT EXISTS` (and, per the reference shape, each callback's own
+   `PRAGMA table_info` scans for `add_column_if_missing` calls) is a real disk check, replayed
+   on every connect. **Correction from this document's first draft**: `services/signal_log.py`
+   — the example previously cited here — has exactly **one** table (`signals`), not "multiple";
+   the real cost driver for that module is its 4 indexes plus 8 `add_column_if_missing` calls
+   (8 `PRAGMA table_info` scans), all replayed every connect, which is a *bigger* number than
+   the first draft's wrong example implied, not a smaller one. `_aio_db.py:191`'s "runs exactly
+   once" precedent (named above) is the existing, proven answer to this tradeoff, if and when
+   the implementation plan decides to adopt it — not adopted in this spec's own reference shape,
+   per the reasoning given above.
 
-Item 5 (`db.connect()` doesn't prevent event-loop-blocking misuse) from the audit is a real,
-correctly-identified property but is **not a `db.py` defect to fix** — it's a per-call-site
-discipline question identical to the one this repo's Tier0/P1 work already solved for five
-other modules (route through `tick_executor.run()` from any FastAPI-event-loop caller). This
-spec folds it into the migration gates below (every per-module migration task must state
-explicitly whether that module's `_connect()` is ever called from the event loop directly, and
-if so, confirm the migrated call site still routes through `tick_executor.run()` or equivalent)
-rather than proposing a `db.py`-level enforcement mechanism the research/audit never asked for
-and this spec has no measured justification to invent.
+Event-loop-blocking misuse (the audit's own item 5) is a real, correctly-identified property but
+is **not a `db.py` defect to fix** — it's a per-call-site discipline question identical to the
+one this repo's Tier0/P1 work already solved for five other modules (route through
+`tick_executor.run()` from any FastAPI-event-loop caller). This spec folds it into the migration
+gates below rather than proposing a `db.py`-level enforcement mechanism no input document asked
+for.
 
-## Scope correction: 30 modules named, 38 files actually carry connection logic
+## Scope correction: 30 modules named, 26 to migrate — not 27
 
-The research doc's `grep -rln "def _connect" services/` (exactly 30 hits) is accurate for what
-it searched, but the baseline measurement's broader
-`grep -rl 'def _connect\|sqlite3.connect' services/ tools/ main.py` (38 hits) found the true
-footprint is wider — the extra 8 files use `sqlite3.connect()` directly without a function
-literally named `_connect()`, or live outside `services/`:
+**Correction from this document's first draft, which incorrectly added a 27th module.** The
+research doc's `grep -rln "def _connect" services/` (exactly 30 hits, independently re-confirmed)
+undercounts the true footprint slightly, but not the way the first draft claimed:
 
-- **`services/store_stats.py`** — a genuine, previously-unlisted gap, not just a naming
-  variance. It is **split-pattern**: one connection (`uri=True`, read-only) already closes
-  correctly, but a second, `with sqlite3.connect(db_path) as conn:`, does not. Its own existing
-  comment ("was a transaction context manager, not a—", cut off mid-sentence, per the baseline
-  doc) suggests this was already a known, half-fixed issue before today. **Add to the migration
-  scope** — it was missing from both PR #504's 30-module list and PR #484's Task 7 tracking
-  list.
-- **`services/backup/backup.py`** — also split-pattern (its primary `_connect()` leaks; a
-  separate `src_conn`/`dest_conn` pair in the same file, used for the backup-copy operation,
-  already closes correctly). **Already in PR #484's Task 7 tracking list** (as `backup/backup.py`)
-  — no scope gap here, just worth noting the file needs a partial, not full, migration.
-- **`tools/coordination_engine.py`** — same leaking shape, but a short-lived CLI script rather
-  than a long-running server process; the OS reclaims its fds on process exit, so the
-  fd-exhaustion risk this creates is real but operationally much lower priority than any
-  server-resident module. **Add to migration scope, lowest priority** (opportunistic, same
-  tracking-issue treatment as the general 22-module bucket, not urgent).
-- **`services/capture_writer.py`, `services/storage_health.py`, `tools/historical_data_backfill.py`,
-  `tools/quality_ratchet.py`** — already close correctly (confirmed by the baseline's own
-  per-file check, not grep-shape alone). **Not in scope** — no defect to migrate.
+- **`services/store_stats.py` does not exist. The real file is `services/diagnostics/store_stats.py`,
+  and it already correctly closes its one connection — this is not a migration candidate at
+  all.** This document's first draft claimed a "split-pattern leak" here, sourced from the
+  baseline measurement's broader grep matching a line *inside the module's own docstring*
+  (`store_stats.py:8`), which quotes the module's **old, already-deleted** code as part of
+  documenting a **completed** fix (issue #210, 2026-08-30): *"The old `with
+  sqlite3.connect(...)` was a transaction context manager, not a closing one... Connections are
+  opened read-only (`mode=ro`) and closed"* (`:38-41`). The file's actual, current connection
+  (`:105`, `uri=True`, read-only) closes correctly in a `finally:` block (`:134-136`). **Removing
+  this module from scope entirely** — migrating it as the first draft proposed would have been
+  an active regression: `connect()`'s reference shape above opens a read-write handle and would
+  run schema DDL against a live capture DB on a diagnostic read path, exactly the bug class
+  `store_stats.py`'s own docstring documents as already fixed. It also carries hard-won
+  performance findings (a measured 70.5s `COUNT(*)` against `series_watcher.db`) a mechanical
+  migration would risk putting back on a blocking path.
+- **`tools/coordination_engine.py`** — genuinely leaking (confirmed: `sqlite3.connect()` with no
+  matching `.close()` anywhere in the file), outside `services/` so outside the research doc's
+  30-module count. A short-lived CLI script, not a long-running server process — the OS
+  reclaims its fds on exit, so the fd-exhaustion risk here is real but operationally much lower
+  priority than any server-resident module. **Add to migration scope, lowest priority**
+  (opportunistic, same tracking treatment as the general bucket, not urgent).
+- **`services/backup/backup.py`** — split-pattern (its primary `_connect()` leaks; a separate
+  `src_conn`/`dest_conn` pair used for the backup-copy operation already closes correctly).
+  **Already in PR #484's Task 7 tracking list** — confirmed by reading that list directly
+  (`docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md`, Task 7) — no scope
+  gap, just a partial (not full-file) migration when picked up.
+- **`services/capture_writer.py`, `services/storage_health/storage_health.py`,
+  `tools/historical_data_backfill.py`, `tools/quality_ratchet.py`** — already close correctly.
+  **Not in scope.**
 - **`services/tick_executor.py`'s `connection_for()`, `services/whalewatchers/_scoring_pool.py`,
-  `services/diagnostics/_aio_db.py`** — pooled/cached, structurally different from the
-  per-call-open-close pattern this migration addresses. **Not in scope** for this migration
-  (see "Considered and declined: pooling" below for why `_aio_db.py`'s pattern specifically is
-  not being adopted wholesale here, despite being a real, working precedent).
+  `services/diagnostics/_aio_db.py`** — pooled/cached, structurally different. **Not in scope**
+  for this migration (see "Considered and declined: pooling" below).
 
-**Corrected scope: 27 modules to migrate onto the new `services/db.py`** — the research doc's
-25 (`services/`-only, `_connect()`-only), plus `store_stats.py` (partial — one of its two
-connections) and `tools/coordination_engine.py` (lowest priority). `backup.py` was already
-counted in the 25 (partial migration, same as `store_stats.py`).
+**Corrected scope: 26 modules** — the research doc's 25 (`_connect()`-named, `services/`-only,
+Tier0's 5 already excluded) plus `tools/coordination_engine.py`, lowest priority.
+`backup/backup.py` was already counted inside the 25 (partial migration).
 
 ## Considered and declined: pooling (`_aio_db.py`'s pattern), for this migration
 
@@ -195,7 +268,7 @@ per-call connect/close overhead entirely, not just make it safe.
 **Declined for this migration's scope, not declined as a future idea**, for three concrete
 reasons:
 
-1. `_aio_db.py`'s pattern is `asyncio`/`aiosqlite`-based. The 27 modules in this migration's
+1. `_aio_db.py`'s pattern is `asyncio`/`aiosqlite`-based. The 26 modules in this migration's
    scope are sync `sqlite3` callers (the research doc's own §2 explicitly defers any
    `aiosqlite` migration to a separate, unstarted plan, citing the design's own admission that
    the necessary before/after benchmark against trading-critical code was never done). Adopting
@@ -203,134 +276,161 @@ reasons:
    the kind of undisclosed scope expansion this repo's HARD RULE process exists to prevent.
 2. `tick_executor.py`'s `connection_for()` is this repo's own, real, recent precedent for why a
    confident-looking connection-management refactor across many modules can be unsafe for
-   non-obvious reasons specific to *this* app: it was investigated for exactly this kind of
-   wiring, found unsafe for two concrete reasons (no schema-init DDL; a 50ms busy_timeout that
-   would convert today's silent 5-second wait into a newly-common lock exception under real
-   cross-thread contention), and deliberately left unwired. A pooled design changes lock/timeout
-   dynamics in ways the close-on-exit-per-call design does not — it needs the same rigor
-   `connection_for()` got, not less, and that rigor is out of scope for a spec whose job is to
-   fix a leak, not redesign the concurrency model.
+   non-obvious reasons specific to *this* app — independently re-confirmed by this document's
+   own adversarial review reading `tick_executor.py`'s header comment directly: it was
+   investigated for exactly this kind of wiring, found unsafe for two concrete reasons (no
+   schema-init DDL; a 50ms busy_timeout that would convert today's silent 5-second wait into a
+   newly-common lock exception under real cross-thread contention), and deliberately left
+   unwired, citing a specific prior code-review finding (#3/#9). A pooled design changes
+   lock/timeout dynamics in ways the close-on-exit-per-call design does not — it needs the same
+   rigor `connection_for()` got, not less.
 3. Per the data-plane HARD RULE, capacity/pooling changes require a measured bottleneck and
    mechanism first, not "should help." Nothing in the research, baseline, or audit documents
-   measures per-call connect/close overhead as the actual bottleneck for any of the 27 modules
+   measures per-call connect/close overhead as the actual bottleneck for any of the 26 modules
    (the measured problems are fd exhaustion from never closing, and lock contention from
    uncoordinated concurrent writers — both are fixed by closing-on-exit; neither requires
-   pooling to fix).
+   pooling to fix). **Independently measured for this revision**: the concern that per-call
+   open/close on a WAL database might trigger an expensive checkpoint on every close is real in
+   principle but small in practice here — `data/series_watcher.db-wal` (the largest store) is
+   4.7 MB against a 29.7 GB main file, confirming the reference shape's cost genuinely does not
+   scale with file size (`connect()`'s body touches only pragmas, schema DDL, and the checkpoint
+   on close — never existing rows).
 
 Recorded here so a future session doesn't have to re-discover `_aio_db.py`'s precedent from
 scratch, and so choosing not to pool is a stated decision, not a silent default.
 
 ## Module classification for the implementation plan
 
-Per-module classification the implementation plan should use directly, built from the research
-doc's sampling plus the baseline's full 38-file pass:
-
 - **Safety-adjacent — individual, dedicated PR required, never bundled** (repeating PR #484's
-  own already-established convention for this exact category): `risk_manager.py` (daily-loss
-  kill switch), `paper_broker.py`, `candidate_ledger.py`. Each migration touches only connection
-  plumbing, not kill-switch/trading logic — but each gets the same real-diff scrutiny CLAUDE.md's
-  safety invariants require for any change in these files, not "same pattern as the others"
-  taken on faith.
+  own already-established convention for this exact category, confirmed unaltered against the
+  merged plan text): `risk_manager.py` (daily-loss kill switch), `paper_broker.py`,
+  `candidate_ledger.py`. Each migration touches only connection plumbing, not
+  kill-switch/trading logic — but each gets the same real-diff scrutiny CLAUDE.md's safety
+  invariants require, not "same pattern as the others" taken on faith.
 - **Closer to the live trading path than the general bucket, lighter caution** (per PR #484's
-  own finding, carried forward unchanged — this spec found nothing to add or remove from this
-  pair): `series_evaluator.py`, `trade_category.py`.
+  own finding, carried forward unchanged): `series_evaluator.py`, `trade_category.py`.
 - **Individually audited already, real complexity beyond mechanical extraction confirmed**:
   `series_watcher.py` — PR #23 ("Realtime data-plane remediation — Phase P0," merged
   2026-08-26) added a real lock guarding this module's capture buffers against a genuine
   cross-thread race between the event loop and `tick_executor`'s worker thread. Its migration
-  needs individual review for interaction with that existing lock, not mechanical extraction.
-  `settlement_edge.py` was also sampled in the research doc as non-trivial; both need
-  individual audit before being called mechanical, not assumed safe from the pattern holding
-  for already-migrated modules.
-- **Size/cost outlier, scope decision needed before migrating**: `series_watcher.py`'s own
-  `series_watcher.db` is 29.7 GB — an order of magnitude larger than every other store
-  (`candidate_log.db` at 3.76 GB is the next largest). This spec does not decide whether
-  `series_watcher.py` migrates in the first wave or is deliberately deferred — that is a real
-  scope/sequencing call belonging to the implementation plan, informed by whether the migration
-  itself requires any operation whose cost scales with file size (schema-replay-on-every-connect
-  does not rewrite the file, so a straight migration is likely cheap regardless of size — but
-  this is stated as reasoning, not measured, per the data-plane HARD RULE, and the
-  implementation plan should confirm it before treating `series_watcher.py` as low-risk purely
-  because the connection-close fix itself is mechanical).
-- **Split-pattern, partial migration only**: `backup/backup.py`, `services/store_stats.py` (new
-  finding, see scope correction above) — only the leaking half of each file's connection logic
-  is in scope; the half that already closes correctly is explicitly untouched.
+  needs individual review for interaction with that existing lock. `settlement_edge.py` was
+  also sampled as non-trivial; both need individual audit before being called mechanical.
+- **Size outlier, migration cost independently confirmed not to scale with it**:
+  `series_watcher.py`'s own `series_watcher.db` is 29.7 GB — confirmed exact
+  (29,738,631,168 bytes), an order of magnitude larger than the next-largest store
+  (`candidate_log.db`, 3.76 GB). The reference shape's `connect()` touches only pragmas, schema
+  DDL, and (on close, for a WAL database) a checkpoint proportional to the WAL file specifically
+  (measured at 4.7 MB for this store), never the main file's existing rows — so a straight
+  migration's *mechanical* cost does not scale with the 29.7 GB figure. This does not by itself
+  resolve whether `series_watcher.py` migrates in the first wave or is deliberately sequenced
+  later — that remains an implementation-plan sequencing call, informed by the non-mechanical
+  concern above (the PR #23 lock interaction), not by file size.
+- **Not in scope** (corrected from the first draft): `services/diagnostics/store_stats.py` —
+  already fixed, not a migration candidate. See scope-correction section above.
+- **Split-pattern, partial migration only**: `backup/backup.py` — only the leaking half
+  (`_connect()`) is in scope; `src_conn`/`dest_conn` are already correct and untouched.
 - **General opportunistic bucket** (no individual flag, same "one PR per module or small
   low-risk batch, tracking issue not a hard deadline" treatment PR #484's Task 7 already
-  established): the remaining ~20 modules, plus `tools/coordination_engine.py` at lowest
+  established): the remaining ~19 modules, plus `tools/coordination_engine.py` at lowest
   priority given its short-lived-process risk profile.
 
 ## Migration gates
 
 **Gate 0 — before any module migrates (blocks the whole migration, not per-module):**
-- The three must-fix items above (silent schema-conflict, corrupted-DB test, capture_writer
-  retry-wrapper documentation) land in `services/db.py` and its own test suite.
-- The API-shape decision above (`register_schema`/callback, not `register_ddl`/string) is the
-  one this spec's downstream implementation plan targets — flagged here as the single
-  highest-stakes call this spec makes; see "Open question for explicit sign-off" below.
+- The three must-fix items above (raise-on-conflict registration, corrupted-DB test,
+  `capture_writer.py`'s retry-mechanism documentation for if/when it's ever migrated) land in
+  `services/db.py` and its own test suite.
+- The reference API shape above (callback registration keyed by table name, explicit `tables=`
+  selection and `busy_timeout_ms` at `connect()`) is what the implementation plan's Task 1
+  builds — flagged as the single highest-stakes call this spec makes; see "Open question for
+  explicit sign-off" below.
+- A test proving the reference shape works correctly under `monkeypatch.setattr(mod, "DB_PATH",
+  tmp_path/...)` — the exact failure mode this revision exists to prevent — before any module's
+  own migration task is written, not discovered by the first module that tries it.
 
 **Gate 1 — before each individual module's migration is considered mechanical:**
 - Read that module's actual `_connect()` (or equivalent) body in full, current-source, not
   from this spec's or any prior document's summary — matching this repo's own
-  Task-Step-2-"read before editing" convention already used throughout PR #484 and Tier0.
+  Task-Step-2-"read before editing" convention, and matching exactly the lesson this document's
+  own adversarial review re-taught by opening `store_stats.py` when the first draft hadn't.
 - Confirm every non-`CREATE TABLE` statement (indexes, `add_column_if_missing` calls) the
-  module's current connect function runs is preserved in its `register_schema` callback —
-  the exact regression class PR #484's Task 3's own test
+  module's current connect function runs is preserved in its `register_schema` callback — the
+  exact regression class PR #484's Task 3's own test
   (`test_connect_still_creates_both_tables_indexes_and_unit_cost_columns`) exists to catch,
-  generalized to every module now, not just the three PR #484 covered.
+  generalized to every module now.
 - A real "connection is actually closed" regression test per module, not "tests still pass" —
-  per the research doc's own point: a fix that looks complete against the happy path already
-  proved (PR #501) it can still leak on the setup-failure path.
+  per PR #501's own lesson: a fix that looks complete against the happy path can still leak on
+  the setup-failure path.
+- A test confirming the migrated module's own tests still pass under whatever `DB_PATH`
+  monkeypatching convention that module's existing test file already uses — the specific
+  failure this revision fixed at the `db.py` level, re-verified at the call-site level too.
 - Confirm whether the module's connect function is ever called from the FastAPI event loop
-  directly (not only from a background thread/`tick_executor.run()`); if so, the migrated call
-  site must keep that routing — this migration must not reintroduce the event-loop-blocking
-  bug class Tier0/P1 already fixed elsewhere.
-- Safety-adjacent modules (`risk_manager.py`, `paper_broker.py`, `candidate_ledger.py`) get
-  their own dedicated PR, full diff review, never bundled with an unrelated change or with each
-  other.
+  directly; if so, the migrated call site must keep routing through `tick_executor.run()` or
+  equivalent — this migration must not reintroduce the event-loop-blocking bug class Tier0/P1
+  already fixed elsewhere.
+- Safety-adjacent modules get their own dedicated PR, full diff review, never bundled.
 - `series_evaluator.py`/`trade_category.py` get the lighter "don't bundle silently as routine"
   caution PR #484 already established.
-- `series_watcher.py`/`settlement_edge.py` get individual audit for the specific
-  non-mechanical concern named above before being scheduled, not batched with the general
-  bucket.
+- `series_watcher.py`/`settlement_edge.py` get individual audit for the specific non-mechanical
+  concern named above before being scheduled.
+- Registration order is significant if any table's `init_fn` depends on another table already
+  existing in the same file (per the prototype's own design property, carried into the
+  reference shape's own registration order) — Gate 1 should confirm this isn't silently assumed
+  for any given module's callback ordering.
 
 **Gate 2 — after each module (or small batch) migrates:**
 - Full local suite passes; `import main` sanity check.
 - Live fd-count check post-deploy (Tier0's Task 9 already added the process-wide `open_fds`
-  counter this migration can reuse — no new instrumentation needed for a coarse signal, though
-  no per-module fd attribution exists yet if that granularity is ever wanted).
-- For any module appearing in the fault-log contention data (`capture_writer.py`'s eventual
-  migration specifically, if picked up — 429+ "database is locked" faults over 4+ days),
-  re-check that rate post-migration the same way Tier0's own Task 4/Task 10 pattern already
-  established for `candidate_log.db`'s contention fix.
+  counter — confirmed present at `services/diagnostics/routes.py:457` — this migration can
+  reuse it; no per-module fd attribution exists yet if that granularity is ever wanted).
+- For `capture_writer.py`'s eventual migration specifically, if and when it's picked up: re-check
+  the `flush_retained_on_lock` occurrence rate post-migration against the corrected current-regime
+  baseline above (~53/day, not the combined 429-over-4-days figure), the same way Tier0's own
+  Task 4/Task 10 pattern already established for `candidate_log.db`'s contention fix.
 
 ## Non-goals (explicitly deferred, not silently in scope)
 
-- Any `aiosqlite` migration for these 27 modules (the research doc's item 16 territory —
-  separately deferred, unstarted).
-- A DuckDB/Parquet export or any change to `raw_trades`'s system-of-record status (unrelated
-  question, already resolved by PR #484's own Task 9 for the 3 modules it covered; not
-  reopened here).
-- Adopting `_aio_db.py`'s pooling pattern for these 27 modules (see "Considered and declined"
-  above).
-- A schema-replay-performance benchmark at real table counts (named as a should-fix tradeoff
-  above, not measured here — no task in the downstream implementation plan should assume this
-  spec cleared it).
-- Deciding `series_watcher.py`'s migration wave/sequencing (flagged as an implementation-plan
-  decision above, informed but not made here).
-- Full individual audits of all 27 modules' connect-function bodies beyond the ones already
+- Any `aiosqlite` migration for these 26 modules.
+- A DuckDB/Parquet export or any change to `raw_trades`'s system-of-record status.
+- Adopting `_aio_db.py`'s pooling pattern for these 26 modules, or its "run schema init exactly
+  once" semantic — named as a viable future refinement, not adopted in this spec's own reference
+  shape (see reasoning above).
+- A schema-replay-performance benchmark at real table counts.
+- Deciding `series_watcher.py`'s migration wave/sequencing.
+- Full individual audits of all 26 modules' connect-function bodies beyond the ones already
   sampled directly (`risk_manager.py`, `trade_category.py`, `series_watcher.py`,
-  `settlement_edge.py`, `store_stats.py`, `backup.py`) — Gate 1 above is how the remaining
-  bodies get read, at migration time, not pre-audited here.
+  `settlement_edge.py`, `backup.py`, and — this revision's own correction —
+  `store_stats.py`, now removed from scope entirely rather than pending audit).
 
 ## Open question for explicit sign-off
 
-**The API-shape decision (callback/`register_schema` over string/`register_ddl`) is this
-spec's single highest-stakes call** — it effectively supersedes what PR #484's own,
-already-merged Task 1 planned to build, based on a prototype that PR #484's own authoring
-session did not know existed. This is exactly a "genuine design/architecture decision" this
-repo's own take-the-wheel carve-out reserves for a human call rather than an AI-executed
-default — flagged explicitly for this spec's own adversarial review to scrutinize the
-reasoning above on its merits, and for the coordinator/user to confirm before an implementation
-plan is drafted against it, rather than this spec silently deciding it standalone the way `git
-commit`-level judgment calls are normally fine to make autonomously.
+**The API-shape decision is this spec's single highest-stakes call** — it effectively
+supersedes what PR #484's own, already-merged Task 1 planned to build, based on a prototype
+that PR #484's own authoring session did not know existed, and this document's own revision
+above further diverges from *both* prior designs rather than adopting either wholesale. This is
+exactly a "genuine design/architecture decision" this repo's own take-the-wheel carve-out
+reserves for a human call rather than an AI-executed default — flagged explicitly for the
+coordinator/user to confirm before an implementation plan is drafted against it.
+
+## Revision log (first draft → this revision)
+
+Every finding from this document's own required adversarial review, and its disposition:
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| C1 | Critical | `services/store_stats.py` "split-pattern leak" is a grep artifact — real file is `services/diagnostics/store_stats.py`, already fixed | **Fixed** — removed from scope entirely; scope corrected 27→26; migration would have been a regression, documented as such |
+| C2 | Critical | Recommended path-keyed registry breaks `monkeypatch.setattr(mod, "DB_PATH", ...)`, demonstrated by running it | **Fixed** — reference shape now uses table-name-keyed registration (PR #484's addressing model) with the prototype's callback, plus a raise-on-conflict check and a `monkeypatch` test named in Gate 0 |
+| I1 | Important | Comparison table applied an inconsistent standard to the two designs' equally-silent collision behavior | **Fixed** — both now stated as silent-collision in the comparison table; the practical ranking is based on the test-convention finding (C2), not the collision-surface framing alone |
+| I2 | Important | Must-fix #2 cited `docs/next-action.md` for a claim that document doesn't contain; correct date is 2026-09-02, not 09-03 | **Fixed** — re-cited to `data/fault_log.db` directly, with corrected date and full occurrence window |
+| I3 | Important | The "429 over 4+ days" figure conflates two sequential fault-name eras across an 11-minute boundary | **Fixed** — current-regime figure (192 over ~3.6 days, ~53/day) now used for Gate 2's own re-check baseline; combined figure kept only for total-historical context |
+| I4 | Important | Must-fix #1's "independently confirmed by autotrade-73's separate audit" claim is unsupported — the baseline doc contains no schema-conflict finding | **Fixed** — claim removed; the schema-conflict finding is sourced to the db-foundation-audit alone, which is the real source |
+| I5 | Important | `_aio_db.py`'s `schema_init` callback (a real, shipped precedent for the callback shape and for should-fix #5) was never examined | **Fixed** — cited directly (`_aio_db.py:187-191`), used to support the callback-shape decision and named as a viable future refinement for the replay-cost tradeoff |
+| M1 | Minor | Wrong paths throughout (`services/store_stats.py`, `services/storage_health.py`) | **Fixed** — corrected to `services/diagnostics/store_stats.py` (now removed from scope anyway) and `services/storage_health/storage_health.py` |
+| M2 | Minor | `signal_log.py` does not have "multiple tables" — it has one table, 4 indexes, 8 `add_column_if_missing` calls | **Fixed** — corrected; the actual cost driver (8 `PRAGMA table_info` scans per connect) is larger than the wrong example implied |
+| M3 | Minor | "the extra 8 files" arithmetic doesn't match grep B − grep A (10, 9 code files); `backup.py` was double-counted as "extra" despite matching both greps | **Fixed** — scope-correction section rewritten around the actually-new file (`tools/coordination_engine.py`) and the actually-refuted file (`store_stats.py`), not an arithmetic-derived "8" |
+| M4 | Minor (confirmed, not a defect) | WAL-checkpoint-on-close cost vs. `series_watcher.db`'s size — unconsidered but small in practice (4.7 MB WAL vs 29.7 GB main file) | **Incorporated** — cited as independent measurement supporting the "cost doesn't scale with file size" claim in both the pooling and size-outlier sections |
+| M5 | Minor | Registration order is load-bearing (schema-init replay order) and was undocumented | **Fixed** — named explicitly in the design section and added to Gate 1 |
+| M6 | Minor (confirmed, no defect) | Lane discipline — decides an API shape and gates, doesn't write implementation tasks | No change needed |
+| M7 | Minor (confirmed, no defect) | Safety classification carried forward accurately from PR #484 | No change needed |
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
