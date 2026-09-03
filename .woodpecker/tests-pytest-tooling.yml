@@ -1,0 +1,51 @@
+# Backend pytest suite, TOOLING HALF - see tests-pytest-app.yml's own
+# header for the full story of why this split exists and why it's safe
+# (tools/classify_pytest_app_vs_tooling.py's AST-based, import-derived
+# boundary, already proven non-interacting with app code by this repo's
+# own pytest-profile audit doc). This half is every test that does NOT
+# import anything from services.* or main - repo tooling
+# (tools/, .claude/hooks/, scripts/) and its own tests, never application
+# runtime code.
+when:
+  - event: [push, pull_request, manual]
+
+# Full-history clone override, required by ci-fast-path-check below - see
+# tests-pytest-app.yml's own identical block for the full explanation
+# (Woodpecker's default clone plugin silently forces --depth=1 unless
+# partial:false is also set).
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
+steps:
+  - name: ci-fast-path-check
+    image: alpine/git
+    commands:
+      - mkdir -p build
+      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+
+  - name: pytest-tooling
+    image: python:3.13-slim
+    volumes:
+      - wp-uv-cache:/root/.cache/uv
+      - wp-testmon-cache:/testmon-cache
+    environment:
+      PYTEST_SPLIT: tooling
+    commands:
+      - |
+        if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
+          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping the full pytest run"
+        else
+          pip install -q uv
+          uv pip install --system -r requirements-dev.txt
+          # git needed for real: tests/test_cleanup_worktrees.py and
+          # tests/test_quality_coordination_cleanup_actions.py run real git
+          # commands against a disposable synthetic repo fixture
+          # (tests/support/synthetic_git_repo.py) - see the retired
+          # tests-pytest.yml's own comment for the full story.
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+          sh scripts/ci-testmon-run.sh
+        fi

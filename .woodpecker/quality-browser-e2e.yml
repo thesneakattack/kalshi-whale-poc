@@ -21,7 +21,7 @@ when:
   - event: [push, pull_request]
 
 # Full-history clone override, required by ci-fast-path-check below - see
-# tests-pytest.yml's matching clone: block for the full explanation. Short
+# tests-pytest-app.yml's matching clone: block for the full explanation. Short
 # version: Woodpecker's default clone plugin's `partial: true` forces a
 # `--depth=1` checkout regardless of any `depth:` setting, which leaves
 # zero ancestor history for ci-fast-path-check's git merge-base/HEAD^1
@@ -71,7 +71,7 @@ steps:
 
   - name: browser-e2e
     image: python:3.13-slim
-    # Shared uv download cache - see tests-pytest.yml for the full reasoning
+    # Shared uv download cache - see tests-pytest-app.yml for the full reasoning
     # and the measurement behind it.
     volumes:
       - wp-uv-cache:/root/.cache/uv
@@ -172,7 +172,7 @@ steps:
   # reason for choosing this image, so keep those two in step.
   - name: playwright-e2e
     image: mcr.microsoft.com/playwright/python:v1.62.0-noble
-    # Shared uv download cache - see tests-pytest.yml for the full reasoning
+    # Shared uv download cache - see tests-pytest-app.yml for the full reasoning
     # and the measurement behind it. The uv venv here does not relocate the
     # cache, so this step shares the same one.
     volumes:

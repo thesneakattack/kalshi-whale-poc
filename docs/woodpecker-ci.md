@@ -46,8 +46,9 @@ shared agent's configured concurrency — see "Known limitations" below).
 
 | File | Mirrors former GitHub Actions job | Path-filtered? |
 |---|---|---|
-| `tests-pytest.yml` | `tests.yml` / `pytest` | no — full suite, cross-module regressions |
-| `tests-dependency-audit.yml` | `tests.yml` / `dependency-audit` | no |
+| `tests-pytest-app.yml` | `tests.yml` / `pytest` (app half, 2026-09-03 split — see `tools/classify_pytest_app_vs_tooling.py`) | no within its half — full unscoped app-code suite, cross-module regressions |
+| `tests-pytest-tooling.yml` | `tests.yml` / `pytest` (tooling half) | no within its half — full unscoped tooling suite; proven non-interacting with the app half by the CI pipeline audit's pytest-profile doc |
+| `tests-dependency-audit.yml` | `tests.yml` / `dependency-audit` | yes (2026-09-03) — skips `pip-audit` internally (still posts its required status) unless `requirements*.txt` changed; see `scripts/ci-skip-if-unaffected.sh` |
 | `quality-frontend-build.yml` | `quality.yml` / `frontend-build` | yes — `frontend/**` only |
 | `quality-architecture-audit.yml` | `quality.yml` / `architecture-audit` (now also covers `frontend-api-contract` and `tools.project_manifest --check`, QCP Task 17, bundled into the same step) | no — the frontend-contract scanner reads both sides |
 | `kalshi-contract-fixtures.yml` | new — `services/kalshi_client.py` etc.'s existing tests plus `tests/test_kalshi_contracts.py` (QCP Task 13's fixture-JSON-driven contract tests), isolated for clearer failure attribution | no |
@@ -79,16 +80,19 @@ required; the other four aren't path-filtered and are safe to require.
 
 **A manually triggered pipeline (`scripts/woodpecker-trigger`, the "Run
 pipeline" UI button, or a raw `POST /api/repos/{id}/pipelines`) carries
-`event: manual`.** `tests-pytest.yml` has matched this event since
-2026-08-28 (`when: event: [push, pull_request, manual]`) and runs its full,
-unscoped suite on a manual trigger — see that file's own header comment for
-why (an explicit ask for confidence, never testmon-scoped). The other five
-workflows still only match `[push, pull_request]`, so a manual trigger
-today produces exactly one workflow (`tests-pytest`) and posts exactly one
-GitHub status (`ci/woodpecker/manual/tests-pytest`) — confirmed live: 0 of
-314 retained pipelines have ever actually been triggered this way (CI
-pipeline audit, 2026-09-02), so this capability is wired but unused.
-Verifying the other five workflows still requires a real push, or
+`event: manual`.** `tests-pytest-app.yml`/`tests-pytest-tooling.yml` (the
+2026-09-03 split of the former single `tests-pytest.yml`) have matched
+this event since 2026-08-28 (`when: event: [push, pull_request, manual]`)
+and each run their own full, unscoped half on a manual trigger — see
+either file's own header comment for why (an explicit ask for confidence,
+never testmon-scoped). The other five workflows still only match `[push,
+pull_request]`, so a manual trigger today produces exactly two workflows
+and posts exactly two GitHub statuses (`ci/woodpecker/manual/tests-pytest-app`,
+`.../tests-pytest-tooling`) — confirmed live as of 2026-09-02 (before the
+split, one workflow/status): 0 of 314 retained pipelines had ever actually
+been triggered this way (CI pipeline audit), so this capability was wired
+but unused; not re-checked live since the split. Verifying the other five
+workflows still requires a real push, or
 temporarily broadening a workflow's `when:` to include `event: manual`
 while testing.
 
@@ -102,7 +106,7 @@ Task 20 names, mapped to where each one actually lives (not always a literal
 
 | Conceptual check | Where it actually runs |
 |---|---|
-| `tests / pytest` | `.woodpecker/tests-pytest.yml` (push/PR) · `tests.yml` (manual fallback) |
+| `tests / pytest` | `.woodpecker/tests-pytest-app.yml` + `tests-pytest-tooling.yml` (push/PR, split 2026-09-03) · `tests.yml` (manual fallback) |
 | `tests / dependency-audit` | `.woodpecker/tests-dependency-audit.yml` (push/PR) · `tests.yml` (manual fallback) |
 | `quality / architecture-audit` | `.woodpecker/quality-architecture-audit.yml` (push/PR) · `quality.yml` (manual fallback) |
 | `quality / frontend-build` | `.woodpecker/quality-frontend-build.yml` (push/PR, `frontend/**` path-filtered) · `quality.yml` (manual fallback) |
