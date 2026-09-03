@@ -9,7 +9,37 @@ document, per the assignment, so the implementation plan can consume both.
 
 Gathered via four parallel mechanical read-only subagents (one per module group below), then
 personally spot-checked and corrected — see "Correction to the source material" below for one
-load-bearing error caught in that verification pass.
+load-bearing error caught in that verification pass, and "PR-stage adversarial review findings"
+further below for a second, larger round of corrections found during this document's own
+required review cycle.
+
+## PR-stage adversarial review findings — `/api/reset` exposes far more of this bucket than
+## originally documented
+
+An independent adversarial review (fresh Agent, no memory of the authoring session) re-derived
+several claims from source and found `accounts_store.py`'s `main.py` citation was off by 100
+lines (corrected to `1926-1950`), and that `reset_log.py`/`trade_archive.py` were both wrongly
+marked event-loop-safe. Tracing the actual mechanism (`services/reset/routes.py`'s
+`async def reset_broker(...)`, `routes.py:151` — an **async** handler, which FastAPI runs
+directly on the event loop, not the thread pool auto-threading that only applies to plain `def`
+sync handlers) surfaced that this single route calls **six more** of this bucket's modules
+synchronously, with zero dispatch, all in one function body with no `await`/`to_thread`/
+`tick_executor` anywhere: `shadow_mode.py` (`shadow.clear()`), `series_evaluator.py`
+(`clear_all()`), `trade_category.py` (`clear_range()`), `whale_calibration/calibration_history.py`
+(`clear_all()`), `market_analyst_agent/_db.py` (`clear_all()`), and `candidate_log.py`
+(`clear_range()` specifically — its separate `resolve_from_market_results` write path genuinely
+is off-loop via `tick_executor.run()`, so this one module has both an on-loop and an off-loop
+path, not a single flat answer). Each corrected module section below now states this directly
+rather than the codebase's original flat "NO" or "not confirmed" verdict.
+
+**Why this matters beyond documentation accuracy**: `/api/reset` is a real, reachable endpoint,
+not a hypothetical. Every one of these six modules blocks the event loop for the duration of its
+`_connect()` call (itself already established elsewhere in this document as non-trivial, given
+the schema-init/index-creation work several of them do) on every `/api/reset` request that
+enables that domain's flag. This is a genuine, currently-live event-loop-blocking exposure
+across seven of this bucket's 21 modules (six here plus `accounts_store.py`, already
+documented) — independent of whether the `db.py` migration happens at all. Worth its own
+tracked follow-up regardless of migration timing, not just a migration-planning footnote.
 
 ## Correction to the source material, verified directly before compiling
 
@@ -64,11 +94,13 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
   `with _connect() as conn:`.
 - **Tests**: **no test file exists** for this module.
 - **Event loop**: **YES, confirmed direct exposure with no tick_executor wrapping** —
-  `main.py:1828-1850`, four synchronous calls (`enabled()`, `status()`, `save()`, `delete()`)
-  made directly from async route handlers (`list_accounts`, `connect_account`,
-  `disconnect_account`). This is a real, pre-existing event-loop-blocking gap independent of
-  the migration — worth its own Gate 1 acceptance criterion (route through `tick_executor.run()`
-  or migrate-and-wrap together), not just a "preserve as-is" migration.
+  `main.py:1926-1950` (corrected citation; independently verified by adversarial review, the
+  original "1828-1850" was wrong by exactly 100 lines from the start, not drift), four
+  synchronous calls (`enabled()`, `status()`, `save()`, `delete()`) made directly from async
+  route handlers (`list_accounts`, `connect_account`, `disconnect_account`). This is a real,
+  pre-existing event-loop-blocking gap independent of the migration — worth its own Gate 1
+  acceptance criterion (route through `tick_executor.run()` or migrate-and-wrap together), not
+  just a "preserve as-is" migration.
 
 ### services/alerting/alerting.py
 - **Body** (`alerting.py:78-96`): `PRAGMA journal_mode=WAL`; `CREATE TABLE IF NOT EXISTS alerts
@@ -109,8 +141,14 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Tests**: `tests/test_candidate_log.py:10`, monkeypatches `DB_PATH` plus
   `capture_writer`'s `_STORE_PATHS`/buffer state (L18-21) — this module's test isolation is
   entangled with `capture_writer.py`'s own state, not self-contained.
-- **Event loop**: NO — `resolve_from_market_results` (the main write path) runs via
-  `tick_executor.run()` from `settlement_resolver.py:270-271`.
+- **Event loop**: **MIXED, corrected** — `resolve_from_market_results` (the main write path)
+  runs off-loop via `tick_executor.run()` from `settlement_resolver.py:270-271`, as originally
+  stated. But `clear_range()` (`candidate_log.py:435`) is called directly, synchronously, from
+  `services/reset/routes.py`'s `async def reset_broker(...)` (`routes.py:151`, via the
+  `body.candidate_log` branch) with no dispatch — found during this document's own PR-stage
+  adversarial review while tracing the same route for `trade_archive.py`/`reset_log.py` below.
+  The original flat "NO" verdict was incomplete: this module has both an off-loop write path
+  and an on-loop clear path.
 
 ### services/config/config_performance.py
 - **Body** (`config_performance.py:46-86`): `PRAGMA journal_mode=WAL`; two `CREATE TABLE`
@@ -203,8 +241,13 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
   where that precedent actually lives).
 - **Tests**: per-test helper `_agent(tmp_path, monkeypatch)` (`test_market_analyst_agent_db.py:9-11`),
   not autouse.
-- **Event loop**: NO for the one direct `_connect()` call; the cached-pool path is accessed from
-  tick_executor-routed callers per the subagent's read, not confirmed independently here.
+- **Event loop**: **YES, corrected** — the module's own `clear_all()` (`_db.py:101`, the one
+  direct `_connect()` call) is called as `market_analyst_agent.clear_all()` directly,
+  synchronously, from `services/reset/routes.py`'s `async def reset_broker(...)`
+  (`routes.py:151`, via the `body.market_analyst` branch), with no dispatch. Found during this
+  document's own PR-stage adversarial review. The original "NO" verdict was wrong for this call
+  site; the cached-pool path (`_scoring_read_connection`) is unaffected and still believed
+  tick_executor-routed, not independently reconfirmed here.
 
 ### services/market_events/event_schedule.py
 - **Body** (`event_schedule.py:133-148`): `PRAGMA journal_mode=WAL`; `CREATE TABLE IF NOT
@@ -241,10 +284,14 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Call sites** (module): `record` L58, `recent` L69 — both `with _connect() as conn:`.
 - **Tests**: **no dedicated test file** — only indirectly exercised via
   `tests/test_reset_routes.py`; DB_PATH isolation for this module specifically not confirmed.
-- **Event loop**: NO — `record()` is called from `services/reset/routes.py:161`, a synchronous
-  FastAPI route handler (FastAPI runs sync routes in a thread pool automatically, so this
-  doesn't block the event loop directly, though it's worth the implementation plan stating this
-  explicitly rather than assuming).
+- **Event loop**: **YES, corrected** — the original "NO" was wrong. `record()` is called (via
+  the `_log()` closure defined at `routes.py:159`) from inside `services/reset/routes.py`'s
+  `async def reset_broker(...)` (`routes.py:151`) — an **async** handler, which FastAPI runs
+  directly on the event loop, not in a thread pool (the auto-threading behavior only applies to
+  plain `def` sync route handlers, which this is not). `_log()` is called ten separate times in
+  that function body (`routes.py:210-246`), each synchronously, no `await`/`to_thread`/
+  `tick_executor` anywhere in the handler. Found during this document's own PR-stage
+  adversarial review, independently re-verified directly against `routes.py` before this fix.
 
 ### services/reset/trade_archive.py
 - **Body** (`trade_archive.py:54-136`) — the largest schema in this bucket: `PRAGMA
@@ -259,8 +306,10 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Tests**: autouse fixture monkeypatches both `trade_archive.DB_PATH` AND
   `paper_broker.DB_PATH` together (`test_trade_archive.py:17-22`) — this module's tests are
   cross-coupled with `paper_broker.py`'s isolation, not self-contained.
-- **Event loop**: NO — `archive_epoch` is called from `services/reset/routes.py:190`, a
-  synchronous route handler.
+- **Event loop**: **YES, corrected** — the original "NO" was wrong, same mechanism as
+  `reset_log.py` above. `archive_epoch` is called directly at `routes.py:190`, inside the same
+  `async def reset_broker(...)` handler, with no dispatch — verified directly against the
+  handler body, which contains zero `await`/`to_thread`/`tick_executor` calls anywhere.
 
 ### services/series_cache.py
 - **Body** (`series_cache.py:34-78`): `PRAGMA journal_mode=WAL`; three `CREATE TABLE`
@@ -280,7 +329,9 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
   `se._connect()` directly at 12 sites, all `with`.
 - **Tests**: helper `_se(tmp_path, monkeypatch)` (`test_series_evaluator.py:7-9`) — also
   monkeypatches `signal_log.DB_PATH` alongside its own, another cross-module test coupling.
-- **Event loop**: not confirmed either way.
+- **Event loop**: **YES, resolved** — `series_evaluator.clear_all()` (`series_evaluator.py:294`)
+  is called directly from `services/reset/routes.py`'s `async def reset_broker(...)` (via the
+  `body.series_evaluator` branch), no dispatch. Same route traced for the corrections above.
 
 ### services/trade_category.py
 - **Body** (`trade_category.py:27-78`): `PRAGMA journal_mode=WAL`; `CREATE TABLE IF NOT EXISTS
@@ -290,7 +341,10 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Tables**: `trade_category`.
 - **Call sites** (module): 6 sites, all `with _connect() as conn:`.
 - **Tests**: autouse fixture `_redirect_db` (`test_trade_category.py:6-8`).
-- **Event loop**: not confirmed either way.
+- **Event loop**: **YES, resolved** — `trade_category.clear_range()` (`trade_category.py:152`)
+  is called directly from `reset_broker` (via the `body.trade_category` branch), no dispatch.
+  `clear_all()` (`trade_category.py:139`) is not called from this route; its own exposure isn't
+  independently confirmed here.
 
 ### services/shadow_mode.py
 - **Body** (`shadow_mode.py:48-99`): `PRAGMA journal_mode=WAL`; two `CREATE TABLE` statements
@@ -305,7 +359,8 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
   `tests/test_shadow_mode.py:255-262` opens `sqlite3.connect(db_path)` directly (not via
   `_connect()`) for a specific pre-existing-row test setup, closed manually.
 - **Tests**: helper `_trader(tmp_path, monkeypatch, ...)` (`test_shadow_mode.py:8`).
-- **Event loop**: not confirmed either way.
+- **Event loop**: **YES, resolved** — `ShadowTrader.clear()` (`shadow_mode.py:187`) is called as
+  `shadow.clear(...)` directly from `reset_broker` (via the `body.shadow` branch), no dispatch.
 
 ### services/whale_calibration/calibration_history.py
 - **Body** (`calibration_history.py:27-49`): `PRAGMA journal_mode=WAL`; `CREATE TABLE IF NOT
@@ -313,7 +368,9 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Tables**: `snapshots`.
 - **Call sites** (module): 4 sites, all `with _connect() as conn:`.
 - **Tests**: autouse fixture `_redirect_db` (`test_calibration_history.py:6-8`).
-- **Event loop**: not confirmed either way.
+- **Event loop**: **YES, resolved** — `calibration_history.clear_all()`
+  (`calibration_history.py:106`) is called directly from `reset_broker` (via the
+  `body.calibration_history` branch), no dispatch.
 
 ### tools/coordination_engine.py (lowest priority — CLI tool, not server-resident)
 - **Body** (`coordination_engine.py:29-63`): sets `conn.row_factory = sqlite3.Row` (the only
@@ -338,11 +395,13 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 The 5 individually-named modules (candidate_ledger, paper_broker, risk_manager, series_watcher,
 settlement_edge) — assigned separately to autotrade-73. `store_stats.py` (the design spec's
 scope-correction addition, not part of either the original 25 or this 21-module assignment).
-Independent verification of every "not confirmed either way" event-loop-exposure line above —
-those are honestly flagged gaps, not silent assumptions, and should be resolved before the
-implementation plan finalizes migration order for those specific modules. This document was
-gathered via parallel subagents and personally spot-checked (the `@contextlib.contextmanager`
-sweep across all 21 modules, and the coordination_engine bare-call recount) rather than fully
+After the PR-stage adversarial review above, only `services/series_cache.py` still carries a
+genuinely unresolved "not confirmed either way" event-loop verdict — every other such line was
+either confirmed off-loop (unchanged) or found to be on-loop via `/api/reset` and corrected.
+`series_cache.py` should get the same direct check before the implementation plan finalizes its
+migration order. This document was gathered via parallel subagents and personally spot-checked
+(the `@contextlib.contextmanager` sweep across all 21 modules, and the coordination_engine
+bare-call recount) rather than fully
 independently re-derived line-by-line for every claim — a genuinely separate adversarial review
 pass, per this repo's own process, should still verify this before it's treated as final input
 to the implementation plan, the same way PR #504's research doc and the design spec both got
