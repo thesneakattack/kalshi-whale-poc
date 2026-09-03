@@ -50,6 +50,20 @@ of the `/api/reset` findings already tracked under #510. `summary()`'s `GROUP BY
 observed at `hours=720`) is the likely mechanism, though this pre-flight didn't instrument the
 query itself to confirm which part of it dominates.
 
+**Correction/addition (2026-09-03, after review, three independent parties measured the
+default window)**: severity is strongly window-dependent, not a flat per-call cost. At the
+route's actual default (`hours=24`, what a caller gets with no explicit parameter), measured at
+0.79-0.91s (this session, autotrade-84) and 0.87-1.02s (a7's independent reproduction) —
+roughly 6-10x cheaper than the `hours=720` figure above, and sub-second. The `hours=720` number
+is real and worth fixing, but it is not what a typical caller pays; whoever implements Task 5
+should treat this as informing fix urgency and shape (a bound/paginate fix may be more targeted
+than a blanket dispatch-off-loop fix) rather than assume every call costs ~7.66s.
+
+**Test-shape note for Task 5's eventual implementation**: `tests/test_observability.py:53` has
+a direct, non-spy dependency on `_connect()`'s current call shape — worth reading before writing
+the migration's own tests, so the migration doesn't need to rediscover this the way earlier
+tasks' `_CountingConn`-style spies had to be adapted.
+
 **This should be filed as its own addition to issue #510** (or a new issue cross-referencing
 it) before or alongside Task 5's eventual implementation — it's a real, live, currently-unfixed
 gap independent of whether/when this migration happens, exactly the same framing the general-
