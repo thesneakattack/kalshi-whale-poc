@@ -104,7 +104,7 @@ def register_schema(table_name: str, init_fn: Callable[[sqlite3.Connection], Non
 
 @contextlib.contextmanager
 def connect(db_path: Path, *, tables: tuple[str, ...] = (), busy_timeout_ms: int = 5000):
-    db_path.parent.mkdir(exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -125,6 +125,18 @@ context today — `capture_writer.py`'s `_DAEMON_BUSY_TIMEOUT_MS = 1000` vs.
 `_CALLER_BUSY_TIMEOUT_MS = 50`, `tick_executor.py`'s `busy_timeout = 50` — a fixed 5000ms with no
 override cannot express what this repo already does); and a raise-on-conflict registration,
 closing the silent-collision gap at the granularity this design actually uses (table name).
+
+**Two implementation details the reference shape above is illustrative, not final, about**
+(the downstream implementation plan's own Task 1 writes the real code and must not silently
+regress either): the prototype's `mkdir` call uses `parents=True` (`db.py:50`) — carried into
+the reference shape above rather than the earlier draft's `exist_ok=True`-only version, since a
+`db_path` under a not-yet-existing nested directory (exactly what `tmp_path`-based tests can
+produce) would otherwise raise. The prototype also guards `_SCHEMAS` with a lock
+(`_SCHEMAS_LOCK`, `db.py:28`) for concurrent registration/connect from multiple threads — not
+shown in the illustrative shape above for brevity, but Task 1 must include it; the raise-on-
+conflict check this spec adds makes concurrent-registration safety more, not less, important
+than it was in the prototype, since two modules genuinely racing to register different
+`init_fn`s for the same table name should raise deterministically, not depend on scheduling.
 
 **A real, already-shipped precedent for the callback shape, missed in this document's first
 draft**: `services/diagnostics/_aio_db.py:187-191` already has a `schema_init: Callable[...] |
@@ -183,9 +195,12 @@ prototype verbatim:
    contention figure**: the commonly-cited "429 over 4+ days" combines two sequential code eras
    across an 11-minute boundary where the fault was renamed (`capture_writer/flush`, 237
    occurrences, ends 2026-08-30 16:08 UTC; `capture_writer/flush_retained_on_lock`, 192
-   occurrences, begins 2026-08-30 16:19 UTC — the issue #211 retain-on-lock fix landing).
-   The *current-regime* rate is 192 over roughly 3.6 days since that fix (~53/day), not 429 over
-   4 — still real, still supports this must-fix, but an implementation plan sizing a
+   occurrences, begins 2026-08-30 16:19 UTC — the issue #211 retain-on-lock fix landing; a small
+   third row, `capture_writer/flush`, count 2, 2026-09-02 13:01-13:06 UTC, exists after the
+   boundary too — the rename wasn't perfectly complete, but 2 occurrences doesn't change the
+   rate below). The *current-regime* rate is 192 (growing live; ~53/day) over roughly 3.6 days
+   since that fix, not 429 over 4 — still real, still supports this must-fix, but an
+   implementation plan sizing a
    post-migration re-check window off the combined figure would size off the wrong number. This
    module is not one of PR #484's three migrated modules and is not in the research doc's
    30-module list (it already closes its connections correctly — see the scope section below);
@@ -198,14 +213,17 @@ prototype verbatim:
 5. **Should-fix, not blocking, tradeoff to document — schema re-runs every `connect()` call.**
    Each `CREATE TABLE IF NOT EXISTS` (and, per the reference shape, each callback's own
    `PRAGMA table_info` scans for `add_column_if_missing` calls) is a real disk check, replayed
-   on every connect. **Correction from this document's first draft**: `services/signal_log.py`
-   — the example previously cited here — has exactly **one** table (`signals`), not "multiple";
-   the real cost driver for that module is its 4 indexes plus 8 `add_column_if_missing` calls
-   (8 `PRAGMA table_info` scans), all replayed every connect, which is a *bigger* number than
-   the first draft's wrong example implied, not a smaller one. `_aio_db.py:191`'s "runs exactly
-   once" precedent (named above) is the existing, proven answer to this tradeoff, if and when
-   the implementation plan decides to adopt it — not adopted in this spec's own reference shape,
-   per the reasoning given above.
+   on every connect. **Correction from this document's first draft, illustrated with**
+   `services/signal_log.py` **(note: one of Tier0's five already-migrated modules, not one of
+   this spec's own 26 — used here only as an illustration of the general tradeoff's magnitude,
+   not as an in-scope migration example)**: it has exactly **one** table (`signals`), not
+   "multiple," and **7** `add_column_if_missing` calls (re-counted directly against source —
+   the document's own prior "8" figure counted that function's own `def` line as an eighth
+   call), not 8 — 4 indexes + 7 `add_column_if_missing` calls = 11 statements (7
+   `PRAGMA table_info` scans among them), all replayed every connect. `_aio_db.py:191`'s "runs
+   exactly once" precedent (named above) is the existing, proven answer to this tradeoff, if and
+   when the implementation plan decides to adopt it — not adopted in this spec's own reference
+   shape, per the reasoning given above.
 
 Event-loop-blocking misuse (the audit's own item 5) is a real, correctly-identified property but
 is **not a `db.py` defect to fix** — it's a per-call-site discipline question identical to the
@@ -331,8 +349,11 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
   (`_connect()`) is in scope; `src_conn`/`dest_conn` are already correct and untouched.
 - **General opportunistic bucket** (no individual flag, same "one PR per module or small
   low-risk batch, tracking issue not a hard deadline" treatment PR #484's Task 7 already
-  established): the remaining ~19 modules, plus `tools/coordination_engine.py` at lowest
-  priority given its short-lived-process risk profile.
+  established): the remaining **17** modules (25 `services/` modules in scope, minus the 8
+  individually named above: `risk_manager.py`, `paper_broker.py`, `candidate_ledger.py`,
+  `series_evaluator.py`, `trade_category.py`, `series_watcher.py`, `settlement_edge.py`,
+  `backup/backup.py`), plus `tools/coordination_engine.py` at lowest priority given its
+  short-lived-process risk profile — 18 total in this bucket.
 
 ## Migration gates
 
@@ -373,10 +394,14 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
   caution PR #484 already established.
 - `series_watcher.py`/`settlement_edge.py` get individual audit for the specific non-mechanical
   concern named above before being scheduled.
-- Registration order is significant if any table's `init_fn` depends on another table already
-  existing in the same file (per the prototype's own design property, carried into the
-  reference shape's own registration order) — Gate 1 should confirm this isn't silently assumed
-  for any given module's callback ordering.
+- **Correction from this document's first revision**: the reference shape's registry is a plain
+  `dict[str, Callable]` (`_SCHEMAS`, table-name-keyed, no ordered list) — registration order
+  itself carries no meaning, unlike the prototype's `db_path`-keyed list. What *is* still
+  significant is **`tables=` ordering at each `connect()` call site**: `connect()`'s `for table
+  in tables: _SCHEMAS[table](conn)` runs callbacks in the order the caller lists them, so if any
+  module's schema-init depends on another table already existing in the same file (e.g. a
+  foreign-key-shaped dependency), that module's own migration must pass `tables=(...)` in the
+  correct order — Gate 1 should confirm this isn't silently assumed for any given module.
 
 **Gate 2 — after each module (or small batch) migrates:**
 - Full local suite passes; `import main` sanity check.
@@ -426,11 +451,30 @@ Every finding from this document's own required adversarial review, and its disp
 | I4 | Important | Must-fix #1's "independently confirmed by autotrade-73's separate audit" claim is unsupported — the baseline doc contains no schema-conflict finding | **Fixed** — claim removed; the schema-conflict finding is sourced to the db-foundation-audit alone, which is the real source |
 | I5 | Important | `_aio_db.py`'s `schema_init` callback (a real, shipped precedent for the callback shape and for should-fix #5) was never examined | **Fixed** — cited directly (`_aio_db.py:187-191`), used to support the callback-shape decision and named as a viable future refinement for the replay-cost tradeoff |
 | M1 | Minor | Wrong paths throughout (`services/store_stats.py`, `services/storage_health.py`) | **Fixed** — corrected to `services/diagnostics/store_stats.py` (now removed from scope anyway) and `services/storage_health/storage_health.py` |
-| M2 | Minor | `signal_log.py` does not have "multiple tables" — it has one table, 4 indexes, 8 `add_column_if_missing` calls | **Fixed** — corrected; the actual cost driver (8 `PRAGMA table_info` scans per connect) is larger than the wrong example implied |
+| M2 | Minor | `signal_log.py` does not have "multiple tables" — it has one table, 4 indexes, 8 `add_column_if_missing` calls | **Fixed in round 1, count still wrong; corrected in round 2** — round 1's "8" was itself a grep artifact (counted the function's own `def add_column_if_missing` line as an eighth call); the scoped re-review caught this. Real count: 7. Also clarified `signal_log.py` is a Tier0 module, not one of this spec's 26, used only as an illustration |
 | M3 | Minor | "the extra 8 files" arithmetic doesn't match grep B − grep A (10, 9 code files); `backup.py` was double-counted as "extra" despite matching both greps | **Fixed** — scope-correction section rewritten around the actually-new file (`tools/coordination_engine.py`) and the actually-refuted file (`store_stats.py`), not an arithmetic-derived "8" |
 | M4 | Minor (confirmed, not a defect) | WAL-checkpoint-on-close cost vs. `series_watcher.db`'s size — unconsidered but small in practice (4.7 MB WAL vs 29.7 GB main file) | **Incorporated** — cited as independent measurement supporting the "cost doesn't scale with file size" claim in both the pooling and size-outlier sections |
-| M5 | Minor | Registration order is load-bearing (schema-init replay order) and was undocumented | **Fixed** — named explicitly in the design section and added to Gate 1 |
+| M5 | Minor | Registration order is load-bearing (schema-init replay order) and was undocumented | **Fixed in round 1, left inconsistent with round 1's own C2 fix; corrected in round 2** — round 1's Gate 1 text said registration order was "carried into the reference shape," but the reference shape's registry has no order (plain `dict[str, Callable]`); what's actually significant is `tables=` ordering at each `connect()` call site, now corrected |
 | M6 | Minor (confirmed, no defect) | Lane discipline — decides an API shape and gates, doesn't write implementation tasks | No change needed |
 | M7 | Minor (confirmed, no defect) | Safety classification carried forward accurately from PR #484 | No change needed |
+
+### Round 2 — scoped re-review of round 1's fixes (required before consolidation, not assumed clean)
+
+Per this project's "a revision is checked against the fix list item by item, never accepted on
+its own completion claim" rule, round 1's fixes were independently re-verified (fresh Agent,
+reading primary sources directly — live `data/fault_log.db` queries, `services/signal_log.py`,
+`services/diagnostics/_aio_db.py`, the prototype source at `17b2e8f` — not trusting round 1's own
+claims). Both Criticals (C1, C2) and all five Importants (I1-I5) were independently confirmed
+genuinely fixed. Two Minors (M2, M5, above) were found still wrong after round 1's own attempt,
+and three new issues were found in round 1's fix pass itself, not present in the original review:
+
+| # | Finding | Disposition |
+|---|---|---|
+| N1 | Reference shape's `mkdir(exist_ok=True)` dropped the prototype's `parents=True` (`db.py:50`) — a silent functional downgrade that would raise `FileNotFoundError` under exactly the nested-`tmp_path` scenario Gate 0's own mandated monkeypatch test could hit | **Fixed** — `parents=True` restored; also noted the prototype's `_SCHEMAS_LOCK` (concurrent-registration guard) is not shown in the illustrative shape and must not be dropped by Task 1 |
+| N2 | General-bucket module count (`~19`) didn't match the corrected scope arithmetic (25 services modules − 8 individually-named = 17, not 19) — round 1 edited this exact line and left it wrong | **Fixed** — corrected to 17 (18 including `tools/coordination_engine.py`), with the 8 named modules listed explicitly so the arithmetic is checkable |
+| N3 | A third `capture_writer/flush` fault-log row (2 occurrences, 2026-09-02, after the era boundary) exists but isn't mentioned — doesn't change the ~53/day rate, purely a completeness gap | **Fixed** — noted inline; explicitly stated it doesn't affect the rate the gate depends on |
+
+No new Critical or Important finding in round 2. Consolidation below proceeds on round 2's
+state of the document.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
