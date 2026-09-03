@@ -641,3 +641,62 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
         conn.execute("SELECT 1")
 
     assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    the try/finally only wraps `with conn: yield conn`, not the PRAGMA/
+    CREATE TABLE/_add_column_if_missing setup before it - a setup failure
+    would otherwise leave `conn` open with nothing left to close it.
+
+    Uses a wrapper/proxy (not the factory=subclass pattern the test above
+    uses) deliberately: empirically, sqlite3.connect(factory=Subclass)
+    itself invokes the subclass's overridden execute() internally as part
+    of connecting (confirmed by reproduction - overriding execute() on a
+    real sqlite3.Connection subclass made connect() itself raise, before
+    this module's own _connect() body ever ran), which would test "connect()
+    itself fails" instead of the intended "setup after a successful
+    connect() fails." A proxy that calls the real connect() to completion
+    first, then wraps the result, avoids that interference - matching
+    title_cache.py's and fault_log.py's analogous tests."""
+    import sqlite3
+
+    cat = _mc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConnProxy:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(cat.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with cat._connect(cat.DB_PATH):
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"
