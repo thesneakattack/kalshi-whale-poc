@@ -66,31 +66,36 @@ def _connect():
     commits/rolls back a transaction, it never closes the connection. This
     module is one of Tier 0's two confirmed-stuck live routes
     (GET /api/health/faults) and, per CLAUDE.md, the store every other
-    diagnostic in this app writes to - so it is exercised constantly."""
+    diagnostic in this app writes to - so it is exercised constantly.
+
+    The `try:` starts immediately after `sqlite3.connect()` succeeds, not
+    after the PRAGMA/schema-init setup below (2026-09-03 follow-up fix): a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS faults (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            component TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            exc_type TEXT,
-            message TEXT,
-            first_traceback TEXT,
-            context TEXT,
-            count INTEGER NOT NULL DEFAULT 1,
-            first_seen REAL NOT NULL,
-            last_seen REAL NOT NULL,
-            UNIQUE (component, operation, exc_type, message)
-        )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS faults (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                component TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                exc_type TEXT,
+                message TEXT,
+                first_traceback TEXT,
+                context TEXT,
+                count INTEGER NOT NULL DEFAULT 1,
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL,
+                UNIQUE (component, operation, exc_type, message)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
         with conn:
             yield conn
     finally:

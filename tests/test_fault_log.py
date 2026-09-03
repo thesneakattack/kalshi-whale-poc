@@ -212,3 +212,52 @@ def test_connect_closes_its_connection(monkeypatch):
         conn.execute("SELECT 1")
 
     assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    fault_log.py's _connect() has no separate _init_schema() to monkeypatch
+    (its CREATE TABLE/INDEX statements are inline conn.execute() calls), so
+    this test makes the very first execute() (the PRAGMA) raise instead -
+    the try/finally must still close the connection even when the first
+    setup statement fails, not just when yield's body raises."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConn:
+        def __init__(self, real):
+            self.__dict__["_real"] = real
+
+        def __getattr__(self, name):
+            return getattr(self.__dict__["_real"], name)
+
+        def __enter__(self):
+            self.__dict__["_real"].__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.__dict__["_real"].__exit__(*exc)
+
+        def close(self):
+            closed.append(True)
+            self.__dict__["_real"].close()
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConn(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(fl.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with fl._connect():
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"
