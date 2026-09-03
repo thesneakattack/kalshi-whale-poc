@@ -112,8 +112,13 @@ Both audits explicitly declined to trust an estimate here and asked for a real n
 `PYTHONPATH` target for this benchmark only — not added to `requirements.txt`), against a
 throwaway scratch SQLite file (`/tmp/bench_scratch.db`, never `data/*.db`), N=2000 calls per
 variant, each call = open (or pool-checkout) → one `SELECT` → close (or pool-checkin).
-Script: `bench_persistence.py` (not committed; reproducible from this document — see
-Appendix).
+**Every variant applies `conn.execute("PRAGMA journal_mode=WAL")` per connect/checkout**,
+matching every real `services/*.py` `_connect()` body and this document's own §1.4 "Before"
+example — this detail is load-bearing for the fd-leak result (without it, variant C shows no
+measurable fd delta at all) and is stated here explicitly, corrected after an earlier version
+of this section omitted it from the variant description despite the Appendix claiming full
+reproducibility. Script: `bench_persistence.py` (not committed; reproducible from this
+document — see Appendix).
 
 | Variant | median | mean | p90 | p99 | max | fd delta over 2000 calls |
 |---|---|---|---|---|---|---|
@@ -365,7 +370,11 @@ Reading `services/tick_executor.py` and `services/whalewatchers/_scoring_pool.py
   `main.py` (several: trade-capture flush, secondary capture stores, signal-log series
   stats). **Critically, `services/whale_stream/decision_bridge.py:66,129` routes
   `candidate_ledger.claim()`/`record_decision()` through `tick_executor.run()` — this is
-  trading-critical: the module's own docstring says these calls "gate every whale signal."**
+  trading-critical: `services/whalewatchers/_scoring_pool.py`'s own docstring says these
+  calls "gate every whale signal" (corrected attribution — an earlier version of this line
+  attributed the quote to `candidate_ledger.py` itself, which does not contain this exact
+  phrase; the underlying claim that these calls gate every whale signal is independently true
+  from `decision_bridge.py`'s own code regardless of which module's docstring states it).**
   Each of these callers' actual SQLite work still goes through its *own* module's leaking
   `_connect()` — `tick_executor.run()` only moves the blocking call off the event loop; it
   does not touch how that call opens its connection.
@@ -493,10 +502,21 @@ zero-copy fast path.**
 WHERE series = 'KXBTC15M') TO '/tmp/....parquet' (FORMAT PARQUET, COMPRESSION ZSTD)` — the
 one series that is 64% of the table — took **181.56 s (≈3.0 min)** via the same
 `sqlite_scanner` mechanism (the slow read above is also the cost of producing the export;
-there is no faster path available without touching the live writer). Extrapolating
-proportionally to the full table (a labeled estimate, not measured: 40.5M/26.0M × 181.6s ≈
-283s ≈ 4.7 min) gives the one-time bulk-conversion cost order of magnitude for the *whole*
-table, not just the biggest series.
+there is no faster path available without touching the live writer). **Extrapolation
+mechanism, corrected after independent adversarial re-verification:** a naive
+proportional-to-output-rows scaling (40.5M/26.0M × 181.6s ≈ 283s ≈ 4.7 min) is *not* the
+right model — the §3.3 `EXPLAIN` evidence above shows the scanner pays a large,
+roughly filter-independent cost to read the *entire* ~40.6M-row table via `SQLITE_SCAN`
+before any `series` filter is applied, plus a smaller marginal cost per row actually
+selected. A two-point fit against that mechanism (a 750,744-row/2.9%-of-`KXBTC15M` export
+measured independently at 75.03s — 41% of `KXBTC15M`'s own export time despite 34× fewer
+output rows, giving a fixed cost of ≈72s and a marginal cost of ≈4.2µs/row) applied to a
+single unfiltered whole-table export (40,542,063 rows, no per-series filter needed at all)
+gives **≈243s (≈4.1 min)** — close to the naive estimate's 283s/4.7min, but for the right
+reason: the fixed full-table-scan cost dominates regardless of how much of the table any
+one export actually keeps, so a *full-table* export is not meaningfully more expensive per
+scan than a single-series one. Either way, the one-time bulk-conversion cost stays in the
+same few-minutes order of magnitude for the *whole* table, not just the biggest series.
 
 **Compression, measured on both sides:** the `KXBTC15M`-only Parquet file is
 **1,526,472,100 bytes (1.53 GB)** for 26,012,845 rows (measured at write time, a few rows
@@ -516,10 +536,7 @@ slow, ~6 minutes wall-clock on this 40M-row table, but real, not estimated from 
 This total (29.25 GB) accounts for essentially the entire 29.57 GB file — confirming
 `raw_trades` and its indexes dominate `series_watcher.db`; `book_snapshots` and its indexes
 are comparatively negligible (retained/pruned, per §3.4's `index_ticks` finding of the same
-shape). `KXBTC15M` is 26,012,845 of ~40,542,063 rows (64.16% by row count — assumes
-roughly uniform per-row byte cost across series, which the schema supports since every
-`raw_trades` row has the same fixed columns regardless of series; not independently verified
-per-series). Applying that share:
+shape). `KXBTC15M` is 26,012,845 of ~40,542,063 rows (64.16% by row count). Applying that share:
 
 - Table-only basis: 23.80 GB × 0.6416 ≈ **15.27 GB** SQLite vs. 1.53 GB Parquet → **≈10.0×**
   compression.
@@ -527,12 +544,22 @@ per-series). Applying that share:
   serve the same queries Parquet's column pruning replaces): 29.25 GB × 0.6416 ≈ **18.77 GB**
   SQLite vs. 1.53 GB Parquet → **≈12.3×** compression.
 
-Both are **real measurements combined with one stated, labeled proportionality assumption**
-(uniform per-row bytes across series), not the unverified "5–10×" industry figure both
-audits explicitly declined to trust — and both land somewhat *above* that range. The
-**query-speed** figures above (58–644×) remain the more load-bearing number regardless, since
-they required no proportionality assumption at all — same file, same rows, same query, timed
-directly both ways.
+**The uniform-per-row-bytes-across-series assumption behind that row-count-share
+calculation is measurably false, corrected after independent adversarial re-verification —
+not just theoretically unverified as an earlier version of this section stated.** A
+2,000-row `LIMIT` sample of `LENGTH(raw_json)` across seven series shows `KXBTC15M`
+averaging **359.7 bytes/row**, noticeably the *smallest* of the seven sampled
+(`KXNFLGAME` 410.5, `KXATPMATCH` 414.5, `KXNBAGAME` 411.8, `KXMLBGAME` 420.9, `KXETH15M`
+394.3, `KXBTCD` 406.0 — i.e. 14–17% larger than `KXBTC15M`), and the Parquet side shows the
+same pattern (`KXNFLGAME`'s own export averages 70.6 bytes/row vs. `KXBTC15M`'s 58.7,
+~20% higher). Since both compression figures above are derived entirely from `KXBTC15M`,
+and `KXBTC15M` has below-average per-row payload size, **the 10.0×/12.3× figures should be
+read as an upper bound specific to `KXBTC15M`, not a representative whole-table blended
+compression ratio** — the true blended ratio across all series is more likely somewhat
+lower. This does not change the decision (§3.5): the **query-speed** figures above
+(58–644×) remain the load-bearing number regardless, since they required no per-series
+proportionality assumption at all — same file, same rows, same query, timed directly both
+ways — and are unaffected by this correction.
 
 ### 3.4 `index_ticks` — a different, much smaller file, benchmarked separately
 
@@ -602,8 +629,12 @@ Queried `fault_log.db` read-only, 2026-09-03T05:06:57Z:
 | `capture_writer` / `flush` (`raw_trades`, "database is locked", drops rows) | error | 237 | 2026-08-27T20:22:15Z | 2026-08-30T16:08:55Z |
 
 The last row is the second-pass audit's already-confirmed-historical C1 finding (fixed by
-commit `13680e5`, zero recurrence) — re-verified here directly, not re-asserted from the
-audit. The middle row is the fd-exhaustion incident window (second-pass audit §4.1),
+commit `13680e5`, merged as `6d1a5e3`/PR #244 2026-08-30T13:26:15Z, zero recurrence since —
+re-verified here directly, not re-asserted from the audit). Note: the row's own `last_seen`
+(2026-08-30T16:08:55Z) is about 2h43m *after* the merge timestamp, consistent with ordinary
+deploy lag between the merge landing on `main` and the running instance picking it up, not a
+sign the fix was incomplete — flagged here only as a footnote for anyone later
+reconstructing this incident's exact timeline. The middle row is the fd-exhaustion incident window (second-pass audit §4.1),
 likewise historical. **The top row is live and current**: its `last_seen` timestamp is 88
 seconds before this query ran, and it has grown from the audit's cited 163 (2026-09-02) to
 **181** as of this probe. Elapsed time first-to-last: ≈84.76 hours (2026-08-30T16:19:54Z →
@@ -622,9 +653,20 @@ deferred write), a materially different and less severe finding than the histori
    `rejection_events` with `_DAEMON_BUSY_TIMEOUT_MS = 1000` (a full second of patience if it
    finds the file locked).
 2. **`candidate_log.py`'s `resolve_from_market_results()`** (`services/candidate_log.py:195`),
-   called once per trading tick (`main.py:383`, `config/settings.yaml`'s
-   `kalshi.poll_interval_sec: 6` — every 6 seconds, verified live in the current config, not
-   assumed). This function does two things against the same file, in order:
+   called once per trading tick. **Tick cadence, corrected: 30 seconds, not 6.**
+   `config/settings.yaml`'s `poll_interval_sec: 6` is real, but it is not what actually
+   drives `trading_loop()`'s sleep — `main.py`'s `_tick_interval_sec(cfg)` only returns
+   `poll_interval_sec` when the app is *not* running in streaming mode; when
+   `_streaming_trade_tape_enabled()` is true (`whale_provider.name == "kalshi_trade_tape" and
+   trade_stream.enabled`) it returns `safety_net_interval_sec` instead —
+   `config/settings.yaml`'s value for that key is **30**. A live `GET /api/state` check
+   confirms the currently-running app's `trade_stream_status` is `{"enabled": true,
+   "connected": true, "mode": "stream", ...}` — i.e. streaming mode is active right now, so
+   the real driving cadence is 30s. (An earlier version of this section stated 6s as "verified
+   live... not assumed" — that check read the static config key without tracing the
+   conditional function that actually consumes it, exactly the gap the never-guess HARD RULE
+   exists to catch; corrected here after independent adversarial re-verification against both
+   source and the live app.) This function does two things against the same file, in order:
    a. Calls `capture_writer.flush_now("rejected_candidates")` and
       `flush_now("rejection_events")` **synchronously**
       (`services/candidate_log.py:239-240`) — these route through the *same*
@@ -644,16 +686,21 @@ structurally the more likely loser** — it is a small fraction of the daemon's 
 patience, and a small fraction of the write-transaction durations this same file's writers
 have already been measured at elsewhere (`capture_writer.py:19-20`'s own docstring cites a
 190K-row book-snapshot prune at ~90ms warm on a comparable mount — not this table
-specifically, but the same order of magnitude a 50ms budget cannot absorb). At a 6-second
+specifically, but the same order of magnitude a 50ms budget cannot absorb). At a 30-second
 tick cadence against a 1-second daemon cadence, a collision is not rare in principle (the
 two timers' phases drift relative to each other over time) but is not the dominant case
 either — the observed ~1-per-28-minute rate is consistent with an occasional near-simultaneous
 overlap between two independently-scheduled timers with a short window, not a saturated
-resource.
+resource. (The tick being 30s rather than 6s, if anything, makes the caller side's case for
+widening its own budget *stronger*, not weaker — a 30-second-cadence caller has more slack to
+spare than a 6-second one; §4.3's fix direction is unaffected by this correction, only the
+number quoted for the collision-likelihood framing.)
 
 **What is established vs. inferred, stated explicitly per the never-guess HARD RULE:**
 established from source — the two writers exist, their budgets are 1000ms vs. 50ms, and the
-tick cadence is 6s. **Not established** — `fault_log`'s row shape (`context`: "N row(s)
+tick cadence is 30s (traced through `_tick_interval_sec()`'s streaming-mode branch and
+cross-checked against the live app, not the static config key alone — see above). **Not
+established** — `fault_log`'s row shape (`context`: "N row(s)
 retained") does not distinguish which of the two callers (daemon-thread periodic flush, or
 tick-driven `flush_now()`) lost any *specific* occurrence, since both call the identical
 `_flush_store()` function. The mechanism above is the best explanation the source code's
@@ -670,7 +717,7 @@ blind timeout increase (which the data-plane HARD RULE forbids without measureme
 
 1. **Widen `resolve_from_market_results()`'s `flush_now()` calls' budget**, or route them
    through the daemon's own 1000ms budget instead of the 50ms caller default — the caller
-   context here (once per 6-second tick, not a latency-sensitive per-request path) can
+   context here (once per 30-second tick, not a latency-sensitive per-request path) can
    afford to wait longer than the current default was tuned for (a UI/route-facing caller).
    This directly targets the asymmetry named in §4.2 without touching the daemon at all.
 2. **Set an explicit `busy_timeout` pragma in `candidate_log.py`'s own `_connect()`**,
@@ -691,9 +738,10 @@ Per this task's own instruction, item 28 is gated on whether §1's benchmark sho
 connection module makes a shared lock cheap enough." The benchmark (§1.2) shows **half of
 that**: a pooled connection's *per-call cost* is cheap (82.5 µs median) and a closing
 connection's fd behavior is bounded either way. **What it does not show, because it was not
-tested, is whether merging today's ~14 independent small files (`config_performance.db`,
-`accounts_store.db`, `reset_log.db`, and others under 1 MB, per the first audit's §5.2
-inventory) onto one shared file's write lock introduces real contention between writers that
+tested, is whether merging today's 17 independent small files (`config_performance.db`,
+`accounts_store.db`, `reset_log.db`, and others under 1 MB — corrected from an earlier "~14"
+estimate after independent adversarial re-verification against a fresh listing of current
+`data/*.db` file sizes) onto one shared file's write lock introduces real contention between writers that
 today never see each other at all.** That is a materially different question from "is one
 call to one file cheap" — it is "do N formerly-independent low-frequency writers, now
 sharing one file, ever collide," which requires either a real concurrent-write simulation
@@ -702,10 +750,17 @@ neither of which this document has done.
 
 **Declined for now, not because the mechanism is expensive, but because:**
 
-- The absolute payoff is small: ~14 files × 3 fds/connection (SQLite's WAL-mode db + `-wal` +
-  `-shm`) ≈ 42 fds saved at most — marginal against a 1,024-descriptor budget, and Tier 0's
+- The absolute payoff is small: 17 files × 3 fds/connection (SQLite's WAL-mode db + `-wal` +
+  `-shm`) ≈ 51 fds saved at most — marginal against a 1,024-descriptor budget, and Tier 0's
   fix plus §1's migration already address the *leak* (the thing that actually exhausted the
   budget), not the *file count*.
+- Independently-relevant supporting evidence for declining now, not cited above: §4.1 already
+  shows that `candidate_log.db` — today, exactly **two** independent writers sharing **one**
+  file — produces a measured, live, warn-severity contention fault roughly every 28 minutes.
+  If two writers on one file already collide often enough to be a named, root-caused problem
+  in this same document, merging several more independent, previously-isolated low-frequency
+  writers onto shared files without a real concurrent-write benchmark is a materially riskier
+  choice than the payoff above alone suggests.
 - The real cost is losing independent backup and crash-isolation boundaries: today, a
   corruption or lock pathology in one small file (as `market_history.db` genuinely
   experienced per the second-pass audit's §4.1 corruption finding) cannot touch a sibling
@@ -787,7 +842,8 @@ Tier 0 (separate, in-flight, PR #441 plan merged — code not yet landed)
   the SQLite source at export time (a reconciliation check, not a trust-it-blindly design).
 - §4: a regression test reproducing the two-writer collision shape (mock `time.sleep`-driven
   interleaving between a fake daemon flush and a fake tick-driven call) to prove the fix
-  changes the outcome, not just the fault-log message.
+  changes the outcome, not just the fault-log message — built against the corrected 30-second
+  tick cadence (§4.2), not the earlier, incorrect 6-second figure.
 
 ## 9. Success criteria (per CLAUDE.md's effectiveness/efficiency/informativeness axes)
 
