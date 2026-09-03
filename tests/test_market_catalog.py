@@ -38,6 +38,29 @@ def test_upsert_and_candidates_in_window(tmp_path, monkeypatch):
     assert result[0]["ticker"] == "TICK-A"
 
 
+def test_close_ts_for_tickers_returns_persisted_close_times(tmp_path, monkeypatch):
+    """Same query shape as services/diagnostics/diagnostics.py's private
+    async _close_ts_for_tickers - see its own docstring: 'the one store
+    that persists a close time per market beyond the rotating watchlist.'
+    This is the sync, public sibling the markout sweep needs (Task 4 of
+    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md) -
+    it did not exist before this task (confirmed: grep -n '^def '
+    services/market_catalog/market_catalog.py before writing this plan).
+    Uses this file's own _market() helper (not the plan's hand-built dict)
+    since upsert_markets skips any row with no occurrence_datetime."""
+    cat = _mc(tmp_path, monkeypatch)
+    now = time.time()
+    markets = [
+        _market("TICK-A", "EVT-A", occurrence_offset_sec=-300, close_offset_sec=3600),
+        _market("TICK-B", "EVT-B", occurrence_offset_sec=-300),  # no close_offset_sec -> no close_time field -> NULL close_ts
+    ]
+    cat.upsert_markets("SER-A", "Sports", markets, updated_at=now)
+    result = cat.close_ts_for_tickers(["TICK-A", "TICK-B", "NOT-CACHED"])
+    assert "TICK-A" in result and isinstance(result["TICK-A"], float)
+    assert "TICK-B" not in result  # close_ts IS NOT NULL filter
+    assert "NOT-CACHED" not in result
+
+
 def test_candidates_in_window_carries_real_display_titles(tmp_path, monkeypatch):
     # Direct regression report: "the long string (KXLPLMATCH-...) is back
     # again. i want readable titles remember." Catalog rows were missing

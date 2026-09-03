@@ -150,6 +150,12 @@ from services.ws_manager import ws_manager  # noqa: E402
 
 
 _last_capture_prune_at = 0.0
+_last_markout_capture_at = 0.0
+_MARKOUT_CAPTURE_INTERVAL_SEC = 300  # matches edge_gate_markout_offsets_sec's
+# finest configured offset (300s/5min) - see strategy-edge-gate-
+# implementation.md Task 4. Runs unconditionally (design SS5/SS8's stated
+# exception to the opt-in pattern - markout data has to exist before
+# there's anything to decide whether to turn edge_gate_enabled on with).
 
 # In-memory cache of series tags: {series_ticker: list[str]} — built from
 # state["series_cache"]["series"] each tick, invalidated when series_cache
@@ -196,6 +202,78 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
     market_history.prune(retention_hours=mh_hours, now=now)
     fl_hours = float((cfg.get("fault_log") or {}).get("retention_hours", 336))
     fault_log.prune(retention_hours=fl_hours, now=now)
+
+
+def _maybe_capture_markouts(cfg: dict, now: float) -> None:
+    """Markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    strategy-edge-gate-implementation.md): for every real entry trade,
+    records the market price at each configured offset after entry
+    (edge_gate_markout_offsets_sec) once that offset comes due, so the
+    edge-gate design's SS6 decisive comparison has real markout data to
+    train on. Runs on its own _MARKOUT_CAPTURE_INTERVAL_SEC cadence,
+    unconditionally - not gated behind edge_gate_enabled, per the design's
+    own SS5/SS8 stated exception (markout data has to exist before there's
+    anything to decide whether to turn edge_gate_enabled on with).
+
+    Reads only paper_broker.db (trades) and market_catalog.db (close
+    times) and writes only the new markouts table in market_history.db -
+    never positions, bankroll, or any trading-decision state. fault_log-
+    wrapped and non-raising, matching every other _maybe_* sweep here.
+
+    Bracketed directly with time.perf_counter() (not inferred from whole-
+    tick before/after noise - Task 4's own runtime-cost-measurement step,
+    per the data-plane HARD RULE) since this sweep only fires once per
+    _MARKOUT_CAPTURE_INTERVAL_SEC: most individual ticks won't include its
+    cost at all, so a whole-tick comparison would be too weak a signal to
+    catch a real regression here."""
+    global _last_markout_capture_at
+    if now - _last_markout_capture_at < _MARKOUT_CAPTURE_INTERVAL_SEC:
+        return
+    _last_markout_capture_at = now
+    _t0 = time.perf_counter()
+    try:
+        offsets = (cfg.get("strategy") or {}).get(
+            "edge_gate_markout_offsets_sec", [300, 3600, None]
+        )
+        trades = [
+            {"id": t.id, "ticker": t.ticker, "side": t.side, "price": t.price, "timestamp": t.timestamp}
+            for t in broker.trades_since(after=now - 40 * 86400)  # 40d: covers close_window_sec's 32d default with margin
+        ]
+        if not trades:
+            return
+        close_ts_by_ticker = market_catalog.close_ts_for_tickers([t["ticker"] for t in trades])
+        targets = market_history.pending_markout_targets(trades, offsets, now, close_ts_by_ticker)
+        for target in targets:
+            price = market_history.recent_price(
+                target["ticker"], max_age_sec=_MARKOUT_CAPTURE_INTERVAL_SEC * 2, as_of=target["target_ts"],
+            )
+            market_history.record_markout(
+                target["trade_id"], target["ticker"], target["entry_side"], target["entry_price"],
+                target["entry_ts"], target["offset_label"], target["offset_sec"], target["target_ts"],
+                price, now,
+            )
+    except Exception as exc:
+        fault_log.record("market_history", "capture_markouts", exc)
+    finally:
+        _elapsed_ms = (time.perf_counter() - _t0) * 1000
+        if _elapsed_ms > 50:
+            # record_fault, not record() - this branch has no exception
+            # object to pass. fault_log.record()'s third positional arg is
+            # typed `exc: BaseException` and its body dereferences
+            # exc.__traceback__; passing a plain string there raises
+            # AttributeError inside record()'s own try/except, which
+            # swallows it and returns False - the diagnostic would silently
+            # never actually log (verified by reading services/fault_log.py
+            # directly, not assumed from the plan text: record_fault's own
+            # docstring - "Log something worth knowing that isn't an
+            # exception" - and every existing non-exception fault_log call
+            # site in this codebase, e.g. strategy_engine.py:277 and
+            # kalshi/websocket.py:474, already use record_fault for exactly
+            # this shape).
+            fault_log.record_fault(
+                "market_history", "capture_markouts_slow",
+                f"{_elapsed_ms:.1f}ms", severity="warn",
+            )
 
 
 _SIGNAL_RESOLUTION_CHECK_INTERVAL_SEC = 30  # see _maybe_check_signal_resolutions' own docstring
@@ -353,6 +431,7 @@ def _flush_secondary_capture_stores(cfg: dict, now: float) -> dict:
     settlement_result = settlement_edge.flush()
     game_state_result = game_state.flush()
     _maybe_prune_capture_stores(cfg, now)
+    _maybe_capture_markouts(cfg, now)
     return {"index_feed": index_result, "settlement_edge": settlement_result, "game_state": game_state_result}
 
 

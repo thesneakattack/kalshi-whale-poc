@@ -20,6 +20,37 @@ def test_fresh_broker_uses_starting_bankroll(tmp_path, monkeypatch):
     assert broker.trade_log == []
 
 
+def test_trades_since_returns_trades_after_the_given_timestamp(tmp_path, monkeypatch):
+    """Task 4 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    implementation.md - the markout-capture sweep's own read of "what
+    entries exist to capture markouts for". Uses this file's own _broker()
+    helper (matches its existing DB_PATH-isolation convention)."""
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+    trades = broker.trades_since(after=None)
+    assert len(trades) == 1
+    assert trades[0].ticker == "TICK-A"
+    assert broker.trades_since(after=time.time() + 100) == []  # nothing after the future
+
+
+def test_trades_since_excludes_close_rows(tmp_path, monkeypatch):
+    """Adversarial review Finding F4: open_position and close_position
+    write into the exact same trades table with no type/action
+    discriminator column - trades_since() must filter out close rows via
+    the already-established reason.startswith("closed:") convention
+    (services/history/trade_analytics.py's build_trade_history, this
+    module's own correct_erroneous_close), or a close row's own exit
+    price/timestamp would be fed into the markout-capture sweep as if it
+    were a fresh entry - pure noise in the exact population the design's
+    SS6 decisive comparison depends on."""
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+    broker.close_position("TICK-A", 0.55, "test-close")
+    trades = broker.trades_since(after=None)
+    assert len(trades) == 1  # the close row is excluded, only the entry remains
+    assert not trades[0].reason.startswith("closed:")
+
+
 def test_open_position_deducts_cost_and_logs_trade(tmp_path, monkeypatch):
     broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
     trade = broker.open_position("TICK-A", "yes", size=100, price=0.5, reason="test")
