@@ -321,6 +321,24 @@ wiring is deliberate, not accidental: `git log --oneline -- services/whale_strea
 shows `eaea541 feat: wire check_pending_fills/position_netting.review into
 the WS ticker path (P8 Task 38)` as its own dedicated commit.
 
+**Why only the ticker channel, not the trade channel, is analyzed below**
+*(added 2026-09-03 per the adversarial review's F12)*: the tick_cache
+commit's own scope note (§4.2) names "the **two**
+`services/whale_stream/whale_stream_handlers.py` call sites," plural —
+`_process_stream_trade` (same file, lines 170-249) also calls
+`strategy.check_exits(...)` synchronously with no `tick_cache`, on the
+trade-channel WS subscription. It is genuinely a second instance of the
+same uncached-call defect, but it is reached only after `if not signals:
+return` — i.e. only when the whale-scoring pipeline actually emitted a
+signal for that specific trade, which §2.1's own `handler_time_by_class`
+data shows is rare relative to raw trade volume ("trade" class averaging
+2.57-5.27ms lifetime vs. "ticker" class's 46-113ms+, where the ticker call
+is unconditional on `signal_feed` being non-empty, true most of the time in
+normal operation). This document's §4 mechanism walkthrough is scoped to
+the ticker-channel call site because that is where the volume is; the
+trade-channel call site is the same defect at a rate too low to be the
+dominant contributor to Condition 1/2, not a case this document overlooked.
+
 ### 4.2 `check_exits`: the memoization that exists, and is deliberately not used here
 
 `services/exits/exit_engine.py:65-71`:
@@ -351,6 +369,19 @@ reads actively fire per open position, per `check_exits` call, live today**
 on this same uncached path but currently inert by config, named here so a
 change to that one weight is understood to change this document's exact
 read count, not silently assumed away.
+
+*(Refined 2026-09-03 per the adversarial review's F11: `analyst_lean`
+(`market_analyst_agent/per_market.py:168`) uses `_scoring_read_connection()`,
+a **cached** scoring-read connection (Task 4, 2026-09-01) — a materially
+different, cheaper connection strategy than `recent_price`/`volatility`'s
+own fresh `with _connect(DB_PATH) as conn:` per call. All three are still
+genuinely re-executed, uncached at the *result* level, on every qualifying
+ticker message — `tick_cache` is `None` at this call site regardless of what
+each function does internally for its own connection — but this document's
+original "3 distinct DB-backed reads" framing flattened the three together
+as equally costly, which they are not at the connection layer. Flagged here
+so a future per-call cost estimate built on this document isn't built on
+that flattened assumption.)*
 
 `main.py:1288-1299`'s trading-loop call site (the *intended* per-tick caller,
 at `poll_interval_sec: 6` — `config/settings.yaml:27`, `main.py:756-774`)
@@ -398,14 +429,25 @@ in §8 as the next thing to measure if more precision is wanted.
 all** (confirmed: full function signature read, `def review(broker,
 market_titles, event_titles, latest_prices, cfg, now=None)`). With
 `position_netting.enabled: true` (confirmed live, `config/settings.yaml:220`),
-`describe_groups(...)` (line 274) contains, unconditionally for every group:
+`describe_groups(...)` (line 274) calls `_materiality_bar` (line 227) for
+every group not already classified `locked_profit`/`locked_loss` — a
+group already known to be a locked win or loss never triggers this read.
+For every group that does reach it, `_materiality_bar` contains:
 ```python
 vols = [market_history.volatility(ticker, vol_lookback, as_of=now) for ticker, _ in members]
 ```
 (`position_netting.py:251`) — a second, entirely independent call to the same
 `market_history.volatility` that `_exit_confidence` also calls (§4.2), with
 **zero memoization of any kind**, on every WS ticker message, for every
-member ticker of every open netting group.
+member ticker of every open, variable-outcome netting group.
+
+*(Corrected 2026-09-03 per the adversarial review's F10: the original text
+attributed the `vols = [...]` line directly to `describe_groups` and called
+it unconditional for every group. It is neither — it lives in the separate
+`_materiality_bar` helper `describe_groups` calls, and only for groups not
+already locked. This doesn't change the underlying point: `review()` still
+reaches this uncached read for any variable-outcome group, on every ticker
+message.)*
 
 ### 4.4 Why this reads as CPU-bound, not I/O-blocked, on `/proc`
 
@@ -566,7 +608,7 @@ accumulation over the container's lifetime), separate from this task's scope.
 | PR #414's inline sync `flush()` (`record_cfbenchmarks`/`record_pyth`/`record_observation`/`record`/`record_book`) | Ruled out, still fixed | Read `services/series_watcher.py:record_book` (§4.0) — flush is scheduled via `tick_executor.run`, not inline |
 | PR #409's per-trade fresh-connection whale-scoring / diagnostics-pool sharing | Ruled out as recurrence | Not touched by this document's mechanism (§4 is exit/netting logic, not whale-scoring or diagnostics); no evidence gathered contradicts PR #409 holding |
 | PR #420/#424's `run_offline()`/`_aio_db` pool behavior | Ruled out as recurrence | `/api/quality/summary`'s slowness (§2.1, §5) is consistent with *this* document's mechanism (loop-wide stall blocks every route, including `/api/quality/summary`'s own handler from ever getting the loop) rather than a regression in the aiosqlite pool itself — not re-benchmarked directly, but no `_aio_db`/`diagnostics` code path appears anywhere in §4's call chain |
-| Issue #510 (reset routes) | Confirmed not the cause, independently | §4's mechanism fires on *every processed ticker message* (10+/sec sustained, per §2.1's call counts over the worker's ~1h life) — orders of magnitude more frequent than an operator-triggered route; nothing in `services/reset/routes.py` appears anywhere in §4's call chain |
+| Issue #510 (reset routes) | Confirmed not the cause, independently | §4's mechanism fires on *every processed ticker message* (~9.4/sec between this document's own two §2.1 pulls, ~6.5/sec average over a longer independent re-measurement during the adversarial review — corrected 2026-09-03 from an original overstated "10+/sec," per F9; either figure holds the conclusion) — orders of magnitude more frequent than an operator-triggered route; nothing in `services/reset/routes.py` appears anywhere in §4's call chain |
 | `record_snapshot_from_ticker` (2026-09-02 audit's own candidate) | Ruled out, already fixed | §4.0 |
 | Thread-pool/`tick_executor` starvation | Ruled out for this mechanism | §2's thread sampling: 24-25 of 27 threads at ~0% every time; the 2 `tick_executor` workers show real but modest, bounded usage, never saturated to the point of queueing (not independently re-benchmarked here, but not the shape §4's mechanism produces — that mechanism never touches `tick_executor` at all) |
 | Disk I/O wait as the loop-stall mechanism | Ruled out for the specific escalation event | Coordinator's report: worker state `R` not `D` during the 31.25s tick (§5); this document's own §2 sampling: `R` state in all 3 runs |
@@ -594,13 +636,15 @@ accumulation over the container's lifetime), separate from this task's scope.
   frames mid-stall. Cost/safety per the data-plane HARD RULE: must be
   measured for hot-path overhead before shipping, same as `loop_watchdog`'s
   own existing 0.1s tick already was.
-- **A live before/after measurement of threading `tick_cache` through the
-  two WS call sites** (the fix the 2026-08-27 commit named and explicitly
-  deferred) — this document deliberately made no code changes and offers no
-  opinion on implementation shape beyond what already exists in
-  `main.py`'s own per-tick pattern; that is a design/implementation decision
-  for a later stage of this repo's planning pipeline, not this research
-  document.
+- ~~A live before/after measurement of threading `tick_cache` through the
+  two WS call sites~~ — **done, 2026-09-03, PR #526** (`fix/whale-stream-
+  ticker-handler-blocking`). See §10 below: the fix that shipped was a
+  global min-interval throttle on the ticker-channel block (not per-message
+  `tick_cache` alone, which turned out to be a no-op given the schema — see
+  §10), and it was measured, not assumed. This document's own deferral was
+  correct: implementation shape was genuinely a later-stage decision, made
+  with information this research alone didn't have (the schema check that
+  showed `tick_cache` wouldn't help by itself).
 - **A WAL-checkpoint/temp-file trace** for §5.2's write/cancel-byte ratio —
   sampling `PRAGMA wal_checkpoint(PASSIVE)` stats or `strace -e trace=write,
   unlink` (itself blocked by the same missing `CAP_SYS_PTRACE` from inside
@@ -622,6 +666,87 @@ same question for the same class of document, §Appendix "No dimensional-
 analysis *plugin* pass was run on this document"). No code was written or
 edited in this task, so there is no source-code arithmetic in scope for the
 plugin to annotate.
+
+## 10. Addendum (2026-09-03, post-review): the incident escalated further, then the mechanism was confirmed by a working fix
+
+Two things happened after this document's own investigation window
+(~12:45-16:05 UTC 2026-09-03) closed, neither of which changes the central
+claim (§4) — both strengthen it.
+
+**The condition got measurably worse, and a quantitative match appeared
+that this document's own worst case never produced.** The adversarial
+review's live re-check at 16:19 UTC (F13) found `last_tick_duration_sec:
+1251.64` — a single tick took ~20.9 minutes, 40x this document's own
+worst-recorded 31.25s. The coordinator (`autotrade-1d`) separately reported
+the same escalation live: oldest stale position at 1,397.7s (23.3min) —
+approximately the blocked tick's duration plus overhead. This is a
+**quantitative** match, not merely directional: a generic "the app is
+slow" story does not predict that the stalest position's age should
+approximate the longest tick's duration; "one synchronous call blocked the
+event loop wholesale, and everything else queues behind it until it
+returns" predicts exactly that relationship.
+
+**A trap in reading `last_tick_duration_sec` is the reason this went
+undiagnosed for hours, and belongs in this document, not just in chat.**
+Early in the incident, `last_tick_duration_sec` read 3.81s while every other
+signal (stale positions climbing, `stores_probe_ms` climbing, `/api/health/
+pipeline` itself taking 39.2s to answer) said something was badly wrong.
+That field reports the duration of the last **completed** tick — a
+healthy-looking value mid-incident means the current tick is still running
+and simply hasn't finished yet, not that the tick loop is fine. The 1,251s
+figure above is that same tick finally completing. Anyone reading this
+field during a live incident should treat a suspiciously-healthy value as
+"still running," not "healthy," and cross-check against oldest-stale-
+position age or a fresh timestamp read before concluding the tick loop
+itself is not the problem.
+
+**The mechanism was independently confirmed by a working fix, not just by
+review.** PR #526 (`fix/whale-stream-ticker-handler-blocking`, merged
+2026-09-03) implemented and measured a fix for exactly the call chain §4
+identifies. Two things from that PR are worth folding back into this
+document's own findings:
+
+- **`tick_cache` alone would not have helped.** §4.2/§8 (before this
+  addendum) treated wiring `tick_cache` through the WS call sites as *the*
+  deferred fix. PR #526 checked the schema before implementing and found
+  `positions` is `ticker TEXT PRIMARY KEY` — one position per ticker, always
+  — and `_exit_confidence` is called exactly once per position per
+  `check_exits` invocation (exit_engine.py:117,399). `tick_cache` only saves
+  work when the *same* key is looked up more than once within one call;
+  given those two facts, no key in the cache is ever read back, so wiring
+  it changes nothing measurable. This document's own §4.2 commit quote
+  already hinted at this — "Task 17c's benchmark already showed the
+  dominant cost is N *distinct*-ticker positions, which this cache can't
+  help with" — but neither this document nor its reviews connected that
+  quote to "therefore tick_cache is a no-op here" before the fix's own
+  implementation checked it directly. The actual fix that reduced cost was
+  a **global min-interval throttle** (`kalshi.
+  ticker_exit_check_min_interval_sec`, default 2.0s) capping how often the
+  whole block runs — orthogonal to `tick_cache`, and the piece this
+  document's own §8 correctly identified as needing a later-stage
+  implementation decision.
+- **The predicted magnitude held.** An isolated, deterministic benchmark
+  (500 synthetic ticker messages, 30 open positions across 726 markets,
+  before vs. after the throttle) measured **500/500 calls reaching the
+  exit-check block before the fix, 1/500 after**, and aggregate blocking
+  cost per simulated second of 10 msg/s traffic falling from **608.0ms/s to
+  25.0ms/s** — a ~24x reduction. This is independent, measured
+  corroboration of the mechanism §4 describes from source alone: the fix
+  that removes the specific call chain this document identifies produces
+  almost exactly the order-of-magnitude improvement the invocation-rate
+  math predicts.
+- **Live post-merge verification (Gate 2) is still owed, separately from
+  this document.** The benchmark above proves the code is cheaper; it does
+  not by itself prove the *incident's* symptoms (queue depth, ingest wait
+  times, stale-position age) resolve in production — those are emergent
+  properties of the live system under real load. PR #526 states this
+  explicitly as an open item, not a claim of "incident closed."
+
+**The `loop_watchdog` structural gap (§3) is filed as its own issue, #527**,
+per the standing rule that a finding living only inside a merged research
+document is a finding nobody acts on. Its fix (a genuinely separate OS
+thread, not another same-loop `asyncio.Task`) is named there, not
+re-litigated here.
 
 ## Appendix — evidence log
 
