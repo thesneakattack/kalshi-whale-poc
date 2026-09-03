@@ -245,12 +245,14 @@ async def _process_stream_trade(trade: dict) -> None:
         # Deliberately NOT throttled like _process_stream_ticker's own
         # check_exits call (see ticker_exit_check_min_interval_sec in
         # config/settings.yaml): this call only runs when fetch_signals
-        # actually returned a signal, which the provider's own docstring
-        # puts at ~0.1% of trades - already self-throttled by construction,
-        # and adding latency here would slow exit-checking exactly when a
-        # fresh whale signal just landed, the moment responsiveness matters
-        # most. tick_cache wired for correctness/consistency only, same as
-        # the ticker path - see that call site's comment on why it costs
+        # actually returned a signal - measured at ~0.2-0.25% of trades
+        # (~99.7% rejected before qualifying; docs/superpowers/research/
+        # 2026-08-25-realtime-replay-baseline.md, services/observability/
+        # README.md) - already self-throttled by construction, and adding
+        # latency here would slow exit-checking exactly when a fresh whale
+        # signal just landed, the moment responsiveness matters most.
+        # tick_cache wired for correctness/consistency only, same as the
+        # ticker path - see that call site's comment on why it costs
         # nothing today.
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
