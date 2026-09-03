@@ -138,6 +138,7 @@ def test_build_raw_trade_row_matches_raw_trades_column_order_and_values():
     assert json.loads(raw_json) == trade  # byte-for-byte the Kalshi response, no injected keys
 
 
+@pytest.mark.slow
 def test_module_never_reads_deprecated_direction_aliases_directly():
     """Direct regression for tools/quality_audit/kalshi_boundary.py's CI
     guard (check 4), which hard-fails a `.get("taker_outcome_side"/
