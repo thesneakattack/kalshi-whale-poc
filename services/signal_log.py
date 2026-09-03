@@ -730,6 +730,36 @@ def resolved_signals_with_factors(since_ts: float | None = None) -> list[dict]:
     return results
 
 
+def resolved_signals_for_edge_calibration(since_ts: float | None = None) -> list[dict]:
+    """Δ_calibrated's entire input population (services/whale_calibration/
+    confidence_calibration.py's _bucket_delta_by_category_price_band) -
+    every resolved, non-excluded signal, NOT filtered to factors_json IS
+    NOT NULL like resolved_signals_with_factors above, because
+    Δ_calibrated only needs price/seen_at/correct/series, not a per-factor
+    breakdown - restricting to the factors-populated subset would silently
+    under-cover the data-plane HARD RULE's completeness requirement for no
+    reason this function's own job needs. Same since_ts-bounding contract
+    as its sibling - always call with a bounded since_ts in production
+    (resolved_signals_with_factors' own docstring measured ~1s/103k+ rows
+    unscoped); this function keeps the unscoped default for parity, not
+    because an unscoped call here is cheap."""
+    query = (
+        "SELECT ticker, side, price, seen_at, correct, factors_json, series "
+        "FROM signals WHERE resolved = 1 AND excluded = 0"
+    )
+    params: tuple = ()
+    if since_ts is not None:
+        query += " AND seen_at >= ?"
+        params = (since_ts,)
+    query += " ORDER BY seen_at ASC"
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {"ticker": t, "side": s, "price": p, "seen_at": ts, "correct": c, "factors_json": fj, "series": sr}
+        for t, s, p, ts, c, fj, sr in rows
+    ]
+
+
 def _size_ratio_ok(a: float, b: float, max_ratio: float) -> bool:
     lo, hi = min(a, b), max(a, b)
     return lo > 0 and (hi / lo) <= max_ratio

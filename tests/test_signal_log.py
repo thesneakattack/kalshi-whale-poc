@@ -558,6 +558,34 @@ def test_resolved_signals_with_factors_since_ts_scopes_the_window(tmp_path, monk
     assert len(log.resolved_signals_with_factors(since_ts=300)) == 1  # only NEW
 
 
+# --- strategy-edge-gate-implementation Task 5: Delta_calibrated's whole
+# resolved-signal input population, NOT filtered to factors_json IS NOT NULL
+# like resolved_signals_with_factors above (docs/superpowers/plans/
+# 2026-09-03-strategy-edge-gate-implementation.md Task 5 - deliberately
+# broader than its sibling per the design's Sec2.1 completeness argument).
+
+def test_resolved_signals_for_edge_calibration_includes_rows_without_factors(tmp_path, monkeypatch):
+    """Deliberately broader than resolved_signals_with_factors - this
+    function's job is the FULL resolved population (design Sec2.1's
+    completeness argument), not just the factors_json-populated subset."""
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 10, 0.7, "simulated", seen_at=1000.0, price=0.6)  # no factors=
+    log.mark_resolved(1, correct=True)
+    rows = log.resolved_signals_for_edge_calibration()
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "TICK-A"
+    assert rows[0]["price"] == 0.6
+    assert rows[0]["correct"] == 1
+
+
+def test_resolved_signals_for_edge_calibration_respects_since_ts(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 10, 0.7, "simulated", seen_at=1000.0, price=0.6)
+    log.mark_resolved(1, correct=True)
+    assert log.resolved_signals_for_edge_calibration(since_ts=2000.0) == []
+    assert len(log.resolved_signals_for_edge_calibration(since_ts=500.0)) == 1
+
+
 # --- write-path capacity fix Task 2: scoring reads use the cached connection
 # pool (services/whalewatchers/_scoring_pool.py), not a fresh _connect() per
 # call - per-trade connection churn on recent_sides_for_ticker/cluster_factor
