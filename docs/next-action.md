@@ -1,5 +1,27 @@
 # Next action
 
+**Interrupt handled this session, now resolved — resume the plan below.**
+User reported live positions opening on markets outside the pinned
+`kalshi.markets_watchlist` (200+ at the worst point, mostly Sports).
+Root-caused and fixed in PR #482 (merged): the trade WebSocket subscribes
+exchange-wide on purpose (a prior whale-flow-coverage fix), and
+`kalshi_trade_tape.py`'s `_resolve_unknown_markets` deliberately resolves
+any off-watchlist market whose print clears the whale threshold — but
+`strategy_engine.py`/`decision_bridge.py` never gated the resulting trade
+entry back to the configured watchlist. Fixed by gating
+`FollowTheWhaleStrategy.evaluate()` on watchlist membership (detection
+stays exchange-wide; only the trade decision narrows). The
+`config/settings.yaml` diff mentioned below is now committed as part of
+that fix, not reverted. Closed 11 live off-watchlist positions via a new
+`POST /api/trading/close-positions` endpoint (added in the same PR).
+While merging, found `main` had moved (PR #460 split the required
+`tests-pytest` CI job into `tests-pytest-app`/`tests-pytest-tooling`) —
+merged `origin/main` in to pick up the new pipeline. That merge's CI run
+surfaced an unrelated, real (not dismissed as a flake) race in
+`tests/test_index_feed_backfill.py` — root-caused and filed as issue
+#485, not yet fixed (test-only synchronization bug, low priority, unowned
+by this plan).
+
 **Execute `docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`**
 (PR #441, merged — 10 tasks, full self-review + independent adversarial
 review + consolidation cycle at both the artifact stage and the PR stage,
@@ -47,15 +69,15 @@ persistence-module rewrite, the DuckDB benchmark, the strategy edge/EV
 gate from §3), and Tier 3 (4 items) remain completely unplanned. Full
 detail in `docs/open-decisions.md`'s newest line.
 
-**`config/settings.yaml`'s uncommitted working-tree diff has grown to four
-changes**, not the two originally recorded: `kalshi.markets_watchlist_mode:
-merge → exclusive`, `kalshi.max_children_per_parent: 5 → 0`,
-`kalshi.categories` narrowed from eleven entries to two (`Crypto`,
-`Commodities`), and the calibration-audit comment block wiped a third time.
-Re-run `git diff config/settings.yaml` to see the current state before
-deciding anything — it may have changed again since this was written;
-whether to revert is still the config owner's call, unrelated to the plan
-above.
+**`config/settings.yaml`'s watchlist-mode/categories diff (previously
+uncommitted) is now committed**, landed in PR #482 as necessary companion
+hardening for the watchlist entry-gate fix above: `kalshi.markets_watchlist_mode:
+merge → exclusive`, `kalshi.max_children_per_parent: 5 → 0`, `kalshi.categories`
+narrowed from eleven entries to two (`Crypto`, `Commodities`). Resolved,
+not reverted — this paragraph is no longer open. The calibration-audit
+comment block wipe mentioned in earlier versions of this file was a
+separate, still-unrelated change; re-run `git diff` / `git log` if that
+still needs attention.
 
 **Also still open, not covered by the plan**: `GET /api/health/faults`'s
 `hours` parameter scopes only its `summary`, not the `faults` list it
