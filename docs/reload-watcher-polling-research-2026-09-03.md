@@ -99,7 +99,12 @@ EVENT RECEIVED after 0.058s (inotify appears to work)
 ```
 
 **Inotify works fine on this exact mount, in 58ms, when not blanket-
-disabled.** The issue's stated mechanism ("bind mounts on WSL2 don't
+disabled** (later independently reproduced during adversarial review with
+three repeated trials: 13ms/12ms/12ms with force_polling off, versus
+13ms/305ms/294ms with it forced on — the forced-on arm landing right on
+watchfiles' 300ms default poll delay, a clean confirmation this is really
+measuring the polling-vs-event-driven difference and not noise). The
+issue's stated mechanism ("bind mounts on WSL2 don't
 propagate inotify") is refuted for this specific setup — this is a native
 dockerd on a native ext4-backed WSL2 filesystem, not the Docker-Desktop-
 on-WSL2 case the upstream watchfiles blanket rule most plausibly exists
@@ -114,10 +119,13 @@ second lever (§4C) beyond scoping what gets watched.
 ## 2. `--reload-dirs`: does it restrict the walk, or only filter after it?
 
 **This is the load-bearing question the PM asked me to answer from source,
-with file:line.** Answer: **`--reload-dirs` restricts the walk itself — it
-is structurally different from `--reload-exclude`, which only filters
-after the walk.** But there's a real, separate gotcha that blocks a naive
-fix (below).
+with file:line.** Answer, precisely: **`--reload-dirs` is structurally a
+different mechanism from `--reload-exclude` — it restricts the walk itself
+rather than filtering after it — but the specific, concrete way of using it
+here (scoping to app-code subdirectories) is verified inert for this
+deployment, not merely risky.** This doc's first draft got that second part
+wrong; corrected below, with the mistake and its catch left visible rather
+than silently edited away.
 
 ### How `--reload-exclude` actually behaves today (confirmed, not assumed)
 
@@ -137,7 +145,7 @@ class WatchFilesReload(BaseReload):
         self.watch_filter = FileFilter(config)
         self.watcher = watch(
             *self.reload_dirs,
-            watch_filter=None,          # <- no filter reaches the walker
+            watch_filter=None,          # watchfiles' own watch_filter is post-hoc too (watchfiles/main.py:146) — passing one here wouldn't reduce the walk either
             stop_event=self.should_exit,
             yield_on_timeout=True,
         )
@@ -163,7 +171,9 @@ only discard results after the full-tree poll already paid for them.
 
 There's also a *second*, separate exclude mechanism in
 `uvicorn/config.py:294-302` that looks like it should help but doesn't for
-this case:
+this case (condensed below — the real code wraps the `.remove()` call in a
+`try`/`except ValueError: pass`, omitted here since it doesn't change the
+logic):
 
 ```python
 reload_dirs_tmp = self.reload_dirs.copy()
@@ -188,61 +198,77 @@ services/tests paths," holds) but it does nothing to reduce the per-cycle
 stat cost. All 17,884 files currently under `/app` get walked every cycle
 regardless.**
 
-### What `--reload-dirs` would actually do (the paths-vs-filter question)
+### What `--reload-dirs` would actually do (the paths-vs-filter question) — corrected after adversarial review
 
-`--reload-dirs` values flow through `uvicorn/config.py:290`
+**First pass on this doc got this wrong in its operative form, caught by a
+fresh adversarial-review pass (documented in full in this doc's
+`-adversarial-review-round1.md` sibling). Recording the correction here rather
+than silently rewriting, since the wrong version already reached a peer
+session's PR discussion before this fix landed.**
+
+`--reload-dirs` values do flow through `uvicorn/config.py:290`
 (`resolve_reload_patterns(reload_includes, reload_dirs)`) into
-`self.reload_dirs`, which then becomes **the literal `*paths` argument**
-passed into `watchfiles.watch()` at `watchfilesreload.py:72-73`. There is
-no filter step between "what `--reload-dirs` names" and "what the walker
-recurses into" — the named directories *are* the walk roots. This is
-structurally different from `--reload-exclude`, confirmed above to be a
-post-hoc, per-change filter that never touches the walk. **By the PM's own
-framing: yes, it's paths, not a filter — the mechanism is real.**
-
-### The gotcha that blocks a naive fix: `main.py` is not inside any subdirectory
-
-`resolve_reload_patterns` (`config.py:131-164`) only keeps entries that
-survive `is_dir()`:
+`self.reload_dirs`, and `WatchFilesReload.__init__` does pass
+`*self.reload_dirs` as the literal walk roots to `watchfiles.watch()`
+(`watchfilesreload.py:72-73`) — that much is correctly a "paths, not a
+filter" mechanism, structurally different from `--reload-exclude`. But
+**the doc's original draft quoted the constructor's own root-selection
+loop verbatim and then never traced what it actually computes for this
+deployment.** Re-reading it:
 
 ```python
-config.py:150-152
-directories = list(map(Path, directories))
-directories = list(map(lambda x: x.resolve(), directories))
-directories = list({reload_path for reload_path in directories if is_dir(reload_path)})
+watchfilesreload.py:64-69
+self.reload_dirs = []
+for directory in config.reload_dirs:
+    if Path.cwd() not in directory.parents:
+        self.reload_dirs.append(directory)
+if Path.cwd() not in self.reload_dirs:
+    self.reload_dirs.append(Path.cwd())
 ```
 
-This `is_dir()` filter applies to **every** candidate, including values
-passed directly via `--reload-dirs` — a bare file never survives it. The
-app's entrypoint, `main.py` (109 KB, the FastAPI app + trading loop, per
-this repo's own "Quick file map" — among the most actively edited files in
-the repo), sits directly at `/app/main.py`, not inside `services/`,
-`tools/`, `tests/`, or any other subdirectory. If `--reload-dirs` were
-scoped to just the app-code subdirectories (`services`, `tools`, `tests`,
-`config`, `static`, `frontend` — deliberately omitting `.claude` to drop
-`.claude/worktrees` from the walk), `main.py` itself would silently **stop
-being watched at all** — edits to the app's own entrypoint would no longer
-trigger a reload, a real correctness regression on the dev loop, not a cost
-tradeoff.
+Any `config.reload_dirs` entry whose parents include `Path.cwd()` — i.e.
+any directory *underneath* the process's working directory — gets dropped
+from the first loop, then `Path.cwd()` itself is unconditionally appended.
+The container's `working_dir` is `/app` (`.ddev/docker-compose.fastapi.
+yaml`), and every candidate app-code directory (`services`, `tools`,
+`tests`, `config`, `static`, `frontend`) is a descendant of `/app` — so
+**all of them get filtered out, every time, and `self.reload_dirs`
+collapses to exactly `[/app]` regardless of what `--reload-dirs` names.**
 
-There is no clean way around this within `--reload-dirs`/`--reload-include`
-alone: a bare filename passed as `--reload-include main.py` only adds to
-the *pattern* list used for post-hoc trigger-matching (`watchfilesreload.py:
-16-18`), it does not add `/app` (main.py's parent) back to the walked roots
-— confirmed by the same `is_dir()` gate in `resolve_reload_patterns`,
-which only promotes a glob match into `directories` when the match is
-itself a directory (`config.py:145-147`), never a bare file. Watching
-`/app` itself to keep `main.py` covered reintroduces `.claude/worktrees`
-into the walk, defeating the purpose.
+Verified this directly rather than trusting the trace on paper — replicated
+the exact logic in the live container against several inputs:
 
-**So `--reload-dirs` is a real mechanism (restricts the walk, not just the
-result), but a naive "list the app subdirectories" implementation of it is
-unsafe here** — it would trade the CPU cost for a silent dev-loop
-correctness bug on the app's own entrypoint. A safe version would need
-either (a) moving `main.py`'s logic into a subdirectory (a real code-layout
-change, out of scope for a config-only fix), or (b) relocating
-`.claude/worktrees` outside `/app` entirely (§4D — its own real tradeoff),
-neither of which is a same-session config flip.
+```
+cwd: /app
+--reload-dirs services tools tests config static frontend
+  -> [/app]                                            <- collapsed, unchanged
+--reload-dirs /app/services (absolute path)
+  -> [/app]                                            <- collapsed, unchanged
+--reload-dirs pointing OUTSIDE cwd (e.g. site-packages/uvicorn)
+  -> [/usr/local/.../uvicorn, /app]                    <- only case that adds anything, and it ADDS rather than replaces
+```
+
+**`--reload-dirs` is therefore inert for the purpose this research exists
+to evaluate, as long as the container's `working_dir` stays `/app`.** It
+can only ever *widen* the watched tree (by naming a root genuinely outside
+cwd), never narrow it — the opposite of what issue #513 needs. This also
+means the earlier draft's "`main.py` gotcha" (a scoped `--reload-dirs`
+would silently stop watching the app's entrypoint) doesn't exist as
+described: `main.py` is never at risk of losing coverage, because `/app`
+— which contains it — is *always* one of the walk roots regardless of what
+`--reload-dirs` is given. The real problem isn't a coverage gap on one
+file; it's that the whole approach doesn't reduce anything at all.
+
+The only way to make `--reload-dirs` actually narrow the walk would be to
+change the container's `working_dir` away from `/app` (so it stops being
+an ancestor of every candidate directory) and then explicitly list the
+app-code directories as roots. That's a materially bigger change than a
+`--reload-dirs` flag — `working_dir` affects how the Dockerfile, any
+relative-path assumption in the app (this repo has direct prior incidents
+with relative-path assumptions breaking on directory moves — see this
+repo's own `DB_PATH`-relative-move history), and container tooling all
+resolve paths, and evaluating its blast radius is out of scope for this
+research pass. Not recommended as a same-session fix.
 
 ## 3. Remaining cost after the worktree drop (measured by autotrade-1d/84; corroborated here)
 
@@ -257,28 +283,43 @@ method was corrected):
   after worktrees dropped 34→10 and the tree went 47,401 → 17,877 files
   (−62%).
 - Worker (control, unaffected by the watcher): unchanged at 107.8%.
-- Of the remaining 17,877 files, 9,594 (54%) are still worktrees — most of
-  which can't be removed further since they're live sessions' workspaces.
+- Of the remaining 17,877 files at that measurement, 9,594 (54%) were still
+  worktrees.
 
 I corroborated the file counts (not the CPU deltas, which I did not
-re-derive) with an independent, lightweight recount minutes later:
+re-derive) with an independent, lightweight recount minutes later, then
+again during adversarial review, then again while fixing this doc — the
+worktree count moves constantly as peer sessions open and close their own
+(9, then 10, then 11 across three checks in under an hour), so treat every
+absolute count below as "as of its own measurement," not a fixed number:
 
 ```
-worktrees: 9 (git worktree list, excluding primary)
-total files under /app:                    17,884
-files under /app/.claude/worktrees:         9,601
-.py files under /app/.claude/worktrees:     3,500
+worktrees: 9→10→11 across three successive checks
+total files under /app:              17,884 → 18,967 → 20,155
+files under /app/.claude/worktrees:   9,601 → 10,613 → 11,763
+directories under /app:                   —    1,542 →  1,640
+directories under /app/.claude/worktrees: —      870 →    967
 files under app-code dirs alone
-  (services+tools+tests+config+static+frontend+main.py):  2,115
+  (services+tools+tests+config+static+frontend+main.py): ~2,115 (stable)
 ```
 
-Close enough to 1d/84's numbers (within normal drift from files changing
-between the two measurement windows) to trust both. **~52% of the watcher's
-original cost came from worktree count; the other ~48% (≈20.8% of a core,
-sustained) is structural — driven by continuing to poll the full `/app`
-tree, worktrees included, every cycle** — this is the part neither cleanup
-nor further worktree hygiene touches, since 2 of the remaining 9 worktrees
-are live sessions' active workspaces that can't be removed regardless.
+App-code's own footprint is stable at ~2,100 files regardless of worktree
+churn — it's genuinely the worktrees, not the app, driving both the
+absolute count and its growth. **Correction from the doc's first draft:**
+worktree-workspace files are **not** mostly permanent — only 2 of the
+current worktrees belong to sessions with work still in flight; the rest
+are provably-merged and were left behind only because nobody had run
+`scripts/cleanup-worktrees.sh` yet. So the ~54-58% "worktree share" of the
+walk is not a floor — it fluctuates with how promptly cleanup runs, and
+**"structural" below describes the fact that continuous full-tree polling
+scales with whatever the tree happens to be at any given moment, not that
+this specific 20.8% is a fixed, un-recoverable cost.** ~52% of the
+watcher's original cost came from worktree count reduction alone; the
+remaining ~20.8% (as of 1d/84's measurement) comes from continuing to poll
+whatever's left in `/app`, worktrees included, every cycle — cleanup
+discipline helps it, but doesn't zero it out, since watching `/app` at all
+means paying for its current size every cycle no matter how small that
+size is kept.
 
 ## 4. Alternatives, named honestly
 
@@ -289,78 +330,108 @@ also runs the trading loop, WebSocket readers, and every other request —
 but it's a known, bounded cost, not a growing one, as long as worktree
 count stays roughly where it is.
 
-**B. `--reload-dirs` scoped to app-code subdirectories.** Confirmed real
-(§2) — it would eliminate the ~9,600 worktree files from the walk
-entirely, not just filter them post-hoc. **Not recommended as a standalone
-fix**: the `main.py`-at-top-level gotcha (§2) means a naive implementation
-silently stops watching the app's own entrypoint. Viable only combined with
-either moving `main.py` into a subdirectory (real code-layout change) or
-§4D below (moving worktrees out of `/app` instead, which achieves the same
-walk-scoping goal without touching `main.py`'s location at all).
+**B. `--reload-dirs` scoped to app-code subdirectories. Ruled out —
+verified inert, not merely risky.** §2's correction: as long as the
+container's `working_dir` is `/app` (it is), any `--reload-dirs` value
+under `/app` gets silently discarded by `watchfilesreload.py:64-69`'s own
+root-selection logic, and the watch always collapses back to `[/app]`
+regardless. This isn't a tradeoff to weigh — it does nothing, confirmed by
+directly instantiating the real logic against several inputs (§2). Not
+viable without also changing `working_dir` away from `/app`, which is a
+materially bigger, unevaluated change (§2's closing paragraph).
 
 **C. `WATCHFILES_FORCE_POLLING=false`.** Newly surfaced in this research
 (§1), not part of the original issue. Overrides watchfiles' blanket
 WSL2-kernel heuristic and switches the underlying mechanism from continuous
 per-cycle full-tree `stat()` polling to event-driven inotify — confirmed
-empirically functional and fast (58ms) on this exact bind mount. Zero
-change to *what* is watched (still `/app` as a whole, `main.py` stays
-covered, no code-layout change), so it carries none of §2's correctness
-risk. The FileFilter's post-hoc exclude logic (`watchfilesreload.py:81-88`)
-applies identically regardless of which backend produced the change batch,
-so `--reload-exclude /app/.claude/worktrees`'s existing behavior (worktree
-edits don't trigger a reload) is preserved either way — confirmed from the
-same source read in §2, not assumed. **Not yet cost-measured at real tree
-scale**: this doc confirms functional correctness and per-event latency in
-a synthetic single-file test, not the steady-state cost of registering and
-maintaining inotify watches recursively across ~18,000 directories under
-real worktree churn (a new worktree appearing mid-session, or a peer
-session's git operations generating bursts of file events) — that
-quantification is fix/plan-stage work, not established here.
+empirically functional and fast on this exact bind mount (a synthetic
+single-file test in the 12-58ms range across multiple runs; not a
+statistically rigorous distribution, but consistent and fast every time).
+Zero change to *what* is watched (still `/app` as a whole, no code-layout
+change), so it carries none of the risk §B turned out to almost (wrongly)
+justify. The FileFilter's post-hoc exclude logic (`watchfilesreload.py:
+81-88`) applies identically regardless of which backend produced the
+change batch, so `--reload-exclude /app/.claude/worktrees`'s existing
+behavior (worktree edits don't trigger a reload) is preserved either way —
+confirmed from the same source read in §2, not assumed. **Not yet
+cost-measured at real tree scale**: this doc confirms functional
+correctness and per-event latency in a synthetic single-file test, not the
+steady-state cost of registering and maintaining inotify watches
+recursively across the real tree under worktree churn (a new worktree
+appearing mid-session, or a peer session's git operations generating
+bursts of file events). That watch-registration cost scales with
+**directory** count, not file count — currently ~1,540-1,640 directories
+under `/app` (§3), well under 1% of this system's `max_user_watches`
+(524288) — so headroom isn't the concern; steady-state CPU under real
+churn is what's still unmeasured, and that quantification is fix/plan-stage
+work, not established here.
 
-**D. Move worktrees outside the bind mount.** Would remove the cost at its
-root for both B and C's purposes, but breaks the reason worktrees live
-inside `/app` in the first place: `ddev exec` (and this repo's documented
-workaround for running it from a worktree, `docker exec -w /app <container>
-<cmd>` — see CLAUDE.md's dev-workflow section) depends on worktrees being
-reachable inside the container's `/app` bind mount. Real, already-
-acknowledged tradeoff (issue #513 itself names it as "would need its own
-decision"); not evaluated further here since it's a bigger, separate change
-than what this research was scoped to weigh.
+**D. `WATCHFILES_POLL_DELAY_MS`, raised from its 300ms default.** Missed
+in this doc's first draft, caught by adversarial review:
+`watchfiles/main.py`'s `_default_poll_delay_ms` reads this env var
+directly (confirmed live: unset → 300, set to 2000 → 2000). Same shape as
+C — one `environment:` line, same restart cost — but even lower-risk than
+C: it doesn't change the notification backend at all, still polls, so it
+carries none of C's "does inotify actually stay reliable under this
+specific container setup long-term" open question. Its cost is bounded and
+directly measurable ahead of time: reload latency increases by however
+much the delay is raised, nothing else changes. Worth quoting alongside C
+rather than instead of it — they attack the same problem from different
+angles (reduce how often the full tree is stat'd, vs. stop stat'ing it
+periodically at all) and could in principle be tested independently to see
+which one the user prefers trading off.
+
+**E. Move worktrees outside the bind mount.** Would remove the cost at its
+root, but breaks the reason worktrees live inside `/app` in the first
+place: `ddev exec` (and this repo's documented workaround for running it
+from a worktree, `docker exec -w /app <container> <cmd>` — see CLAUDE.md's
+dev-workflow section) depends on worktrees being reachable inside the
+container's `/app` bind mount. Real, already-acknowledged tradeoff (issue
+#513 itself names it as "would need its own decision"); not evaluated
+further here since it's a bigger, separate change than what this research
+was scoped to weigh.
 
 ## Recommendation
 
-**Test `WATCHFILES_FORCE_POLLING=false` (§4C) first, not `--reload-dirs`
-(§4B), despite `--reload-dirs` being the one the PM asked me to settle.**
-By the PM's own stated decision rule — "if it's paths, the fix is real and
-worth a restart" — `--reload-dirs` clears that bar (§2 confirms it
-restricts the walk, not just the result). But it's not the fix to spend the
-interruption on *first*: it carries a real, structural correctness risk
-(silently losing `main.py`'s reload coverage) that has no clean same-session
-fix, while `WATCHFILES_FORCE_POLLING=false` targets the same root cause
-(continuous full-tree polling) with no code-layout change, no risk to what
-gets watched, and a working empirical proof-of-concept on this exact
-filesystem.
+**Test `WATCHFILES_FORCE_POLLING=false` (§4C), with `WATCHFILES_POLL_DELAY_
+MS` (§4D) as a lower-risk complement or fallback. Do not spend the restart
+on `--reload-dirs` (§4B) — it's verified inert, not merely risky, as long
+as `working_dir` stays `/app`.**
 
-Both are one-line changes to `.ddev/docker-compose.fastapi.yaml` and both
-require a real `ddev restart` (the same interruption cost either way), so
-there's no reason to spend it on the riskier option first. Concretely: add
-`environment: - WATCHFILES_FORCE_POLLING=false` to the `fastapi` service (or
-pass it via the existing `command:` is not an option — it's an env var, not
-a CLI flag — so it needs an `environment:` block), restart, then verify
+This answers the PM's original decision rule ("if it's paths, the fix is
+real and worth a restart; if it's a filter, it buys nothing") more
+precisely than a yes/no on `--reload-dirs` alone can: `--reload-dirs` *is*
+a paths-not-filter mechanism in the abstract (§2), but the specific,
+concrete instantiation of it available here (scope to app-code
+subdirectories) does not clear that bar, because uvicorn's own root-
+selection logic discards every one of those directories before the watcher
+ever starts. There's no live version of "the `--reload-dirs` fix" to
+choose between it and something else — it isn't on the table.
+
+`WATCHFILES_FORCE_POLLING=false` and `WATCHFILES_POLL_DELAY_MS` both are:
+one-line changes to `.ddev/docker-compose.fastapi.yaml`'s `environment:`
+block (env vars, not CLI flags — the existing `command:` array doesn't
+change), both require a real `ddev restart`, and neither touches what's
+watched or `main.py`'s coverage at all. Concretely: add `WATCHFILES_FORCE_
+POLLING=false` (the mechanism-level fix, targets the root cause directly,
+has a working proof-of-concept on this exact filesystem but unmeasured
+steady-state cost under real churn — §4C) and/or `WATCHFILES_POLL_DELAY_MS`
+raised from 300 (a strictly bounded, predictable latency/CPU tradeoff with
+no open questions about reliability — §4D). Restart, then verify
 end-to-end before declaring it done: (a) an edit under `services/` still
 triggers a reload, (b) an edit inside a worktree still does *not* trigger
 one (confirms the FileFilter's exclude logic still applies against
-inotify-sourced events, per §4C's source-level reasoning — verify it live,
-don't trust the reasoning alone), and (c) a clean-window `/proc/1/stat`
-utime+stime delta (1d/84's own method, §3) actually drops from the current
-20.8%. If (c) doesn't show a real drop, the WSL2 blanket-polling heuristic
-may be masking a different cost than assumed, and that's worth a fresh
+whichever backend produced the change — verify it live, don't trust the
+source-level reasoning alone), and (c) a clean-window `/proc/1/stat`
+utime+stime delta (1d/84's own method, §3) actually drops from whatever it
+measures at restart time. If (c) doesn't show a real drop for the force-
+polling change specifically, the WSL2 blanket-polling heuristic may be
+masking a different cost than assumed, and that's worth a fresh
 investigation rather than a second guess layered on this one.
 
-`--reload-dirs` (§4B) is not dismissed — it's a real, larger fix genuinely
-worth doing eventually, just gated on relocating `main.py` (or the
-worktrees) first, which is a bigger, separate decision than this research
-was scoped to make.
+`--reload-dirs` is not a "do it later" item — it would need `working_dir`
+to change first, which is a separate, unevaluated initiative with its own
+blast radius, not a follow-up step on this fix.
 
 ## Summary for whoever picks up the fix/plan stage
 
@@ -368,21 +439,30 @@ was scoped to make.
   host-namespace PID the issue originally cited); the *why* is watchfiles'
   own blanket `_auto_force_polling()` WSL2-kernel check
   (`watchfiles/main.py:358-367`), not a bind-mount inotify-propagation
-  failure as issue #513 stated — falsified directly: inotify works in 58ms
-  on this exact mount when the blanket check is overridden.
-- `--reload-dirs` is real (restricts the watcher's walk roots, confirmed
-  from `uvicorn/supervisors/watchfilesreload.py:64-79` and
-  `uvicorn/config.py:131-164,275-320`) — genuinely different from
-  `--reload-exclude`, which only filters an already-produced change batch
-  (`watchfilesreload.py:81-88`) and can never prune a *nested* exclude
-  directory from a broader watched root (`config.py:294-302`'s pruning only
-  fires for an ancestor/exact-match exclude, confirmed against the actual
-  resolved values here, not just the code's shape).
-- Remaining cost after the worktree drop: 20.8% of a core, clean-window
-  measured by 1d/84, corroborated here on file counts; ~52% of the original
-  cost is gone, ~48% is structural (full-`/app` polling) and doesn't
-  improve with further worktree cleanup alone.
-- Recommendation: test `WATCHFILES_FORCE_POLLING=false` first (lower risk,
-  same root-cause target, empirically proven functional here); treat
-  `--reload-dirs` as a larger follow-up gated on relocating `main.py` or the
-  worktrees, not a same-session fix.
+  failure as issue #513 stated — falsified directly: inotify works in the
+  12-58ms range on this exact mount when the blanket check is overridden.
+- `--reload-dirs` is a real paths-not-filter mechanism in the abstract
+  (confirmed from `uvicorn/supervisors/watchfilesreload.py:64-79` and
+  `uvicorn/config.py:131-164,275-320`), genuinely different from
+  `--reload-exclude`'s post-hoc-only filtering (`watchfilesreload.py:
+  81-88`) — **but verified inert for this deployment specifically**:
+  `watchfilesreload.py:64-69`'s own root-selection loop discards any
+  candidate directory under the process's `working_dir` (`/app`), so the
+  watch always collapses back to `[/app]` no matter what `--reload-dirs`
+  names. This doc's first draft missed this despite quoting the exact
+  lines verbatim — caught by a fresh adversarial-review pass, corrected
+  here, and the wrong version's implications (a nonexistent `main.py`
+  coverage-loss risk) removed.
+- Remaining cost after the worktree drop: 20.8% of a core at 1d/84's
+  clean-window measurement, corroborated here on file counts (which kept
+  climbing across successive checks as peer sessions opened new worktrees
+  — treat any specific percentage as a point-in-time reading, not a fixed
+  number); ~52% of the original cost came from worktree count reduction,
+  the rest from continuing to poll whatever remains in `/app` every cycle
+  regardless of its current size.
+- Recommendation: test `WATCHFILES_FORCE_POLLING=false` (targets the root
+  cause, empirically functional here, steady-state cost still unmeasured)
+  and/or `WATCHFILES_POLL_DELAY_MS` raised from 300 (strictly bounded,
+  predictable tradeoff, no reliability open questions) — both are real,
+  same-session, `main.py`-safe config changes. `--reload-dirs` is not a
+  viable lever here at all without a separate `working_dir` change.

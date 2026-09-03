@@ -64,7 +64,8 @@ of the reads used to write the doc:
 ## What this doc does NOT do, stated explicitly
 
 Does not measure `WATCHFILES_FORCE_POLLING=false`'s steady-state CPU cost
-against the real ~18,000-directory tree, and does not perform a `ddev
+against the real tree (~18,000 files, ~1,500-1,600 directories — the unit
+that matters for inotify watch-descriptor cost), and does not perform a `ddev
 restart` — both are explicitly deferred to the fix/plan stage, since a real
 restart is a live-app interruption this research task wasn't authorized to
 take. Does not implement `--reload-dirs` or move `main.py`.
