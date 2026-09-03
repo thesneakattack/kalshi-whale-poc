@@ -33,6 +33,9 @@ python3 .claude/hooks/guard_workflow.py --sessions 2>/dev/null \
 n=$(git worktree list --porcelain 2>/dev/null | grep -c '^worktree ')
 if [ "$n" -gt 1 ]; then
   echo "worktrees: $((n - 1)) besides the primary - scripts/cleanup-worktrees.sh --dry-run reports the stale ones; /checkpoint removes the provably merged ones after a merge"
+  if [ "$n" -gt 12 ]; then
+    echo "  WARNING: that is a lot, and each one costs LIVE APP cpu - the uvicorn --reload watcher polls (no inotify under wsl2 bind mounts) so it stats every worktree's files each cycle. Measured 2026-09-03 (issue #513): 34 worktrees = 47k files = 42.9% of a core; cleaning to 10 halved it. Remove yours when done."
+  fi
 fi
 
 if command -v ddev >/dev/null 2>&1 && (cd "$primary" && ddev describe >/dev/null 2>&1); then
