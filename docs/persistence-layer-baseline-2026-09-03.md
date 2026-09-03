@@ -49,13 +49,15 @@ current and correct, and the four buckets below sum to 39 exactly.)
   directly.
 - **Already closes correctly, not part of the problem (5 modules)**:
   `capture_writer.py` (explicit `conn.close()`), `storage_health.py`
-  (explicit closes at two call sites), `store_stats.py`'s *second* connection
-  (a read-only `uri=True` one, closes correctly — its *first*, `with
-  sqlite3.connect(db_path) as conn:`, does not, so this file is also
-  split-pattern like `backup.py`, and its own comment already flags "was a
-  transaction context manager, not a—" mid-sentence, suggesting this was a
-  known, half-addressed issue before this baseline), `tools/
-  historical_data_backfill.py`, `tools/quality_ratchet.py`.
+  (explicit closes at two call sites), `store_stats.py` (adversarial-review
+  correction: the original version of this doc misread this file as
+  split-pattern like `backup.py` — the `with sqlite3.connect(db_path) as
+  conn:` text it pointed to sits inside the module's own docstring
+  describing an *already-fixed historical* pattern from issue #210, not
+  live code; the file's one real connection, the read-only `uri=True` one
+  at `store_stats.py:105`, already closes correctly via `finally:` at
+  `:134-136`, and the docstring itself says so explicitly at `:38-41`),
+  `tools/historical_data_backfill.py`, `tools/quality_ratchet.py`.
 - **Pooled / cached, structurally different (3 modules)**: `tick_executor.py`'s
   `connection_for()` — one thread-local connection per worker thread, reused
   across calls, WAL mode, `busy_timeout=50ms` (fails fast rather than
@@ -68,8 +70,10 @@ current and correct, and the four buckets below sum to 39 exactly.)
 **Net: 26 modules (25 in `services/`, 1 in `tools/`) still carry the exact
 leak pattern Tier0 fixed in only 5** (self-review correction: the original
 "25 (24 services, 1 tools)" undercounted its own listed names by one — the
-list above already names 25 services/ modules, not 24), plus 2 files (`backup.py`,
-`store_stats.py`) that are split — half-fixed already, half still leaking.
+list above already names 25 services/ modules, not 24), plus 1 file
+(`backup.py`) that is split — half-fixed already, half still leaking
+(`store_stats.py` is NOT split, see the correction above — it's fully
+fixed, counted only in "already closes correctly").
 This is the single largest structural finding for the migration's impact
 estimate — a unified `db.py` needs to either close-on-exit by construction
 (so no call site can regress this) or pool connections outright, and
