@@ -50,7 +50,8 @@ def _fake_stream(dropped_messages=0, messages_received=0, enabled=True):
 
 def test_schema_creation_is_additive_across_repeated_connects():
     observability.record_sample("tick.duration_sec", 1.0, observed_at=1000.0)
-    observability._connect().close()  # simulates a second process start / uvicorn reload
+    with observability._connect():  # simulates a second process start / uvicorn reload
+        pass
     observability.record_sample("tick.duration_sec", 2.0, observed_at=1001.0)
 
     rows = observability.history("tick.duration_sec", since_ts=0.0)
@@ -82,6 +83,77 @@ def test_record_samples_bulk_writes_one_row_per_metric():
 
     assert observability.history("a.metric", since_ts=0.0)[0]["value"] == 1.0
     assert observability.history("b.metric", since_ts=0.0)[0]["value"] == 2.0
+
+
+# --- services/db.py migration (Task 5) ---------------------------------
+
+def test_connect_closes_its_connection(monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file.
+
+    `real_connect = sqlite3.connect` deliberately captures whatever
+    sqlite3.connect currently is, which under pytest is
+    tests/support/runtime_isolation.py's _guarded_connect, not the raw
+    stdlib one - so the "never open a live data/*.db" guard stays in force
+    underneath this spy rather than being bypassed by it. The autouse
+    _isolated fixture above has already redirected DB_PATH into tmp_path,
+    so no per-test DB_PATH monkeypatching is needed here or in the two
+    tests below."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(observability.db.sqlite3, "connect", _tracking_connect)
+    with observability._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_table_and_index():
+    with observability._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "metric_samples" in tables
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+        assert "idx_metric_samples_metric_time" in indexes
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(metric_samples)")]
+        assert cols == ["observed_at", "metric", "value", "labels_json"]
+
+
+def test_connect_sets_explicit_busy_timeout_pragma():
+    """D3: 5000ms is sqlite3's existing implicit default made explicit,
+    not a new number invented for this module."""
+    with observability._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
 # --- capture_from_runtime: pure mapping, no I/O -------------------------
