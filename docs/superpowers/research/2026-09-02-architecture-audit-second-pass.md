@@ -418,7 +418,15 @@ stated (§5 C5). It is still worth doing for the serialization reason.
 | 08:24:52 / 08:24:58 | `task_supervisor`: `scheduler.auto_apply crashed`, `signal_resolution.background_check crashed` (60 supervisor error lines in the window) |
 | ~08:24–08:25 | log line 14737: **`OSError: [Errno 24] Too many open files`**; then `aiohttp ... Cannot connect to host external-api.kalshi.com:443 ... [Too many open files]` from `milestone_scan` for every category (116 EMFILE-bearing lines in total) |
 | 08:24 → 15:12 | **observability capture: zero samples for 408 minutes** (§3.2), no `fault_log` row records the gap |
-| 08:20–14:50 | 1,187 `unable to open database file` / `readonly database` lines, in 10-minute clusters: 08:20 192, 08:30 28, 08:40 53, 09:00 142, 09:10 223, 11:10 51, 12:40 34, 12:50 6, **13:00 352**, 13:10 43, 14:40 63 |
+| 08:20–14:50 | 1,187 `unable to open database file` / `readonly database`
+lines, in 10-minute clusters: 08:20 192, 08:30 28, 08:40 53, 09:00 142,
+09:10 223, 11:10 51, 12:40 34, 12:50 6, **13:00 352**, 13:10 43, 14:40 63
+(raw stdout-log count; a later cross-check by this document's PR-stage
+review, reading `fault_log.db`'s per-signature `count` column directly
+instead, totals 1,060 for the same two message strings — not a
+contradiction, since a fault-log write is itself a SQLite open and could
+itself have failed silently during the exact window it was trying to
+record; flagged, not reconciled, per the log-fragility caution above) |
 | 08:26 → 13:10 | `market_catalog.scan_batch` 5 faults; 13:01–13:08 `capture_writer` (2) and `signal_resolution` (2) `unable to open` faults |
 | ongoing → 20:44 | **`market_history.record_snapshot_from_ticker` raising `DatabaseError: database disk image is malformed`, 45 occurrences, last seen 20:44:11 UTC** — a corruption signature, distinct from and more severe than the `OperationalError: unable to open` class above (an `open(2)` failure); confirmed live by this document's own adversarial review, not in the original log sweep |
 | 14:45:34 | hot-reload (PR #429's `tools/quality_audit/persistence.py` arriving in the checkout) — last `capture_writer flush failed` line 14:45:34 |
@@ -633,7 +641,7 @@ instant of §4.4 is not separately timestamped, so which changes were
 present when this paragraph was first written cannot be reconstructed),
 now shows **four** changes, not two: `kalshi.markets_watchlist_mode: merge
 → exclusive`; `kalshi.max_children_per_parent: 5 → 0`; `kalshi.categories`
-narrowed from ten entries (Sports, Crypto, Climate and Weather,
+narrowed from eleven entries (Sports, Crypto, Climate and Weather,
 Entertainment, Economics, Politics, Mentions, Commodities, Financials,
 Science and Technology, Elections) to two (Crypto, Commodities); and the
 deletion of the 24-line calibration-audit comment block that sat between `whale_watcher_kalshi.min_contracts_by_series`'s
@@ -732,6 +740,17 @@ at 63 s; this document's author's own follow-up probes of
 both timed out at 63 s as well (01:26–01:28Z) and were not retried a third
 time, consistent with the data-plane rule's own caution against adding
 load to a system already this degraded.
+
+**Further degraded by the time of this document's PR-stage review**
+(01:36–01:44 UTC, 2026-09-03): `/api/health/pipeline` no longer returns
+at all within a 90 s budget (504 from nginx), and the `fastapi` access log
+showed no completion for that request several minutes after it was
+issued — the route is not merely slow now, it is not completing.
+`/api/state` (a lighter, non-tick-dependent path) still returned `200` in
+25.7 s with `"markets": []` in the body, independently corroborating zero
+known markets from a different code path than `/api/health/pipeline`'s
+own `markets_watched` field. This document's characterization above was
+accurate when written; the live condition has continued to worsen since.
 
 **`markets_watched: 0` is a 100% completeness failure on the app's primary
 discovery path**, worse in kind than anything §2–§4.6 measured (those are
@@ -1190,7 +1209,7 @@ catch a mistake (§2).
     priority argument.
 19. = #10 `apply_suggestion()` extraction (after 11).
 20. = #11, #12 The EV gate and markout measurement (unchanged; §6.7).
-21. = #13 The Preact migration (unchanged; after 7).
+21. = #13 The Preact migration (unchanged; after 8).
 22. = #16 Frontend DRY sweep (unchanged).
 23. `raw_trades` engine: **benchmark, then decide** — DuckDB and Parquet+
     DuckDB against the queries that read the table today (C9). No longer
@@ -1254,7 +1273,7 @@ are added in the same one-line-plus-owner form so they can move to
   snapshot rather than continue writing to it · you or me, Tier 0 · 2026-09-03.
 - **`config/settings.yaml`'s primary-checkout working tree carries two more
   uncommitted changes than this document's §4.4 first recorded**
-  (`max_children_per_parent: 5 → 0`, `categories` narrowed from ten
+  (`max_children_per_parent: 5 → 0`, `categories` narrowed from eleven
   entries to `Crypto`/`Commodities` only) — all four uncommitted changes
   need one decision together, not `markets_watchlist_mode` alone · you ·
   2026-09-03.

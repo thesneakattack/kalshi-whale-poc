@@ -6,9 +6,13 @@ twice ten minutes apart (2026-09-03 01:16 and 01:26 UTC): `GET
 /api/health/pipeline` returns `markets_watched: 0` and
 `last_tick_duration_sec: 2642.07`, identical across both probes (the tick
 has not completed since, not merely large), 45 of 46 open positions stale
-over 300 s. Full evidence and two uneliminated hypotheses (a genuinely
-empty pinned watchlist right now vs. `market_catalog.db`/`market_history.db`
-possibly unreadable or corrupt — see the malformed-database fault below) in
+over 300 s. **As of this file's own PR-stage review (01:36–01:44 UTC), it
+is worse still: `/api/health/pipeline` no longer returns at all within
+90 s (504), not merely reporting a stuck tick — re-check current state
+before assuming anything below is still accurate.** Full evidence and two
+uneliminated hypotheses (a genuinely empty pinned watchlist right now vs.
+`market_catalog.db`/`market_history.db` possibly unreadable or corrupt —
+see the malformed-database fault below) in
 `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
 §4.7. First step: re-read `/api/health/pipeline` a few minutes apart with
 no other change to rule out "nothing open right now"; if it persists, run
@@ -28,7 +32,7 @@ continue writing to a possibly-corrupt file.
 **`config/settings.yaml`'s uncommitted working-tree diff has grown to four
 changes**, not the two originally recorded: `kalshi.markets_watchlist_mode:
 merge → exclusive`, `kalshi.max_children_per_parent: 5 → 0`,
-`kalshi.categories` narrowed from ten entries to two (`Crypto`,
+`kalshi.categories` narrowed from eleven entries to two (`Crypto`,
 `Commodities`), and the calibration-audit comment block wiped a third time.
 Re-run `git diff config/settings.yaml` to see the current state before
 deciding anything — it may have changed again since this was written.

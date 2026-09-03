@@ -128,3 +128,65 @@ a second full review cycle (self-review, independent adversarial review,
 consolidation) runs against the PR as submitted, before merge. That is a
 distinct, later step from this artifact-stage consolidation and is not
 recorded here.
+
+## PR-stage review — completed, GO after fixes
+
+Per `.claude/rules/branching-and-ci.md`, once PR #439 was pushed and
+opened, a second, genuinely separate review cycle ran against the PR as
+submitted — a fresh Agent call, no memory of the drafting or artifact-stage
+sessions, re-deriving claims from the live app, `fault_log.db` read
+directly (bypassing the app's own unreachable `/api/health/faults` route),
+git, `gh`, and source.
+
+**Self-review** (this session): confirmed the PR diff contains exactly the
+7 intended files, `config/settings.yaml` untouched.
+
+**Adversarial review**
+(`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-pr-review.md`):
+**verdict GO-AFTER-FIXES.** Both of the artifact's most time-pressured,
+most-recently-added claims — the `market_history.db` corruption fault and
+the `markets_watched: 0`/stuck-tick incident — were independently
+re-confirmed exactly (the corruption fault's count and microsecond-precise
+timestamp matched a direct read-only query against the live
+`fault_log.db`; the stuck-tick finding was corroborated by two different
+code paths, `/api/health/pipeline` and `/api/state`, the latter returning
+`"markets": []` directly). Diff scope confirmed clean. Two real issues
+found that the artifact-stage cycle missed:
+
+1. **Must-fix**: `kalshi.categories`' committed list has **eleven**
+   entries, not ten, in all four places this document says "ten entries"
+   — confirmed independently against `git show HEAD:config/settings.yaml`
+   and cross-checked against an unrelated, already-resolved
+   `open-decisions.md` line that separately enumerates the same eleven
+   categories. Applied: `docs/next-action.md:31`,
+   `docs/open-decisions.md:50`, and both occurrences in the second-pass
+   document (§4.4, §9).
+2. **Should-fix**: §8 item 21's "(after 7)" cross-reference was a third
+   stale reference the renumbering pass missed (it corrected two: "after
+   10"→"after 11" and "on top of (14)"→"(15)", but not this one) —
+   reconstructed from those two confirmed examples that the pre-shift
+   de-poll item was 7, now 8. Applied: "(after 7)" → "(after 8)".
+
+Also folded in, non-blocking per the review's own classification but cheap
+and worth the reader knowing: the live app degraded further between the
+artifact-stage review and the PR-stage review (`/api/health/pipeline` now
+times out at 90s entirely rather than returning a stuck-tick reading) —
+added as a postscript to §4.7 and the top of `docs/next-action.md`; and a
+caveat that the 1,187-line fd-exhaustion count (raw stdout log, no longer
+re-derivable) diverges from a `fault_log.db`-aggregate cross-check (1,060)
+for reasons neither review resolved — flagged, not reconciled, added
+inline where the 1,187 figure first appears. Two purely informational
+items the review raised as out-of-scope for this PR were not acted on:
+`data/series_watcher.db` (~29 GB) and `data/candidate_log.db` (~3.67 GB)
+being unusually large and unaudited by either document (a future-session
+item, not this PR's), and confirmation that the `soak_analyzer`-class
+observation about log fragility already generalizes to this exact case.
+
+Per CLAUDE.md's fix-list-recheck provision ("check the revision against
+the fix list item by item... not a second full self-review-plus-
+adversarial-review pass"), the two required fixes and the informational
+additions above were applied directly rather than triggering a third full
+cycle — neither changes the document's scope or introduces a claim the
+prior two reviews never saw.
+
+**Verdict: GO.** Ready for `gh pr merge`.
