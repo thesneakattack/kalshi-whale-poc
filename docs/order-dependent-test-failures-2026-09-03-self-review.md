@@ -49,6 +49,21 @@ assignment pattern beyond the 9 files already in the issue's own
 reproduction set — a broader audit is implied as valuable by the fix
 options discussed but wasn't attempted here.
 
+## Addendum: PM decision + db.py migration coupling note (added after this self-review, before the adversarial review's result was known)
+
+Two additions to the Disposition section: the PM's own choice between the
+two fix candidates (narrow per-file sync, paired with a fail-loud CI
+guard — not the systemic `runtime_isolation.py` centralization, to avoid
+risking a regression that lands on every suite at once) with its
+disposition classified per CLAUDE.md's investigation-to-guard rule; and a
+coupling note for whoever tracks the `db.py` persistence-migration's later
+tasks. The migration-coupling claim was verified before writing it, not
+asserted from the PM's framing alone: confirmed directly that
+`capture_writer.py` imports raw `sqlite3` (no `from services import db`,
+no `db.connect()`/`register_schema()` anywhere in the file), so its write
+path is genuinely independent of whatever `services/db.py`'s unified
+layer does — the coupling risk described is real, not speculative.
+
 ## Verdict
 
 GO. No correction needed. Ready for adversarial review.

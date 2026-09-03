@@ -213,8 +213,7 @@ about, just contained to test infrastructure this time instead of the
 live `paper_broker.db` the 2026-08-23 incident hit.
 
 The actual fix (not attempted here, per assignment) has at least two
-honest candidates worth comparing on their own merits at the fix/plan
-stage, not decided here: (a) have `test_main_tick_executor_wiring.py`'s
+honest candidates: (a) have `test_main_tick_executor_wiring.py`'s
 module-level block also set `cw_module._STORE_PATHS`/`_buffers` for
 candidate_log's stores, mirroring `test_trading_gate.py`'s own pattern
 (narrow, fixes exactly this pair, doesn't address the general "any two
@@ -227,7 +226,43 @@ sync by hand — `runtime_isolation.py`'s own docstring describes fixing an
 almost identical incident this way already (the 2026-08-23 collection-
 order bug), and `capture_writer` isn't in `PERSISTENCE_MODULE_PATHS` at
 all today, confirmed by reading the tuple directly (line 46-77) —
-`"services.capture_writer"` is absent. (b) would be the systemic fix but
-touches shared infrastructure every test file depends on, matching
-exactly the tradeoff the assignment flagged as a decision to make with
-the mechanism in hand, not before.
+`"services.capture_writer"` is absent.
+
+**Decision (autotrade-1d, after reading this doc): (a), the narrow
+per-file sync — not (b).** Reasoning: centralizing touches shared test
+infrastructure every suite depends on, and this repo has twice built
+confident sweeping changes in adjacent territory that had to be shelved
+or reverted (`tick_executor.connection_for()`; PR #424's elastic-pool
+attempt) — a regression in `runtime_isolation.py` would land on every
+suite at once, a materially worse failure mode than the narrow defect
+this doc found. **But the narrow fix alone leaves the trap armed**: the
+next test file that redirects `candidate_log.DB_PATH` without also
+redirecting `capture_writer._STORE_PATHS` hits this identically, and
+fails exactly as silently. Per CLAUDE.md's investigation-to-guard rule,
+pair the narrow fix with an assertion that the two pointers agree —
+placed so a future divergence fails loudly at collection or session
+start, not as a mysterious empty read three files later. **Disposition:
+CI guard** (a loud, fail-fast assertion added alongside the narrow fix),
+not a runtime diagnostic (this is test-infrastructure, not live-app
+code) and not shared logic (rejected — that's option (b), the systemic
+centralization, deliberately not chosen here for the reason above).
+
+**A separate coupling worth flagging for whoever tracks the `db.py`
+migration, not this issue's own concern to resolve:** `capture_writer.py`
+imports raw `sqlite3` directly (confirmed: no `from services import db`,
+no `db.connect()`/`db.register_schema()` anywhere in the file) — its
+`_flush_store` always opens `_STORE_PATHS[store]` via bare
+`sqlite3.connect()`, entirely independent of whatever `services/db.py`'s
+unified layer does. Task 3 of the persistence-layer migration moved
+`candidate_log.py`'s own read/write paths onto `db.connect()`/
+`register_schema()`; `capture_writer` was deliberately left out of that
+migration's scope. In production this coupling is currently inert —
+nothing reassigns `candidate_log.DB_PATH` after import, so there's no
+live divergence risk today — but it means `candidate_log.db`'s on-disk
+location has two independent sources of truth in the codebase (`services/
+candidate_log.py:65`'s `DB_PATH`, and `services/capture_writer.py:92-96`'s
+hardcoded `_STORE_PATHS` entries), and if a future migration task changes
+how `DB_PATH` is resolved without capture_writer following along, this
+exact test-infrastructure bug's production-code analog becomes possible.
+Worth a sentence on whichever plan/issue tracks that migration's later
+tasks, not a blocker for anything here.
