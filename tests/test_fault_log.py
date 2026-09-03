@@ -212,3 +212,25 @@ def test_connect_closes_its_connection(monkeypatch):
         conn.execute("SELECT 1")
 
     assert closed == [True]
+
+
+def test_record_fault_stores_an_explicit_traceback():
+    """record_fault's tb param (added by Task 1 of docs/superpowers/plans/
+    2026-09-03-tier1-backend-hygiene.md) stores a pre-formatted stack/
+    traceback string into the same first_traceback slot record() populates
+    from a real exception - for a captured stack (loop_watchdog's stall
+    attribution), not a raised one."""
+    fl.record_fault("test_component", "test_op", "something worth knowing",
+                     tb="Traceback (most recent call last):\n  fake stack\n")
+    row = fl.recent(component="test_component", limit=1)[0]
+    assert row["first_traceback"] == "Traceback (most recent call last):\n  fake stack\n"
+
+
+def test_record_fault_tb_defaults_to_none_for_every_existing_caller():
+    """Every one of this function's other 10+ call sites omits tb - this
+    pins that omitting it still behaves exactly as before (first_traceback
+    stays NULL), so this additive param cannot be a silent behavior change
+    for anything that doesn't pass it."""
+    fl.record_fault("test_component2", "test_op2", "no traceback here")
+    row = fl.recent(component="test_component2", limit=1)[0]
+    assert row["first_traceback"] is None

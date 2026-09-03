@@ -13,11 +13,12 @@ for "is my critical backup fresh" alerting. Large-tier staleness is visible
 here (GET /api/backup/status's large_tier key) but not yet alerted on -
 a deliberate scope boundary, not an oversight.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from services.app_state import state
 from services.backup import backup
 from services.config.config_store import config_store
+from services.pagination import paginate
 
 router = APIRouter()
 
@@ -46,7 +47,7 @@ async def get_backup_status():
 
 
 @router.get("/api/backup/history")
-async def get_backup_history(limit: int = 20, tier: str = "regular"):
+async def get_backup_history(limit: int = Depends(paginate(max_limit=200)), tier: str = "regular"):
     return {"runs": backup.recent(limit=limit, tier=tier)}
 
 

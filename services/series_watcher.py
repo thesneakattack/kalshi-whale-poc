@@ -156,28 +156,7 @@ def _connect() -> sqlite3.Connection:
     # pattern that took the app down under rollback-journal mode on
     # 2026-08-11.
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_trades (
-            trade_id TEXT PRIMARY KEY,
-            ticker TEXT NOT NULL,
-            series TEXT NOT NULL,
-            observed_at REAL NOT NULL,
-            exchange_ts REAL,
-            taker_outcome_side TEXT,
-            taker_book_side TEXT,
-            taker_side_legacy TEXT,
-            resolved_side TEXT,
-            count_fp REAL,
-            yes_price_dollars REAL,
-            no_price_dollars REAL,
-            notional_usd REAL,
-            is_block_trade INTEGER,
-            excluded INTEGER NOT NULL DEFAULT 0,
-            raw_json TEXT NOT NULL
-        )
-        """
-    )
+    conn.execute(capture_writer.RAW_TRADES_DDL_SQL)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
     conn.execute(
@@ -211,33 +190,15 @@ async def _ensure_schema_aio(conn) -> None:
     """Same DDL as _connect() above, run once per (loop, db_path) key via
     _aio_db.connection_for()'s schema_init hook - _connect() itself stays
     untouched (still used by every write-path function this plan doesn't
-    convert). Duplicated rather than shared with _connect() because one is
-    sync (sqlite3.Connection) and one is async (aiosqlite.Connection) -
-    keep the two DDL blocks in sync by hand if this table's schema ever
-    changes; both are exercised by tests/test_series_watcher.py."""
+    convert). Shares capture_writer.RAW_TRADES_DDL_SQL with _connect()
+    (2026-09-03, Task 3c of docs/superpowers/plans/2026-09-03-tier1-
+    backend-hygiene.md) rather than a hand-kept-in-sync second copy - the
+    plain SQL string works identically for both conn.execute(sql) (sync)
+    and await conn.execute(sql) (aiosqlite), since only the caller's
+    execute differs, not the string itself; both paths are exercised by
+    tests/test_series_watcher.py."""
     await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS raw_trades (
-            trade_id TEXT PRIMARY KEY,
-            ticker TEXT NOT NULL,
-            series TEXT NOT NULL,
-            observed_at REAL NOT NULL,
-            exchange_ts REAL,
-            taker_outcome_side TEXT,
-            taker_book_side TEXT,
-            taker_side_legacy TEXT,
-            resolved_side TEXT,
-            count_fp REAL,
-            yes_price_dollars REAL,
-            no_price_dollars REAL,
-            notional_usd REAL,
-            is_block_trade INTEGER,
-            excluded INTEGER NOT NULL DEFAULT 0,
-            raw_json TEXT NOT NULL
-        )
-        """
-    )
+    await conn.execute(capture_writer.RAW_TRADES_DDL_SQL)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
     await conn.execute(
