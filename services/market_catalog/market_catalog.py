@@ -384,6 +384,27 @@ def apply_lifecycle_update(ticker: str, *, close_ts: float | None = None, status
         return cur.rowcount > 0
 
 
+def close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
+    """Sync, public sibling of services/diagnostics/diagnostics.py's
+    private async _close_ts_for_tickers - same query, same docstring
+    reasoning ('the one store that persists a close time per market
+    beyond the rotating watchlist'), added for services/market_history.py's
+    markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    strategy-edge-gate-implementation.md), which runs synchronously from
+    main.py's tick-loop maintenance path, not from an async route."""
+    if not tickers:
+        return {}
+    unique = list({t for t in tickers if t})
+    with _connect(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT ticker, close_ts FROM markets WHERE ticker IN ({placeholders}) "
+            "AND close_ts IS NOT NULL",
+            unique,
+        ).fetchall()
+    return {t: ts for t, ts in rows}
+
+
 def candidates_in_window(now: float, lookahead_sec: float, lookback_sec: float, min_volume: float = 0) -> list[dict]:
     """Every catalog market whose occurrence_ts falls within [now -
     lookback_sec, now + lookahead_sec] - the same window shape main.py's

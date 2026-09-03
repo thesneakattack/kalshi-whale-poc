@@ -1542,6 +1542,151 @@ def test_validate_entry_price_passes_inside_every_band():
     assert v.gate_name is None
 
 
+# ---- Edge/EV gate (strategy-edge-gate-implementation, Task 8) ----
+# _edge_gate_check is appended inside _validate_entry_price, after the
+# existing price-band checks, so a resting limit order's fill-time
+# re-check (validate_pending_fill) is held to the same bar as a fresh
+# signal - same reasoning as every other check in this function (see its
+# own docstring, the "four-entry gate bypass" fix). ticker/category/as_of
+# all default to None, so every pre-existing call site/test above this
+# comment keeps its exact prior behavior unchanged.
+
+def test_edge_gate_off_by_default_changes_nothing(tmp_path, monkeypatch):
+    """edge_gate_enabled defaults to false (Task 1) - confirms the gate
+    truly is a no-op until deliberately turned on, even with a ticker
+    passed through."""
+    from services import strategy_engine as se
+
+    result = se._validate_entry_price(
+        "yes", 0.5, 0.9, 0.5, {}, ticker="TICK-A", category="Crypto", as_of=time.time(),
+    )
+    assert result.ok
+
+
+def test_edge_gate_rejects_when_edge_below_min_edge(tmp_path, monkeypatch):
+    from services import strategy_engine as se, market_history as mh, series_cache as sc
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    monkeypatch.setattr(sc, "DB_PATH", tmp_path / "series_cache.db")
+    now = time.time()
+    # P_pre snapshot: yes_price 0.50 at (now - offset - 1s), so q_pre_now ~= 0.50
+    with mh._connect(mh.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO snapshots (ticker, series, yes_price, timestamp) VALUES (?,?,?,?)",
+            ("TICK-A", "TICK", 0.50, now - 11),
+        )
+    strat_cfg = {"edge_gate_enabled": True, "edge_gate_min_edge": 0.04,
+                 "edge_gate_pre_print_offset_sec": 10.0, "edge_gate_p_pre_max_age_sec": 600.0}
+    # No Δ_calibrated cache populated -> delta defaults to 0.0 -> p_est_side ~= q_pre_now ~= 0.50
+    # ask_now = price = 0.55 (bought 5c above P_pre) -> edge is clearly negative
+    result = se._validate_entry_price(
+        "yes", 0.55, 0.9, 0.5, strat_cfg, ticker="TICK-A", category="Crypto", as_of=now,
+    )
+    assert not result.ok
+    assert result.gate_name == "edge_gate"
+
+
+def test_edge_gate_fails_open_when_p_pre_unavailable(tmp_path, monkeypatch):
+    from services import strategy_engine as se, market_history as mh, series_cache as sc
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    monkeypatch.setattr(sc, "DB_PATH", tmp_path / "series_cache.db")
+    strat_cfg = {"edge_gate_enabled": True, "edge_gate_min_edge": 0.04}
+    # No snapshot rows at all -> P_pre unavailable -> fails open, gate not evaluated
+    result = se._validate_entry_price(
+        "yes", 0.55, 0.9, 0.5, strat_cfg, ticker="TICK-A", category="Crypto", as_of=time.time(),
+    )
+    assert result.ok  # falls through to EntryValidation(True)
+
+
+def test_edge_gate_fails_closed_on_flat_fee_type(tmp_path, monkeypatch):
+    from services import strategy_engine as se, market_history as mh, series_cache as sc
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    monkeypatch.setattr(sc, "DB_PATH", tmp_path / "series_cache.db")
+    sc.save(time.time(), [{"ticker": "TICK", "fee_type": "flat"}])
+    strat_cfg = {"edge_gate_enabled": True, "edge_gate_min_edge": 0.0}
+    result = se._validate_entry_price(
+        "yes", 0.55, 0.9, 0.5, strat_cfg, ticker="TICK-A", category="Crypto", as_of=time.time(),
+    )
+    assert result.ok  # not evaluated (flat), falls open the same way as missing P_pre
+
+
+def test_evaluate_admitted_decision_includes_edge_gate_fields_when_computed(tmp_path, monkeypatch):
+    """Task 9 (docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    implementation.md): design §9's informativeness criterion - p_est/
+    Δ_calibrated/edge must be inspectable per-signal, not only a boolean
+    pass/fail. EntryValidation.observed/.threshold already carry
+    edge/min_edge for the REJECT case (Task 8, see
+    test_edge_gate_rejects_when_edge_below_min_edge above); this is the
+    ADMITTED case - a signal that passed the gate - which carried no
+    extra fields before this task. Same setup shape as Task 8's
+    test_edge_gate_rejects_when_edge_below_min_edge (a real P_pre
+    snapshot, edge_gate_enabled: true) but with the P_pre snapshot ABOVE
+    the ask price (0.60 vs. 0.50) instead of below it, so
+    p_est_side (~0.60, delta defaults to 0.0 with no calibration cache
+    populated) clears ask_now (0.50) + fee + edge_gate_min_edge (0.04)
+    comfortably instead of failing it - drives the strategy's real
+    evaluate() end to end via this file's own _strategy/_signal/_cfg
+    fixtures rather than calling _validate_entry_price directly, so the
+    admitted decision dict this test asserts on is the one a real caller
+    actually receives."""
+    from services import series_cache as sc_module
+
+    monkeypatch.setattr(sc_module, "DB_PATH", tmp_path / "series_cache.db")
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    now = time.time()
+    # P_pre snapshot: yes_price 0.60 at (now - offset - 1s), so q_pre_now ~= 0.60
+    with mh_module._connect(mh_module.DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO snapshots (ticker, series, yes_price, timestamp) VALUES (?,?,?,?)",
+            ("TICK-A", "TICK", 0.60, now - 11),
+        )
+    cfg = _cfg(
+        edge_gate_enabled=True, edge_gate_min_edge=0.04,
+        edge_gate_pre_print_offset_sec=10.0, edge_gate_p_pre_max_age_sec=600.0,
+    )
+    # ask_now = signal price = 0.50 (bought 10c below P_pre) -> edge is clearly positive
+    decision = strategy.evaluate(_signal(timestamp=now, price=0.5, confidence=0.8), cfg, category="Crypto")
+    assert decision["action"] == "trade"
+    assert "edge_gate" in decision
+    assert set(decision["edge_gate"].keys()) >= {"p_est", "delta", "edge", "q_pre"}
+    assert decision["edge_gate"]["edge"] >= 0.04
+
+
+def test_evaluate_admitted_decision_omits_edge_gate_when_not_computed(tmp_path, monkeypatch):
+    """Counterpart to the test above - when the gate never ran (off by
+    default, per Task 1), the admitted decision dict carries no
+    fabricated edge_gate numbers, matching every pre-existing evaluate()
+    test in this file (none of which expect an "edge_gate" key)."""
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(_signal(), _cfg(), category="Crypto")
+    assert decision["action"] == "trade"
+    assert "edge_gate" not in decision
+
+
+def test_evaluate_and_validate_pending_fill_pass_ticker_category_as_of_through(tmp_path, monkeypatch):
+    """Wiring test, not a re-test of the gate's own logic (covered above) -
+    confirms both real call sites actually forward the new parameters,
+    not just that _validate_entry_price itself accepts them."""
+    from services import strategy_engine as se
+
+    calls = []
+    real = se._validate_entry_price
+
+    def _spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(se, "_validate_entry_price", _spy)
+    strategy = _strategy(tmp_path, monkeypatch)[0]
+    strategy.evaluate(_signal(), _cfg(), category="Crypto")
+    assert calls[-1].get("ticker") == "TICK-A" and calls[-1].get("category") == "Crypto"
+    calls.clear()
+    strategy.validate_pending_fill("TICK-A", "yes", 0.5, 0.9, _cfg(), category="Crypto")
+    assert calls[-1].get("ticker") == "TICK-A" and calls[-1].get("category") == "Crypto"
+
+
 def test_validate_pending_fill_records_a_rejection_in_candidate_log(tmp_path, monkeypatch):
     strategy, broker, risk = _strategy(tmp_path, monkeypatch)
     cfg = _cfg(min_unit_cost=0.6, max_unit_cost=0.8)

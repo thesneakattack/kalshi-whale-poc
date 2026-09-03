@@ -100,3 +100,18 @@ def test_existing_blob_write_is_unchanged(tmp_path, monkeypatch):
     cache.save(1755000000.0, series)
     result = cache.load()
     assert result == {"fetched_at": 1755000000.0, "series": series}
+
+
+def test_get_fee_type_returns_the_stored_value(tmp_path, monkeypatch):
+    """series_metadata.fee_type is already written by save() - this is
+    just the read side that Task 8's fail-closed flat-fee-type check
+    needs and that didn't exist before this task (confirmed by grep -n
+    '^def ' services/series_cache.py before writing this plan - only
+    load()/save() existed, no per-series read)."""
+    from services import series_cache as sc
+
+    monkeypatch.setattr(sc, "DB_PATH", tmp_path / "series_cache.db")
+    sc.save(1234.0, [{"ticker": "KXBTC15M", "fee_type": "quadratic"}])
+
+    assert sc.get_fee_type("KXBTC15M") == "quadratic"
+    assert sc.get_fee_type("NOT-CACHED-YET") is None

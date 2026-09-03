@@ -9,7 +9,9 @@ live" section) - see tests/test_active_terminal_refresh.py.
 """
 import asyncio
 import tempfile
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -182,6 +184,67 @@ def test_flush_secondary_capture_stores_flushes_all_three_and_prunes(monkeypatch
     }
 
 
+# --- Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+# implementation.md: hourly Delta_calibrated recompute-and-cache sweep,
+# wired next to _maybe_prune_capture_stores (same interval-guard idiom,
+# same call site inside _flush_secondary_capture_stores) -----------------
+
+
+def test_maybe_recompute_edge_gate_deltas_calls_recompute_when_due(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+    calls = []
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda cfg, now: calls.append((cfg, now)),
+    )
+    cfg = {"strategy": {"edge_gate_recompute_interval_sec": 3600}}
+    main._maybe_recompute_edge_gate_deltas(cfg, 1_755_000_000.0)
+    assert calls == [(cfg, 1_755_000_000.0)]
+
+
+def test_maybe_recompute_edge_gate_deltas_skips_when_not_due(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 1_755_000_000.0)
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    cfg = {"strategy": {"edge_gate_recompute_interval_sec": 3600}}
+    main._maybe_recompute_edge_gate_deltas(cfg, 1_755_000_100.0)  # only 100s later, not due yet
+
+
+def test_maybe_recompute_edge_gate_deltas_swallows_exceptions_into_fault_log(monkeypatch):
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+
+    def _boom(cfg, now):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main.confidence_calibration, "recompute_deltas", _boom)
+    recorded = []
+    monkeypatch.setattr(
+        main.fault_log, "record",
+        lambda component, operation, exc: recorded.append((component, operation, type(exc))),
+    )
+    main._maybe_recompute_edge_gate_deltas({}, 1_755_000_000.0)  # must not raise
+    assert recorded == [("whale_calibration", "recompute_edge_gate_deltas", RuntimeError)]
+
+
+def test_flush_secondary_capture_stores_recomputes_edge_gate_deltas(monkeypatch):
+    """Pins Task 7's own wiring point: _maybe_recompute_edge_gate_deltas
+    runs from inside _flush_secondary_capture_stores, next to
+    _maybe_prune_capture_stores - unconditionally, not gated behind
+    edge_gate_enabled (design's own stated exception: recomputing an
+    unused cache is cheap and harmless, and keeps delta_calibrated_for
+    warm from the moment the gate is eventually flipped on)."""
+    monkeypatch.setattr(main, "_last_edge_gate_delta_recompute_at", 0.0)
+    calls = []
+    monkeypatch.setattr(
+        main.confidence_calibration, "recompute_deltas",
+        lambda cfg, now: calls.append((cfg, now)),
+    )
+    asyncio.run(main._flush_secondary_capture_stores_async(CFG, 1_755_000_000.0))
+    assert calls == [(CFG, 1_755_000_000.0)]
+
+
 def test_resolve_and_record_settlements_runs_via_tick_executor(monkeypatch):
     calls = []
 
@@ -307,3 +370,34 @@ def test_trading_loop_stamps_category_tags_from_in_memory_series_cache():
     # Must check for series_ticker existence before looking it up
     assert 'event_meta.get("series_ticker")' in source or "series_ticker = event_meta.get" in source, \
         "trading_loop must safely check for series_ticker before lookup"
+
+
+def test_maybe_capture_markouts_writes_a_row_for_a_due_trade(monkeypatch):
+    """Pins the sweep's own wiring - not a re-test of pending_markout_targets/
+    record_markout's own logic (Task 3 already covers that), just that
+    main.py's sweep actually calls them with real broker/market_catalog/
+    market_history data, on its own interval, unconditionally (not gated
+    on edge_gate_enabled - design SS5/SS8's stated exception). Task 4 of
+    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md.
+
+    main.broker is the correct reference (a bare module-level name from
+    services/app_state.py, never state["broker"] - that key doesn't exist
+    anywhere in this codebase; corrected after independent adversarial
+    review, Finding F3)."""
+    now = time.time()
+    fake_trade = SimpleNamespace(id="t1", ticker="TICK-A", side="yes", price=0.6, timestamp=now - 400)
+    monkeypatch.setattr(main.broker, "trades_since", lambda after: [fake_trade])
+    monkeypatch.setattr(mc_module, "close_ts_for_tickers", lambda tickers: {})
+    monkeypatch.setattr(mh_module, "recent_price", lambda ticker, max_age_sec, as_of=None: 0.63)
+    recorded = []
+    monkeypatch.setattr(mh_module, "record_markout", lambda *a, **kw: recorded.append(a))
+    # _last_markout_capture_at gate forced open via monkeypatch (auto-
+    # reverting), matching this file's own established convention for the
+    # sibling _last_capture_prune_at gate above rather than a raw module
+    # assignment.
+    monkeypatch.setattr(main, "_last_markout_capture_at", 0.0)
+
+    cfg = {"strategy": {"edge_gate_markout_offsets_sec": [300, 3600, None]}}
+    main._maybe_capture_markouts(cfg, now)
+
+    assert recorded  # at least the due 300s offset was captured

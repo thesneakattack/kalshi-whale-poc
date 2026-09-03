@@ -765,6 +765,30 @@ class PaperBroker:
                 (starting_bankroll, starting_bankroll),
             )
 
+    def trades_since(self, after: float | None) -> list[Trade]:
+        """Every real ENTRY (a PaperBroker.open_position row) with
+        timestamp > after - the markout-capture sweep's own read of 'what
+        entries exist to capture markouts for' (Task 4,
+        strategy-edge-gate-implementation.md). open_position and
+        close_position write into this exact same trades table with no
+        type/action discriminator column, so close rows are filtered out
+        here via the reason column's own established convention -
+        close_position always prefixes reason with "closed: "
+        (services/history/trade_analytics.py's build_trade_history and
+        this module's own correct_erroneous_close both already depend on
+        the identical convention). Without this filter a close row's own
+        exit price/timestamp would be fed into the markout sweep as a
+        phantom entry (adversarial review Finding F4). Unlike
+        count_trade_range/clear_trade_range, this returns full rows, not
+        just a count."""
+        where, params = self._trade_range_where(before=None, after=after)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, ticker, side, size, price, reason, timestamp, config_fingerprint, "
+                f"fee, signal_seen_at FROM trades {where} ORDER BY timestamp ASC", params,
+            ).fetchall()
+        return [Trade(*row) for row in rows if not row[5].startswith("closed:")]
+
     def count_trade_range(self, before: float | None = None, after: float | None = None) -> int:
         """Danger Zone preview support (2026-08-16 direct request: purge a
         noisy tuning stretch without losing valid history on either side of
