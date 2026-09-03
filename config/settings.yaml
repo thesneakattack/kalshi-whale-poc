@@ -33,6 +33,24 @@ kalshi:
   # poll_interval_sec stays the cadence for non-streaming (REST-primary) mode,
   # unchanged.
   safety_net_interval_sec: 30
+  # 2026-09-03 live-incident fix: the WS ticker path's check_exits/
+  # check_pending_fills/position_netting.review block (Task 38, see
+  # safety_net_interval_sec's comment above) ran on every single ticker
+  # message - 10+/sec across 726 watched markets - instead of once per
+  # tick. Each run does uncached per-open-position work (recent_price/
+  # volatility/analyst_lean/series_stats), and the handler never yields
+  # mid-run, so a backlog of these blocked the single-threaded event
+  # loop long enough to stall the main tick loop itself (observed: a
+  # 1,251s tick, with the oldest stale position's age matching that
+  # duration almost exactly). This caps how often the block runs from
+  # the ticker path; it does not gate _process_stream_trade's own
+  # check_exits call, which only fires when a whale signal was actually
+  # emitted (~0.1% of trades) and is already self-throttled by
+  # construction. 2.0s is 3x faster than poll_interval_sec's pre-
+  # streaming 6s floor, so exit responsiveness stays strictly better
+  # than the pre-streaming baseline while cutting this block's
+  # invocation rate roughly 20x at the observed message rate.
+  ticker_exit_check_min_interval_sec: 2.0
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
   market_lifecycle_stream_enabled: true

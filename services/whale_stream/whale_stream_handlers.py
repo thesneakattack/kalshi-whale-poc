@@ -8,6 +8,10 @@ _process_stream_trade and _process_stream_ticker call strategy.check_exits(
 ...) directly - this cross-boundary call (position-management logic
 invoked from the stream path, not just from trading_loop) is a real,
 deliberate coupling from the original code, preserved exactly as-is here.
+_process_stream_ticker's own check_exits/check_pending_fills/
+position_netting.review block is rate-limited (2026-09-03 live-incident
+fix, ticker_exit_check_min_interval_sec) - see _last_ticker_exit_check_at's
+own comment below.
 """
 import asyncio
 import time
@@ -26,6 +30,16 @@ from services.market_catalog import market_catalog
 from services.market_lookup import _category_by_ticker, _close_time_by_ticker
 from services.whale_stream.decision_bridge import _handle_close_decision, _handle_fill_decision, _handle_signal
 from services.ws_manager import ws_manager
+
+
+# 2026-09-03 live-incident fix: throttles how often _process_stream_ticker's
+# check_exits/check_pending_fills/position_netting.review block runs - see
+# ticker_exit_check_min_interval_sec's own comment in config/settings.yaml
+# for the mechanism and reasoning. Global (not per-ticker): the block
+# already re-evaluates broker.positions/pending orders in full on every
+# call regardless of which ticker triggered it, so one shared gate matches
+# its existing all-positions-at-once shape.
+_last_ticker_exit_check_at = 0.0
 
 
 def build_fill_validator(cfg: dict, now: float):
@@ -228,10 +242,20 @@ async def _process_stream_trade(trade: dict) -> None:
         now = time.time()
         for signal in signals:
             await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
+        # Deliberately NOT throttled like _process_stream_ticker's own
+        # check_exits call (see ticker_exit_check_min_interval_sec in
+        # config/settings.yaml): this call only runs when fetch_signals
+        # actually returned a signal, which the provider's own docstring
+        # puts at ~0.1% of trades - already self-throttled by construction,
+        # and adding latency here would slow exit-checking exactly when a
+        # fresh whale signal just landed, the moment responsiveness matters
+        # most. tick_cache wired for correctness/consistency only, same as
+        # the ticker path - see that call site's comment on why it costs
+        # nothing today.
         for close_decision in strategy.check_exits(
             state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
             category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-            latest_prices_updated_at=state["latest_prices_updated_at"],
+            tick_cache={}, latest_prices_updated_at=state["latest_prices_updated_at"],
         ):
             await _handle_close_decision(close_decision)
         signals_emitted = len(signals)
@@ -249,6 +273,7 @@ async def _process_stream_trade(trade: dict) -> None:
 
 
 async def _process_stream_ticker(ticker_msg: dict) -> None:
+    global _last_ticker_exit_check_at
     # Canonical key (A14): the stream gateway normalizes every message
     # before this callback (services/kalshi/contracts/ticker.py owns the
     # market_ticker alias) - handlers read vendor-neutral fields only.
@@ -355,36 +380,64 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         ))
     if state["running"]:
         cfg_now = config_store.get()
-        # check_exits keeps its own pre-existing signal_feed gate - it
-        # searches signal_feed for the position to exit-check, so an empty
-        # feed is a real no-op for it specifically, not a reason to skip
-        # the other two below (Family-C-lite, P8 Task 38: check_pending_
-        # fills and position_netting.review used to only ever run from
-        # trading_loop's tick, on its own state["running"] gate with no
-        # signal_feed dependency - same gate here, unchanged behavior).
-        if state.get("signal_feed"):
-            for close_decision in strategy.check_exits(
-                state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
-                opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-                latest_prices_updated_at=state["latest_prices_updated_at"],
+        # 2026-09-03 live-incident fix: this whole block used to run on
+        # every ticker message (10+/sec across 726 watched markets)
+        # instead of once per tick, and none of the three calls below
+        # yield mid-run - a backlog of them blocked the single-threaded
+        # event loop long enough to stall the main tick loop itself. See
+        # ticker_exit_check_min_interval_sec's comment in config/
+        # settings.yaml for the full mechanism and the reasoning behind
+        # 2.0s. Bookkeeping above this line (latest_prices/latest_asks,
+        # series_watcher, market_history snapshot) still runs on every
+        # message unthrottled - only this evaluate-and-act block is
+        # rate-limited, so price/state freshness is unaffected.
+        # .get(...) with a fallback, not cfg_now["kalshi"][...] direct
+        # indexing: several existing tests monkeypatch config_store.get()
+        # with a partial dict scoped to what they're testing (no "kalshi"
+        # key at all) - fail open to the same 2.0 default settings.yaml
+        # ships, the codebase's uniform rule for missing config, rather
+        # than crashing every test that doesn't happen to stub this key.
+        _min_interval = (cfg_now.get("kalshi") or {}).get("ticker_exit_check_min_interval_sec", 2.0)
+        if now - _last_ticker_exit_check_at >= _min_interval:
+            _last_ticker_exit_check_at = now
+            # tick_cache (I13 P4 Task 20): threaded through the same as
+            # main.py's tick loop already does. Confirmed to cost nothing
+            # today (positions table is `ticker TEXT PRIMARY KEY` and
+            # _exit_confidence is called once per position, so no key in
+            # this dict is ever read back within one call) but wiring it
+            # is the correct, zero-risk default and closes a silent gap
+            # if that one-position-per-ticker invariant ever changes.
+            tick_cache: dict = {}
+            # check_exits keeps its own pre-existing signal_feed gate - it
+            # searches signal_feed for the position to exit-check, so an empty
+            # feed is a real no-op for it specifically, not a reason to skip
+            # the other two below (Family-C-lite, P8 Task 38: check_pending_
+            # fills and position_netting.review used to only ever run from
+            # trading_loop's tick, on its own state["running"] gate with no
+            # signal_feed dependency - same gate here, unchanged behavior).
+            if state.get("signal_feed"):
+                for close_decision in strategy.check_exits(
+                    state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
+                    opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+                    tick_cache=tick_cache, latest_prices_updated_at=state["latest_prices_updated_at"],
+                ):
+                    await _handle_close_decision(close_decision)
+            # Safe under near-simultaneous callers (this WS site + trading_
+            # loop's own tick, until Task 39 slows it) - proven in
+            # tests/test_position_management_concurrency.py before this wiring
+            # landed: both functions are plain synchronous defs that mutate
+            # broker state as their last step before returning, so a second
+            # caller scheduled right after always reads the first caller's
+            # mutation and finds nothing left to act on. Never claimed/opened/
+            # closed twice.
+            for fill_decision in broker.check_pending_fills(
+                state["latest_prices"], state["latest_asks"], now=now, validate_fn=build_fill_validator(cfg_now, now),
+            ):
+                await _handle_fill_decision(fill_decision, now)
+            for close_decision in position_netting.review(
+                broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg_now, now=now,
             ):
                 await _handle_close_decision(close_decision)
-        # Safe under near-simultaneous callers (this WS site + trading_
-        # loop's own tick, until Task 39 slows it) - proven in
-        # tests/test_position_management_concurrency.py before this wiring
-        # landed: both functions are plain synchronous defs that mutate
-        # broker state as their last step before returning, so a second
-        # caller scheduled right after always reads the first caller's
-        # mutation and finds nothing left to act on. Never claimed/opened/
-        # closed twice.
-        for fill_decision in broker.check_pending_fills(
-            state["latest_prices"], state["latest_asks"], now=now, validate_fn=build_fill_validator(cfg_now, now),
-        ):
-            await _handle_fill_decision(fill_decision, now)
-        for close_decision in position_netting.review(
-            broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg_now, now=now,
-        ):
-            await _handle_close_decision(close_decision)
     bump_generation()
 
 
