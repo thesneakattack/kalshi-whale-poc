@@ -299,6 +299,54 @@ def _series_win_rates(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _price_band_label(q_pre: float) -> str:
+    """Same fixed bands as _CONFIDENCE_BANDS above, applied to q_pre
+    instead of composite_confidence - both are 0-1 probabilities, and
+    reusing an already-shipped, already-labeled partition avoids a second,
+    independently-tuned banding scheme for what is structurally the same
+    kind of quantity. Falls back to the last band for q_pre == 1.0 exactly,
+    same 1.01-upper-bound trick _CONFIDENCE_BANDS already uses."""
+    for lo, hi, label in _CONFIDENCE_BANDS:
+        if lo <= q_pre < hi:
+            return label
+    return _CONFIDENCE_BANDS[-1][2]
+
+
+def _bucket_delta_by_category_price_band(
+    rows: list[dict], min_bucket_n: int,
+) -> dict[tuple[str, str], float]:
+    """Δ_calibrated(category, price_band) = mean(y - q_pre) over resolved
+    signals in that cell, per design §2.2/§2.3 Alternative A. Each row
+    needs "category" (trade_category.categories_for_tickers, attached by
+    the caller - Task 7) and "q_pre" (kalshi_fees.unit_cost(side,
+    P_pre_at_seen_at), attached by the caller via market_history.recent_price -
+    this module deliberately stays statistics-only, not a second place
+    that knows how to reconstruct P_pre) and "correct" (0/1, already on
+    every row from signal_log).
+
+    Deliberately fixed unit-cost bands, not _bucket_win_rates' rank-based
+    tertiles - see this plan's own "What changed" section for why: this
+    dimension (category x price-band) is a natural, externally fixed grid,
+    not a single continuous factor that needs protecting against a
+    near-constant value the way _bucket_win_rates' rank-tertile mechanism
+    does. Reuses that function's GUARD philosophy, not its algorithm: a
+    cell with fewer than min_bucket_n resolved signals is simply absent
+    from the result (never a fabricated small-sample estimate) - the
+    caller's own lookup (Task 7) falls back to 0.0 (design §2.4's neutral
+    'no measurable edge yet' default) for any missing cell."""
+    cells: dict[tuple[str, str], list[float]] = {}
+    for r in rows:
+        if r.get("category") is None or r.get("q_pre") is None:
+            continue
+        key = (r["category"], _price_band_label(r["q_pre"]))
+        cells.setdefault(key, []).append(r["correct"] - r["q_pre"])
+    return {
+        key: sum(deltas) / len(deltas)
+        for key, deltas in cells.items()
+        if len(deltas) >= min_bucket_n
+    }
+
+
 def compute_input_coverage(rows: list[dict], resolved_count: int) -> dict:
     """Per-fabrication-site absence rates - depth_factor/trend_factor/
     agreement_factor/raw_spread's honest-None coverage, plus an

@@ -404,3 +404,28 @@ def test_input_coverage_raw_spread_reads_the_row_level_column_not_factors():
     coverage = result["report"]["input_coverage"]["raw_spread"]
     assert coverage["n"] == 30
     assert coverage["absent_pct"] == pytest.approx(5 / 30 * 100, abs=0.1)
+
+
+def _edge_row(category, q_pre, correct):
+    return {"category": category, "q_pre": q_pre, "correct": 1 if correct else 0}
+
+
+def test_bucket_delta_computes_mean_y_minus_q_pre_per_cell():
+    from services.whale_calibration import confidence_calibration as cc
+
+    rows = (
+        [_edge_row("Crypto", 0.7, True)] * 60   # y=1, q_pre=0.7 -> delta +0.3 each
+        + [_edge_row("Crypto", 0.7, False)] * 40  # y=0, q_pre=0.7 -> delta -0.7 each
+        # mean = (60*0.3 + 40*-0.7) / 100 = (18 - 28) / 100 = -0.10
+    )
+    deltas = cc._bucket_delta_by_category_price_band(rows, min_bucket_n=50)
+    assert ("Crypto", "70-80%") in deltas
+    assert deltas[("Crypto", "70-80%")] == pytest.approx(-0.10, abs=1e-9)
+
+
+def test_bucket_delta_omits_cells_under_min_bucket_n():
+    from services.whale_calibration import confidence_calibration as cc
+
+    rows = [_edge_row("Sports", 0.55, True)] * 10  # under min_bucket_n=50
+    deltas = cc._bucket_delta_by_category_price_band(rows, min_bucket_n=50)
+    assert ("Sports", "50-60%") not in deltas
