@@ -30,6 +30,7 @@ from services import settlement_resolver
 from services import capture_writer
 from services.diagnostics import diagnostics
 from services.history import regime_analytics
+from services.history import suggestion_decisions
 from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
 from services.market_events import event_schedule
@@ -591,6 +592,13 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
                 last_applied_by_path=config_performance.all_last_applied_by_path(),
                 series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
                 category_rows=regime_analytics.by_category(adv_all_rows),
+                # 2026-09-03, Task 3a of docs/superpowers/plans/2026-09-03-
+                # tier1-backend-hygiene.md: this is the one UNSUPERVISED
+                # call site (no human between a suggestion and applying it)
+                # - the one that most needs to honor a decline, and
+                # previously didn't (advisory_engine.py's declined_ids
+                # docstring, :926-929).
+                declined_ids=suggestion_decisions.declined_ids(),
             )
             min_confidence_rank = _CONFIDENCE_RANK.get(adv_cfg.get("auto_apply_min_confidence", "higher"), 2)
             # Direct report (2026-08-11): "auto apply should wait for a

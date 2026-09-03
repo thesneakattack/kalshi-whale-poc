@@ -98,6 +98,7 @@ async def _analyze_market_uncached(
             last_applied_by_path=config_performance.all_last_applied_by_path(),
             series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
             category_rows=regime_analytics.by_category(all_rows),
+            declined_ids=suggestion_decisions.declined_ids(),  # 2026-09-03, Task 3a
         )
     snapshot = ml_feed.build_context_snapshot(
         cfg=cfg,
@@ -280,6 +281,7 @@ def _build_full_spectrum_context(cfg: dict) -> dict:
         last_applied_by_path=config_performance.all_last_applied_by_path(),
         series_evaluator_rows=_series_evaluator_overview_with_crosscheck(cfg),
         category_rows=category_rows,
+        declined_ids=suggestion_decisions.declined_ids(),  # 2026-09-03, Task 3a
     )
     # Busiest 10 series by observed trade volume - a real, disclosed bound
     # (not exhaustive) so this section can't grow unbounded as more series
