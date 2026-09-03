@@ -114,5 +114,3 @@ complete: **GO** to proceed past it.
   just in the synthetic benchmark) — explicitly owed by that PR, not by
   this research stage, but the natural next confirmation of everything
   this document and its addendum describe.
-
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

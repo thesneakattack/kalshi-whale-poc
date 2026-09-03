@@ -98,7 +98,7 @@ $ docker top ddev-kalshi-whale-poc-fastapi -eo pid,ppid,args | grep spawn_main
 ```
 Host PID 1803872 = container PID 25541. `cat /proc/1803872/io` and
 `ls /proc/1803872/fd` (run directly as `davidf` on the host, no `docker exec`,
-no `sudo`) both succeed. This is the access path used for §6's fd census and
+no `sudo`) both succeed. This is the access path used for §5.1's fd census and
 the `/proc/<pid>/io` cross-check in §5.2 — genuinely reproduced here, not
 copied from a prior report.
 
@@ -173,7 +173,7 @@ diagnostic added to `orient.sh`, per PR #515's own "Investigation-to-guard"
 framing), and **not part of this document's mechanism** for the worker's own
 pin, which their control measurement shows is independent of worktree count.
 
-### 2.1 What `handler_time_by_class` shows, live, twice, ~20 minutes apart
+### 2.1 What `handler_time_by_class` shows, live, twice, ~10.4 minutes apart
 
 `GET /api/health/pipeline`'s `ingest.queue_health.handler_time_by_class`
 measures wall-clock `time.monotonic()` around `await self._handle_message(...)`
@@ -266,7 +266,7 @@ sampled) cannot occur under this design, on this event-loop model, ever.
 **This is why this document's mechanism for §4 rests on (b) live correlated
 telemetry + (c) source-code proof, not (a) a captured stack of the blocker
 itself** — the one diagnostic that could have delivered (a) turns out, on
-direct reading, to be structurally incapable of it. §7 names the specific
+direct reading, to be structurally incapable of it. §8 names the specific
 fix.
 
 ## 4. The mechanism, read end to end
@@ -331,10 +331,11 @@ trade-channel WS subscription. It is genuinely a second instance of the
 same uncached-call defect, but it is reached only after `if not signals:
 return` — i.e. only when the whale-scoring pipeline actually emitted a
 signal for that specific trade, which §2.1's own `handler_time_by_class`
-data shows is rare relative to raw trade volume ("trade" class averaging
-2.57-5.27ms lifetime vs. "ticker" class's 46-113ms+, where the ticker call
-is unconditional on `signal_feed` being non-empty, true most of the time in
-normal operation). This document's §4 mechanism walkthrough is scoped to
+data shows is rare relative to raw trade volume ("trade" class's own two
+window averages, 2.57ms and 2.69ms, against "ticker" class's 45.88-112.7ms
+in the same two pulls — where the ticker call is unconditional on
+`signal_feed` being non-empty, true most of the time in normal operation).
+This document's §4 mechanism walkthrough is scoped to
 the ticker-channel call site because that is where the volume is; the
 trade-channel call site is the same defect at a rate too low to be the
 dominant contributor to Condition 1/2, not a case this document overlooked.
@@ -429,7 +430,7 @@ in §8 as the next thing to measure if more precision is wanted.
 all** (confirmed: full function signature read, `def review(broker,
 market_titles, event_titles, latest_prices, cfg, now=None)`). With
 `position_netting.enabled: true` (confirmed live, `config/settings.yaml:220`),
-`describe_groups(...)` (line 274) calls `_materiality_bar` (line 227) for
+`describe_groups(...)` (line 274) calls `_materiality_bar` (`def` at line 229) for
 every group not already classified `locked_profit`/`locked_loss` — a
 group already known to be a locked win or loss never triggers this read.
 For every group that does reach it, `_materiality_bar` contains:
@@ -467,8 +468,11 @@ GIL throughout. None of `check_exits`, `_exit_confidence`,
 the duration of this whole chain, the event loop's one thread is doing real,
 GIL-holding, mostly-CPU work (SQLite's index-seek queries are fast once
 connected — `idx_snapshots_ticker_ts ON snapshots (ticker, timestamp)` exists,
-confirmed — so most of the cost is Python-level `sqlite3.connect()`/pragma
-overhead plus the pure-Python statistics, not disk-wait). This matches §2's
+confirmed, and its column order matches `recent_price`'s query shape by
+inspection — reasoned from the index definition, not `EXPLAIN QUERY PLAN`-
+verified; see §8's still-open item — so most of the cost is Python-level
+`sqlite3.connect()`/pragma overhead plus the pure-Python statistics, not
+disk-wait). This matches §2's
 thread sampling exactly: the main thread in state `R` (running), not `D`
 (uninterruptible/I/O-wait), for the overwhelming majority of every window
 sampled.
@@ -637,14 +641,24 @@ accumulation over the container's lifetime), separate from this task's scope.
   measured for hot-path overhead before shipping, same as `loop_watchdog`'s
   own existing 0.1s tick already was.
 - ~~A live before/after measurement of threading `tick_cache` through the
-  two WS call sites~~ — **done, 2026-09-03, PR #526** (`fix/whale-stream-
-  ticker-handler-blocking`). See §10 below: the fix that shipped was a
-  global min-interval throttle on the ticker-channel block (not per-message
-  `tick_cache` alone, which turned out to be a no-op given the schema — see
-  §10), and it was measured, not assumed. This document's own deferral was
-  correct: implementation shape was genuinely a later-stage decision, made
-  with information this research alone didn't have (the schema check that
-  showed `tick_cache` wouldn't help by itself).
+  two WS call sites~~ — **implemented and benchmarked, 2026-09-03, PR #526**
+  (`fix/whale-stream-ticker-handler-blocking`, open/in its own review cycle
+  as of this writing — see §10 below for current status). The fix that
+  reduced measured cost was a global min-interval throttle on the
+  ticker-channel block (not per-message `tick_cache` alone, which turned
+  out to be a no-op given the schema — see §10), and it was measured, not
+  assumed. This document's own deferral was correct: implementation shape
+  was genuinely a later-stage decision, made with information this
+  research alone didn't have (the schema check that showed `tick_cache`
+  wouldn't help by itself).
+- **`EXPLAIN QUERY PLAN` on `idx_snapshots_ticker_ts`** against
+  `recent_price`'s exact query shape — flagged by the self-review, checked
+  and confirmed still not run by the stage-level adversarial review (its
+  F14), and named again here so §8 itself carries it rather than leaving it
+  only in the reviews. Affects only the precision of §4.4's "index-seek
+  queries are fast once connected" claim (currently reasoned from column
+  order, not `EXPLAIN`-verified) — not the central mechanism, which holds
+  either way.
 - **A WAL-checkpoint/temp-file trace** for §5.2's write/cancel-byte ratio —
   sampling `PRAGMA wal_checkpoint(PASSIVE)` stats or `strace -e trace=write,
   unlink` (itself blocked by the same missing `CAP_SYS_PTRACE` from inside
