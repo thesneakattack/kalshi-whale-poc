@@ -20,12 +20,45 @@
 # Assumes the caller already installed requirements-dev.txt and already
 # checked scripts/ci-skip-heavy-suite.sh's SKIP verdict - this script only
 # decides full-suite vs testmon-scoped and runs pytest accordingly.
+#
+# PYTEST_SPLIT (2026-09-03, required): "app" or "tooling" - selects which
+# half of the suite this invocation runs, per
+# tools/classify_pytest_app_vs_tooling.py's AST-based, import-derived split
+# (a test file is "app" iff it imports something from services.* or main,
+# anywhere in its own source, including function-local lazy imports - see
+# that script's own module docstring for why this boundary is safe: the CI
+# pipeline audit's pytest-profile doc already measured app-code and
+# tooling-code tests as provably non-interacting). Two callers,
+# .woodpecker/tests-pytest-app.yml and tests-pytest-tooling.yml, each their
+# own required branch-protection context - replaces the single
+# tests-pytest.yml context that used to run everything unconditionally on
+# every PR/main push, the actual "massive suite on every push" complaint
+# this whole audit started from. Each half gets its own testmon cache
+# subdirectory (see CACHE_DIR below) so the two runs' fingerprints never
+# clobber each other.
 set -u
+
+case "${PYTEST_SPLIT:-}" in
+  app|tooling) ;;
+  *)
+    echo "ci-testmon-run.sh: PYTEST_SPLIT must be 'app' or 'tooling', got '${PYTEST_SPLIT:-<unset>}'" >&2
+    exit 1
+    ;;
+esac
+
+TARGET_FILES=$(python3 -m tools.classify_pytest_app_vs_tooling --list "$PYTEST_SPLIT")
+if [ -z "$TARGET_FILES" ]; then
+  echo "ci-testmon-run.sh: classify_pytest_app_vs_tooling returned zero files for '$PYTEST_SPLIT' - failing loud, not silently passing with nothing to test" >&2
+  exit 1
+fi
+# shellcheck disable=SC2086
+TARGET_PATHS=$(for f in $TARGET_FILES; do printf 'tests/%s ' "$f"; done)
 
 if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_PIPELINE_EVENT:-}" = "manual" ] || [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
   # The actual merge gate (PR event), a manual "run the tests" trigger, or a
-  # just-merged main push - always full, unscoped, never testmon-selected.
-  # See tests-pytest.yml's header, tiers 2 and 4.
+  # just-merged main push - always full, unscoped, never testmon-selected,
+  # for THIS half of the suite. See tests-pytest-app.yml/tests-pytest-tooling.yml's
+  # own headers, tiers 2 and 4.
   #
   # -m "not slow" (2026-08-26): excludes two tests
   # (`tests/test_quality_audit.py::test_unit_cost_scanner_is_clean_on_this_repo`,
@@ -38,18 +71,22 @@ if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_PIPELINE_EVENT:-}" =
   # left unmarked - see docs/superpowers/research/2026-09-02-ci-pipeline-audit.md's
   # Tier 1 #3 addendum). That job is
   # unaffected by this change; it doesn't invoke pytest at all.
-  exec python -m pytest -n 4 -m "not slow"
+  # shellcheck disable=SC2086
+  exec python -m pytest -n 4 -m "not slow" $TARGET_PATHS
 fi
 
 # A push to a non-main branch, not yet a PR - testmon-scoped (tier 3).
-# Restore this branch's cached baseline if one exists (a brand-new branch
-# has none, so pytest-testmon naturally treats everything as unstable and
-# runs it all - correct, safe first-push behavior, not a special case
-# here). wp-testmon-cache is a Woodpecker-managed named volume mounted at
-# /testmon-cache (tests-pytest.yml); one subdirectory per branch, slashes
-# stripped since a branch name like fix/foo can't be a single path segment.
+# Restore this branch+split's cached baseline if one exists (a brand-new
+# branch has none, so pytest-testmon naturally treats everything as
+# unstable and runs it all - correct, safe first-push behavior, not a
+# special case here). wp-testmon-cache is a Woodpecker-managed named volume
+# mounted at /testmon-cache; one subdirectory per branch+split, slashes in
+# the branch name stripped since e.g. fix/foo can't be a single path
+# segment, split suffix appended so app and tooling never share one
+# .testmondata (their file sets, and therefore their fingerprints, are
+# disjoint by construction - see classify_pytest_app_vs_tooling.py).
 BRANCH_KEY=$(echo "$CI_COMMIT_BRANCH" | tr '/' '_')
-CACHE_DIR="/testmon-cache/$BRANCH_KEY"
+CACHE_DIR="/testmon-cache/${BRANCH_KEY}_${PYTEST_SPLIT}"
 mkdir -p "$CACHE_DIR"
 if [ -f "$CACHE_DIR/.testmondata" ]; then
   cp "$CACHE_DIR/.testmondata" .testmondata
@@ -59,7 +96,8 @@ fi
 # checks this flag before its `-m`-triggered deactivation branch) - every
 # push since this script shipped 2026-08-26 had been running the full
 # suite under testmon for nothing; this restores real per-push selection.
-python -m pytest --testmon --testmon-forceselect -n 4 -m "not slow"
+# shellcheck disable=SC2086
+python -m pytest --testmon --testmon-forceselect -n 4 -m "not slow" $TARGET_PATHS
 STATUS=$?
 cp .testmondata "$CACHE_DIR/.testmondata"
 exit "$STATUS"
