@@ -16,7 +16,7 @@ thin wrappers, same shape as every other route in this file.
 """
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services import (
@@ -34,6 +34,7 @@ from services.app_state import broker, bump_generation
 from services.config.config_paths import _config_value_at_path
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
+from services.pagination import paginate
 
 router = APIRouter()
 
@@ -72,7 +73,7 @@ async def undecline_suggestion(body: UndeclineSuggestionBody):
 
 
 @router.get("/api/suggestions/declined")
-async def get_declined_suggestions(limit: int = 50):
+async def get_declined_suggestions(limit: int = Depends(paginate(max_limit=200))):
     return {"declined": suggestion_decisions.list_declined(limit)}
 
 
@@ -190,7 +191,9 @@ async def post_market_analyst_analyze(body: MarketAnalystAnalyzeBody):
 
 
 @router.get("/api/market-analyst/analyses")
-async def get_market_analyst_analyses(limit: int = 25, offset: int = 0, resolved_only: bool = False):
+async def get_market_analyst_analyses(
+    limit: int = Depends(paginate(max_limit=200)), offset: int = 0, resolved_only: bool = False,
+):
     # Always safe to call regardless of market_analyst.enabled - past
     # analyses stay visible/inspectable even after the feature's turned off,
     # same as every other history panel in this app.

@@ -9,7 +9,7 @@ market_catalog/title_cache/market_watch's series cache, the natural home.
 """
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from services import title_cache
 from services.app_state import bump_generation, state
@@ -20,6 +20,7 @@ from services.market_watch import (
     _fetch_live_status, _get_series_cache, _LIVE_STATUS_LOOKAHEAD_SEC, _LIVE_STATUS_LOOKBACK_SEC, _slim_market,
     selection,
 )
+from services.pagination import paginate
 
 router = APIRouter()
 
@@ -175,7 +176,10 @@ async def get_market_catalog_status():
 
 
 @router.get("/api/markets/search")
-async def search_markets(q: str = "", min_volume: float = 0, category: str = "", limit: int = 50, live_only: bool = False):
+async def search_markets(
+    q: str = "", min_volume: float = 0, category: str = "",
+    limit: int = Depends(paginate(max_limit=200)), live_only: bool = False,
+):
     # On-demand market search/browse (ROADMAP.md Phase 0.5) - distinct from
     # the automatic watchlist selection (_fetch_markets), which stays
     # volume-filtered by config default (kalshi.min_volume_24h). Defaults to

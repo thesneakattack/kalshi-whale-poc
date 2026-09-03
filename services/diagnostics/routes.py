@@ -25,7 +25,7 @@ import os
 import resource
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from services import (
     capture_writer, index_feed, mutual_exclusivity, series_watcher, settlement_edge, settlement_resolver,
@@ -43,6 +43,7 @@ from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_co
 from services.config.config_store import config_store
 from services.kalshi.account import classify_api_key_attestation, user_data_age_sec
 from services.kalshi.public import KalshiPublicGateway
+from services.pagination import paginate
 
 router = APIRouter()
 
@@ -269,14 +270,14 @@ async def get_series_watcher(series: str, hours: float = 24.0):
 
 
 @router.get("/api/archive/epochs")
-async def get_archive_epochs(limit: int = 50):
+async def get_archive_epochs(limit: int = Depends(paginate(max_limit=200))):
     """Every archived paper-trading epoch (services/reset/trade_archive.py) -
     the permanent record a reset can't destroy."""
     return {"epochs": trade_archive.epochs(limit)}
 
 
 @router.get("/api/archive/compare")
-async def get_archive_compare(limit: int = 10):
+async def get_archive_compare(limit: int = Depends(paginate(max_limit=200))):
     """Epochs side by side against the standing 70%/70% target. edge_pts
     (win rate minus the breakeven accuracy its own entry prices implied) is
     the ranking column - a high win rate with negative edge is the
