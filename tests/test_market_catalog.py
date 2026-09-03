@@ -597,4 +597,36 @@ def test_upsert_mve_markets_overwrites_on_conflict(tmp_path, monkeypatch):
 def test_upsert_mve_markets_empty_list_is_a_noop(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     cat.upsert_mve_markets([], updated_at=time.time())
+
     assert cat.scan_progress()["total_markets"] == 0
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as Tasks 2-3 - eleven call sites in this module
+    share one non-closing _connect(), on the file the live markets_watched:
+    0 incident's own open hypothesis names as a possible cause."""
+    import sqlite3
+    from services.market_catalog import market_catalog as mc
+
+    monkeypatch.setattr(mc, "DB_PATH", tmp_path / "market_catalog.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection instances have no __dict__, so `conn.close = ...`
+    # raises "attribute 'close' is read-only" - track via a Connection
+    # subclass passed as sqlite3.connect's `factory=` instead.
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(mc.sqlite3, "connect", _tracking_connect)
+
+    with mc._connect(mc.DB_PATH) as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
