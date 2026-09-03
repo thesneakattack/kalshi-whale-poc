@@ -9,11 +9,11 @@
 #      sources_worktree.py treats CLOSED-without-merge as "still live
 #      work", and this script stays consistent with that judgment rather
 #      than guessing).
-#   2. `git merge-base --is-ancestor <branch> refs/remotes/origin/main` -
+#   2. `git merge-base --is-ancestor refs/heads/<branch> refs/remotes/origin/main` -
 #      the branch's tip is already fully contained in origin/main, freshly
-#      fetched first. Not local main: local main is only fast-forwarded
-#      when the primary checkout happens to be on main itself, so it can
-#      be arbitrarily stale (2026-08-28: an idle worktree held local main
+#      fetched first. Not local main: this script never touches local main
+#      (#535 - it used to fast-forward it, which deployed the live app), so
+#      it can be arbitrarily stale (2026-08-28: an idle worktree held local main
 #      65 commits behind and every merged branch read as "not merged").
 #   3. The worktree's working tree is clean (`git status --porcelain`
 #      empty) - nothing uncommitted sitting there.
@@ -35,7 +35,10 @@
 #
 # Usage:
 #   scripts/cleanup-worktrees.sh            # act: remove every stale worktree found
-#   scripts/cleanup-worktrees.sh --dry-run  # report only, never mutates anything
+#   scripts/cleanup-worktrees.sh --dry-run  # report only - never touches the
+#                                            # working tree, a branch, or a
+#                                            # worktree (it still fetches, which
+#                                            # only ever writes inside .git/)
 #
 # Run from anywhere in the repo; worktree/branch operations always target
 # the primary checkout (the one whose .git is a real directory), not the
@@ -156,14 +159,30 @@ if [ "${#WORKTREE_PATHS[@]}" -eq 0 ]; then
 fi
 
 # Fetch first - this unconditionally refreshes origin/main, which is what
-# the ancestor check below compares against. Also fast-forward the LOCAL
-# main branch when it is what's checked out in the primary (never force a
-# checkout there) - a courtesy for anything else that reads local main;
-# nothing downstream depends on it, so a failure (local main diverged)
-# must not abort the whole script under set -e.
+# the ancestor check below compares against. This used to also fast-forward
+# the primary's LOCAL main whenever main was checked out there, as "a
+# courtesy for anything else that reads local main; nothing downstream
+# depends on it." That was wrong on both counts (issue #535, filed 2026-09-03):
+# the primary checkout is ddev's bind mount, so
+# fast-forwarding it there rewrites the running application's .py files and
+# fires uvicorn --reload mid-run - an unannounced production deploy from a
+# routine hygiene script, three times in one day by the reflog before anyone
+# noticed - and git branch -d below DOES depend on local main being current
+# (see the comment there), so "nothing downstream depends on it" was never
+# true. Deliberately not fast-forwarding local main anymore: instead, report
+# how far behind it is (after the fetch below, so the comparison is against
+# a freshly-refreshed origin/main) and let whoever owns the deploy pull
+# deliberately.
 git -C "$PRIMARY" fetch origin main --quiet
 if [ "$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null || echo "")" = "main" ]; then
-  git -C "$PRIMARY" merge --ff-only refs/remotes/origin/main --quiet || true
+  counts="$(git -C "$PRIMARY" rev-list --left-right --count main...refs/remotes/origin/main 2>/dev/null || echo "0	0")"
+  ahead="$(echo "$counts" | cut -f1)"
+  behind="$(echo "$counts" | cut -f2)"
+  if [ "${ahead:-0}" -gt 0 ] && [ "${behind:-0}" -gt 0 ]; then
+    echo "note: primary's local main has diverged from origin/main ($ahead ahead, $behind behind) - not touching it; a plain merge --ff-only will refuse" >&2
+  elif [ "${behind:-0}" -gt 0 ]; then
+    echo "note: primary's local main is $behind commit(s) behind origin/main - not pulling (that would deploy the live app via uvicorn --reload). To deploy deliberately: git -C \"$PRIMARY\" merge --ff-only origin/main (may refuse if a tracked file there has local modifications)" >&2
+  fi
 fi
 
 remove_err="$(mktemp)"
@@ -186,12 +205,17 @@ for i in "${!WORKTREE_PATHS[@]}"; do
     is_merged=1
   fi
 
-  # refs/remotes/origin/main, fully qualified: git resolves refs/heads/<name>
-  # before refs/remotes/<name> (gitrevisions(7)), so a bare `origin/main`
-  # would silently resolve to a local branch literally named that if one
-  # ever existed - turning a false "not merged" into a worse false "merged".
+  # Both sides fully qualified: git resolves refs/tags/<name>, then
+  # refs/heads/<name>, before refs/remotes/<name> (gitrevisions(7)), so a
+  # bare `$branch` or `origin/main` would silently resolve to a tag or local
+  # branch of the same name if one ever existed - turning a false "not
+  # merged" into a worse false "merged". This is the sole guard against
+  # deleting a branch with commits not yet in origin/main now that branch
+  # deletion below uses -D (#535's PR review, scenario: a same-named tag
+  # made an unmerged branch's tip resolve to the tag's - merged - commit
+  # instead), so it must resolve $branch as a branch, never ambiguously.
   is_ancestor=0
-  if git -C "$PRIMARY" merge-base --is-ancestor "$branch" refs/remotes/origin/main 2>/dev/null; then
+  if git -C "$PRIMARY" merge-base --is-ancestor "refs/heads/$branch" refs/remotes/origin/main 2>/dev/null; then
     is_ancestor=1
   fi
 
@@ -241,7 +265,24 @@ for i in "${!WORKTREE_PATHS[@]}"; do
       git -C "$PRIMARY" worktree prune
     fi
 
-    git -C "$PRIMARY" branch -d "$branch"
+    # -D, not -d: this repo used to run -d specifically as "an independent
+    # second guard beyond is_ancestor" (see tools/quality_coordination.py's
+    # delete_merged_branch, which still does that deliberately - it has no
+    # ancestry proof of its own). Here it isn't independent: -d checks the
+    # branch against its configured upstream, or against HEAD if none is
+    # set, and HEAD in the primary is local main - which this script no
+    # longer force-advances (see the fetch/notice above, #535). So -d is
+    # redundant with this loop's own merge-base --is-ancestor check above
+    # (against the authoritative refs/remotes/origin/main) when it agrees,
+    # vacuous when the branch's own upstream is itself unmerged (git deletes
+    # anyway, with only a warning), and wrong - refusing a genuinely merged
+    # branch - when local main is stale and no upstream is configured
+    # (issue #535's fix, hit live 2026-08-31; see docs/open-decisions.md's
+    # RESOLVED entry for this script's branch-deletion behavior). is_ancestor already
+    # proved this branch is fully contained in origin/main before this line
+    # is ever reached; -D trusts that proof instead of re-deriving a weaker
+    # one from whatever HEAD happens to be.
+    git -C "$PRIMARY" branch -D "$branch"
     if [ -n "$(git -C "$PRIMARY" ls-remote --heads origin "$branch" 2>/dev/null)" ]; then
       git -C "$PRIMARY" push origin --delete "$branch"
     fi
