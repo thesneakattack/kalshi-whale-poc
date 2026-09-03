@@ -276,8 +276,21 @@ undercounts the true footprint slightly, but not the way the first draft claimed
   matching `.close()` anywhere in the file), outside `services/` so outside the research doc's
   30-module count. A short-lived CLI script, not a long-running server process — the OS
   reclaims its fds on exit, so the fd-exhaustion risk here is real but operationally much lower
-  priority than any server-resident module. **Add to migration scope, lowest priority**
-  (opportunistic, same tracking treatment as the general bucket, not urgent).
+  priority than any server-resident module. **PR-stage correction, a real and distinct risk this
+  module carries that no other module in scope does**: `_connect()` (`:29`) has zero in-file
+  production references — it is called only from tests, 22 sites across 4 test files, every one
+  a **bare assignment** (`conn = ce._connect()`, not `with ce._connect() as conn:`). Migrating
+  it to a `@contextlib.contextmanager`-returning shape (this migration's whole approach) would
+  make every one of those 22 test call sites receive a generator-context-manager object instead
+  of a `sqlite3.Connection` — `conn.execute(...)` would fail immediately, not leak silently. This
+  is the one module in scope whose call-site *shape* (not just its schema/DDL) must be part of
+  its own migration task, and its callers are entirely in `tests/`, not production — Gate 1
+  below is updated to say so explicitly rather than assuming "leaking" implies the same
+  with-statement shape every other module uses. **Add to migration scope, lowest priority**
+  (opportunistic, same tracking treatment as the general bucket, not urgent) — the priority
+  ranking is unchanged (this is still not a production fd-exhaustion risk), only the migration
+  task's own scope (touch `tests/test_coordination_engine.py` too, not just the module) is
+  corrected.
 - **`services/backup/backup.py`** — split-pattern (its primary `_connect()` leaks; a separate
   `src_conn`/`dest_conn` pair used for the backup-copy operation already closes correctly).
   **Already in PR #484's Task 7 tracking list** — confirmed by reading that list directly
@@ -414,6 +427,17 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
 - A test confirming the migrated module's own tests still pass under whatever `DB_PATH`
   monkeypatching convention that module's existing test file already uses — the specific
   failure this revision fixed at the `db.py` level, re-verified at the call-site level too.
+- **PR-stage addition — call-site *shape*, not just DDL preservation, and covering `tests/` as
+  well as production.** Grep every caller of the module's `_connect()` (production **and**
+  test), not only its production callers, and confirm each uses `with _connect() as conn:` (or
+  the module's own equivalent) before assuming the migration is call-site-transparent. The sign-
+  off census behind this design (111/111 with-shape call sites) covered production call sites
+  across the 26 in-scope modules only — it does not cover `tools/coordination_engine.py`'s
+  callers, which are exclusively in `tests/` (22 sites, 4 test files) and use a **bare
+  assignment** (`conn = ce._connect()`), not a `with` block. Migrating that module to a
+  context-manager-returning `_connect()` without also updating those 22 test call sites would
+  break every one of them (`conn.execute(...)` on a generator-context-manager object, not a
+  connection) — the one module in scope where this gate's own default assumption doesn't hold.
 - Confirm whether the module's connect function is ever called from the FastAPI event loop
   directly; if so, the migrated call site must keep routing through `tick_executor.run()` or
   equivalent — this migration must not reintroduce the event-loop-blocking bug class Tier0/P1
