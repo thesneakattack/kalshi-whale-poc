@@ -610,3 +610,33 @@ def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(t
     log.log_signal("KXTEST-VIS", "yes", 100, 0.9, "test", 12345.0)
     sides = log.recent_sides_for_ticker("KXTEST-VIS", since_ts=0)
     assert "yes" in sides
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as Tasks 2-4 - 21 call sites in this module
+    share one non-closing _connect()."""
+    import sqlite3
+    from services import signal_log as sl
+
+    monkeypatch.setattr(sl, "DB_PATH", tmp_path / "signal_log.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection instances have no __dict__, so `conn.close = ...`
+    # raises "attribute 'close' is read-only" - track via a Connection
+    # subclass passed as sqlite3.connect's `factory=` instead.
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sl.sqlite3, "connect", _tracking_connect)
+
+    with sl._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]

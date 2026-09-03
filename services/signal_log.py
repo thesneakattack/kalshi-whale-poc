@@ -22,6 +22,7 @@ for the same ticker - see docs/superpowers/research/2026-08-25-realtime-
 data-plane-known-findings.md H13. Both paths are idempotent (WHERE
 resolved = 0), so a row graded by either is never reopened or re-graded.
 """
+import contextlib
 import json
 import sqlite3
 import time
@@ -147,7 +148,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_excluded ON signals (excluded, seen_at)")
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site (21 of them)
+    keeps working unchanged - this yields the same conn as before, but now
+    closes it on exit (2026-09-03, Task 5 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md), same fix and same
+    reasoning as market_history.py's Task 2."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     # WAL mode (2026-08-11, real live incident): rollback-journal mode
@@ -158,7 +165,11 @@ def _connect() -> sqlite3.Connection:
     # sqlite3.connect()). idempotent - safe to run on every connect.
     conn.execute("PRAGMA journal_mode=WAL")
     _init_schema(conn)
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _scoring_read_connection() -> sqlite3.Connection:
