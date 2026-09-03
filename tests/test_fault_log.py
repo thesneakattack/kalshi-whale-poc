@@ -156,3 +156,35 @@ def test_prune_returns_the_deleted_row_count():
     fl.record("c", "op", _boom("fresh"), now=now - 1 * 3600)
 
     assert fl.prune(retention_hours=336, now=now) == 2
+
+
+def test_connect_closes_its_connection(monkeypatch):
+    """Same fd-leak class as Tasks 2-5 - fault_log.py's own _connect() had
+    the identical non-closing shape, and this module is the one CLAUDE.md
+    tells every session to read first (services/fault_log.py's own callers
+    include GET /api/health/faults, one of only two routes this plan's own
+    live re-verification found stuck). DB_PATH is already redirected by
+    this file's autouse _isolated fixture - no need to set it here."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection instances have no __dict__, so `conn.close = ...`
+    # raises "attribute 'close' is read-only" - track via a Connection
+    # subclass passed as sqlite3.connect's `factory=` instead.
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(fl.sqlite3, "connect", _tracking_connect)
+
+    with fl._connect() as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]

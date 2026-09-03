@@ -42,6 +42,7 @@ DESIGN
   arrived unparseable, a projection refused for want of data, a market that
   couldn't be resolved.
 """
+import contextlib
 import sqlite3
 import time
 import traceback
@@ -55,7 +56,16 @@ _MAX_TRACEBACK_CHARS = 4000
 _MAX_MESSAGE_CHARS = 500
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site (four of them)
+    keeps working unchanged - this yields the same conn as before, but now
+    closes it on exit (2026-09-03, Task 6 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md, added by this plan's own
+    adversarial review, finding F4): `with conn:` alone commits/rolls back
+    a transaction, it never closes the connection, same fd-leak shape as
+    Tasks 2-5's four modules. This store backs GET /api/health/faults, one
+    of only two routes the plan's own live re-verification found stuck."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -79,7 +89,11 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def record(component: str, operation: str, exc: BaseException,
