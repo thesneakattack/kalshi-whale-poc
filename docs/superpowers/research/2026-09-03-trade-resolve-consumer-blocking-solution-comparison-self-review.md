@@ -8,20 +8,31 @@ first (cheapest) layer.
 
 ## Errors found and fixed during this pass
 
-- **Wrong issue attribution, four instances.** The intro, §3's benchmark, §5's
-  benchmark, and §4's precedent reference all attributed the reconnect-free-window
-  falsifier test and the 8,854.6ms/queue-depth-jump correlation to "#542's own
-  comment thread." Checked directly rather than trusting memory:
-  `gh issue view 541 --json comments --jq '.comments[].body' | grep -c
-  'reconnect-free|falsifier'` → 4 matches; the same grep against #542 → 0 matches.
-  That analysis was posted to **#541**, not #542 — #542 holds the original
-  mechanism root-cause and the later resolve-volume-vs-baseline comment, #541 holds
-  the dropped-message finding and the falsifier test that links the two. Corrected
-  all four references. This is exactly the kind of citation error that's easy to
-  make when writing quickly from memory of "the incident" as one undifferentiated
-  thing rather than checking which specific issue thread a specific claim actually
-  lives on — the "never guess" HARD RULE applies to citing my own prior work, not
-  just to source code.
+- **Wrong issue attribution, three instances** (originally miscounted as four in
+  this bullet — see correction note below). The intro, §3's benchmark, and §5's
+  benchmark all attributed the reconnect-free-window falsifier test and the
+  8,854.6ms/queue-depth-jump correlation to "#542's own comment thread." Checked
+  directly rather than trusting memory: `gh issue view 541 --json comments --jq
+  '.comments[].body' | grep -c 'reconnect-free|falsifier'` → 4 matches; the same
+  grep against #542 → 0 matches. That analysis was posted to **#541**, not #542 —
+  #542 holds the original mechanism root-cause and the later
+  resolve-volume-vs-baseline comment, #541 holds the dropped-message finding and
+  the falsifier test that links the two. Corrected all three references. This is
+  exactly the kind of citation error that's easy to make when writing quickly from
+  memory of "the incident" as one undifferentiated thing rather than checking which
+  specific issue thread a specific claim actually lives on — the "never guess" HARD
+  RULE applies to citing my own prior work, not just to source code.
+  **Correction (caught by adversarial review, F7):** this bullet originally said
+  "four instances" and folded in §4's precedent-reference fix as a supposed fourth
+  issue-attribution correction. `git diff cb80392 f0b1903` shows only three actual
+  issue-attribution fixes; §4's only change in that diff is the *separate*,
+  correctly-described section cross-reference fix (the next bullet below), which
+  has nothing to do with issue attribution. The adversarial review caught this by
+  diffing the actual commit rather than trusting this bullet's prose — exactly the
+  discipline this self-review itself was supposed to apply. Two further residual
+  `#541/#542` dual-citations (§1.2, §7) that this sweep should have caught but
+  didn't were also found on adversarial review (F8) and are fixed in the main
+  document, not here.
 - **Wrong section cross-reference.** §4 (Option A) referenced `_coalesce_ticker` as
   discussed "(§2 above)" — but `_coalesce_ticker` is introduced and discussed in
   §1.1, not §2 (§2 only mentions it in passing, itself citing §1.1). Corrected to
