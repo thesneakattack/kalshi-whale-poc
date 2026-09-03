@@ -150,11 +150,16 @@ tooling.
     separate `_connect()` that this plan does not migrate — see the note
     below), not anything in `candidate_log.py`. Verified directly:
     `grep -rn "candidate_log" services/whale_stream/decision_bridge.py` —
-    zero hits. `candidate_log.py`'s own callers are
-    `services/strategy_engine.py`/`services/whale_stream/*_handlers.py`'s
-    *rejection recording* path (a candidate that did **not** trade), and
-    `main.py`'s tick loop calling `resolve_from_market_results()` — neither
-    is the order-placement path.
+    zero hits. `candidate_log.py`'s own callers, named precisely after
+    independent adversarial re-verification (an earlier version of this
+    line cited a non-matching glob, `services/whale_stream/*_handlers.py`):
+    its *rejection recording* path is called from `services/strategy_engine.py`,
+    `services/kalshi/websocket.py`, `services/whalewatchers/kalshi_trade_tape.py`,
+    and `services/whale_stream/whale_stream_handlers.py` (a candidate that
+    did **not** trade); its `resolve_from_market_results()` is called from
+    both `main.py`'s tick loop **and** `services/settlement_resolver.py`'s
+    separately-supervised settlement-polling loop (see Task 4's own note) —
+    none of these is the order-placement path.
   - `services/capture_writer.py` — Tasks 2 and 4 touch `_flush_store()`
     (adds a `caller` parameter, Task 2) and `flush_now()` (adds a
     `busy_timeout_ms` override parameter, Task 4). `capture_writer.submit()`
@@ -482,11 +487,17 @@ deduplication.
   `busy_timeout_ms` override parameter (default `None` = today's
   `_CALLER_BUSY_TIMEOUT_MS`) is added here rather than in Task 4, since both
   tasks touch this same function signature — adding it once, now, avoids a
-  second signature change in Task 4. Every existing call site (5 test files,
-  `candidate_log.py`'s other 4 non-tick call sites) calls `flush_now(store)`
-  positionally with no keyword arg, so this is purely additive — verified via
-  `grep -rn "flush_now(" services/ main.py tests/` before drafting this task
-  (28 call sites total, zero pass a second positional argument).
+  second signature change in Task 4. Every existing call site calls
+  `flush_now(store)` positionally with no keyword arg, so this is purely
+  additive — verified via `grep -rn "flush_now(" services/ main.py tests/`
+  before drafting this task (**34** call sites total — corrected after
+  independent adversarial re-count found the originally-cited "28" wrong;
+  the substantive safety claim, zero call sites pass a second positional
+  argument, was independently re-verified and holds regardless of the exact
+  count: `services/candidate_log.py` 10, `tests/test_candidate_log.py` 2,
+  `tests/test_capture_writer.py` 19, `tests/test_main_tick_executor_wiring.py`
+  1, `tests/test_series_watcher.py` 1, `tests/test_whale_candidate_lifecycle.py`
+  1).
 - `fault_log.record(...)`'s own signature is untouched — only the string
   passed as `operation` changes, from a caller inside `_flush_store`'s except
   block.
@@ -494,8 +505,11 @@ deduplication.
 - [ ] **Step 1: Write the failing test first**
 
 Add to `tests/test_capture_writer.py` (check its existing fixture first —
-`grep -n "^def _\|_STORE_PATHS\|_is_lock_error" tests/test_capture_writer.py`
-— to match its monkeypatch/lock-simulation pattern before writing this):
+`grep -n "^def _\|_STORE_PATHS\|_is_lock_error\|_hold_write_lock" tests/test_capture_writer.py`
+— this file has **no module-level `cw`/`capture_writer` alias**; every
+existing test does its own local `from services import capture_writer`
+inside the function body, so all three new tests below follow that same
+convention rather than introducing a new one):
 
 ```python
 def test_flush_retained_on_lock_records_caller_in_operation_name(monkeypatch, tmp_path):
@@ -505,24 +519,41 @@ def test_flush_retained_on_lock_records_caller_in_operation_name(monkeypatch, tm
     caller (daemon vs. flush_now) hit the lock, via `operation`, not
     `context` - fault_log._write()'s ON CONFLICT clause never updates
     `context` on a repeat occurrence, only `operation` is part of the
-    UNIQUE key that actually creates separate rows."""
+    UNIQUE key that actually creates separate rows. Uses this file's own
+    _hold_write_lock()/_release() pattern (matching
+    test_lock_collision_retains_the_batch_instead_of_dropping_it and its
+    three neighbors below it in this file) rather than a manually-raised
+    sqlite3.OperationalError: a manually-constructed OperationalError has
+    no sqlite_errorcode attribute (only the real sqlite3 C extension sets
+    it when it raises the error itself), and _is_lock_error() gates
+    exclusively on that attribute - a mock that doesn't set it would
+    silently take the generic-exception branch instead of the
+    flush_retained_on_lock branch this test exists to exercise
+    (adversarial review Finding F6)."""
+    from services import capture_writer
+
     db_path = tmp_path / "candidate_log.db"
-    monkeypatch.setattr(cw, "_STORE_PATHS", {"rejected_candidates": db_path})
-    monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": [("t", "s", "g")]})
-    monkeypatch.setattr(cw, "_last_flush_at", {"rejected_candidates": 0.0})
+    monkeypatch.setattr(capture_writer, "_STORE_PATHS", {"rejected_candidates": db_path})
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": [("t", "s", "g")]})
+    _fresh_counters(monkeypatch, capture_writer, ["rejected_candidates"])
+    capture_writer.flush_now("rejected_candidates")  # creates the file and the table
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": [("t", "s", "g")]})
 
     recorded = []
     monkeypatch.setattr(
-        cw.fault_log, "record",
+        capture_writer.fault_log, "record",
         lambda component, operation, exc, **kw: recorded.append(operation),
     )
 
-    def _raise_locked(*a, **kw):
-        raise sqlite3.OperationalError("database is locked")
-    monkeypatch.setattr(cw.sqlite3, "connect", _raise_locked)
-
-    cw._flush_store("rejected_candidates", caller="flush_now")
-    cw._flush_store("rejected_candidates", caller="daemon")
+    holder = _hold_write_lock(db_path)
+    try:
+        capture_writer._flush_store("rejected_candidates", caller="flush_now")
+        # a failed flush retains (does not clear) the buffer - confirmed by
+        # test_lock_collision_retains_the_batch_instead_of_dropping_it above -
+        # so the same buffered rows are still there for the second call.
+        capture_writer._flush_store("rejected_candidates", caller="daemon")
+    finally:
+        _release(holder)
 
     assert recorded == [
         "flush_retained_on_lock_flush_now",
@@ -531,29 +562,33 @@ def test_flush_retained_on_lock_records_caller_in_operation_name(monkeypatch, tm
 
 
 def test_flush_now_passes_flush_now_as_caller(monkeypatch, tmp_path):
+    from services import capture_writer
+
     seen = {}
     monkeypatch.setattr(
-        cw, "_flush_store",
-        lambda store, busy_timeout_ms=cw._CALLER_BUSY_TIMEOUT_MS, *, caller="daemon": seen.update(
+        capture_writer, "_flush_store",
+        lambda store, busy_timeout_ms=capture_writer._CALLER_BUSY_TIMEOUT_MS, *, caller="daemon": seen.update(
             store=store, busy_timeout_ms=busy_timeout_ms, caller=caller,
         ),
     )
-    monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": []})
-    cw.flush_now("rejected_candidates")
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": []})
+    capture_writer.flush_now("rejected_candidates")
     assert seen["caller"] == "flush_now"
-    assert seen["busy_timeout_ms"] == cw._CALLER_BUSY_TIMEOUT_MS  # unchanged default
+    assert seen["busy_timeout_ms"] == capture_writer._CALLER_BUSY_TIMEOUT_MS  # unchanged default
 
 
 def test_flush_now_accepts_busy_timeout_override(monkeypatch, tmp_path):
+    from services import capture_writer
+
     seen = {}
     monkeypatch.setattr(
-        cw, "_flush_store",
-        lambda store, busy_timeout_ms=cw._CALLER_BUSY_TIMEOUT_MS, *, caller="daemon": seen.update(
+        capture_writer, "_flush_store",
+        lambda store, busy_timeout_ms=capture_writer._CALLER_BUSY_TIMEOUT_MS, *, caller="daemon": seen.update(
             busy_timeout_ms=busy_timeout_ms,
         ),
     )
-    monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": []})
-    cw.flush_now("rejected_candidates", busy_timeout_ms=999)
+    monkeypatch.setattr(capture_writer, "_buffers", {"rejected_candidates": []})
+    capture_writer.flush_now("rejected_candidates", busy_timeout_ms=999)
     assert seen["busy_timeout_ms"] == 999
 ```
 
@@ -839,9 +874,9 @@ must exist first).
 of `capture_writer.flush_now()` (lines 236-237, 286, 386, 437-438, 458-459,
 478-479 — confirmed via `grep -n "flush_now(" services/candidate_log.py`).
 Only the two inside `resolve_from_market_results()` (lines 236-237) are
-touched by this task. The other four functions (`gate_summary`,
+touched by this task. The other **five** functions (`gate_summary`,
 `population_gate_summary`, `clear_all`, `count_range`, `clear_range`) are
-route-facing/admin callers, not the once-per-tick caller the design's §4.2
+route-facing/admin callers, not the tick-driven caller the design's §4.2
 mechanism analysis is about — their `flush_now()` calls keep the current
 50ms (`_CALLER_BUSY_TIMEOUT_MS`) budget the design says that default was
 "tuned for" (a UI/route-facing caller), unchanged by this task.
@@ -854,12 +889,31 @@ arguments change.
 = 1000` reuses `capture_writer._DAEMON_BUSY_TIMEOUT_MS`'s existing value
 directly, rather than introducing a new magic number — the daemon thread's
 own periodic flush already waits up to 1000ms for this exact file under real
-production load today; `resolve_from_market_results()` runs once per ~30-second
-tick (`main.py`'s `_tick_interval_sec()`, confirmed via the design's own live
-trace of the streaming-mode branch — not a request-latency-sensitive path),
-so it can afford exactly the same patience the daemon already proves safe,
-instead of racing it on the 50ms budget tuned for a different (UI/route)
-caller shape. Defined as a local constant in `candidate_log.py` rather than
+production load today; `resolve_from_market_results()` runs from **two
+independent callers**, corrected here after independent adversarial
+re-verification found this task's original framing incomplete: `main.py`'s
+main tick loop (once per ~30-second tick, `_tick_interval_sec()`'s
+streaming-mode branch) **and** `services/settlement_resolver.py`'s
+separately-supervised `_settlement_resolver_loop()`, polling every
+`_SCHEDULER_TRIGGER_INTERVAL_SEC` = 5.0 seconds whenever a settlement is
+pending — both dispatched through the same `tick_executor` 2-worker thread
+pool, so they can genuinely run concurrently on different threads, not just
+at staggered wall-clock moments. `settlement_resolver.py`'s own docstring
+notes settlements "cascade at boundary times," so the 5-second-cadence
+caller is likely bursty rather than steady. Neither caller is a
+request-latency-sensitive path, so 1000ms — the same patience the daemon's
+own periodic flush already proves safe under real load — is generous
+against either cadence; this correction changes the justification's
+precision, not the chosen number. **Known limitation, stated explicitly:**
+Task 2's `daemon`/`flush_now` operation-name taxonomy cannot distinguish a
+main-tick-driven collision from a settlement-resolver-driven one — both
+route through `capture_writer.flush_now()` identically and collapse into
+`caller="flush_now"`. If Task 10's re-measurement still shows a non-trivial
+`flush_retained_on_lock_flush_now` rate after this task lands, that
+ambiguity — not a failure of this fix — is the reason further
+instrumentation (attributing by call-site, not just by `flush_now` vs.
+`daemon`) would be needed to see which of the two callers is still
+colliding. Defined as a local constant in `candidate_log.py` rather than
 importing `capture_writer`'s private `_DAEMON_BUSY_TIMEOUT_MS` across the
 module boundary, to avoid a cross-module private-name dependency.
 
@@ -911,11 +965,13 @@ Add near the top of `services/candidate_log.py`, after `DB_PATH`:
 
 ```python
 # Reuses capture_writer's own daemon-flush patience (1000ms) rather than a
-# new arbitrary number: resolve_from_market_results() runs once per ~30s
-# tick (main.py's _tick_interval_sec(), streaming-mode branch), not on a
-# request-latency-sensitive path, so it can afford to wait as long as the
-# daemon thread's own periodic flush already does, instead of racing it on
-# the far shorter 50ms budget tuned for UI/route callers
+# new arbitrary number: resolve_from_market_results() runs from two
+# independent callers - main.py's ~30s tick loop and
+# settlement_resolver.py's separately-supervised 5s-poll-while-pending loop,
+# both via tick_executor's thread pool - neither is a request-latency-
+# sensitive path, so either can afford to wait as long as the daemon
+# thread's own periodic flush already does, instead of racing it on the far
+# shorter 50ms budget tuned for UI/route callers
 # (capture_writer._CALLER_BUSY_TIMEOUT_MS). Design decision:
 # docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md §4.3
 # candidate 1, implemented docs/superpowers/plans/2026-09-03-persistence-
@@ -1086,12 +1142,15 @@ usages) keeps working unmodified.
 
 - [ ] **Step 1: Write the failing test first**
 
-Add to `tests/test_observability.py` (check its existing fixture pattern
-first):
+Add to `tests/test_observability.py` (this file already imports the module
+under its full name at module level — `from services.observability import
+observability`, line 33 — with **no `obs` alias anywhere in the file**;
+both new tests below use `observability.` directly, matching that existing
+import rather than introducing an alias no other test in this file uses):
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
-    monkeypatch.setattr(obs, "DB_PATH", tmp_path / "observability.db")
+    monkeypatch.setattr(observability, "DB_PATH", tmp_path / "observability.db")
     closed = []
     real_connect = sqlite3.connect
 
@@ -1101,15 +1160,15 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
         conn.close = lambda: (closed.append(True), real_close())[-1]
         return conn
 
-    monkeypatch.setattr(obs.db.sqlite3, "connect", _tracking_connect)
-    with obs._connect() as conn:
+    monkeypatch.setattr(observability.db.sqlite3, "connect", _tracking_connect)
+    with observability._connect() as conn:
         conn.execute("SELECT 1")
     assert closed == [True]
 
 
 def test_connect_still_creates_table_and_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(obs, "DB_PATH", tmp_path / "observability.db")
-    with obs._connect() as conn:
+    monkeypatch.setattr(observability, "DB_PATH", tmp_path / "observability.db")
+    with observability._connect() as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "metric_samples" in tables
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -1199,7 +1258,16 @@ tasks into this document would not make any of them safer, only longer.
 out explicitly (repeating the design's own §1.5 step 1 language) as
 safety-adjacent modules that must each get their own dedicated, individually
 reviewed PR when picked up — never bundled with each other or with a
-routine unrelated change, unlike the other 19.
+routine unrelated change, unlike the other 19. **Two more modules added to
+this same caution list after independent adversarial review** (not as
+central as the three above — neither gates nor executes a trade — but
+measurably closer to the live trading path than the remaining ~17 in the
+general opportunistic bucket): `series_evaluator.py` (governs whether a
+series is re-admitted to or removed from the automatic watchlist that
+whale-signal generation draws candidates from — upstream of, and feeding
+into, live signal generation) and `trade_category.py` (writes once per
+position **open**, participating in the live position-opening sequence
+even though it only records metadata rather than gating the decision).
 
 - [ ] **Step 1: Create the tracking issue**
 
@@ -1208,9 +1276,13 @@ module (services/db.py): migrate the remaining 22 _connect() modules
 opportunistically" --body "..."` — body content: the 22-module list above,
 the design citation
 (`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`
-§1.5), this plan's citation, and an explicit note that
+§1.5), this plan's citation, an explicit note that
 `risk_manager.py`/`paper_broker.py`/`candidate_ledger.py` each need their own
-dedicated PR, never bundled with an unrelated change or with each other.
+dedicated PR, never bundled with an unrelated change or with each other, and
+a second, lighter caution for `series_evaluator.py`/`trade_category.py` —
+not requiring a fully dedicated PR, but the same "don't bundle silently as
+routine" care given their proximity to live signal generation and
+position-opening respectively.
 Apply label `phase:implementing` per `tools/kanban_sync/labels.py`'s
 vocabulary (an ongoing, no-deadline tracking item, not research/spec/plan
 stage work).
