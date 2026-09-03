@@ -207,7 +207,23 @@ def _connect():
     cached path) is functionally untouched by this migration - same DDL,
     same behavior - except its inline book_snapshots copy now references
     the shared _BOOK_SNAPSHOTS_DDL_SQL constant above instead of a second
-    hand-kept-in-sync literal; see that constant's own comment for why."""
+    hand-kept-in-sync literal; see that constant's own comment for why.
+
+    Correction to this task's own original commit message, which claimed
+    "execution order unchanged" - that was true for _ensure_schema_aio (its
+    own statement order was verified unchanged) but not for this function:
+    db.connect()'s own `for table in tables: _SCHEMAS[table](conn)` loop
+    runs BOTH registered init_fns (raw_trades' CREATE TABLE, then
+    book_snapshots' CREATE TABLE) before this function's own body - the
+    four CREATE INDEX statements below - ever runs. The pre-migration order
+    interleaved each table with its own indexes (raw_trades, its 2
+    indexes, book_snapshots, its 2 indexes); the post-migration order is
+    both CREATE TABLEs first, then all four indexes. Confirmed safe: every
+    statement here is IF NOT EXISTS-guarded, no index has a foreign-key or
+    other cross-table dependency on execution order, and
+    test_connect_still_creates_both_tables_and_all_four_indexes passes
+    regardless of order since it only asserts final-state existence, not
+    a specific creation sequence."""
     with db.connect(DB_PATH, tables=("raw_trades", "book_snapshots")) as conn:
         conn.execute(_IDX_RAW_TRADES_SERIES_SQL)
         conn.execute(_IDX_RAW_TRADES_TICKER_SQL)

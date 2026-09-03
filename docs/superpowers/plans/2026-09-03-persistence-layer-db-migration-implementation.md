@@ -76,6 +76,21 @@ arithmetic, shown explicitly so a reviewer can check it in one line rather than 
   itself. No `db.py` async counterpart is built. This is not a new design decision — it is
   applying the design spec's own already-declined-pooling reasoning to the one module where the
   question was still open.
+
+  **Amendment (2026-09-03, during Task 4's own implementation, PR #524), attributed to
+  coordinator autotrade-1d's explicit direction rather than self-granted in a commit message**:
+  `_ensure_schema_aio` MAY be modified, narrowly, for the specific purpose of consuming shared
+  DDL constants — `book_snapshots`' `CREATE TABLE` and both its indexes were found to be
+  hand-duplicated as separate inline literals in `_connect()` and `_ensure_schema_aio` (unlike
+  `raw_trades`, which already shared `RAW_TRADES_DDL_SQL` as this rule's original text says).
+  Migrating only the sync side onto a registered `init_fn` while leaving the async side's
+  duplicate copy in place would have split that pre-existing duplication across two different
+  mechanisms — a worse drift hazard than today's "duplicated but adjacent in one file" state.
+  The coordinator requested the sync migration extract both into shared constants that both
+  `_connect()` and `_ensure_schema_aio` reference, closing the duplication as a side effect.
+  This is a one-line-per-statement substitution (inline literal → shared constant reference),
+  never a change to what SQL runs or in what order *within* `_ensure_schema_aio` itself — see
+  Task 4's own Step 4 (amended below) for how this is verified going forward, not asserted.
 - **D2 — shared-DDL identity-check risk (3 tables).** `register_schema` raises if a table name
   is registered with a *different* callable than one already registered for it. Three tables in
   this migration's scope have their DDL owned by `capture_writer.py` but executed by a
@@ -1147,11 +1162,26 @@ def _connect():
 
 Add `import contextlib` if not already present.
 
-- [ ] **Step 4: Confirm `_ensure_schema_aio` is untouched**
+- [ ] **Step 4: Confirm `_ensure_schema_aio` still produces the same schema**
 
-Run: `git diff main -- services/series_watcher.py | grep -n '^[+-]' | grep -A2 -B2
-'_ensure_schema_aio'` (against this task's own branch) — expected: empty output, or output
-confined to context lines only, never a `+`/`-` line inside that function's body.
+**Amended 2026-09-03 (PR #524).** The original gate here was a literal grep asserting zero
+`+`/`-` lines inside `_ensure_schema_aio`'s body — that gate is retired, not satisfied, because
+D1's amendment above explicitly permits a narrow class of edit to this function (consuming
+shared DDL constants) that the grep can't distinguish from an unauthorized one; left as-is, the
+grep becomes a permanent false alarm for every future run. The literal "is the text untouched"
+check was always a proxy for the thing actually being verified — does the async path still
+create exactly the same schema as the sync path — so the gate now points at that directly:
+
+Run the schema-equality regression test added in PR #524
+(`test_sync_and_async_schema_paths_share_the_same_book_snapshots_ddl` in
+`tests/test_series_watcher.py`) — it queries `sqlite_master` on both a synchronously-connected
+and an `asyncio.run()`-executed connection and asserts the resulting `book_snapshots` schema
+text is identical, not a source-string comparison. Mutation-tested (PR #524's own review):
+adding a column to only the async side's copy makes this test fail. This is a stronger gate
+than the retired grep ever was — the grep could pass on a text-identical-but-semantically-wrong
+edit (e.g. reordered columns that still diff as zero lines changed if untouched, or would
+simply fail loudly instead of silently on any real edit at all), where this test verifies the
+actual schema, not the text.
 
 - [ ] **Step 5: Confirm tests pass**
 
