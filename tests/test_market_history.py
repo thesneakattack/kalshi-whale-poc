@@ -366,3 +366,36 @@ def test_scoring_read_connection_and_plain_connect_see_the_same_committed_data(t
     assert result is not None
     assert result["from_price"] == 0.50
     assert result["to_price"] == 0.55
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """with sqlite3.connect(...) commits a transaction, it does not close
+    the connection - 26 of 30 _connect()-owning modules in this app had
+    this shape, and it produced a real 6.8-hour file-descriptor-exhaustion
+    incident (2026-09-02) once enough of them piled up. This module was
+    one of the four confirmed leaking live."""
+    import sqlite3
+    from services import market_history as mh
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection instances have no __dict__, so `conn.close = ...`
+    # raises "attribute 'close' is read-only" - track via a Connection
+    # subclass passed as sqlite3.connect's `factory=` instead.
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(mh.sqlite3, "connect", _tracking_connect)
+
+    with mh._connect(mh.DB_PATH) as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
