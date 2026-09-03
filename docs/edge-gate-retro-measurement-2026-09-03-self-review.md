@@ -87,7 +87,31 @@ in — flagged as a separate follow-up, not chased to full resolution here
 since it wasn't the question asked. Does not change `config/settings.yaml`
 or any strategy code.
 
+## Addendum: §3.5 follow-up measurements (added after this self-review, before the doc's adversarial review lands)
+
+The PM requested three additional measurements after reading the initial
+doc: in-band vs out-of-band coverage of the un-evaluable 61.4%, whether
+that gap is config- or data-limited, and rejection-rate sensitivity to
+`min_edge`. Added as §3.5 using the same script, same live data, same
+already-verified methodology (no new mechanism, just more slices of the
+same computation) — run immediately after §3's own numbers, no meaningful
+gap for the underlying data to drift. Spot-checked arithmetic before
+committing: in-band (54+70=124) and out-of-band (69+126=195) both sum
+correctly and 124+195=319 matches the total; the in-band/out-of-band
+*evaluable* counts (54, 69) match §3's own band-checked counts exactly,
+confirming the two measurements are drawing from the same underlying
+per-trade computation rather than a second, potentially-diverging one.
+The `min_edge` and `max_age_sec` sensitivity sweeps are both monotonic in
+the expected direction (lower `min_edge` → fewer rejections; wider
+`max_age_sec` → more coverage), which is a basic sanity check any bug in
+the loop logic would likely have broken.
+
+This addendum was written before the doc's adversarial review agent's
+result was known — if that review's scope predates this section (timing
+not yet confirmed), §3.5 should get its own check as part of consolidation
+rather than being treated as already covered.
+
 ## Verdict
 
-GO, with the §1 presentation fix already applied. Ready for adversarial
-review.
+GO, with the §1 presentation fix already applied and the §3.5 addendum
+self-checked as above. Ready for (or already in) adversarial review.

@@ -158,6 +158,85 @@ with §1's finding that no real cell is currently in fallback, so every
 evaluable rejection reflects a genuine measured `delta`, not the strict
 default-filter behavior described in §2.
 
+## 3.5. Three follow-up questions (PM, after reading the above)
+
+Three additional, cheap measurements requested before the user briefing,
+using the same script and methodology as §3 (same live data, same
+`_edge_gate_check` math, run immediately after §3 — no meaningful time gap
+for the underlying data to have shifted).
+
+### The decision-critical number: is the un-evaluable 61.4% disproportionately in-band?
+
+This is the number the PM flagged as the one the decision actually turns
+on: if the trades the gate *can't* see are concentrated in the 0.60-0.95
+band, flipping the gate on would reject three-quarters of what it can see
+while leaving the actual concern untouched — worse than useless for the
+stated purpose.
+
+```
+                    evaluable    fail-open    total    fail-open rate
+in-band (0.60-0.95)     54           70        124         56.5%
+out-of-band              69          126        195         64.6%
+```
+
+**Answer: no, the un-evaluable set is not disproportionately in-band — if
+anything, coverage is slightly *better* in-band.** 43.5% of in-band trades
+are evaluable versus 35.4% out-of-band, an 8-point gap in the reassuring
+direction. This doesn't eliminate the coverage gap (56.5% of in-band
+trades still can't be evaluated at all), but it rules out the worse
+failure mode the PM was checking for: the gate is not selectively blind to
+the specific trades CLAUDE.md's negative-EV concern is about.
+
+### Is the 61.4% fail-open rate a config limit or a data limit?
+
+Tested by widening `edge_gate_p_pre_max_age_sec` far beyond its live 600s
+value and re-running the same 319 trades' `market_history.recent_price`
+lookups at each width:
+
+```
+max_age_sec=     600 (live default): p_pre found for 123/319 (38.6%)
+max_age_sec=    1800:                p_pre found for 128/319 (40.1%)
+max_age_sec=    3600:                p_pre found for 130/319 (40.8%)
+max_age_sec=   86400 (1 day):        p_pre found for 134/319 (42.0%)
+max_age_sec=  604800 (7 days):       p_pre found for 134/319 (42.0%)
+```
+
+**Answer: it's overwhelmingly a data limit, not a config limit.** Widening
+the window 1,008x (600s → 7 days) recovers only 3.4 percentage points of
+coverage (38.6% → 42.0%), and the last 6x of that widening (1 day → 7
+days) recovers nothing at all — the curve has already flattened. This
+matches §1's root-cause finding directly: the missing snapshots aren't
+just outside a too-narrow lookback window, they genuinely don't exist yet
+at trade time, concentrated in markets (15-minute gold/silver, hourly ETH
+strikes) that are created and traded faster than `market_history` captures
+a first snapshot. Raising `edge_gate_p_pre_max_age_sec` is not a viable
+fix for this coverage gap; closing it would require `market_history`
+itself capturing new-market snapshots faster, a separate, unmeasured piece
+of work.
+
+### Rejection-rate sensitivity to `min_edge`
+
+```
+min_edge=+0.04 (live default): rejected  92/123 (74.8%)
+min_edge=+0.03:                rejected  90/123 (73.2%)
+min_edge=+0.02:                rejected  86/123 (69.9%)
+min_edge=+0.01:                rejected  81/123 (65.9%)
+min_edge=+0.00:                rejected  72/123 (58.5%)
+min_edge=-0.01:                rejected  71/123 (57.7%)
+```
+
+**Answer: not flat — genuinely threshold-sensitive, but with a floor.**
+The rejection rate falls steadily as `min_edge` is lowered (74.8% → 57.7%
+across the tested range), so the 0.04 setting is doing real, tunable work,
+not just crossing a wall that's fixed regardless of the threshold. But
+**even at `min_edge=0.00`** — admitting anything with non-negative
+estimated edge after fees, no profit cushion required at all — **58.5% of
+evaluable trades are still rejected.** That's a separate, important
+reading: a substantial majority of these trades are estimated to have
+negative edge outright, not merely positive-but-below-threshold edge. The
+rejection isn't primarily a borderline-tuning artifact; most of what gets
+rejected is rejected by a wide margin.
+
 ## 4. Is an observe-only mode worth proposing?
 
 **Yes, in the sense the PM's instinct pointed at — the compute step is
@@ -221,6 +300,19 @@ concrete enough to size as a task, not a guess.
   price-history coverage, a data gap concentrated in fast-rotating 15min/
   hourly markets) — flipping it on would filter roughly three-quarters of
   a minority of trades, not three-quarters of everything.
+- **The follow-up that most directly answers "is this the right fix":**
+  the un-evaluable 61.4% is not disproportionately in the 0.60-0.95 band
+  (in-band coverage is actually 8 points *better* than out-of-band) — the
+  gate isn't blind precisely where the concern lives, it's just
+  incomplete everywhere. The coverage gap itself is a data limit, not a
+  config one (widening the pre-print lookback 1,008x recovers only 3.4
+  points of coverage) — fixing it would mean speeding up
+  `market_history`'s capture of brand-new markets, not tuning the gate.
+  And the rejection rate is genuinely threshold-sensitive (not a flat
+  wall), but even at `min_edge=0.00` — no profit cushion required at all —
+  58.5% of evaluable trades are still rejected, meaning most rejections
+  are trades with outright negative estimated edge, not borderline cases
+  the threshold happens to catch.
 - Observe-only is worth proposing and is cheap on the compute side, but
   needs one additional real piece of work (capturing the full detail
   breakdown on rejection, which nothing does today even with the gate
