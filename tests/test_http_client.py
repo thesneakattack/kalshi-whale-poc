@@ -710,3 +710,26 @@ def test_per_endpoint_window_counts_are_exact_and_reset_with_the_window(monkeypa
     assert ep["get_milestones"] == {"calls": 1, "rate_limited": 0, "errors": 1}
     http_client.reset_rest_latency_window()
     assert http_client.rest_latency_snapshot()["by_endpoint"] == {}
+
+
+def test_get_client_pins_explicit_timeout_and_limits(monkeypatch):
+    """Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
+    hygiene.md - makes the shared client's timeout/connection-pool ceiling
+    explicit, pinned to httpx 0.27.2's own already-measured defaults
+    (Timeout(timeout=5.0), Limits(max_connections=100,
+    max_keepalive_connections=20)) rather than an implicit, version-
+    dependent default. No behavior change - a bottleneck was never
+    measured here, only the values made explicit."""
+    monkeypatch.setattr(http_client, "_client", None)
+    client = http_client.get_client()
+    assert client.timeout.connect == 5.0
+    assert client.timeout.read == 5.0
+    assert client._transport._pool._max_connections == 100
+    # (Exact private-attribute path for max_connections confirmed against
+    # the installed httpx version before trusting this assertion - httpx's
+    # public API doesn't expose Limits back off a constructed client
+    # directly; re-verify this attribute path is still correct for
+    # whatever httpx version is installed at execution time, since this
+    # is exactly the kind of private-internal detail that can shift
+    # across httpx releases.)
+    asyncio.run(http_client.close_client())

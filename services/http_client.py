@@ -424,10 +424,36 @@ def http_metrics_snapshot(reset: bool = False) -> dict:
     return snapshot
 
 
+# 2026-09-03, Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
+# hygiene.md: pins this shared client's timeout/connection-pool ceiling
+# explicitly rather than leaving it as an implicit, httpx-version-
+# dependent default. Values are httpx 0.27.2's OWN measured defaults
+# (docker exec ddev-kalshi-whale-poc-fastapi python3, confirmed live,
+# 2026-09-03: Timeout(timeout=5.0), Limits(max_connections=100,
+# max_keepalive_connections=20, keepalive_expiry=5.0)) - no bottleneck was
+# measured at these values, so this changes no runtime behavior; it only
+# stops a future httpx upgrade from silently changing this app's behavior
+# by changing its own defaults out from under an implicit construction.
+# max_connections/max_keepalive_connections are also an fd-budget concern
+# now (this app's 2026-09-02 6.8h fd-exhaustion incident) - each open
+# connection is a socket file descriptor, and this shared client serves
+# every caller of get_client() (Kalshi public REST via KalshiPublicGateway,
+# Google OAuth, event_schedule.py) through one pool.
+_HTTP_CLIENT_TIMEOUT_SEC = 5.0
+_HTTP_CLIENT_MAX_CONNECTIONS = 100
+_HTTP_CLIENT_MAX_KEEPALIVE_CONNECTIONS = 20
+
+
 def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient()
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(_HTTP_CLIENT_TIMEOUT_SEC),
+            limits=httpx.Limits(
+                max_connections=_HTTP_CLIENT_MAX_CONNECTIONS,
+                max_keepalive_connections=_HTTP_CLIENT_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
     return _client
 
 
