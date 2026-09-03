@@ -1,33 +1,28 @@
 # Next action
 
-**The app is currently watching zero markets and stuck in a 44-minute
-tick — check this before anything else in this file.** Confirmed live
-twice ten minutes apart (2026-09-03 01:16 and 01:26 UTC): `GET
-/api/health/pipeline` returns `markets_watched: 0` and
-`last_tick_duration_sec: 2642.07`, identical across both probes (the tick
-has not completed since, not merely large), 45 of 46 open positions stale
-over 300 s. **As of this file's own PR-stage review (01:36–01:44 UTC), it
-is worse still: `/api/health/pipeline` no longer returns at all within
-90 s (504), not merely reporting a stuck tick — re-check current state
-before assuming anything below is still accurate.** Full evidence and two
-uneliminated hypotheses (a genuinely empty pinned watchlist right now vs.
-`market_catalog.db`/`market_history.db` possibly unreadable or corrupt —
-see the malformed-database fault below) in
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
-§4.7. First step: re-read `/api/health/pipeline` a few minutes apart with
-no other change to rule out "nothing open right now"; if it persists, run
-`PRAGMA integrity_check` (read-only) on `market_catalog.db` and
-`market_history.db` before touching the config below. Only after that,
-decide whether the uncommitted `config/settings.yaml` changes (see next
-paragraph) should be reverted — that is the config owner's call.
-
-**`market_history.db` shows a corruption-class fault, not just a
-failed-open.** `DatabaseError: database disk image is malformed`, 45
-occurrences, last seen 2026-09-02 20:44:11 UTC (found live, not in the
-original incident sweep below). Run `PRAGMA integrity_check` before any
-further writes to that file; if it reports damage, restore from
-`services/backup/backup.py`'s most recent pre-incident snapshot rather than
-continue writing to a possibly-corrupt file.
+**Execute `docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`**
+(PR #441, merged — 10 tasks, full self-review + independent adversarial
+review + consolidation cycle at both the artifact stage and the PR stage,
+both GO) via `superpowers:executing-plans` or
+`superpowers:subagent-driven-development`. It supersedes the previous
+version of this section: bound `/api/health/pipeline`'s per-store probes
+with a timeout (Task 1); close the connection-lifetime leak in five
+confirmed-leaking modules — `market_history.py`, `title_cache.py`,
+`market_catalog.py`, `signal_log.py`, `fault_log.py` (Tasks 2-6); stop
+`GET /api/health/faults` from blocking the event loop synchronously
+(Task 7); a read-only `PRAGMA integrity_check` on `market_history.db`
+(already run twice during the plan's own review, confirmed genuinely
+corrupt — `sqlite3.DatabaseError: database disk image is malformed`,
+reproduced three times total including a PR-stage recheck) and
+`market_catalog.db` (confirmed clean) with a human decision gate before
+any restore (Task 8); fd-count visibility + an early-warning fault
+(Task 9); full regression + live validation (Task 10). **Note recorded in
+the plan's own Task 10**: by the PR-stage review (2026-09-03, 02:59-03:00
+UTC) both `/api/health/pipeline` (0.19s) and `/api/health/faults`
+(0.036s) were responding quickly again, not hanging — the underlying code
+defects are still real and confirmed in current source, but re-measure
+live before assuming the specific hang durations cited in the plan are
+still reproducible on demand.
 
 **`config/settings.yaml`'s uncommitted working-tree diff has grown to four
 changes**, not the two originally recorded: `kalshi.markets_watchlist_mode:
@@ -35,61 +30,29 @@ merge → exclusive`, `kalshi.max_children_per_parent: 5 → 0`,
 `kalshi.categories` narrowed from eleven entries to two (`Crypto`,
 `Commodities`), and the calibration-audit comment block wiped a third time.
 Re-run `git diff config/settings.yaml` to see the current state before
-deciding anything — it may have changed again since this was written.
+deciding anything — it may have changed again since this was written;
+whether to revert is still the config owner's call, unrelated to the plan
+above.
 
-**Then, pin and fix the file-descriptor leak that took the app down for 6.8 hours
-today, before anything else from either architecture audit** — Tier 0 of
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
-(§4.1, §8), via `superpowers:systematic-debugging`. What is established
-(log-confirmed, not inferred): at 2026-09-02 08:24 UTC the live uvicorn
-worker hit its 1,024-descriptor limit (`OSError: [Errno 24] Too many open
-files`, 116 log lines); until the 14:45 UTC hot-reload every SQLite open
-failed intermittently across ≥7 components (1,187 `unable to open database
-file`/`readonly database` lines), `capture_writer` took its non-lock *drop*
-path 1,127 times (414 `raw_trades`, 356 `rejection_events`, 357
-`rejected_candidates` batches — sizes unrecoverable, counters reset by the
-reload), `market_history` lost 717 ticker snapshots, outbound Kalshi HTTP
-failed DNS with `[Too many open files]`, `task_supervisor` restarted three
-crashed schedulers, and observability capture has a 408-minute hole with no
-fault row of its own. Nothing tracked it: no issue, no alert
-(`alerting.check_and_alert` monitors three conditions and never reads
-`fault_log`), no mention in this file until now. The replacement worker
-(started 17:32 UTC) held 425–619 fds at 35–40 min of uptime, 366 of them
-`data/*.db` handles (144 on `market_history.db`, 92 `market_catalog.db`, 80
-`signal_log.db`, opened read-write at position 0, only 2 on the matching
-`-wal`). It has recurred at least once since (a live re-sample found the
-descriptor count climbing again), though a third live sample at a longer
-uptime found no incident — the leak looks coupled to diagnostic/API
-request volume, not a fixed wall-clock period; treat it as urgent, not as
-"every N hours" (§4.1's "Recurrence" note). Mechanism candidates and
-falsifiers, in order, are in §4.1: `gc.collect()`-and-recensus
-(traceback/cycle retention), `contextlib.closing` on one of
-`services/title_cache.py`'s five `_connect()` call sites (the
-smallest reproducer, ≥40 handles from one site), the three hand-rolled
-connection caches. Source fact behind all of them: 30 modules define their
-own `_connect()`, 26 never call `close()`, `with sqlite3.Connection` does
-not close. Do not "fix" it by raising `ulimit -n`. Same PR: fd count in
-`/api/health/pipeline` + a `fault_log` row at 80% of `RLIMIT_NOFILE`.
-
-**Then, in this order (second pass §8 Tier 0/1):** fix
-`GET /api/health/faults` so `hours` scopes the `faults` list, not only the
-`summary` (`services/diagnostics/routes.py:489-496` — this label defect is
-why the first audit, its adversarial reviewer, and the previous version of
+**Also still open, not covered by the plan**: `GET /api/health/faults`'s
+`hours` parameter scopes only its `summary`, not the `faults` list it
+returns (`services/diagnostics/routes.py:489-496`) — this label defect is
+why the first audit, its adversarial reviewer, and an earlier version of
 this file all reported "237 `raw_trades` faults in the last 24h that drop
 rows": that row is lifetime, last seen 2026-08-30 16:08 UTC, fixed by
-`13680e5` the same day, zero recurrence — **the first audit's Tier-1 item 3
-is closed, not open**); decide whether to backfill the 08:24–14:45 UTC
-`raw_trades` gap from Kalshi REST (your call, `docs/open-decisions.md`);
-give the faults an automated consumer (schedule `tools/soak_analyzer.py`'s
-checks in-process — allowed since PR #429 removed the tooling/app
-separation rule); move observability capture off the loop it measures;
-add stack capture on stall to `loop_watchdog` (the container cannot run
-`py-spy`: no `CAP_SYS_PTRACE`) *before* any stall fix; then the first
-audit's de-polling item — which the nginx access log now shows fixes the
-504 bursts (foreground History tab at 6 s → 411–2,305 per hour; same tab
-browser-throttled to ~1/min → 0–10) and is **not** expected to fix the
-60–130 s event-loop stalls, which occur in every hour regardless of
-dashboard activity (§3.2, §3.3).
+`13680e5` the same day, zero recurrence — **the first audit's Tier-1 item
+3 is closed, not open**. Also open: decide whether to backfill the
+08:24-14:45 UTC `raw_trades` gap from Kalshi REST (`docs/open-decisions.md`);
+give the faults an automated consumer beyond Task 9's threshold alert
+(schedule `tools/soak_analyzer.py`'s checks in-process — allowed since PR
+#429 removed the tooling/app separation rule); move observability capture
+off the loop it measures; add stack capture on stall to `loop_watchdog`
+(the container cannot run `py-spy`: no `CAP_SYS_PTRACE`) before any stall
+fix; then the first audit's de-polling item — which the nginx access log
+showed fixes the 504 bursts (foreground History tab at 6 s → 411-2,305 per
+hour; same tab browser-throttled to ~1/min → 0-10) and is **not** expected
+to fix the 60-130 s event-loop stalls, which occurred in every hour
+regardless of dashboard activity.
 
 **Issue #410's original next-action text (superseded twice — by the first
 audit's measurement and now by the second pass's log evidence; not yet fixed
@@ -162,6 +125,31 @@ are in `docs/open-decisions.md`'s newest lines.
 is needed for pre-existing root-owned leftovers in other worktrees (see
 below) — `ddev exec -s fastapi` can no longer force through them now that
 it runs as the host user.
+
+## Recently resolved (2026-09-03, Tier 0 implementation-plan session)
+
+- **Implementation plan drafted and merged for the Tier 0 live incident**
+  (`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`,
+  PR #441, `phase:plan`; self-review + independent adversarial review +
+  consolidation at both the artifact stage and the PR stage, both GO — the
+  PR-stage review caught the artifact-stage cycle's own claim to have
+  "searched and corrected every cross-reference" as itself inaccurate,
+  three sentences in Global Constraints were missed; fixed, both cycles
+  recorded honestly in the consolidation doc rather than papered over).
+  10 tasks: bound `/api/health/pipeline`'s per-store probes with a
+  timeout; close the connection-lifetime leak in five confirmed modules
+  (`market_history.py`, `title_cache.py`, `market_catalog.py`,
+  `signal_log.py`, `fault_log.py` — the last two added mid-review after
+  the adversarial review found `GET /api/health/faults` was named as
+  stuck by the plan's own diagnosis but left untouched by the first
+  draft); stop `GET /api/health/faults` from blocking the event loop
+  synchronously; read-only integrity checks confirming `market_history.db`
+  genuinely corrupt (reproduced three times across both review passes) and
+  `market_catalog.db` clean, with a human decision gate before any
+  restore; fd-count visibility + an early-warning fault; full regression +
+  live validation. Docs only — no code, config, or data changed; the plan
+  describes future implementation work, it does not perform it. See the
+  top of this file for the current single next action.
 
 ## Recently resolved (2026-09-02, architecture-audit second-pass session)
 
