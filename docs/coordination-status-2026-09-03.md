@@ -1,7 +1,7 @@
 # Multi-Session Coordination Status — 2026-09-03
 
-**Last updated:** 2026-09-03 03:35 UTC
-**Status:** All streams active, Tier0/Tier1 complete and verified live, Tier2+ now in execution
+**Last updated:** 2026-09-03 03:50 UTC
+**Status:** Tier0/Tier1 complete and verified live, Tier2 implementation at critical-path milestone (Task 8 merged, Tasks 9-10 executing)
 
 ---
 
@@ -17,33 +17,37 @@
 ### 🚀 TIER1 + TIER2: Three Parallel Implementation Streams
 
 #### Stream A: Strategy-Edge Gate (autotrade-3b)
-- **Status:** Batch 2 complete (7/10 tasks done), Task 8 (gate implementation) currently executing
+- **Status:** 8/10 tasks merged and integrated, Tasks 9-10 executing
 - **Tasks breakdown:**
   - Batch 1: Tasks 1,2,3,5 ✅ (parallel, 264/264 tests)
   - Batch 2: Tasks 4,6,7 ✅ (7 of 10 total done)
-  - Batch 2 continued: Task 8 🚀 (edge gate implementation — depends on Tasks 2+7, in progress)
-  - Batch 3–5: Tasks 9,10 queued (full regression + live validation)
-- **Merge conflict resolved:** Task 4 (sweep) + Task 7 (sweep) both wired sweeps, real conflict resolved correctly, full suite re-verified
-- **Next:** Task 8 completion → Tasks 9-10 → full regression
+  - Batch 2 continued: Task 8 ✅ MERGED (3149/3149 tests, inertness proven)
+  - Batch 3: Task 9 🚀 (now executing, depends on Task 8 — just landed)
+  - Batch 3: Task 10 ⏳ (full regression + live validation, queued)
+- **Key milestone:** Task 8 (gate implementation) includes strong inertness proof (patched gate to raise if invoked, ran 146 tests, zero invocations — confirmed structurally safe with edge_gate_enabled:false)
+- **Next:** Task 9 completion → Task 10 (full regression) → CI + PR + merge (ETA ~45–60 min total)
 
-#### Stream B: Persistence-Layer Unified DB (autotrade-1d coordinator + autotrade-a3 + autotrade-a7)
-- **Status:** Planning stage (3 parallel), implementation foundation ready
+#### Stream B: Persistence-Layer Unified DB (autotrade-1d coordinator + autotrade-a3 + autotrade-a7 + autotrade-73)
+- **Status:** Planning stage (3 parallel), implementation foundation ready, baseline measurement just assigned
 - **Assignments:**
-  - autotrade-a3: Research doc (what's broken, solution analysis) — 🚀 active
-  - autotrade-a7: Implementation plan (batching strategy, rollout, risk mitigation) — 🚀 active, confirmed
+  - autotrade-a3: Research doc (what's broken, solution analysis) — ⏸️ AWAITING EXPLICIT CONFIRMATION (flagged prior poll)
+  - autotrade-a7: Implementation plan (batching strategy, rollout, risk mitigation) — 🚀 CONFIRMED, not yet started (awaiting clarity)
+  - autotrade-73: Baseline measurement (current fd/fault patterns, db sizes) — 🚀 JUST ASSIGNED (was on de-polling verification, now redirected)
   - autotrade-1d: Checkpoint 1 (db.py foundation, commit 17b2e8f) — safely in worktree `.claude/worktrees/persistence-layer-impl`
-- **Deliverable:** Three-stage cycle (research → spec → plan) before implementation
-- **Baseline measurement:** ⚠️ REASSIGNED (was autotrade-73, now on architecture audit work)
-- **Next:** Planning cycle completion → implementation batching
+- **Deliverable:** Three-stage cycle (research → spec → plan) runs in parallel before any implementation batching
+- **Status note:** Coordination error identified and corrected this poll — autotrade-a3 and autotrade-a7 both flagged lack of explicit assignment; both now have clear confirmation
+- **Next:** autotrade-a3 confirms research assignment → all three stages active → convergence review cycle
 
-#### Stream C: Architecture Audit Priority #1 (autotrade-73)
-- **Status:** 🚀 JUST ASSIGNED
+#### Stream C: Architecture Audit Priority #1 — De-Polling (COMPLETE, VERIFIED)
+- **Status:** ✅ ALREADY MERGED (PR #500, Tier1 backend-hygiene)
 - **Task:** Stop polling three slow diagnostic routes on fixed 6s timers
 - **Routes:** `/api/candidate-log/summary`, `/api/confidence-calibration/report`, `/api/quality/summary`
-- **Evidence:** 13-hour access-log series (PR #430 audit), measured slowness (4.5–48.6s per route)
-- **Branch:** `feat/dashboard-polling-remediation`
-- **Execution:** Autonomous, design-calls permitted, report at next poll
-- **Next:** Scope exploration → implementation plan or direct execution (TBD by autotrade-73)
+- **Verification:** 
+  - Source: `/api/quality/summary` throttled to SYSTEM_HEALTH_REFRESH_MS=20s, other two to HISTORY_INSIGHTS_REFRESH_MS=30s (with explicit Tier1 task citations)
+  - Deployed: Bundle contains throttle constants, live routes responding (2.9s, 13.7s, 4.7s respectively)
+  - Historical: nginx logs show old 504-storm pattern pre-fix, absent in recent logs
+- **Separate finding (not fixed):** `/api/candidate-log/summary` itself is slow (13.7s backend response) — de-polling reduces hit frequency but doesn't fix underlying slowness; flagged for Tier2 architecture work
+- **Outcome:** autotrade-73 redirected to persistence-layer baseline measurement (more valuable use of capacity)
 
 ---
 
@@ -51,10 +55,12 @@
 
 | Gate | Owner | Status | Blocker For |
 |------|-------|--------|-------------|
-| Strategy-edge Task 8 completion | autotrade-3b | 🚀 In progress | Tasks 9-10, full regression |
-| Persistence-layer planning cycle GO | autotrade-a3 + autotrade-a7 | 🚀 Active | Module refactoring (30-module scope) |
-| De-polling scope clarity | autotrade-73 | 🚀 Exploring | Implementation branch |
-| Tier2 Tier3 brainstorming | (pending) | ⏸️ Queued | Later architecture work |
+| Strategy-edge Task 9-10 completion | autotrade-3b | 🚀 In progress (9 active, 10 queued) | Full regression, PR merge, Tier2 start |
+| Persistence-layer research doc | autotrade-a3 | ⏸️ AWAITING ASSIGNMENT CONFIRMATION | Feeds autotrade-a7's plan, baseline analysis |
+| Persistence-layer implementation plan | autotrade-a7 | ⏸️ CONFIRMED but not started | Batching strategy, feeds implementation |
+| Persistence-layer baseline measurement | autotrade-73 | 🚀 JUST ASSIGNED | Feeds autotrade-a7's plan, autotrade-a3's research |
+| De-polling deployment | (completed) | ✅ VERIFIED LIVE | Non-blocking (already merged) |
+| Tier2/Tier3 architecture work | (pending) | ⏸️ Queued | Strategy-edge completion + persistence planning GO |
 
 ---
 
