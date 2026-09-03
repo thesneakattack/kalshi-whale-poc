@@ -2,20 +2,35 @@
 
 Research stage only — no code or `config/settings.yaml` change. Assignment
 (autotrade-1d, 2026-09-03): the strategy edge/EV gate (PR #502) is fully
-built and merged but `strategy.edge_gate_enabled: false`; 14 of 21 open
-paper positions (14 of 18 on the yes side) sit in the 0.60-0.95 unit-cost
-band CLAUDE.md flags as negative-EV, and 109 of the last 500 trades entered
-there. The user needs a number before deciding whether to flip the gate on.
-Verified every inherited claim from source rather than taking it on trust,
-per this repo's "never guess" rule, then measured the four things asked
-for.
+built and merged but `strategy.edge_gate_enabled: false`; the PM's own
+working numbers going in were 14 of 21 open paper positions (14 of 18 on
+the yes side) sitting in the 0.60-0.95 unit-cost band CLAUDE.md flags as
+negative-EV, and 109 of the last 500 trades entered there — both are
+time-varying counts, not independently re-verified against a specific
+timestamp in this doc (a live re-check while writing this: 15 open
+positions, 9 yes-side, 7 in-band). The user needs a number before deciding
+whether to flip the gate on. Measured the four things asked for, tracing
+every derived claim to source rather than taking it on trust, per this
+repo's "never guess" rule — though as the adversarial review that
+followed found (see this doc's `-adversarial-review.md` sibling), tracing
+a citation correctly is not the same as tracing what it *computes*
+correctly, and this doc's first draft got that distinction wrong twice.
 
-All numbers below come from one script (read-only against live
-`data/signal_log.db` and `data/paper_broker.db`, deleted after use, not
-committed) that calls the real production functions unchanged
-(`confidence_calibration.recompute_deltas`, `_edge_gate_check`'s own logic
-inlined for the per-trade simulation) — never a re-derivation of the
-gate's math from scratch. Config values used are the live
+All numbers below come from scripts (read-only-intent SQLite queries
+against live `data/signal_log.db` and `data/paper_broker.db` — though the
+underlying `services.*` functions called still open ordinary read-write
+connections that run `PRAGMA journal_mode=WAL`/`CREATE TABLE IF NOT
+EXISTS` internally, so "read-only" describes intent and the queries
+written for this research, not a guarantee about every function called;
+scratch scripts deleted after use, not committed) that call the real
+production functions for the actual gate math — `confidence_calibration.
+recompute_deltas`/`delta_calibrated_for`/`_bucket_delta_by_category_
+price_band`, and `kalshi_fees.unit_cost`/`taker_fee_per_contract` — with
+`_edge_gate_check`'s own formula inlined for the per-trade simulation in
+§3 (the function itself needs a live `ticker`/`series_cache` lookup for
+its flat-fee-type early-out that a standalone script doesn't replicate;
+confirmed none of the sampled tickers are on a flat-fee series, so the
+omission doesn't affect the numbers). Config values used are the live
 `config/settings.yaml` ones, confirmed identical to code defaults:
 `edge_gate_min_edge=0.04`, `edge_gate_fee_buffer_usd=0.005`,
 `edge_gate_pre_print_offset_sec=10.0`, `edge_gate_p_pre_max_age_sec=600.0`,
@@ -39,9 +54,9 @@ resolved signals in 30d window:                              173,801
   q_pre attached (has both p_pre and a fee-derived
     unit cost) — the remaining rows, subdivides below:         49,915  (28.7%)
     of those, category=None (no trade_category row)
-      — also excluded, same as production's own filter:        40,801  (23.5% of total, 81.8% of attached)
+      — also excluded, same as production's own filter:        40,801  (23.5% of total, 81.7% of attached)
     of those, category present — these are what actually
-      go into a (category, price_band) cell:                    9,114  ( 5.2% of total, 18.2% of attached)
+      go into a (category, price_band) cell:                    9,114  ( 5.2% of total, 18.3% of attached)
 
 distinct (category, price_band) cells with >=1 signal:   18
 cells clearing min_bucket_n=50:                           18  (100%)
@@ -56,13 +71,16 @@ third disjoint bucket, kept indented above to make that explicit.)
 **Correction to the PM's own working assumption:** "~170k resolved signals
 over roughly 55 cells" was the framing going in; the real grid is much
 smaller — only 3 categories currently produce any edge-gate-attachable
-signals at all (Crypto, Sports, Commodities; Politics/Economics/etc. either
-have no resolved signals in-window or none that survive attachment), each
+signals at all (Crypto, Sports, Commodities; `trade_category.db` itself
+only holds Sports/Crypto/Commodities/Climate and Weather/Economics/
+Entertainment rows — no Politics category exists in this table at all —
+and the latter three categories' signals either don't survive attachment
+or don't reach `min_bucket_n`), each
 with up to 6 price bands, giving 18 possible cells, and **every one of
 those 18 that has any data at all clears the floor by a wide margin.**
 Zero cells are currently in the delta=0.0 fallback state. This is a
 stronger, more specific answer than "most clear it" — it's all of them,
-counted, not estimated. Worth noting separately: 81.8% of the rows that
+counted, not estimated. Worth noting separately: 81.7% of the rows that
 survive the p_pre attachment step still get dropped for having no
 `trade_category` row at all (40,801 of 49,915) — the real per-cell
 population (9,114 rows across 18 cells, ~506 average) is meaningfully
@@ -71,28 +89,51 @@ exists is still well clear of the 50-signal floor (smallest at 152, 3x
 the minimum) even after that further narrowing.
 
 **The bigger number here is the 71.3% `no p_pre` rate**, not the cell
-count — confirmed as a real data characteristic, not a script bug, by
-widening the lookback window to 7 days and re-checking a sample of the
-failures: `market_history.recent_price` still returned `None` even at 7
-days back, but returned a real value for the *same ticker* as of *right
-now*. That means these aren't old signals whose price history rolled off
-retention — they're on tickers that had **no price snapshot at all before
-their first (and often only) trade**, concentrated in the highest-
-rotation market types: 15-minute gold/silver strikes (`KXGOLD15M`,
-`KXSILVER15M`) and hourly ETH strikes (`KXETHD-...`) that are created,
-traded, and resolved faster than `market_history`'s own polling cadence
-captures a baseline snapshot. This is a real, separate finding worth its
-own follow-up (a coverage gap in how fast new short-dated market instances
-get their first price snapshot), out of scope to fix here, but directly
-relevant to item 3 below since it drives most of that section's fail-open
-rate too.
+count — but the explanation for it in this doc's first draft was wrong,
+caught by adversarial review, and worth walking through since the error is
+instructive: the doc originally widened the lookback window to 7 days,
+found `recent_price` still returned `None`, and concluded these were
+tickers with no price history at all rather than old signals whose history
+had rolled off retention. **That test cannot actually distinguish the two
+hypotheses** — widening how far back you *search* can't recover a snapshot
+that's already been physically *deleted* by the time you search, and
+`market_history.retention_hours: 168` (`config/settings.yaml:308-309`, a 7-
+day retention window, enforced hourly by `market_history.prune()` deleting
+`snapshots WHERE timestamp < cutoff`) means exactly that: a signal older
+than ~7 days has almost certainly had its own contemporaneous price
+snapshots physically removed by now, regardless of how wide a window a
+later query searches.
+
+Re-measured directly, binning the same 30-day signal population by age:
+miss rate holds around 32-67% for signals 0-6 days old, then jumps to
+**99.4% at exactly 7 days and 100% beyond** — a clean cliff at the
+configured retention boundary, not a gradual falloff. **~60% of all
+misses are signals older than the retention window whose history has
+simply been deleted; the genuine within-retention coverage gap is 49.4%,
+not 71.3%.** This also means `recompute_deltas`'s nominal 30-day
+calibration window is, in practice, capped at ~7 days by retention — worth
+flagging on its own, since it bounds how far back *any* future
+calibration measurement can ever look, not just this one.
+
+The exemplar markets named in the original draft (`KXGOLD15M`,
+`KXSILVER15M`, `KXETHD-...`) were also wrong — re-checked per-family, they
+are actually reasonably well covered (`KXGOLD15M` and `KXSILVER15M` both
+~62-64% covered, only 23-25% genuinely zero-snapshot). The real
+within-retention coverage gap concentrates in `KXMVECROSSCATEGORY`
+(16.1% of all misses, **100% zero-snapshot at every age** — a distinct
+failure from either retention or fast rotation) and the sports-match
+families (`KXATPMATCH`, `KXMLBGAME`, `KXWTAMATCH`, `KXATPCHALLENGERMATCH`
+— collectively ~47% of all misses, 83-99% zero-snapshot). This is a real,
+separate finding worth its own follow-up (why these specific families
+never get a first `market_history` snapshot at all, as distinct from the
+general retention-boundary effect), out of scope to fix here. It is *not*
+what drives §3's fail-open rate, though — see §3's own note on why that
+section isn't contaminated by the retention mechanism.
 
 ## 2. The consequence of an uncalibrated cell
 
 Confirmed directly from `_edge_gate_check` (`services/strategy_engine.py:
-287-308`): when `delta_calibrated_for()` returns `0.0` (either `category is
-None`, or the cell exists but never accumulated `min_bucket_n` — neither
-condition is currently occurring for any real cell, per §1), `p_est_side =
+287-308`): when `delta_calibrated_for()` returns `0.0`, `p_est_side =
 clamp(q_pre_now + 0.0) = q_pre_now`. The gate's comparison is `edge =
 p_est_side - ask_now - fee`, admitted when `edge >= min_edge`. Substituting:
 
@@ -102,27 +143,74 @@ q_pre_now - ask_now - fee >= min_edge
 ```
 
 **Confirmed, not refuted: an uncalibrated cell is a strict "the price must
-have moved in your favor by at least ~0.045 since the pre-print snapshot"
-filter, not a neutral pass-through.** `q_pre_now` is the unit cost 10
-seconds *before* the whale print; `ask_now` is the unit cost the trade
-would actually pay. Since `delta=0.0` means "no measured edge from being
-right about direction," the gate falls back to demanding the price already
-moved the trader's way before it will admit the trade — the opposite of
-"chasing" a print. This reading holds regardless of §1's finding that no
-real cell currently sits in this state: it's the correct characterization
-of what would happen *if* one did (a brand-new category, or a cell that
-later drops below 50 signals through retention pruning), and it's worth
-carrying forward even though it isn't biting today.
+have moved in your favor since the pre-print snapshot" filter, not a
+neutral pass-through.** `q_pre_now` is `unit_cost` at the most recent
+`market_history` snapshot at or before `as_of - edge_gate_pre_print_
+offset_sec` (10s), itself accepted up to `edge_gate_p_pre_max_age_sec`
+(600s) stale — so in practice `q_pre_now` can reflect a price up to ~610s
+before the print, not a clean "10 seconds before," and given §1's coverage
+sparsity many real `q_pre` values sit near that stale end; `ask_now` is
+the unit cost the trade would actually pay. Since `delta=0.0` means "no
+measured edge from being right about direction," the gate falls back to
+demanding the price already moved the trader's way before it will admit
+the trade — the opposite of "chasing" a print, though a looser reading of
+"since the pre-print snapshot" than the clean 10-second framing suggests.
+The margin required is `fee + min_edge`, not a flat number: `fee =
+taker_fee_per_contract(price, ticker) + 0.005`, so the floor is ~0.045 at
+the cheapest/priciest contracts and closer to ~0.06 within the CLAUDE.md-
+flagged 0.60-0.95 band specifically, where the per-contract fee itself is
+larger.
+
+**Correction, caught by adversarial review: this doesn't only matter as a
+hypothetical.** The doc's first draft claimed "neither condition [`category
+is None`, or an under-sized cell] is currently occurring for any real
+cell, per §1" — §1 only established the second half (0 existing cells
+below the floor). It said nothing about `category is None`, which §1's own
+numbers show is common: **81.7% of p_pre-attached signals have no
+`trade_category` row at all.** A third case also exists that neither draft
+named: a `(category, price_band)` combination that simply has zero rows
+attached returns the same 0.0 fallback (`confidence_calibration.py:479`'s
+`_delta_cache.get(..., 0.0)`) — `trade_category.db` has categories
+(`Climate and Weather`, `Economics`, `Entertainment`) that never produce a
+cell at all. **Correct, narrower statement: no *existing* (category,
+price_band) cell is under-sized, but a live signal with no category, or
+one in a category that's never formed a cell, hits this strict filter
+right now** — not a hypothetical confined to "a brand-new category." §3's
+own "0 uncalibrated hits among 121 evaluable trades" is the actual
+empirical check that this isn't currently biting the trades that make it
+past the earlier fail-open filters, and that finding stands.
 
 ## 3. Headline number: how many of the recent trades would the gate reject
 
 Queried the last 500 entry trades from `data/paper_broker.db` (`reason NOT
 LIKE 'closed:%'`, most recent first) — 319 actually exist in that
-selection (paper trading hasn't accumulated 500 distinct entries yet).
+selection. **Correction, caught by adversarial review: this is not a
+lifetime shortfall.** `paper_broker.db` in full holds 633 rows, the oldest
+0.82 days old — the broker was reset (`data/trade_archive.db`'s mtime
+confirms the prior history was archived ~20 hours before this
+measurement), so the entire 319-entry sample is one ~20-hour trading
+session at roughly 400 entries/day, not "hasn't accumulated 500 entries
+yet" in a general sense. Worth stating plainly since it bears on how much
+weight to put on the specific numbers below: this is one narrow window,
+not a long-run average, and the archived prior history isn't a usable
+substitute for extending it — `market_history`'s own retention (§1) has
+already pruned the price snapshots that history's own `p_pre` values would
+need, which is itself the reason this kind of measurement can never look
+back further than ~7 days regardless of how much trade history exists.
+
 Simulated `_edge_gate_check`'s exact math per trade using **today's**
 calibration state (the real question a flip-the-switch-now decision needs:
 would enabling the gate right now have rejected these), not a
-point-in-time-historical recalibration.
+point-in-time-historical recalibration. One disclosed methodological
+substitution, caught by adversarial review: this simulation attaches
+category via `trade_category.categories_for_tickers` (the same source §1
+uses), while the live gate's runtime category actually comes from
+`market_lookup._category_by_ticker()` (`decision_bridge.py:125`, an
+in-memory map built from `event_titles`) — same vocabulary, but with
+materially denser real-time coverage than the DB table. No practical
+divergence found in this run (0 of the evaluable trades hit a delta=0.0
+fallback either way), but a live-enabled gate would see more categorized
+signals than this offline simulation does.
 
 ```
 total entry trades checked:                        319
@@ -205,14 +293,22 @@ max_age_sec=  604800 (7 days):       p_pre found for 134/319 (42.0%)
 the window 1,008x (600s → 7 days) recovers only 3.4 percentage points of
 coverage (38.6% → 42.0%), and the last 6x of that widening (1 day → 7
 days) recovers nothing at all — the curve has already flattened. This
-matches §1's root-cause finding directly: the missing snapshots aren't
-just outside a too-narrow lookback window, they genuinely don't exist yet
-at trade time, concentrated in markets (15-minute gold/silver, hourly ETH
-strikes) that are created and traded faster than `market_history` captures
-a first snapshot. Raising `edge_gate_p_pre_max_age_sec` is not a viable
-fix for this coverage gap; closing it would require `market_history`
-itself capturing new-market snapshots faster, a separate, unmeasured piece
-of work.
+confirms the missing snapshots aren't just outside a too-narrow lookback
+window — for this specific population (all entries <1 day old, so §1's
+retention-pruning mechanism cannot be the explanation here, per §3's own
+correction above) they genuinely don't exist yet at trade time. **Which
+markets drive this particular 20-hour window's gap wasn't separately
+broken down** — §1's corrected root-cause analysis (retention pruning
+plus a genuine `KXMVECROSSCATEGORY`/sports-match zero-coverage hole)
+covers the full 30-day population, not specifically this recent slice, so
+citing those same exemplar families here without checking would repeat
+the shape of the original mistake rather than fix it. What's established
+for this slice specifically: raising `edge_gate_p_pre_max_age_sec` is not
+a viable fix for it, whatever markets are driving it; closing the gap
+would require `market_history` capturing new-market snapshots faster (if
+it's rotation-driven) or extending coverage to whichever families are
+missing here (if it's the same zero-coverage-hole shape as §1's), neither
+of which this pass separately confirmed for the §3 population.
 
 ### Rejection-rate sensitivity to `min_edge`
 
@@ -237,6 +333,57 @@ negative edge outright, not merely positive-but-below-threshold edge. The
 rejection isn't primarily a borderline-tuning artifact; most of what gets
 rejected is rejected by a wide margin.
 
+## 3.6. What was missing from all of the above: did the gate actually reject losers?
+
+**Caught by adversarial review, and this is the finding that most directly
+bears on the flip decision: nothing above asks whether the trades the gate
+would reject were actually losing trades.** Every number so far is a
+volume/count measurement — how many trades the gate touches, not whether
+touching them would have helped. That's a real gap in a doc meant to
+inform an EV decision.
+
+Matched each of the 319 entries to the first subsequent close on the same
+ticker and parsed the broker's own recorded realized P&L
+(`paper_broker.py:620`'s `reason=f"closed: {reason} (realized
+{realized_pnl:+.2f})"`, a real per-position figure — mark-to-market minus
+entry and exit fees, not re-derived). Independently reproduced (not just
+taken from the adversarial review) on a slightly later snapshot of the
+same live data:
+
+```
+              entries  closed  still_open   sum realized    mean     win%
+would-REJECT      94      85      12          +$7,159.49   +$68.84   78.8%
+would-ADMIT       29      12       1          +$1,098.45   +$91.54   66.7%  (n=12, small)
+fail-open        204     196       3          +$5,082.91   +$25.93   57.1%
+```
+
+(Counts differ slightly from §3's 92/31/196 split — this was run at a
+later moment with a few more trades in the window and a different,
+independently-written matching script; the qualitative shape is what
+matters, not exact parity between the two runs.)
+
+**The would-REJECT cohort was not a cohort of losers — its win rate
+(78.8%) was the highest of the three, and its per-trade mean (+$68.84) was
+comparable to, not clearly worse than, would-ADMIT's (+$91.54, though on
+only 12 closed trades — too few to weight heavily).** On this data, a gate
+that had been on would have removed a profitable cohort roughly as strong
+as the one it kept, in exchange for filtering out the (much larger)
+rejected volume.
+
+**This is explicitly indicative, not a conclusion**, and every caveat that
+applies to §3 applies doubly here: one ~20-hour session, ticker-level
+"first close after entry" matching that doesn't correctly attribute P&L
+under position-netting or partial closes, several rejected entries still
+open (their eventual P&L unknown), and a session that happened to be
+strongly profitable overall (bankroll 10,000 → 16,763), which could
+compress or exaggerate any real difference between cohorts. It does not
+show the gate is bad, and it does not show the gate is good — it shows
+that **volume rejected is not evidence of quality improved**, and this doc
+otherwise never checked the difference. A real answer needs a longer
+window, correct netting-aware P&L attribution per entry, and ideally
+several different market regimes, none of which this research pass
+attempted.
+
 ## 4. Is an observe-only mode worth proposing?
 
 **Yes, in the sense the PM's instinct pointed at — the compute step is
@@ -255,65 +402,115 @@ or edge_gate_observe_only`) while gating the *early-return* strictly on
 `edge_gate_enabled` alone.
 
 **What it would additionally need, confirmed by tracing where the detail
-actually goes today:** on the *admitted* path, `decision["edge_gate"]` is
-already populated from the full detail dict (`strategy_engine.py:811-812,
-836-837`) — that part transfers to observe-only unchanged. But on the
-*rejected* path, the caller (`evaluate()`, `:731-736`) currently calls
-`candidate_log.record_rejection(ticker, "whale_follow", gate_name,
-observed_value, threshold_value, side=side, unit_cost=unit_cost)` —
-`record_rejection`'s own signature
+actually goes today — and this doc's first draft overstated how much of
+that already works, caught by adversarial review:** the original draft
+claimed the *admitted* path's `decision["edge_gate"]` "already
+transfers to observe-only unchanged," implying that side of the picture
+was solved. Traced further: `decision["edge_gate"]` (populated at
+`strategy_engine.py:811-812, 836-837`) has **zero consumers anywhere** in
+the codebase (`grep -rn edge_gate main.py services/ static/ frontend/`
+finds only those two writes) — it flows into `state["decision_feed"]`, a
+transient ring buffer capped at 50 entries
+(`services/whale_stream/decision_bridge.py:130-131`) plus a live
+WebSocket broadcast, and the only thing that persists durably is
+`candidate_ledger.record_decision(signal.id, decision.get("action",
+"unknown"))` (`:129`), which stores the bare action string, not the detail
+dict. **Nothing durable captures the admitted-path detail today either** —
+the admit side isn't a solved problem observe-only inherits unchanged,
+it's the same open problem the reject side has.
+
+On the *rejected* path specifically, the caller (`evaluate()`, `:731-736`)
+currently calls `candidate_log.record_rejection(ticker, "whale_follow",
+gate_name, observed_value, threshold_value, side=side,
+unit_cost=unit_cost)` — `record_rejection`'s own signature
 (`services/candidate_log.py:116-119`) has no field for the full detail
 blob; only `observed_value`/`threshold_value` (which the edge gate's call
-site maps to `edge`/`min_edge` alone) get persisted. **`p_est`, `q_pre`,
-and `delta` are computed but never captured anywhere today for a rejected
-signal** — not a new problem observe-only creates, but a real gap
-observe-only would inherit unless addressed at the same time, since the
-whole point of an observe-only pass is comparing what *would have*
-happened across the full breakdown, not just edge-vs-threshold.
+site maps to `edge`/`min_edge` alone) get persisted. `q_pre` and `delta`
+are computed but never captured anywhere today for a rejected signal —
+`p_est` survives partially, embedded as text inside the human-readable
+`reason` string (`strategy_engine.py:305-306`, reaching the decision dict
+via `_skip(signal, validation.reason)` at `:736`), but only as an
+unparsed sentence in a 50-entry transient ring, not a queryable field.
 
 **Roughly what it would take, concretely:** (a) one new config key
 (`edge_gate_observe_only` or similar); (b) a small conditional in
 `_validate_entry_price` so observe-only still calls `_edge_gate_check` and
 still attaches `edge_gate_detail`, but never turns a failing `edge_result`
-into an early return; (c) extending `record_rejection`'s persisted fields
-(or adding a parallel capture path) so `p_est`/`q_pre`/`delta` survive for
-signals the gate *would* have rejected, not just `edge`/`min_edge`. (a)
-and (b) are genuinely small; (c) is the part that turns "cheap" into
-"small but real" — a schema/call-site change, not a one-line flag flip.
-Not attempted here (out of scope — read-only research), but this is
-concrete enough to size as a task, not a guess.
+into an early return; (c) real, durable capture of the full detail dict
+(`p_est`/`q_pre`/`delta`/`edge`) on **both** the admit and reject paths —
+extending `record_rejection`'s persisted fields (or a parallel capture
+path) for rejections, and adding durable storage for admits too, since
+`decision["edge_gate"]` today is not that despite superficially looking
+like it. (a) and (b) are genuinely small; (c) is the part that turns
+"cheap" into "small but real" — a schema/call-site change on *both* paths,
+not a one-line flag flip. Not attempted here (out of scope — read-only
+research), but this is concrete enough to size as a task, not a guess.
 
 ## Summary for the decision
 
+**The single most important thing this doc can tell the decision-maker:
+every number below is a volume/count measurement — how many trades the
+gate touches — not an outcome measurement. §3.6 found (indicatively, on a
+small, noisy sample) that the trades the gate would have rejected were
+*not* worse performers than the trades it would have kept; if anything
+they had a higher win rate. Nothing here shows flipping the gate on would
+improve results, and nothing here shows it wouldn't — that question was
+never actually answered, and it's the one that matters most.**
+
 - The edge-gate math and its calibration inputs are sound and well-
-  covered where they apply: all 18 real (category, price_band) cells
-  clear the 50-signal floor with 3x+ headroom, and the uncalibrated-cell
-  fallback (a real, confirmed strict filter) isn't currently affecting any
-  trade.
-- The real headline number: **of trades the gate could actually evaluate,
-  it would have rejected ~75% of them** (92/123) — a large, real effect,
+  covered where they currently apply: all 18 real (category, price_band)
+  cells clear the 50-signal floor with 3x+ headroom. But this doesn't mean
+  the strict uncalibrated-cell filter (§2) never bites in practice —
+  81.7% of signals that clear the earlier price-history filter still have
+  no category at all, and a live signal with no category, or one in a
+  category that's never formed a cell (Climate and Weather, Economics,
+  Entertainment all exist in `trade_category.db` with zero cells), hits
+  the strict filter today. §3's own empirical check (0 of 123 evaluable
+  trades hit it) is the only reason to believe this isn't currently
+  costing real admits — a narrower, more defensible claim than "isn't
+  occurring for any real cell."
+- The volume headline: **of trades the gate could actually evaluate, it
+  would have rejected ~75% of them** (92/123) — a large, real effect,
   roughly evenly split between the CLAUDE.md-flagged 0.60-0.95 band and
   everything else, not concentrated where the concern was originally
-  raised.
-- The caveat that matters as much as the headline: **the gate can only
-  evaluate 38.6% of entries at all** (61.4% fail open on missing
-  price-history coverage, a data gap concentrated in fast-rotating 15min/
-  hourly markets) — flipping it on would filter roughly three-quarters of
-  a minority of trades, not three-quarters of everything.
-- **The follow-up that most directly answers "is this the right fix":**
-  the un-evaluable 61.4% is not disproportionately in the 0.60-0.95 band
-  (in-band coverage is actually 8 points *better* than out-of-band) — the
-  gate isn't blind precisely where the concern lives, it's just
-  incomplete everywhere. The coverage gap itself is a data limit, not a
-  config one (widening the pre-print lookback 1,008x recovers only 3.4
-  points of coverage) — fixing it would mean speeding up
-  `market_history`'s capture of brand-new markets, not tuning the gate.
-  And the rejection rate is genuinely threshold-sensitive (not a flat
-  wall), but even at `min_edge=0.00` — no profit cushion required at all —
-  58.5% of evaluable trades are still rejected, meaning most rejections
-  are trades with outright negative estimated edge, not borderline cases
-  the threshold happens to catch.
-- Observe-only is worth proposing and is cheap on the compute side, but
-  needs one additional real piece of work (capturing the full detail
-  breakdown on rejection, which nothing does today even with the gate
-  enabled) to actually deliver what an observe-only comparison needs.
+  raised. This is a single ~20-hour trading session's worth of data (§3's
+  own correction — not a lifetime-average sample), during an unusually
+  profitable run (bankroll 10,000 → 16,763).
+- **The gate can only evaluate 38.6% of entries at all** (61.4% fail
+  open on missing price-history coverage) — flipping it on would filter
+  roughly three-quarters of a minority of trades, not three-quarters of
+  everything. **The root cause of that coverage gap was misdiagnosed in
+  this doc's first draft** (caught by adversarial review): it isn't
+  primarily fast-rotating 15-minute/hourly markets never getting a first
+  snapshot — it's `market_history.retention_hours: 168` (7 days) pruning
+  price history faster than the nominal 30-day calibration window assumes,
+  plus a genuine, separate zero-coverage hole in `KXMVECROSSCATEGORY` and
+  the sports-match families specifically. The practical consequence is the
+  same either way (the gate can't evaluate a majority of entries), but the
+  fix would be different: retention tuning or accepting the ~7-day
+  effective window, not speeding up snapshot capture for specific market
+  types. §3 itself (all entries <1 day old) is *not* contaminated by the
+  retention mechanism, so its own 61.4% figure stands as measured.
+- The un-evaluable 61.4% is not disproportionately in the 0.60-0.95 band
+  (in-band coverage is actually 8 points *better* than out-of-band, §3.5)
+  — the gate isn't blind precisely where the original concern lives, it's
+  just incomplete everywhere. Widening `edge_gate_p_pre_max_age_sec`
+  1,008x recovers only 3.4 points of coverage — this specific gap won't
+  close via that config knob.
+- Rejection rate is genuinely threshold-sensitive (not a flat wall), but
+  even at `min_edge=0.00` — no profit cushion required at all — 58.5% of
+  evaluable trades are still rejected, meaning most rejections are
+  estimated to have outright negative edge, not borderline cases the
+  threshold happens to catch. **This number describes the gate's own
+  estimate of edge, not measured outcomes — §3.6 is the check of whether
+  that estimate lined up with what actually happened, and on this sample
+  it's genuinely unclear that it did.**
+- Observe-only is worth proposing and is cheap on the compute side (the
+  `_edge_gate_check` computation itself is symmetric), but needs more real
+  work than this doc's first draft implied: **neither the admit path nor
+  the reject path durably captures the full `p_est`/`q_pre`/`delta`
+  breakdown today** — `decision["edge_gate"]` (the admit-path detail) has
+  zero consumers and lives only in a 50-entry transient ring buffer;
+  `record_rejection` (the reject-path capture) persists only `edge`/
+  `min_edge`, not the full breakdown. Both sides need the same kind of
+  durable-capture work, not just the reject side.
