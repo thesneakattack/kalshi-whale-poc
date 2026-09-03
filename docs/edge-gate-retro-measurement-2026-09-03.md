@@ -371,6 +371,32 @@ later moment with a few more trades in the window and a different,
 independently-written matching script; the qualitative shape is what
 matters, not exact parity between the two runs.)
 
+**Worth naming directly rather than leaving for a reader to notice: this
+doc's own adversarial review, using its own independent matching script on
+an earlier snapshot, got +$5,456.90 for the same would-REJECT cohort —
+not +$7,159.49.** The two figures genuinely disagree in magnitude, which
+would read as sloppiness if left unaddressed. It isn't: two independently
+written implementations, run against two different moments of a live,
+continuously-trading database, are not expected to agree on an exact
+dollar figure — what they *do* agree on is the sign and the ordering:
+would-REJECT was profitable, and at least as profitable per the win-rate
+comparison as would-ADMIT, under both independent measurements. Read that
+agreement as corroboration of the finding's direction, not confirmation of
+either specific number; neither dollar figure should be quoted on its own
+as *the* answer.
+
+**One more limitation worth stating plainly rather than modeling: this
+ignores opportunity cost.** The would-REJECT cohort's realized P&L is
+measured on capital that was actually deployed into those specific trades.
+Had the gate been live and rejected them, that capital would have been
+free for other entries instead — with `starting_bankroll: 10000` and
+20-30 concurrent positions typical in this session, capital plausibly
+binds at times, meaning the real counterfactual isn't "these trades vs.
+nothing," it's "these trades vs. whatever else the freed capital would
+have bought." Not modeled here — this is a stated limitation, not a
+computed one. The finding supports "these specific trades made money," not
+"taking them was the best available use of the capital."
+
 **Leading with the number that actually matters for an EV decision: the
 would-REJECT cohort's net-of-fees realized P&L was +$7,159.49 over 85
 closed positions — positive, and larger in total than would-ADMIT's
