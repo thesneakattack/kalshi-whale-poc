@@ -701,10 +701,11 @@ position age or a fresh timestamp read before concluding the tick loop
 itself is not the problem.
 
 **The mechanism was independently confirmed by a working fix, not just by
-review.** PR #526 (`fix/whale-stream-ticker-handler-blocking`, merged
-2026-09-03) implemented and measured a fix for exactly the call chain §4
-identifies. Two things from that PR are worth folding back into this
-document's own findings:
+review.** PR #526 (`fix/whale-stream-ticker-handler-blocking`, opened
+2026-09-03, own review cycle in progress at the time this addendum was
+written — not yet merged) implemented and measured a fix for exactly the
+call chain §4 identifies. Two things from that PR are worth folding back
+into this document's own findings regardless of its own merge status:
 
 - **`tick_cache` alone would not have helped.** §4.2/§8 (before this
   addendum) treated wiring `tick_cache` through the WS call sites as *the*
