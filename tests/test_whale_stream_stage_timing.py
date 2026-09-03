@@ -160,3 +160,62 @@ def test_process_stream_ticker_schedules_flush_via_tick_executor_when_told(monke
 
     assert len(scheduled) == 1
     assert tick_executor_calls[0] is series_watcher.flush
+
+
+def test_process_stream_ticker_schedules_snapshot_write_via_tick_executor(monkeypatch):
+    """Task 4 of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
+    (§4.5 of the architecture-audit-second-pass research): record_snapshot_
+    from_ticker did a synchronous `with _connect(DB_PATH)` SQLite write per
+    throttled ticker message, directly on the event loop, with no thread
+    hop at all - the exact bug class PR #414 already fixed for 4 sibling
+    functions. Unlike those, this function has no accumulation buffer, so
+    the fix is at the call site (schedule the whole call via tick_executor,
+    not modify record_snapshot_from_ticker's own signature)."""
+    from services import market_history, series_watcher, tick_executor
+
+    scheduled = []
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro):
+        scheduled.append(coro)
+        return real_create_task(coro)
+
+    monkeypatch.setattr(asyncio, "create_task", spy_create_task)
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+    # Isolate this test from series_watcher's own real buffer/flush path -
+    # this test's only concern is record_snapshot_from_ticker's scheduling;
+    # see test_process_stream_ticker_schedules_flush_via_tick_executor_when_
+    # told above for that path's own coverage.
+    monkeypatch.setattr(series_watcher, "record_book", lambda *a, **k: (True, False))
+    snapshot_calls = []
+    monkeypatch.setattr(market_history, "record_snapshot_from_ticker",
+                         lambda *a, **k: snapshot_calls.append((a, k)) or True)
+
+    # state["running"]=False keeps this test focused on the snapshot-
+    # scheduling call site only, skipping check_exits/check_pending_fills/
+    # position_netting.review (unrelated to this fix, and not mocked here).
+    monkeypatch.setitem(wsh.state, "running", False)
+    monkeypatch.setitem(wsh.state, "markets", [{
+        "ticker": "KXTEST-25", "volume_24h_fp": "12.0",
+        "close_time": "2026-09-03T00:00:00Z",
+    }])
+
+    asyncio.run(wsh._process_stream_ticker({
+        "ticker": "KXTEST-25", "yes_bid_dollars": "0.55", "yes_ask_dollars": "0.57",
+    }))
+
+    assert len(scheduled) == 1
+    assert tick_executor_calls[0] is not None
+    assert len(snapshot_calls) == 1
+    call_args, call_kwargs = snapshot_calls[0]
+    assert call_args[0] == "KXTEST-25"
+    assert call_args[1] == pytest.approx(0.55)  # state["latest_prices"][ticker], captured as a plain value
+    assert call_kwargs["volume_24h"] == pytest.approx(12.0)
+    assert call_kwargs["close_time"] == "2026-09-03T00:00:00Z"
