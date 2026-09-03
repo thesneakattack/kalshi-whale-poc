@@ -9,6 +9,21 @@ commit `4130eb6`) and `docs/db-foundation-audit-2026-09-03.md` (`feat/db-foundat
 commit `d783877`). Output of this stage: a design this document's own review cycle clears GO,
 which a later, separate implementation-plan stage then turns into ordered, testable tasks.
 
+**PR-stage correction — a fourth input this document should have cited from the start, found by
+this PR's own required adversarial review reading the whole document end to end**: `main`
+already has a separate, merged, GO'd design-stage document,
+`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`, whose §1.4 is the
+actual origin of the `register_ddl(table, ddl)`/`_DDL_REGISTRY: dict[str, str]` API this
+document attributes only to "PR #484's Task 1" throughout — PR #484's Task 1 transcribes that
+design's code verbatim (its own text says so), rather than inventing it. This document's central
+recommendation therefore does not merely supersede a plan-stage task; it revises an
+already-independently-reviewed, GO'd **design-stage decision**, made without either session
+being aware of the other — the same "two sessions, same day, unaware of each other" failure
+this document's own opening section describes, recurring one stage later, about this document
+itself. Named explicitly here, and restated in "Open question for explicit sign-off" below, so
+the reader deciding whether to sign off knows the true weight of what they're being asked to
+override.
+
 **Revision note (this document's own required PR/artifact-stage adversarial review found 2
 Critical + 5 Important + 7 Minor findings against the first draft — all applied below, not a
 silent rewrite):** the first draft's headline scope finding (`services/store_stats.py`) was a
@@ -140,7 +155,8 @@ than it was in the prototype, since two modules genuinely racing to register dif
 
 **A real, already-shipped precedent for the callback shape, missed in this document's first
 draft**: `services/diagnostics/_aio_db.py:187-191` already has a `schema_init: Callable[...] |
-None` parameter that "runs exactly once — only on this key's first connect." This is direct,
+None` parameter that "runs exactly once - only on this key's first-ever open, never on a cache
+hit" (`:191`, quoted verbatim). This is direct,
 in-production evidence the callback approach is not a new, unproven idea for this codebase —
 it's already shipped and operating. Whether the new `services/db.py` should adopt this same
 "run once, not every connect" semantic (closing the schema-replay-per-connect cost named below)
@@ -187,8 +203,10 @@ prototype verbatim:
 3. **Must-fix, documentation not code — `capture_writer.py`'s existing retry mechanism must NOT
    be dropped during its own eventual migration.** **Correction from this document's first
    draft**: the fault name is `flush_retained_on_lock`; the retry mechanism itself is
-   `capture_writer.py`'s `_retain()` function (`:403-414`), not a function literally named
-   `flush_retained_on_lock` — that string is the fault-log label, not the code path.
+   `capture_writer.py`'s `_retain()` function (defined `:329`, invoked from the lock-error
+   handler at `:403-414` where the fault is actually recorded — `:412`'s
+   `fault_log.record("capture_writer", "flush_retained_on_lock", ...)` confirms the string is a
+   label, not the code path), not a function literally named `flush_retained_on_lock`.
    `services/db.py` (either design) has no retry logic of its own beyond the single
    `busy_timeout` wait, so `capture_writer.py`'s existing retain-and-retry-next-cycle behavior
    has to keep wrapping calls into `connect()`, not be assumed redundant. **Correction to the
@@ -217,9 +235,10 @@ prototype verbatim:
    `services/signal_log.py` **(note: one of Tier0's five already-migrated modules, not one of
    this spec's own 26 — used here only as an illustration of the general tradeoff's magnitude,
    not as an in-scope migration example)**: it has exactly **one** table (`signals`), not
-   "multiple," and **7** `add_column_if_missing` calls (re-counted directly against source —
-   the document's own prior "8" figure counted that function's own `def` line as an eighth
-   call), not 8 — 4 indexes + 7 `add_column_if_missing` calls = 11 statements (7
+   "multiple," and **7** `_add_column_if_missing` calls (its real, underscore-prefixed name in
+   this module — re-counted directly against source, the document's own prior "8" figure
+   counted that function's own `def` line as an eighth call), not 8 — 4 indexes + 7
+   `_add_column_if_missing` calls = 11 statements (7
    `PRAGMA table_info` scans among them), all replayed every connect. `_aio_db.py:191`'s "runs
    exactly once" precedent (named above) is the existing, proven answer to this tradeoff, if and
    when the implementation plan decides to adopt it — not adopted in this spec's own reference
@@ -368,6 +387,16 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
 - A test proving the reference shape works correctly under `monkeypatch.setattr(mod, "DB_PATH",
   tmp_path/...)` — the exact failure mode this revision exists to prevent — before any module's
   own migration task is written, not discovered by the first module that tries it.
+- **PR-stage addition**: table-name-only keying (the C2 fix) trades a silent failure mode for a
+  loud one that still needs covering — `connect()`'s `_SCHEMAS[table](conn)` is an unguarded
+  dict lookup, so calling it for a table whose owning module hasn't been imported yet (and
+  therefore hasn't run its `register_schema` call) raises a bare `KeyError`. Better than C2's
+  silent `no such table`, but still unnamed anywhere in this design until now — Task 1's own
+  tests should cover the "connect before the registering module is imported" case explicitly,
+  and the implementation plan should confirm each migrated module's own import graph guarantees
+  registration happens before its first `connect()` call (typically true for a module
+  registering its own schema at its own top level, but worth stating as a requirement rather
+  than assuming).
 
 **Gate 1 — before each individual module's migration is considered mechanical:**
 - Read that module's actual `_connect()` (or equivalent) body in full, current-source, not
@@ -429,13 +458,17 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
 
 ## Open question for explicit sign-off
 
-**The API-shape decision is this spec's single highest-stakes call** — it effectively
-supersedes what PR #484's own, already-merged Task 1 planned to build, based on a prototype
-that PR #484's own authoring session did not know existed, and this document's own revision
-above further diverges from *both* prior designs rather than adopting either wholesale. This is
-exactly a "genuine design/architecture decision" this repo's own take-the-wheel carve-out
-reserves for a human call rather than an AI-executed default — flagged explicitly for the
-coordinator/user to confirm before an implementation plan is drafted against it.
+**The API-shape decision is this spec's single highest-stakes call.** It does not merely
+supersede a plan-stage task — **it revises an API shape that was independently designed,
+reviewed, and cleared GO at the design stage already**, in
+`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md` §1.4 (see the
+provenance correction at the top of this document), which PR #484's Task 1 then transcribed
+verbatim. This document's own revision above diverges from *all three* — that GO'd design, PR
+#484's transcription of it, and the unmerged prototype — rather than adopting any of them
+wholesale. This is exactly a "genuine design/architecture decision" this repo's own
+take-the-wheel carve-out reserves for a human call rather than an AI-executed default — flagged
+explicitly for the coordinator/user to confirm, with the full weight of what's being revised
+stated plainly, before an implementation plan is drafted against it.
 
 ## Revision log (first draft → this revision)
 

@@ -22,7 +22,10 @@ correctness could have missed structurally.
 - `git diff` between the PR's base (`origin/main` at PR open time) and its head — confirms the
   PR contains exactly the three files the design/spec stage produced (the design doc, its
   self-review, its consolidation) plus the round-2 fix commit, no unrelated changes, no `data/*.db`
-  file, no code file.
+  file, no code file. (**PR-stage correction, caught by this PR's own adversarial review**: this
+  file — the PR-stage self-review itself — is a fourth file the PR contains; "three files"
+  above describes the artifact-stage output specifically, not the PR's total file count, which
+  is four once this document and the consolidation-to-follow are included.)
 - Re-read the full, final document end to end (not per-section, the way the fix passes did) to
   check it reads as one coherent artifact rather than a patchwork of edits — the two rounds of
   fixes touched a large fraction of the document (322 + 84 lines across two commits against an
