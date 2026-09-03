@@ -59,7 +59,7 @@ _MAX_MESSAGE_CHARS = 500
 @contextlib.contextmanager
 def _connect():
     """Every existing `with _connect() as conn:` call site (4 of them -
-    services/fault_log.py:129, 153, 191, 203) keeps working unchanged -
+    services/fault_log.py:256, 292, 330, 342) keeps working unchanged -
     this yields the same conn as before, but now closes it on exit
     (2026-09-03, Task 6 of docs/superpowers/plans/
     2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
@@ -109,8 +109,10 @@ def _ensure_null_exc_type_dedup_index(conn: sqlite3.Connection) -> None:
     is never equal to NULL for uniqueness purposes - and `record_fault()`
     always passes `exc_type=None` (it's the non-exception path). Every
     `record_fault()` call with a fixed message therefore inserted a new row
-    instead of deduping (confirmed live: 55,635 rows / 1 distinct message for
-    `loop_watchdog`'s stall fault alone). `record()` (the exception path)
+    instead of deduping (confirmed live, as measured when this fix was
+    written: 57,021 rows / 1 distinct message for `loop_watchdog`'s stall
+    fault alone - a moving, ever-growing number until this fix ships, not a
+    fixed constant to keep in sync). `record()` (the exception path)
     always passes a real `exc_type` and already dedupes correctly through the
     constraint above - this only covers the gap that constraint can't reach.
 
