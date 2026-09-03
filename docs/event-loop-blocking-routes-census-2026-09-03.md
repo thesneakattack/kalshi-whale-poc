@@ -21,31 +21,57 @@ distinct throughout, since code-shape alone doesn't tell you how bad an instance
 
 ## Headline numbers
 
-**89 async route handlers checked across 17 `services/*/routes.py` files plus `main.py`'s 13
-inline handlers (counted directly from the census table below, not from any subagent's own
-summary tally — one subagent's stated summary, "27 routes / 20 blocking / 7 safe," didn't
-match its own itemized per-route list, "24 routes / 16 blocking / 8 safe"; this document uses
-the itemized counts throughout, verified by direct recount during self-review). **58 are
-BLOCKING** (undispatched synchronous DB/file I/O), **4 are UNCLEAR** (need a direct follow-up
-read, listed below), **27 are SAFE** (no sync I/O, or properly dispatched). This is not a
+**88 async route handlers checked across 17 `services/*/routes.py` files plus `main.py`'s 13
+inline handlers — figures below are post-adversarial-review corrections (see "Adversarial
+review corrections" further down for exactly what changed), not the original sweep's numbers.
+The original sweep's own arithmetic needed two separate correction passes before it was right:
+one subagent's stated summary, "27 routes / 20 blocking / 7 safe," didn't match its own
+itemized per-route list, "24 routes / 16 blocking / 8 safe" (caught during self-review, fixed by
+using the itemized counts); independent adversarial review then found the itemized counts
+themselves were wrong for 3 of 7 files spot-checked, correcting the true total from 89 to 88 and
+BLOCKING from 58 to **63**. **63 are BLOCKING** (undispatched synchronous DB/file I/O), **0 are
+UNCLEAR** (all 4 originally-unclear items resolved to BLOCKING by the adversarial review), **25
+are SAFE** (no sync I/O, or properly dispatched). This is not a
 handful of instances — it is the dominant pattern across the
 route layer, not the exception.
 
 ## Severity varies enormously — measured, not assumed
 
-**Confirmed CRITICAL, genuinely undispatched (30+ seconds, live-measured):**
-- `GET /api/quality/summary` — **30.25s** (subagent measurement). `diagnostics.run_offline()`
-  (the largest single piece of this route, `services/quality/routes.py:92`) is **not** part of
-  this — it's `await`ed and runs natively on aiosqlite (PR #424's own prior work; see "Prior
-  history" below). The genuine, undispatched contributors, confirmed by direct read with no
-  prior-investigation history found for either: `alerting.active_alerts()`
-  (`services/alerting/alerting.py:171-177`, one plain `SELECT`) and `fault_log.summary()`
-  (`services/fault_log.py:231-248`, four separate aggregate queries against the `faults` table).
-  `research.latest()` (`services/quality/routes.py:62`) is also undispatched and separately
-  confirmed BLOCKING for `research/routes.py`'s own routes — likely a smaller contributor, not
-  measured in isolation here. This is the endpoint named first in CLAUDE.md's own "Start
-  investigations here" list — it has been timing out all session with no established root cause
-  until this sweep.
+**Confirmed CRITICAL, genuinely undispatched (multi-second to 30+, live-measured, variable —
+see note below):**
+- `GET /api/quality/summary` — **measured at 30.25s, 33.35s (independent adversarial
+  re-measurement), and 11.59s (a separate independent measurement, timing unclear relative to
+  concurrent background load)**. Stated as a range, not a constant — per-call cost genuinely
+  varies (plausibly background system load, not yet isolated), so the cumulative-impact estimate
+  in the priority-ranking table below is an estimate built on an average, not a fixed number.
+  `diagnostics.run_offline()` (the largest single piece of this route,
+  `services/quality/routes.py:92`) is **not** part of this — it's `await`ed and runs natively on
+  aiosqlite (PR #424's own prior work; see "Prior history" below). **Four** genuine, undispatched
+  contributors confirmed by direct read, not three — this document's own sweep initially missed
+  one: `alerting.active_alerts()` (`services/alerting/alerting.py:171-177`, one plain `SELECT`),
+  `fault_log.summary()` (`services/fault_log.py:231-248`, four separate aggregate queries against
+  the `faults` table), `research.latest()` (`services/quality/routes.py:62`, also separately
+  confirmed BLOCKING for `research/routes.py`'s own routes), and — found by a7's independent
+  review, not this sweep — `observability.runtime_findings()`
+  (`services/quality/routes.py:40`) → `_repeated_rate_limit_hits_finding()`
+  (`services/observability/observability.py:600-608`) → `observability.history(...)`
+  (`:603`) → `_connect()`, **two levels of indirection** from the direct call this document's
+  grep-based sweep was built to catch. This is the endpoint named first in CLAUDE.md's own
+  "Start investigations here" list — it has been timing out all session with no established root
+  cause until this sweep.
+
+**A real limitation of this document's detection method, stated explicitly rather than left
+implicit**: the sweep's grep-based approach matches synchronous DB calls made *directly* inside
+a route handler's own body. It cannot see a call reached through one or more intermediate
+function calls (exactly the `runtime_findings()` → `_repeated_rate_limit_hits_finding()` →
+`history()` chain above) unless that intermediate function was independently checked for its
+own DB access, which this sweep did not systematically do for every helper function every route
+calls. **The corrected counts in this document (63 BLOCKING / 88 total) are therefore a floor,
+not a ceiling — "at least 63," not "exactly 63."** A complete answer would need call-graph
+tracing, not pattern matching against route-handler bodies alone. This doesn't undermine the
+document's core thesis (the pattern is real and widespread) but it does mean "we've now fixed
+every blocking handler" cannot be claimed from this document's count reaching zero — that claim
+would need the tracing this document didn't do.
 - `POST /api/reset` with `candidate_log:true` / `GET /api/reset/preview?candidate_log=true` —
   **34,129ms** (issue #510, PR #512, already tracked, not re-measured here).
 
@@ -124,15 +150,16 @@ from the code alone.
 
 | Endpoint | Calls in window | Measured cost | Cumulative impact | Mechanism |
 |---|---|---|---|---|
-| `GET /api/quality/summary` | 358 (18.3/hr) | 30.25s, every call, no caching found | **~3.01 event-loop-blocked hours — 15.4% of the entire 19.6h window** | Directly blocks the event loop (undispatched) |
-| `GET /api/candidate-log/summary` | 2,327 (1 per **30.3s**) | 24-31s cache-miss / 0.59s cache-hit | Poll interval ≈ 30s cache TTL ≈ scan duration — a `tick_executor` worker (1 of only 2 in the whole app) is very likely occupied by this scan **near-continuously** | Dispatched (doesn't block the event loop directly) but a severe shared-capacity/starvation risk — issue #410's track, not #530's |
+| `GET /api/quality/summary` | 358 (18.3/hr) | **11.59-33.35s across 3 independent measurements**, no caching found | **~1.2-3.3 event-loop-blocked hours (6-17% of the 19.6h window) — a range built on variable per-call cost, not a fixed constant** | Directly blocks the event loop (undispatched) |
+| `GET /api/candidate-log/summary` | 2,327 (1 per **30.3s**) | **~19-31s cache-miss** (varies run to run — 24.44s and 31.1s measured in this document, 18.78s/18.94s in independent adversarial re-measurement) / 0.59s cache-hit | Poll interval ≈ 30s cache TTL ≈ scan duration — a `tick_executor` worker (1 of only 2 in the whole app) is very likely occupied by this scan **near-continuously** | Dispatched (doesn't block the event loop directly) but a severe shared-capacity/starvation risk — issue #410's track, not #530's |
 | `GET /api/state` | 5,089 (260/hr, ~1 every 14s) | 0.06-0.52s | ~0.4 event-loop-blocked hours (rough, cost varies) — **the highest call volume of any endpoint measured**, so even its small per-call cost compounds, and it's the endpoint every future table-growth regression (same shape as `candidate_log`'s) would hit fastest | Directly blocks the event loop (undispatched) |
 | `GET /api/observability/summary` | 32 (1.6/hr) | 0.79-7.66s, window-dependent | Low — infrequent enough that even the worst-case window cost is a minor aggregate contributor | Directly blocks the event loop (undispatched) |
 | ~15 dashboard-batch endpoints (`regime/*`, `advisory/status`, `confidence-calibration/*`, `market-analyst/status`, `backtest/*`, `suggestions/declined`, `series-evaluator/status`) | ~2,320-2,325 each — clustered tightly enough (within 15 of each other) to be one dashboard tab's batch poll firing every ~30s | Not individually measured in this pass | Unknown until measured — same poll cadence as `candidate-log/summary`, so worth checking whether any of these are ALSO scanning something that's grown past a prior measurement, the same way `population_gate_summary()` had | Mixed — some of these are SAFE (in-memory only, per the census table below), some are BLOCKING; frequency alone doesn't tell you which ones matter, cost does |
 
 **Reading this table**: `/api/quality/summary` is the worst *confirmed* offender in pure
-event-loop-hours-lost terms — over 15% of the observed window, no other request could be served
-at all while one of these was in flight, which directly matches PR #424's own prior finding ("5
+event-loop-hours-lost terms — somewhere in the range of 6-17% of the observed window (the exact
+figure moves with the variable per-call cost above), no other request could be served at all
+while one of these was in flight, which directly matches PR #424's own prior finding ("5
 concurrent `GET /api/quality/summary` requests stalling an unrelated `GET /api/state` for
 minutes"). `/api/candidate-log/summary` is arguably worse in a different, harder-to-see way — it
 doesn't freeze the whole app, but it may be quietly consuming half of `tick_executor`'s entire
@@ -142,7 +169,7 @@ measurement, not done here). `/api/state`'s ranking is a volume story, not a per
 fixing on principle (it's the endpoint most exposed to any future data-growth regression) even
 though its current aggregate cost is the smallest of the four measured.
 
-**This ranking, not the 58-instance count, is the actual triage input.** The remaining ~54
+**This ranking, not the 63-instance count, is the actual triage input.** The remaining ~59
 BLOCKING instances not in this table are real, structurally identical defects — but nothing in
 this document measured them, and per the pattern already confirmed twice (`/api/state` cheap
 despite 3 undispatched calls, most of the `/api/reset` family cheap despite the same undispatched
@@ -153,13 +180,15 @@ twice in adjacent code: `tick_executor.connection_for()` was built and deliberat
 unwired after investigation found two specific reasons it wasn't safe to wire in broadly, and PR
 #424's own elastic connection pool was built, measured, and reverted after proving it made the
 exact incident it targeted worse under real concurrent load. The recommendation is: fix the ones
-in this table on their measured evidence, and measure before touching any of the other ~54,
+in this table on their measured evidence, and measure before touching any of the other ~59,
 not before.
 
 ## Full census by file
 
 *(BLOCKING = async handler, undispatched sync DB/file I/O. SAFE = no such I/O, or properly
-dispatched. UNCLEAR = sweep couldn't confirm, listed separately below for follow-up.)*
+dispatched. Corrected 2026-09-03 by independent adversarial review — see "Adversarial review
+corrections" below for what changed and why; this table reflects the corrected state, not the
+original sweep's numbers.)*
 
 | File | BLOCKING | SAFE | Notes |
 |---|---|---|---|
@@ -168,24 +197,52 @@ dispatched. UNCLEAR = sweep couldn't confirm, listed separately below for follow
 | `services/storage_health/routes.py` | 0 | 3 | Genuinely clean — `integrity-check` properly uses `asyncio.to_thread` |
 | `services/reset/routes.py` | 3 | 0 | `preview`, `history` (new findings) + `POST /api/reset` (issue #510) |
 | `services/history/routes.py` | 5 | 0 | signals/history, signals/clusters, trading-history, market-history/summary, market-history/hypothetical-trades |
-| `services/whale_calibration/routes.py` | 5 | 1 | `report` properly dispatched via `tick_executor.run`; the other 5 aren't |
+| `services/whale_calibration/routes.py` | 5 | 1 | `report` properly dispatched via `tick_executor.run`; the other 5 aren't. Adversarially confirmed exact. |
 | `services/config/routes.py` | 1 | 1 | `POST /api/config`'s `log_applied_change` undispatched |
 | `services/research/routes.py` | 4 | 0 | including `POST /api/research/run`, whose *second* call (`research.latest()`) is undispatched even though the heavy first call correctly uses `asyncio.to_thread` |
-| `services/advisory/routes.py` | 4 | 2 | all four `config_performance.log_applied_change()` call sites |
-| `services/market_catalog/routes.py` | 2 | 4 | the 4 SAFE ones properly use an async Kalshi client; `status`/`search` don't |
-| `services/analytics/routes.py` | 9 | 7 | 2 UNCLEAR (`series-evaluator/status`, `/reset`) |
-| `services/backtest/routes.py` | 0 | 0 | 2 UNCLEAR, both need a direct `signal_log` read |
-| `services/alerting/routes.py` | 3 | 0 | active, history, resolve |
-| `services/position/routes.py` | 3 | 2 | `risk/halt`, `risk/resume`, `shadow-risk/resume` — **safety-adjacent, see below** |
+| `services/advisory/routes.py` | **6** | **0** | **Corrected from 4/2** — `status`/`recommendations` were wrongly marked SAFE; both call `config_performance.all_variants()`/`recent_applied_changes()`-shaped sync reads, undispatched. All 6 routes BLOCKING. |
+| `services/market_catalog/routes.py` | 2 | 4 | the 4 SAFE ones properly use an async Kalshi client; `status`/`search` don't. Adversarially confirmed exact. |
+| `services/analytics/routes.py` | **11** | 7 | Was 9 + 2 UNCLEAR; both UNCLEAR (`series-evaluator/status`, `/reset`) resolved to BLOCKING by adversarial review. |
+| `services/backtest/routes.py` | **2** | 0 | Was 0 + 2 UNCLEAR; both resolved to BLOCKING (`signal_log.resolved_signals_with_series`, confirmed sync). |
+| `services/alerting/routes.py` | 3 | 0 | active, history, resolve. Adversarially confirmed exact. |
+| `services/position/routes.py` | **4** | **1** | **Corrected from 3/2** — `POST /api/admin/correct-trade` was wrongly marked SAFE; calls `broker.correct_erroneous_close()` → sync `_connect()`, undispatched. `risk/halt`, `risk/resume`, `shadow-risk/resume`, `correct-trade` all BLOCKING — **safety-adjacent, see below**. |
 | `services/backup/routes.py` | 2 | 1 | `run` properly awaited; `status`/`history` aren't |
-| `services/quality/routes.py` | 1 | — | `/api/quality/summary`, CRITICAL, see above |
+| `services/quality/routes.py` | 1 | — | `/api/quality/summary`, CRITICAL, see above. Adversarially re-measured at 33.35s, same severity class. |
 | `services/exits/routes.py` | 0 | 1 | clean, in-memory only |
-| `main.py` (13 inline handlers) | 10 | 4 | including `/api/state` (see above) and both position-close endpoints |
+| `main.py` (13 inline handlers) | **8** | **5** | **Corrected from 10/4 (which also mis-summed to 14, not 13)** — real split confirmed by direct read of all 13: BLOCKING = `state`, `enable_trading`, `disable_trading`, `flatten-all`, `close-positions`, `accounts` (via `status()`), `accounts/connect`, `accounts/disconnect`; SAFE = `session`, `auth/login`, `auth/callback`, `auth/logout`, `toggle`. |
 
-**UNCLEAR, need direct follow-up before being counted either way**: `services/analytics/routes.py`'s
-`GET /api/series-evaluator/status` and `POST /api/series-evaluator/reset`; `services/backtest/routes.py`'s
-`GET /api/backtest/entry-threshold` and `GET /api/backtest/min-whale-winrate` (both likely call
-`signal_log` functions, not directly confirmed by the sweep).
+## Adversarial review corrections
+
+Independent review (fresh Agent, no memory of the authoring session) spot-checked 7 of the 18
+files/sources in depth — `main.py`, `position/routes.py`, `advisory/routes.py`,
+`whale_calibration/routes.py`, `alerting/routes.py`, `market_catalog/routes.py`,
+`quality/routes.py` — well beyond the 10-12 individual routes requested, and separately
+resolved all 4 originally-UNCLEAR items. **Real errors found in 3 of those 7 files (43%)**:
+`main.py` (undercounted by 2, and its own row didn't even sum to its stated 13 handlers),
+`position/routes.py` (missed one BLOCKING route entirely), `advisory/routes.py` ("the largest
+miss" — 2 routes wrongly marked SAFE when they do undispatched sync reads). The other 4 files
+checked (`whale_calibration`, `alerting`, `market_catalog`, `quality`) were confirmed exactly
+as originally reported.
+
+**Corrected headline: 88 total handlers checked (not 89 — `main.py`'s original row summed to
+14 against its own stated 13), 63 BLOCKING (not 58), 25 SAFE (not 27), 0 UNCLEAR (not 4).** Every
+number in this document from here down uses the corrected totals.
+
+**Given a 43% file-level error rate in the files independently re-checked, the ~10 files not
+in that sample (`diagnostics`, `storage_health`, `reset`, `history`, `config`, `research`,
+`backtest`'s 2 already-resolved items, `backup`, `exits`, `analytics`'s already-resolved items)
+should not be treated as equally solid** — they're this document's best current estimate, not
+independently re-verified at the same depth. A reader relying on any single file's exact count
+for triage should re-check it directly first, the same discipline this correction pass itself
+demonstrates was necessary.
+
+**The `/api/candidate-log/summary` specific duration also doesn't reproduce exactly**: this
+document's own measurement was 24.44s cold / 0.59s cached; the adversarial review's independent
+re-measurement got 18.78s and 18.94s across two consecutive runs — about 30% lower, but the
+same severity class (tens of seconds, catastrophic). Stating this as a range (**~19-31s across
+independent measurements**) rather than a single fixed figure, since the exact number varies
+run to run (plausibly OS page-cache state or concurrent load on the same file) and the range,
+not a false-precision point estimate, is what's actually established.
 
 ## A safety-relevant subset worth flagging explicitly
 
@@ -223,7 +280,7 @@ problem at all. These should not be conflated into one plan or one PR.
 Design the actual fix for the handful it does prioritize, or decide the mechanism (dispatch
 off-loop vs. bound/paginate vs. retention/index/rollup on `rejection_events` itself). The
 priority ranking above says *which* four endpoints have measured evidence behind them and that
-the other ~54 shouldn't be assumed costly without their own measurement first — it deliberately
+the other ~59 shouldn't be assumed costly without their own measurement first — it deliberately
 stops short of picking a fix shape, since the severity range found (window-dependent for
 `observability.py`, capacity-dependent for `candidate_log.population_gate_summary()`,
 directly-blocking for `quality/summary`/`state`) means a single uniform fix likely isn't right
