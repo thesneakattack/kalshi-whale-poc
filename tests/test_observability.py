@@ -156,6 +156,41 @@ def test_connect_sets_explicit_busy_timeout_pragma():
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
+def test_connect_does_not_leak_file_descriptors():
+    """The actual point of this migration, measured rather than inferred
+    from the close-tracking spy above: repeated _connect() cycles must not
+    grow the process's open fd count. Adversarial review on PR #540 asked
+    for this as a committed artifact, not review-comment prose - manual
+    measurement (600 cycles, fd count flat at 4) is reproduced here at a
+    smaller N so the assertion runs on every CI pass, not just once by
+    hand. /proc/self/fd is Linux-specific; this suite only ever runs
+    inside the fastapi container (ddev/Docker), never on a bare host."""
+    import os
+
+    def _open_fd_count():
+        return len(os.listdir("/proc/self/fd"))
+
+    before = _open_fd_count()
+    for i in range(50):
+        observability.record_sample("fd_leak_probe", float(i), observed_at=1000.0 + i)
+    for _ in range(50):
+        observability.history("fd_leak_probe", since_ts=0.0)
+    after = _open_fd_count()
+    assert after == before
+
+
+def test_connect_index_creation_runs_in_autocommit_not_a_transaction():
+    """Moving the CREATE INDEX statement inside db.connect()'s `with conn:`
+    (a transaction context manager, not the closing one - _connect() itself
+    is that now) must not change when it commits. Python's sqlite3 module
+    only emits an implicit BEGIN before INSERT/UPDATE/DELETE/REPLACE - DDL
+    runs in autocommit regardless of which `with` block it executes inside.
+    Adversarial review on PR #540 asked for this measurement (previously
+    verified by hand, in_transaction == False) as a committed test."""
+    with observability._connect() as conn:
+        assert conn.in_transaction is False
+
+
 # --- capture_from_runtime: pure mapping, no I/O -------------------------
 
 def test_capture_from_runtime_maps_stable_metric_names():
