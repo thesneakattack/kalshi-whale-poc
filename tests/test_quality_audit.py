@@ -875,6 +875,7 @@ def test_unit_cost_scanner_is_registered_with_the_audit_cli():
     assert unit_cost_scanner.scan_unit_cost_derivations in audit_cli._SCANNERS
 
 
+@pytest.mark.slow
 def test_unit_cost_scanner_is_clean_on_this_repo():
     """The migration (issue #212) left zero inline copies, so the scanner
     starts at zero findings with no baseline entry - CLAUDE.md forbids

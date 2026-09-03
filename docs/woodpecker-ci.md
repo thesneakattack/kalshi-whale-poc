@@ -79,13 +79,18 @@ required; the other four aren't path-filtered and are safe to require.
 
 **A manually triggered pipeline (`scripts/woodpecker-trigger`, the "Run
 pipeline" UI button, or a raw `POST /api/repos/{id}/pipelines`) carries
-`event: manual`, which none of these workflows' `when: event: [push,
-pull_request]` filters match** — confirmed live: the API call itself
-succeeds (`204`), but the response carries a `pipeline-filtered: true`
-header and no workflow actually runs. This is the filters working as
-designed, not a bug - manual verification of these specific checks means
-either a real push, or temporarily broadening a workflow's `when:` to
-include `event: manual` while testing.
+`event: manual`.** `tests-pytest.yml` has matched this event since
+2026-08-28 (`when: event: [push, pull_request, manual]`) and runs its full,
+unscoped suite on a manual trigger — see that file's own header comment for
+why (an explicit ask for confidence, never testmon-scoped). The other five
+workflows still only match `[push, pull_request]`, so a manual trigger
+today produces exactly one workflow (`tests-pytest`) and posts exactly one
+GitHub status (`ci/woodpecker/manual/tests-pytest`) — confirmed live: 0 of
+314 retained pipelines have ever actually been triggered this way (CI
+pipeline audit, 2026-09-02), so this capability is wired but unused.
+Verifying the other five workflows still requires a real push, or
+temporarily broadening a workflow's `when:` to include `event: manual`
+while testing.
 
 ## Final job taxonomy (QCP Task 20)
 
@@ -167,7 +172,10 @@ Notes:
   simultaneously.
 - Needs no settings change: this repo is already trusted for volumes
   (`gh`-equivalent check: `curl -s https://ci.webfoundry.dev/api/repos/1`
-  shows `trusted: {network, volumes, security}` all true).
+  shows `trusted: {"network": false, "volumes": true, "security": true}` —
+  this repo is trusted for volumes and security, but not network egress from
+  step containers; re-check live if a future step needs outbound network
+  access).
 - To reset it: `docker volume rm wp-uv-cache`. Losing it costs exactly one
   slow run; Docker recreates it on next use.
 - `tests-dependency-audit` deliberately stays on `pip` and has no cache
@@ -237,6 +245,16 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   ever needs to be trusted and shows stale `pending`, check the pipeline's
   own `cancel_info` via the API before assuming it failed or is still
   running.
+
+  (Note, added 2026-09-03, corrected 2026-09-03: the server's pipeline-
+  number sequence was reset on 2026-08-31. Checked live: pipeline 241 now
+  404s, but pipeline 240 has been reused and returns a real, unrelated
+  `pull_request`/`main` pipeline from 2026-09-01 — not this incident. So
+  pre-reset numbers cited in this doc are worse than merely unresolvable;
+  240 specifically now silently points at different content. The incident
+  and its lesson above are still accurate history, just no longer
+  independently re-verifiable by number — don't follow either number as a
+  live link.)
 - `main` has real GitHub branch protection, configured 2026-08-25 (was
   unconfigured/404 before that) — see
   `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" section

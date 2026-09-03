@@ -47,7 +47,9 @@ steps:
     # Safe to share concurrently - uv locks its cache, which matters here
     # because the agent runs WOODPECKER_MAX_WORKFLOWS=4 and several of these
     # steps install at the same time. The repo is already trusted for volumes
-    # (network/volumes/security all true), so this needs no settings change.
+    # (volumes/security true, network **false** - confirmed live
+    # 2026-09-02), so this needs no settings change (volumes is what this
+    # comment is actually about).
     # Prune with `docker volume rm wp-uv-cache` if it ever grows unreasonably;
     # losing it costs one slow run, nothing more.
     volumes:

@@ -247,7 +247,9 @@ def _guarded_connect(database, *args, **kwargs):
         raise AssertionError(
             f"pytest attempted to open live repository data: {database}"
         )
-    return _original_connect(database, *args, **kwargs)
+    conn = _original_connect(database, *args, **kwargs)
+    conn.execute("PRAGMA synchronous=OFF")
+    return conn
 
 
 def _install_sqlite_guard() -> None:
