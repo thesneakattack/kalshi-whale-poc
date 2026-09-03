@@ -30,6 +30,7 @@ close_time are stored as parsed unix timestamps (not the original ISO
 strings) specifically so window queries are cheap SQL range comparisons,
 not per-row Python parsing on every call.
 """
+import contextlib
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -62,7 +63,17 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(db_path: Path):
+    """Every existing `with _connect(DB_PATH) as conn:` call site keeps
+    working unchanged - this yields the same conn as before, but now
+    closes it on exit (2026-09-03, Task 4 of docs/superpowers/plans/
+    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    commits/rolls back a transaction, it never closes the connection, and
+    this module has eleven call sites (:136, 162, 208, 218, 233, 362, 403,
+    504, 566, 605, 616) sharing this one non-closing _connect(), on
+    market_catalog.db - the store the live markets_watched: 0 incident's
+    own open hypothesis named as a possible discovery-path blocker."""
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)
     # WAL mode (2026-08-11, real live incident): rollback-journal mode
@@ -106,7 +117,11 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _parse_ts(value: str | None) -> float | None:

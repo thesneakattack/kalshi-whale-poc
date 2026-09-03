@@ -598,3 +598,46 @@ def test_upsert_mve_markets_empty_list_is_a_noop(tmp_path, monkeypatch):
     cat = _mc(tmp_path, monkeypatch)
     cat.upsert_mve_markets([], updated_at=time.time())
     assert cat.scan_progress()["total_markets"] == 0
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """Same fd-leak class as Tasks 2-3 - eleven call sites in this module
+    share one non-closing _connect(), on the file the live markets_watched:
+    0 incident's own open hypothesis names as a possible cause.
+
+    Deviates from the plan's literal instance-attribute-patching snippet
+    (`conn.close = _close`): on this repo's actual runtime (Python 3.13.15,
+    verified via `docker exec ... python -c "..."` against
+    ddev-kalshi-whale-poc-fastapi), sqlite3.Connection is an immutable
+    C-level type with no per-instance __dict__ - `conn.close = _close`
+    raises `AttributeError: 'sqlite3.Connection' object attribute 'close'
+    is read-only`, and `sqlite3.Connection.close = ...` (class-level) raises
+    `TypeError: cannot set 'close' attribute of immutable type
+    'sqlite3.Connection'`. Both confirmed by direct probe, not assumed.
+    A Connection subclass supplied via sqlite3.connect(factory=...) is the
+    standard workaround: subclasses are real heap types and can override
+    close(), while isinstance(conn, sqlite3.Connection) and `with conn:`
+    (via inherited __enter__/__exit__) still behave identically to the
+    plain connection this module's _connect() actually returns."""
+    import sqlite3
+
+    cat = _mc(tmp_path, monkeypatch)
+    closed = []
+
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    real_connect = sqlite3.connect
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(cat.sqlite3, "connect", _tracking_connect)
+
+    with cat._connect(cat.DB_PATH) as conn:
+        conn.execute("SELECT 1")
+
+    assert closed == [True]
