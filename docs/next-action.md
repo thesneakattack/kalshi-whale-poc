@@ -75,12 +75,39 @@ across four test files.
   migration, and explicitly **not** the cause of the standing stall pattern
   below. `autotrade-73` is writing its research doc; fix shape is PR #414's
   `tick_executor.run(...)` pattern.
-- **Standing live condition, unexplained, being tracked not diagnosed:**
-  sustained high worker CPU (139–187%) with `loop_watchdog` stalls accumulating
-  at ~37–53/min, present continuously for hours. A worker replacement at
-  11:56 UTC dropped container CPU to its session low (76%), which points at
-  **process-state accumulation rather than steady load** — `autotrade-84` is
-  tracking the new worker's CPU/stall growth curve from t=0 to test that.
+- **RESOLVED — the standing CPU/stall condition was diagnosed and fixed.**
+  Root cause (research: PR #519): `_process_stream_ticker` in
+  `services/whale_stream/whale_stream_handlers.py` called `strategy.check_exits`,
+  `broker.check_pending_fills` and `position_netting.review` **synchronously per
+  WS ticker message** across 700+ markets, with no `await` between the
+  running-check and `bump_generation()` — no cooperative yield point, so the
+  backlog starved every other coroutine including the tick loop's own
+  continuation. Fixed in PR #526 by a global min-interval throttle
+  (`kalshi.ticker_exit_check_min_interval_sec`, default 2.0) around that block;
+  measured 608 ms → 25 ms of blocking cost per simulated second. Worst-case exit
+  latency is **unchanged** — `main.py`'s `safety_net_interval_sec` (30 s) already
+  bounded it and shares no state with the throttle. Historical peak symptoms, for
+  recognising a recurrence: a **1,251 s tick**, positions stale 23 min, ingest
+  `queue_depth` 19,656 against a 20,000 cap, `queue_wait` averaging 912 s.
+- **Issue #530 — 58 of 89 async route handlers block the event loop.** A census
+  of all 17 `routes.py` files plus `main.py` found blocking is the *dominant*
+  pattern in the route layer, not an exception. Worst confirmed: **`/api/quality/summary`
+  — 358 calls × ~30 s = ~3 h of blocked time, 15.4 % of a 19.6 h window with
+  nothing else served** (undispatched `alerting.active_alerts()`,
+  `fault_log.summary()`, `research.latest()`; note `diagnostics.run_offline()` is
+  **not** implicated — PR #424 already made it async). **Severity is not uniform
+  and the count is a poor guide:** `/api/state` is the most-polled endpoint yet
+  costs 0.06–0.52 s. Prioritise by cost × call-frequency. **Fixing all 58 is
+  explicitly not the recommendation** — see `tick_executor.connection_for()`'s
+  deliberate non-wiring and PR #424's built-then-reverted pool.
+- **Issue #532 — `rejection_events` (22.6 M rows) is one table outgrowing three
+  access patterns**, not three independent findings: the 34 s `count_range`
+  (#510/#512), a `population_gate_summary()` scan that went ~4.8 s → 24–31 s as
+  the table grew 6.2 M → 22.6 M since 2026-08-26 (#410 — **already dispatched and
+  cached, so this is capacity, not a missing `tick_executor.run`**), and the
+  3.6 GB store that held Task 3's leaked handles. No fix proposed: retention
+  discards accumulated history, which is a first-class asset and a human
+  decision.
 - **`market_history.db` watch:** it was genuinely corrupt on 2026-09-02
   (recovered via SQLite `.recover`; original quarantined). A **new, single,
   unexplained** `disk I/O error` hit `market_history.py:234` at 12:07 UTC.
@@ -98,6 +125,18 @@ the live app** — one on 2026-09-03 at 11:56 UTC rewrote every `.py` that `main
 had gained since the switched-from branch forked, firing uvicorn `--reload`
 twice and replacing the worker. Diagnose any unexplained reload with
 `git reflog --date=iso` in the primary first.
+
+**Merging is not deploying.** `gh pr merge` is remote-side; the live app runs
+from the primary's working tree, which only changes when someone pulls — and
+that pull *is* the deploy, since it rewrites the bind mount and fires the
+reload. A merged PR can sit un-deployed indefinitely. This already caused a full
+Gate 2 fd-verification to run against un-migrated code and nearly record a pass.
+Verify a deploy with **both** `git merge-base --is-ancestor <merge sha> HEAD`
+**and** a `WatchFiles detected changes in … <file>` line in `ddev logs -s fastapi`
+— only the log line proves the running process picked it up. Wait for the merge
+commit's own CI (it is a new, untested combination, not the already-green PR
+head), and never measure a worker in its first few minutes: `last_tick_duration_sec`
+reads `None` and `open_fds` is artificially low during warm-up.
 
 `docs/SESSION_CRASH_RECOVERY.md` holds the per-role onboarding procedure if a
 session is lost.
