@@ -13,6 +13,12 @@ data/*.db-wal
 # of 2026-08-30 - see that module's own docstring.
 data/backups/
 data/backups_large/
+# Manual hold area for a data/*.db file quarantined out of the live path
+# during an incident (e.g. a corrupted file preserved rather than deleted
+# while its replacement goes live) - same one-level-below-the-flat-pattern
+# reasoning as data/backups/ above. First used 2026-09-03
+# (market_history.db corruption repair).
+data/quarantine/
 # tools/quality_ratchet.py's own db (renamed from quality_coordination.py 2026-08-27),
 # deliberately NOT under data/ - see that module's docstring for why (zero coupling to
 # the app's own backup/storage-health mechanisms, which specifically own the data/
