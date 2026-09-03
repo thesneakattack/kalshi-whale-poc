@@ -363,3 +363,45 @@ def test_pipeline_health_bounds_a_hung_store_probe(monkeypatch):
     # every other store still answered normally, proving one hung probe
     # doesn't take the others down with it
     assert "error" not in body["stores"]["signals"]
+
+
+def test_pipeline_health_reports_open_fd_count():
+    """The 2026-09-02 fd-exhaustion incident had no visibility anywhere in
+    this route until the container was already at its 1,024-descriptor
+    ceiling. This field is the lead-time signal that incident had none of."""
+    import main
+    from fastapi.testclient import TestClient
+
+    body = TestClient(main.app).get("/api/health/pipeline").json()
+
+    assert isinstance(body["open_fds"], dict)
+    assert isinstance(body["open_fds"]["count"], int)
+    assert body["open_fds"]["count"] > 0
+    assert isinstance(body["open_fds"]["soft_limit"], int)
+
+
+def test_fd_budget_fault_fires_past_80_percent(monkeypatch):
+    """Permanent recurrence detection for the incident's own root symptom -
+    a fault_log row should exist before the ceiling is hit, not only after,
+    unlike 2026-09-02's real incident which had zero warning. fault_log.record's
+    real signature (services/fault_log.py:85-87, confirmed against current
+    source before writing this test) is
+    record(component, operation, exc: BaseException, context=None,
+    severity="error", now=None) -> bool - there is no record_message."""
+    import main
+    from fastapi.testclient import TestClient
+    from services import fault_log
+    from services.diagnostics import routes
+
+    monkeypatch.setattr(routes, "_current_fd_count", lambda: 900)
+    monkeypatch.setattr(routes, "_fd_soft_limit", lambda: 1024)  # 900/1024 = 87.9%, over the 80% threshold
+
+    recorded = []
+    monkeypatch.setattr(fault_log, "record", lambda *a, **kw: recorded.append((a, kw)) or True)
+
+    TestClient(main.app).get("/api/health/pipeline")
+
+    assert recorded, "expected a fault_log.record() call once open fds crossed 80% of the soft limit"
+    (component, operation, exc), kwargs = recorded[0]
+    assert (component, operation) == ("fd_budget", "approaching_limit")
+    assert kwargs.get("severity") == "warn"

@@ -21,6 +21,8 @@ with respect to trading, and each degrades to an explicit "unknown" rather
 than a fabricated number.
 """
 import asyncio
+import os
+import resource
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -82,6 +84,24 @@ async def _bounded(coro, *, timeout: float | None = None) -> dict:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
         return {"error": f"timed out after {timeout:.0f}s"}
+
+
+# Task 9 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
+# remediation.md: the 2026-09-02 fd-exhaustion incident had zero
+# visibility anywhere until the container was already at its ceiling.
+# 80% is an estimate - enough lead time to notice before the 1,024-fd
+# limit this incident actually hit, without firing on ordinary variation;
+# Task 10's live validation is where that gets checked against real
+# behavior, not assumed correct on landing.
+FD_BUDGET_WARN_FRACTION = 0.8
+
+
+def _current_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _fd_soft_limit() -> int:
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 @router.get("/api/diagnostics")
@@ -420,8 +440,20 @@ async def get_pipeline_health(exact_rows: bool = False):
     extras, store_results = results[0], results[1:]
     stores_probe_ms = round((time.perf_counter() - probe_started) * 1000.0, 2)
 
+    from services import fault_log
+
+    fd_count = _current_fd_count()
+    fd_limit = _fd_soft_limit()
+    if fd_limit and fd_count / fd_limit >= FD_BUDGET_WARN_FRACTION:
+        fault_log.record(
+            "fd_budget", "approaching_limit",
+            RuntimeError(f"{fd_count}/{fd_limit} file descriptors in use"),
+            severity="warn",
+        )
+
     return {
         "generated_at": now,
+        "open_fds": {"count": fd_count, "soft_limit": fd_limit},
         "running": state.get("running"),
         "last_tick_duration_sec": state.get("last_tick_duration_sec"),
         "last_tick_rate_limit_hits": state.get("last_tick_rate_limit_hits"),
