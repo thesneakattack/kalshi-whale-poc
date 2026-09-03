@@ -358,3 +358,19 @@ def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, m
         re_cols = [r[1] for r in conn.execute("PRAGMA table_info(rejection_events)").fetchall()]
     assert "unit_cost" in rc_cols
     assert "unit_cost" in re_cols
+
+
+def test_population_gate_summary_includes_edge_gate_rejections(tmp_path, monkeypatch):
+    """Task 9 (docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    implementation.md): confirms design §3.3/§6's claim that
+    candidate_log's existing counterfactual-tracking machinery picks up
+    edge_gate rejections with zero new plumbing - a real test of that
+    claim, not a repeat of the trust the design document already
+    extended it. record_rejection()/population_gate_summary() are both
+    already generic over gate_name (Task 8 needed no candidate_log
+    changes at all), so this is expected to pass immediately."""
+    monkeypatch.setattr(cl, "DB_PATH", tmp_path / "candidate_log.db")
+    cl.record_rejection("TICK-A", "whale_follow", "edge_gate", -0.02, 0.04, side="yes", unit_cost=0.55)
+    summary = cl.population_gate_summary(min_samples=1)
+    gate_names = {row["gate_name"] for row in summary}
+    assert "edge_gate" in gate_names

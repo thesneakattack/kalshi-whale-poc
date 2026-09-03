@@ -145,6 +145,17 @@ class EntryValidation(NamedTuple):
     observed: float | None = None
     threshold: float | None = None
     reason: str | None = None
+    # Task 9 (strategy-edge-gate-implementation): the edge gate's own
+    # intermediate values ({"p_est", "q_pre", "delta", "edge", "min_edge"}),
+    # set whenever _edge_gate_check actually computed them - on BOTH the
+    # admitted and rejected outcome, not just the reject case observed/
+    # threshold already covered (Task 8). None whenever the gate wasn't
+    # evaluated at all (disabled, no ticker, missing P_pre, flat fee_type).
+    # Purely additive - every existing EntryValidation(...) call site uses
+    # positional args for the first 1-5 fields only (confirmed via
+    # `grep -rn "EntryValidation(" services/` before this change), so this
+    # 6th defaulted field breaks nothing.
+    edge_gate_detail: dict | None = None
 
 
 def _validate_entry_price(
@@ -204,21 +215,25 @@ def _validate_entry_price(
             f"price {unit_cost:.2f} is above the maximum unit cost of {max_unit_cost:.2f}",
         )
 
+    edge_gate_detail = None
     if strat_cfg.get("edge_gate_enabled") and ticker is not None:
-        edge_result = _edge_gate_check(side, price, ticker, category, as_of, strat_cfg)
+        edge_result, edge_gate_detail = _edge_gate_check(side, price, ticker, category, as_of, strat_cfg)
         if edge_result is not None and not edge_result.ok:
-            return edge_result
+            return edge_result._replace(edge_gate_detail=edge_gate_detail)
         # edge_result is None: gate could not be evaluated (missing P_pre,
         # or flat fee_type) - fails open per design §5, falls through to
         # return EntryValidation(True) below like every other pass.
+        # edge_gate_detail is None too in that case (Task 9's contract:
+        # the detail dict is only ever populated alongside a real
+        # computed edge, never fabricated for a check that didn't run).
 
-    return EntryValidation(True)
+    return EntryValidation(True, edge_gate_detail=edge_gate_detail)
 
 
 def _edge_gate_check(
     side: str, price: float, ticker: str, category: str | None,
     as_of: float | None, strat_cfg: dict,
-) -> EntryValidation | None:
+) -> tuple[EntryValidation | None, dict | None]:
     """The edge/EV gate (docs/superpowers/specs/2026-09-03-strategy-edge-
     gate-design.md §3.2), appended inside _validate_entry_price rather
     than called separately from evaluate() so a resting limit order's
@@ -227,12 +242,22 @@ def _edge_gate_check(
     function already applies (see this function's own docstring, the
     "four-entry gate bypass" fix).
 
-    Returns None when the gate cannot be evaluated at all (missing P_pre,
-    or a flat-type series whose fee this app doesn't model) - the caller
-    treats None as fail-open, per design §5's explicit statement that this
-    is a stated, not-yet-settled judgment call (docs/open-decisions.md).
-    Returns an EntryValidation with ok=False when it CAN be evaluated and
-    the computed edge is below strategy.edge_gate_min_edge."""
+    Returns a (EntryValidation | None, dict | None) pair (Task 9,
+    strategy-edge-gate-implementation - informativeness: design §9 wants
+    p_est/Δ_calibrated/edge inspectable per-signal, not only a boolean
+    pass/fail). The first element is None when the gate cannot be
+    evaluated at all (missing P_pre, or a flat-type series whose fee this
+    app doesn't model) - the caller treats None as fail-open, per design
+    §5's explicit statement that this is a stated, not-yet-settled
+    judgment call (docs/open-decisions.md); an EntryValidation with
+    ok=False when it CAN be evaluated and the computed edge is below
+    strategy.edge_gate_min_edge; EntryValidation(True) when it clears the
+    bar. The second element is the computed-values dict ({"p_est",
+    "q_pre", "delta", "edge", "min_edge"}) whenever the function got past
+    the P_pre/flat-fee-type early-outs and actually computed edge - on
+    BOTH the reject and the admitted outcome - None whenever it didn't
+    (mirrors the first element's None cases exactly, so "gate wasn't
+    evaluated" is never expressed as a fabricated detail dict)."""
     as_of = as_of if as_of is not None else time.time()
     series_ticker = signal_log.series_of(ticker)
 
@@ -245,7 +270,7 @@ def _edge_gate_check(
         # recognizable name (design's adversarial review, Finding 2,
         # independently re-derived from the raw PDF bytes). Not evaluated,
         # not admitted through this mechanism - other gates are untouched.
-        return None
+        return None, None
 
     pre_print_offset = strat_cfg.get("edge_gate_pre_print_offset_sec", 10.0)
     p_pre_max_age_sec = strat_cfg.get("edge_gate_p_pre_max_age_sec", 600.0)
@@ -257,29 +282,30 @@ def _edge_gate_check(
         # carries the "should this instead fail closed" question forward
         # for revisit once real markout data exists, per this plan's
         # Global Constraints note).
-        return None
+        return None, None
 
     q_pre_now = kalshi_fees.unit_cost(side, p_pre)
     if q_pre_now is None:
-        return None
+        return None, None
     delta = confidence_calibration.delta_calibrated_for(category, q_pre_now)
     p_est_side = min(max(q_pre_now + delta, 1e-6), 1 - 1e-6)  # clamped to (0, 1), design §2.2
 
     ask_now = kalshi_fees.unit_cost(side, price)
     if ask_now is None:
-        return None
+        return None, None
     fee_buffer = strat_cfg.get("edge_gate_fee_buffer_usd", 0.005)
     fee = kalshi_fees.taker_fee_per_contract(price, ticker) + fee_buffer
     edge = p_est_side - ask_now - fee
 
     min_edge = strat_cfg.get("edge_gate_min_edge", 0.04)
+    detail = {"p_est": p_est_side, "q_pre": q_pre_now, "delta": delta, "edge": edge, "min_edge": min_edge}
     if edge < min_edge:
         return EntryValidation(
             False, "edge_gate", edge, min_edge,
             f"edge {edge:.4f} is below the minimum edge of {min_edge:.4f} "
             f"(p_est={p_est_side:.4f}, ask={ask_now:.4f}, fee={fee:.4f})",
-        )
-    return EntryValidation(True)
+        ), detail
+    return EntryValidation(True), detail
 
 
 # evaluate()'s special-market conservative gate reads market_titles/
@@ -774,7 +800,7 @@ class FollowTheWhaleStrategy:
             )
             if order is None:
                 return self._skip(signal, "a limit order is already resting on this ticker")
-            return {
+            decision = {
                 "action": "limit_order_placed",
                 "signal": signal.to_dict(),
                 "order": {
@@ -782,6 +808,9 @@ class FollowTheWhaleStrategy:
                     "limit_price": order.limit_price, "expires_at": order.expires_at,
                 },
             }
+            if validation.edge_gate_detail is not None:
+                decision["edge_gate"] = validation.edge_gate_detail
+            return decision
 
         trade = self.broker.open_position(
             ticker=signal.ticker,
@@ -799,11 +828,14 @@ class FollowTheWhaleStrategy:
             # this only fires if that gate and this one somehow disagree,
             # e.g. a future bug in either check.
             return self._skip(signal, f"halted: {self.risk.halt_reason}" if self.risk.halted else "exposure cap")
-        return {
+        decision = {
             "action": "trade",
             "signal": signal.to_dict(),
             "trade": trade.to_dict(),
         }
+        if validation.edge_gate_detail is not None:
+            decision["edge_gate"] = validation.edge_gate_detail
+        return decision
 
     def _skip(self, signal: WhaleSignal, reason: str) -> dict:
         return {"action": "skip", "signal": signal.to_dict(), "reason": reason}
