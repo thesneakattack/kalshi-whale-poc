@@ -151,11 +151,10 @@ process's age) misidentified which process was current. The mistake was caught
 by cross-checking `/proc/<pid>/stat` field 22 (real start time) against
 `/proc/stat`'s `btime`, which identified the actual deployed worker; the check
 was then redone against that PID and passed cleanly. **This exchange lived only
-in cross-session chat, never a PR comment or doc** — exactly the gap the
-"persist code-PR reviews as comments" practice below exists to close; an
-adversarial reviewer of a later doc citing this could not corroborate it from
-the repo alone, which is itself evidence for why it needs saying here with this
-much specificity. Verify a deploy with **both**
+in cross-session chat, never a PR comment or doc**; an adversarial reviewer of
+a later doc citing this could not corroborate it from the repo alone, which is
+itself evidence for why it needs saying here with this much specificity.
+Verify a deploy with **both**
 `git merge-base --is-ancestor <merge sha> HEAD` **and** a `WatchFiles detected
 changes in … <file>` line in `ddev logs -s fastapi` — only the log line proves
 the running process picked it up. Wait for the merge commit's own CI (it is a
