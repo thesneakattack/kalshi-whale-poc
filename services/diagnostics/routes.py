@@ -536,8 +536,11 @@ async def get_faults(limit: int = 50, component: str | None = None, hours: float
     recent `last_seen` means something is failing right now, silently."""
     from services import fault_log as fl
 
-    return {"summary": fl.summary(since_ts=time.time() - hours * 3600),
-            "faults": fl.recent(limit=limit, component=component)}
+    summary, faults = await asyncio.gather(
+        asyncio.to_thread(fl.summary, since_ts=time.time() - hours * 3600),
+        asyncio.to_thread(fl.recent, limit=limit, component=component),
+    )
+    return {"summary": summary, "faults": faults}
 
 
 @router.get("/api/index")
