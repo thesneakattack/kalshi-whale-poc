@@ -119,6 +119,22 @@ def load() -> dict:
     return {"fetched_at": fetched_at, "series": json.loads(series_json)}
 
 
+def get_fee_type(series_ticker: str) -> str | None:
+    """One series' fee_type from series_metadata (already populated by
+    save() - see the module docstring's `docs/kalshi/get-series-list.md`
+    FeeType schema). None when this ticker was never fetched/cached, not
+    "not flat" - Task 8 (strategy-edge-gate-implementation.md) treats an
+    unknown fee_type the same as any other missing-data case: logged,
+    fails open on the OTHER checks, but this specific gate's own
+    fail-closed rule (§1.3 of the design) only fires on a CONFIRMED
+    "flat" value, never on absence."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT fee_type FROM series_metadata WHERE ticker = ?", (series_ticker,)
+        ).fetchone()
+    return row[0] if row else None
+
+
 def save(fetched_at: float, series: list[dict]) -> None:
     with _connect() as conn:
         conn.execute(
