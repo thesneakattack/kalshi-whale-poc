@@ -421,3 +421,64 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
         conn.execute("SELECT 1")
 
     assert closed == [True]
+
+
+def test_pending_markout_targets_selects_due_uncaptured_offsets(tmp_path, monkeypatch):
+    mh = _mh(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    trades = [{"id": "t1", "ticker": "TICK-A", "side": "yes", "price": 0.6, "timestamp": now - 400}]
+    # 300s offset is due (400 > 300); 3600s is not (400 < 3600); close_ts unknown for this ticker.
+    targets = mh.pending_markout_targets(
+        trades, offsets_sec=[300, 3600, None], now=now, close_ts_by_ticker={},
+    )
+    labels = {t["offset_label"] for t in targets}
+    assert labels == {"300"}
+    assert targets[0]["target_ts"] == now - 400 + 300
+
+
+def test_pending_markout_targets_uses_close_ts_for_the_close_offset(tmp_path, monkeypatch):
+    mh = _mh(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    trades = [{"id": "t1", "ticker": "TICK-A", "side": "yes", "price": 0.6, "timestamp": now - 400}]
+    targets = mh.pending_markout_targets(
+        trades, offsets_sec=[None], now=now, close_ts_by_ticker={"TICK-A": now - 100},
+    )
+    assert len(targets) == 1
+    assert targets[0]["offset_label"] == "close"
+    assert targets[0]["target_ts"] == now - 100
+
+
+def test_pending_markout_targets_skips_close_offset_with_no_known_close_ts(tmp_path, monkeypatch):
+    mh = _mh(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    trades = [{"id": "t1", "ticker": "TICK-A", "side": "yes", "price": 0.6, "timestamp": now - 400}]
+    targets = mh.pending_markout_targets(
+        trades, offsets_sec=[None], now=now, close_ts_by_ticker={},  # no close_ts known
+    )
+    assert targets == []
+
+
+def test_pending_markout_targets_excludes_already_captured(tmp_path, monkeypatch):
+    mh = _mh(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    mh.record_markout("t1", "TICK-A", "yes", 0.6, now - 400, "300", 300.0, now - 100, 0.62, now)
+    already = mh.already_captured_offset_labels(["t1"])
+    assert already == {"t1": {"300"}}
+    trades = [{"id": "t1", "ticker": "TICK-A", "side": "yes", "price": 0.6, "timestamp": now - 400}]
+    targets = mh.pending_markout_targets(
+        trades, offsets_sec=[300, 3600], now=now + 10_000, close_ts_by_ticker={},
+        already_captured=already,
+    )
+    labels = {t["offset_label"] for t in targets}
+    assert labels == {"3600"}  # "300" already captured, excluded even though now it's also due
+
+
+def test_record_markout_is_idempotent(tmp_path, monkeypatch):
+    mh = _mh(tmp_path, monkeypatch)
+    now = 1_000_000.0
+    mh.record_markout("t1", "TICK-A", "yes", 0.6, now - 400, "300", 300.0, now - 100, 0.62, now)
+    mh.record_markout("t1", "TICK-A", "yes", 0.6, now - 400, "300", 300.0, now - 100, 0.99, now + 5)
+    with mh._connect(mh.DB_PATH) as conn:
+        rows = conn.execute("SELECT markout_price FROM markouts WHERE trade_id = ?", ("t1",)).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 0.62  # first write wins, second is silently ignored

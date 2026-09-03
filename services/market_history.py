@@ -82,6 +82,24 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS markouts (
+            trade_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            entry_side TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            entry_ts REAL NOT NULL,
+            offset_label TEXT NOT NULL,
+            offset_sec REAL,
+            target_ts REAL NOT NULL,
+            markout_price REAL,
+            captured_at REAL NOT NULL,
+            PRIMARY KEY (trade_id, offset_label)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_markouts_ticker ON markouts (ticker)")
 
 
 @contextlib.contextmanager
@@ -462,3 +480,67 @@ def compute_hypothetical_trades(lookback_windows_sec: tuple = (3600, 21600, 8640
                     "resolved_at": resolved_at,
                 })
     return results
+
+
+def already_captured_offset_labels(trade_ids: list[str]) -> dict[str, set[str]]:
+    if not trade_ids:
+        return {}
+    with _connect(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in trade_ids)
+        rows = conn.execute(
+            f"SELECT trade_id, offset_label FROM markouts WHERE trade_id IN ({placeholders})",
+            trade_ids,
+        ).fetchall()
+    out: dict[str, set[str]] = {}
+    for trade_id, label in rows:
+        out.setdefault(trade_id, set()).add(label)
+    return out
+
+
+def pending_markout_targets(
+    trades: list[dict], offsets_sec: list[float | None], now: float,
+    close_ts_by_ticker: dict[str, float], already_captured: dict[str, set[str]] | None = None,
+) -> list[dict]:
+    """Which (trade, offset) pairs are due for markout capture right now
+    and don't have a row yet. Pure - no DB access - so Task 4's sweep can
+    unit-test the "what's due" logic (this function) separately from the
+    "go read snapshots and write rows" side effects (the sweep itself)."""
+    already_captured = already_captured if already_captured is not None else already_captured_offset_labels(
+        [t["id"] for t in trades]
+    )
+    out = []
+    for t in trades:
+        captured = already_captured.get(t["id"], set())
+        for offset_sec in offsets_sec:
+            if offset_sec is None:
+                label = "close"
+                close_ts = close_ts_by_ticker.get(t["ticker"])
+                if close_ts is None:
+                    continue  # no known close time for this ticker yet - skip, don't guess
+                target_ts = close_ts
+            else:
+                label = str(int(offset_sec))
+                target_ts = t["timestamp"] + offset_sec
+            if label in captured or target_ts > now:
+                continue
+            out.append({
+                "trade_id": t["id"], "ticker": t["ticker"], "entry_side": t["side"],
+                "entry_price": t["price"], "entry_ts": t["timestamp"],
+                "offset_label": label, "offset_sec": offset_sec, "target_ts": target_ts,
+            })
+    return out
+
+
+def record_markout(
+    trade_id: str, ticker: str, entry_side: str, entry_price: float, entry_ts: float,
+    offset_label: str, offset_sec: float | None, target_ts: float,
+    markout_price: float | None, captured_at: float,
+) -> None:
+    with _connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO markouts "
+            "(trade_id, ticker, entry_side, entry_price, entry_ts, offset_label, offset_sec, "
+            "target_ts, markout_price, captured_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (trade_id, ticker, entry_side, entry_price, entry_ts, offset_label, offset_sec,
+             target_ts, markout_price, captured_at),
+        )
