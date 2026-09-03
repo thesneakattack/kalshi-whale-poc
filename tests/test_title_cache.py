@@ -59,6 +59,56 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
     assert closed == [True]
 
 
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    the try/finally only wraps `with conn: yield conn`, not the PRAGMA/
+    CREATE TABLE/_add_column_if_missing setup before it - a setup failure
+    would otherwise leave `conn` open with nothing left to close it. This
+    module has no single _init_schema() to monkeypatch (setup is inline
+    conn.execute() calls plus several _add_column_if_missing() calls), so
+    this test makes the very first execute() (the PRAGMA) raise."""
+    import sqlite3
+    tc_mod = _tc(tmp_path, monkeypatch)
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _CloseTrackingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("PRAGMA failed")
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _CloseTrackingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(tc_mod.sqlite3, "connect", _tracking_connect)
+
+    raised = None
+    try:
+        with tc_mod._connect():
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "PRAGMA failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (the first execute()) raises before the try block"
+
+
 # --- market_title_fields() - the shared title/sub-title builder --------------
 # Previously reimplemented independently in three places (main.py's
 # new_market_titles builder, /api/markets/search, and market_catalog.

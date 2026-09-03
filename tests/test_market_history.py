@@ -482,3 +482,57 @@ def test_record_markout_is_idempotent(tmp_path, monkeypatch):
         rows = conn.execute("SELECT markout_price FROM markouts WHERE trade_id = ?", ("t1",)).fetchall()
     assert len(rows) == 1
     assert rows[0][0] == 0.62  # first write wins, second is silently ignored
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """The 2026-09-03 tier0 fix's try/finally only wraps `with conn: yield
+    conn`, not the sqlite3.connect() + PRAGMA + _init_schema(conn) setup
+    that runs before it - so if that setup raises (e.g. a corrupted db
+    file, or disk/fd pressure - exactly the conditions the fd-exhaustion
+    incident this fix exists for), the connection object is never closed.
+    Found by this task's own review, confirmed present in main's shipped
+    version too, not specific to any one implementation."""
+    import sqlite3
+    from services import market_history as mh
+
+    monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _TrackingConnProxy:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _TrackingConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(mh.sqlite3, "connect", _tracking_connect)
+
+    def _boom(conn):
+        raise RuntimeError("schema init failed")
+
+    monkeypatch.setattr(mh, "_init_schema", _boom)
+
+    raised = None
+    try:
+        with mh._connect(mh.DB_PATH):
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "schema init failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (PRAGMA/_init_schema) raises before the try block"

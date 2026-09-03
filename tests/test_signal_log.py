@@ -692,3 +692,55 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
         conn.execute("SELECT 1")
 
     assert closed == [True]
+
+
+def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
+    """Same setup-failure leak class as market_history.py's analogous test:
+    the try/finally only wraps `with conn: yield conn`, not the
+    sqlite3.connect() + PRAGMA + _init_schema(conn) setup before it - a
+    setup failure would otherwise leave `conn` open with nothing left to
+    close it."""
+    import sqlite3
+    from services import signal_log as sl
+
+    monkeypatch.setattr(sl, "DB_PATH", tmp_path / "signal_log.db")
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sl.sqlite3, "connect", _tracking_connect)
+
+    def _boom(conn):
+        raise RuntimeError("schema init failed")
+
+    monkeypatch.setattr(sl, "_init_schema", _boom)
+
+    raised = None
+    try:
+        with sl._connect():
+            pass
+    except RuntimeError as exc:
+        raised = exc
+
+    assert raised is not None and "schema init failed" in str(raised)
+    assert closed == [True], "connection must be closed even when setup (PRAGMA/_init_schema) raises before the try block"
