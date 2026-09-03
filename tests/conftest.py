@@ -108,6 +108,36 @@ def _fresh_loop_watchdog_window(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_generation_bump_window(monkeypatch):
+    """services/app_state.py's bump_generation() (Task 7 of docs/
+    superpowers/plans/2026-09-03-tier1-backend-hygiene.md) coarsens
+    state["generation"] bumps to at most one per real wall-clock second via
+    the module-global `_last_bump_ts`, timestamped with the real time.time()
+    - not a monkeypatched one, since every caller in production and most
+    callers in this suite use real time. Same leak class as every other
+    fixture in this file: two tests that each call bump_generation() only
+    ONCE (a "single test calling it once is always unaffected" assumption
+    the plan's own Task 7 text states) can still collide if they run within
+    1.0s of real time of each other, which is routine for this suite - a
+    LATER test's one-and-only bump_generation() call then gets silently
+    suppressed by an EARLIER test's leftover timestamp, leaving
+    state["generation"] unchanged, which then hits _build_state_body()'s
+    own memoization and serves a stale cached body that predates the later
+    test's own state mutations. Reproduced deterministically: `pytest tests/
+    -k "state or generation or event_live_data"` failed
+    test_state_market_titles_includes_a_recently_closed_trades_ticker and
+    test_state_market_titles_includes_real_account_position_and_fill_tickers
+    in tests/test_trading_gate.py (both call bump_generation() exactly once)
+    before this fixture existed, and passed once it reset the window ahead
+    of every test - not guessed, confirmed by reverting Task 7's two source
+    edits via `git stash` and observing the same two tests pass unmodified
+    on the pre-Task-7 baseline, then reproducing the failure again with the
+    edits restored."""
+    from services import app_state
+    monkeypatch.setattr(app_state, "_last_bump_ts", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_title_cache_series_ticker_cache(monkeypatch):
     """services/title_cache.py's series_ticker_for() in-memory index
     (_MARKET_EVENT_INDEX/_EVENT_SERIES_INDEX - final whole-branch review

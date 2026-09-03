@@ -129,69 +129,76 @@ _STORE_UPSERT_SQL: dict[str, str] = {
         WHERE rejected_candidates.resolved = 0
     """,
 }
+RAW_TRADES_DDL_SQL = """
+    CREATE TABLE IF NOT EXISTS raw_trades (
+        trade_id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL,
+        series TEXT NOT NULL,
+        observed_at REAL NOT NULL,
+        exchange_ts REAL,
+        taker_outcome_side TEXT,
+        taker_book_side TEXT,
+        taker_side_legacy TEXT,
+        resolved_side TEXT,
+        count_fp REAL,
+        yes_price_dollars REAL,
+        no_price_dollars REAL,
+        notional_usd REAL,
+        is_block_trade INTEGER,
+        excluded INTEGER NOT NULL DEFAULT 0,
+        raw_json TEXT NOT NULL
+    )
+"""
+# Shared with services/series_watcher.py's _connect()/_ensure_schema_aio()
+# (2026-09-03, Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
+# hygiene.md) - previously three independent hand-typed copies (this
+# module plus series_watcher.py's own sync AND async schema-init
+# functions), with a self-documented "keep the two DDL blocks in sync by
+# hand" comment in series_watcher.py. This module owns the constant
+# because it has no import dependency on series_watcher.py/candidate_log.py
+# (they both already import IT) - the only direction that doesn't create
+# a circular import.
+REJECTION_EVENTS_DDL_SQL = """
+    CREATE TABLE IF NOT EXISTS rejection_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        gate_name TEXT NOT NULL,
+        observed_value REAL,
+        threshold_value REAL,
+        side TEXT,
+        rejected_at REAL NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        result TEXT,
+        resolved_at REAL,
+        unit_cost REAL
+    )
+"""
+# Shared with services/candidate_log.py's _connect() (same reasoning as
+# RAW_TRADES_DDL_SQL above). Matches candidate_log.py's real schema
+# exactly, unit_cost baked in from the start here (candidate_log.py's own
+# _add_column_if_missing migration stays, as a no-op safety net for any
+# pre-existing file created before this shared constant existed).
+REJECTED_CANDIDATES_DDL_SQL = """
+    CREATE TABLE IF NOT EXISTS rejected_candidates (
+        ticker TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        gate_name TEXT NOT NULL,
+        observed_value REAL,
+        threshold_value REAL,
+        side TEXT,
+        rejected_at REAL NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        result TEXT,
+        resolved_at REAL,
+        unit_cost REAL,
+        PRIMARY KEY (ticker, strategy, gate_name)
+    )
+"""
 _STORE_DDL: dict[str, str] = {
-    "raw_trades": """
-        CREATE TABLE IF NOT EXISTS raw_trades (
-            trade_id TEXT PRIMARY KEY,
-            ticker TEXT NOT NULL,
-            series TEXT NOT NULL,
-            observed_at REAL NOT NULL,
-            exchange_ts REAL,
-            taker_outcome_side TEXT,
-            taker_book_side TEXT,
-            taker_side_legacy TEXT,
-            resolved_side TEXT,
-            count_fp REAL,
-            yes_price_dollars REAL,
-            no_price_dollars REAL,
-            notional_usd REAL,
-            is_block_trade INTEGER,
-            excluded INTEGER NOT NULL DEFAULT 0,
-            raw_json TEXT NOT NULL
-        )
-    """,
-    # Matches services/candidate_log.py's real schema exactly (including
-    # unit_cost, which that module adds via ALTER TABLE after its own
-    # initial CREATE - baked directly into this DDL instead, since a fresh
-    # table created by THIS module's own _flush_store (e.g. a clean test
-    # tmp_path) needs the full shape from the start, not a two-step
-    # migration). id is INTEGER PRIMARY KEY AUTOINCREMENT - submit() rows
-    # pass None for it so SQLite assigns the next value, same as omitting
-    # the column entirely.
-    "rejection_events": """
-        CREATE TABLE IF NOT EXISTS rejection_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            gate_name TEXT NOT NULL,
-            observed_value REAL,
-            threshold_value REAL,
-            side TEXT,
-            rejected_at REAL NOT NULL,
-            resolved INTEGER NOT NULL DEFAULT 0,
-            result TEXT,
-            resolved_at REAL,
-            unit_cost REAL
-        )
-    """,
-    # Matches candidate_log.py's real schema exactly, same "bake unit_cost
-    # into the initial CREATE" reasoning as rejection_events above.
-    "rejected_candidates": """
-        CREATE TABLE IF NOT EXISTS rejected_candidates (
-            ticker TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            gate_name TEXT NOT NULL,
-            observed_value REAL,
-            threshold_value REAL,
-            side TEXT,
-            rejected_at REAL NOT NULL,
-            resolved INTEGER NOT NULL DEFAULT 0,
-            result TEXT,
-            resolved_at REAL,
-            unit_cost REAL,
-            PRIMARY KEY (ticker, strategy, gate_name)
-        )
-    """,
+    "raw_trades": RAW_TRADES_DDL_SQL,
+    "rejection_events": REJECTION_EVENTS_DDL_SQL,
+    "rejected_candidates": REJECTED_CANDIDATES_DDL_SQL,
 }
 _FLUSH_INTERVAL_SEC = 1.0
 _FLUSH_BATCH = 500

@@ -1,7 +1,8 @@
 """Alert visibility routes - the informativeness half of alerting.py."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from services import alerting
+from services.pagination import paginate
 
 router = APIRouter()
 
@@ -12,7 +13,7 @@ async def get_active_alerts():
 
 
 @router.get("/api/alerts/history")
-async def get_alert_history(limit: int = 50):
+async def get_alert_history(limit: int = Depends(paginate(max_limit=200))):
     return {"alerts": alerting.recent(limit=limit)}
 
 

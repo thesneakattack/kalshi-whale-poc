@@ -130,14 +130,26 @@ def record(component: str, operation: str, exc: BaseException,
 
 def record_fault(component: str, operation: str, message: str,
                  context: str | None = None, severity: str = "warn",
-                 now: float | None = None) -> bool:
+                 now: float | None = None, tb: str | None = None) -> bool:
     """Log something worth knowing that isn't an exception - a field that
     arrived unparseable, a projection refused for want of data, a market
     that couldn't be resolved. Same deduplication, same never-raises
-    contract."""
+    contract.
+
+    tb (2026-09-03, Task 1 of docs/superpowers/plans/2026-09-03-tier1-
+    backend-hygiene.md): stores a pre-formatted traceback/stack string into
+    the same first_traceback slot record() populates from a real
+    exception - added for services/loop_watchdog.py's stall-attribution
+    capture, a non-exception event (a captured stack, not a raised one)
+    that still needs a first_traceback for attribution. Every existing
+    call site omits it and behaves exactly as before (None -> unchanged
+    null column, since _write's ON CONFLICT never updates first_traceback
+    on a repeat anyway - see this module's own module docstring)."""
     try:
         return _write(component, operation, severity, None,
-                      str(message)[:_MAX_MESSAGE_CHARS], None, context, now)
+                      str(message)[:_MAX_MESSAGE_CHARS],
+                      tb[:_MAX_TRACEBACK_CHARS] if tb else None,
+                      context, now)
     except Exception:
         return False
 

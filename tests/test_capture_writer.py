@@ -573,3 +573,15 @@ def test_stop_waits_out_a_flush_already_blocked_on_the_daemon_budget(tmp_path, m
         assert capture_writer.lock_retry_count()["raw_trades"] >= 1
     finally:
         _release(holder)
+
+
+def test_ddl_constants_are_exported_and_match_the_dict():
+    """Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
+    hygiene.md - the three DDL strings become named, importable module
+    constants (not just dict values), so series_watcher.py/candidate_log.py
+    can import them instead of hand-copying the SQL text."""
+    from services import capture_writer as cw
+
+    assert cw._STORE_DDL["raw_trades"] is cw.RAW_TRADES_DDL_SQL
+    assert cw._STORE_DDL["rejection_events"] is cw.REJECTION_EVENTS_DDL_SQL
+    assert cw._STORE_DDL["rejected_candidates"] is cw.REJECTED_CANDIDATES_DDL_SQL

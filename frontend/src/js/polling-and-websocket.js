@@ -30,6 +30,12 @@ let lastSuccessfulRefresh = Date.now();
 let consecutiveRefreshFailures = 0;
 let lastWhaleSource = null;  // set from each poll's state.whale_source - see loadConfig()'s real-provider status note
 
+// De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
+// tier1-backend-hygiene.md): loadSystemHealth() call site below, throttled
+// to 20s - see that call site's own comment for the full rationale.
+const SYSTEM_HEALTH_REFRESH_MS = 20000;
+let _lastSystemHealthLoadAt = 0;
+
 // terminalSignalFeed/terminalDecisionFeed get wholesale-reassigned on every
 // refresh() (see below) - a one-time `window.x = x` exposure would go
 // stale after the first poll, so the Terminal tab's inline onchange
@@ -105,7 +111,20 @@ async function refresh() {
       renderFunnel(state.stats);
       renderSignalDecisionFeed(state.signal_feed, state.decision_feed);
       renderHalted(state.risk);
-      loadSystemHealth(state);
+      // De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
+      // tier1-backend-hygiene.md): §3.3 of the architecture-audit-second-
+      // pass research found this route is the LEAST-fetched of the three
+      // named for de-polling (35 browser rows in 13h - the Terminal tab is
+      // rarely open) and the MOST important to keep responsive, since it's
+      // the endpoint CLAUDE.md tells every session to start an
+      // investigation from. Smaller throttle (20s, vs. the History tab
+      // loaders' 30s) reflects that corrected priority, not a uniform
+      // "de-poll everything the same" reading.
+      const _now = Date.now();
+      if (_now - _lastSystemHealthLoadAt >= SYSTEM_HEALTH_REFRESH_MS) {
+        _lastSystemHealthLoadAt = _now;
+        loadSystemHealth(state);
+      }
     } else if (active === 'portfolio') {
       renderPortfolio(state, broker);
       loadPositionNettingGroups();

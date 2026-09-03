@@ -507,3 +507,33 @@ def test_advisory_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypa
     assert updates == []  # known completeness defect open - refuse the automatic write
     assert logged == []
     assert bumps == []
+
+
+def test_maybe_run_auto_apply_passes_declined_ids(monkeypatch):
+    """Task 3a of docs/superpowers/plans/2026-09-03-tier1-backend-
+    hygiene.md: this is the ONE unsupervised generate_recommendations()
+    call site (no human in the loop between a suggestion and it being
+    applied) - per advisory_engine.py's own declined_ids docstring
+    (":926-929", "a suggestion a human already clicked 'no thanks' on
+    doesn't come back with the exact same evidence behind it"), this is
+    exactly the path that most needs to honor a decline, and previously
+    didn't."""
+    calls = []
+    monkeypatch.setattr(main.advisory_engine, "generate_recommendations",
+                         lambda *a, **k: calls.append(k) or {"recommendations": []})
+    monkeypatch.setattr(main, "_series_evaluator_rows_for_advisory", lambda cfg: [])
+    monkeypatch.setattr(main.regime_analytics, "by_category", lambda rows: [])
+    monkeypatch.setattr(main.candidate_log, "gate_summary", lambda: {})
+    monkeypatch.setattr(main.config_performance, "last_applied_at", lambda source: None)
+    monkeypatch.setattr(main.config_performance, "fingerprint", lambda cfg: "fp")
+    monkeypatch.setattr(main.config_performance, "all_last_applied_by_path", lambda: {})
+    monkeypatch.setattr(main.config_performance, "all_variants", lambda: [])
+    monkeypatch.setattr(main.trade_analytics, "build_trade_history", lambda rows: [])
+    monkeypatch.setattr(main.evidence_provenance, "current_completeness_state",
+                         lambda: {"degraded": False, "defects": [], "checked_at": 0.0})
+    monkeypatch.setattr(main.suggestion_decisions, "declined_ids", lambda: {"decl-1", "decl-2"})
+
+    main._maybe_run_auto_apply(_ADVISORY_CFG)
+
+    assert len(calls) == 1
+    assert calls[0].get("declined_ids") == {"decl-1", "decl-2"}
