@@ -59,7 +59,7 @@ _MAX_MESSAGE_CHARS = 500
 @contextlib.contextmanager
 def _connect():
     """Every existing `with _connect() as conn:` call site (4 of them -
-    services/fault_log.py:129, 153, 191, 203) keeps working unchanged -
+    services/fault_log.py:256, 292, 330, 342) keeps working unchanged -
     this yields the same conn as before, but now closes it on exit
     (2026-09-03, Task 6 of docs/superpowers/plans/
     2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
@@ -75,6 +75,18 @@ def _connect():
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     try:
+        # busy_timeout FIRST, before journal_mode (issue #543 follow-up:
+        # found by testing the concurrency fix, not reasoned out in
+        # advance): converting a fresh database to WAL mode itself needs
+        # exclusive access, so on a database no connection has ever opened
+        # in WAL mode yet, multiple threads racing to connect for the first
+        # time can have every statement past the first one fail with
+        # "database is locked" - including this PRAGMA itself - if
+        # busy_timeout isn't already in effect. A connection's busy_timeout
+        # defaults to 0 (fail instantly) until this statement runs, so it
+        # must be the very first thing executed on any new connection, not
+        # the second. Same 5000ms default services/db.py already uses.
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             """
@@ -96,10 +108,156 @@ def _connect():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
+        _ensure_null_exc_type_dedup_index(conn)
         with conn:
             yield conn
     finally:
         conn.close()
+
+
+def _ensure_null_exc_type_dedup_index(conn: sqlite3.Connection) -> None:
+    """Fixes issue #543: the table-level `UNIQUE (component, operation,
+    exc_type, message)` above never fires when `exc_type IS NULL` - SQL NULL
+    is never equal to NULL for uniqueness purposes - and `record_fault()`
+    always passes `exc_type=None` (it's the non-exception path). Every
+    `record_fault()` call with a fixed message therefore inserted a new row
+    instead of deduping (confirmed live, as measured when this fix was
+    written: 57,021 rows / 1 distinct message for `loop_watchdog`'s stall
+    fault alone - a moving, ever-growing number until this fix ships, not a
+    fixed constant to keep in sync). `record()` (the exception path)
+    always passes a real `exc_type` and already dedupes correctly through the
+    constraint above - this only covers the gap that constraint can't reach.
+
+    A partial unique index scoped to `WHERE exc_type IS NULL` closes the gap
+    without touching the existing constraint or its rows: same table, same
+    key shape, just narrowed to the one case NULL breaks. Purely additive -
+    no ALTER, no table rebuild.
+
+    Guarded, not unconditional: a database that already has pre-fix duplicate
+    NULL-exc_type rows (any production `fault_log.db` older than this fix)
+    would make `CREATE UNIQUE INDEX` itself raise `IntegrityError` on first
+    creation - `IF NOT EXISTS` only skips *re*-creation once the index
+    exists, it does not skip a constraint violation on the first attempt
+    (verified directly, not assumed). So: try the cheap fast path first: if
+    it succeeds, either the index already exists (near-every call, negligible
+    cost) or the database was already clean. Only on IntegrityError -
+    meaning duplicates are actually present - does this run the one-time
+    merge below and retry.
+
+    Both statements below carry `IF NOT EXISTS` - not just the first
+    (independent adversarial review of this fix, must-fix #1, 2026-09-03):
+    `fault_log.record_fault()` genuinely runs from concurrent OS threads,
+    not just interleaved coroutines - `loop_watchdog.py`'s stall capture
+    dispatches it via `asyncio.to_thread`, and `GET /api/health/faults`
+    (diagnostics/routes.py) does the same for `summary()`/`recent()`. Two
+    threads can both observe the pre-fix duplicates and both raise
+    IntegrityError on their first attempt before either commits a fix; both
+    then run the (idempotent - a second pass over an already-merged table
+    finds nothing `HAVING COUNT(*) > 1`) merge, and without IF NOT EXISTS
+    here, the thread that loses the race hits `CREATE UNIQUE INDEX` on an
+    index the winner already created, raising `OperationalError` (not
+    `IntegrityError` - not caught by the `except` above, escaping to the
+    caller's broad `except Exception` and silently dropping that one
+    `record_fault()`/`summary()`/`recent()` call).
+
+    `BEGIN IMMEDIATE` around the merge+retry (found the hard way: fixing
+    must-fix #1 above alone made the *first* race's symptom - a silently
+    dropped call - go away, but a second, subtler race was still there,
+    caught by running this fix's own new concurrency test rather than
+    assuming green meant done): `_merge_duplicate_null_exc_type_rows`'s
+    first statement, `CREATE TEMP TABLE ... AS SELECT`, is DDL - confirmed
+    directly that Python's sqlite3 module does not open a transaction for
+    DDL (`conn.in_transaction` stays `False` across it, unlike DML) - so
+    its `SUM(count)`/`MAX(last_seen)` read was not atomic with the UPDATE/
+    DELETE that use it. Two connections could both read the same pre-merge
+    duplicate rows, both compute the same aggregate, and the second one to
+    write would overwrite rather than add to the first one's numbers -
+    undercounting silently, no exception at all (reproduced directly: 8
+    concurrent threads against 20 pre-existing rows landed on 21 or 23
+    instead of 28 in roughly 1 of 8 real trials before this fix). `BEGIN
+    IMMEDIATE` takes the write lock before the read, so the read-then-write
+    below runs as one atomic unit against every other writer - the
+    `busy_timeout` set in `_connect()` above is what this waits on instead
+    of failing instantly when another connection already holds that lock.
+    Verified empirically (dozens of trials, exact count every time) after
+    this fix - see `test_concurrent_first_writes_after_upgrade_do_not_
+    lose_a_call` in tests/test_fault_log.py, which catches both races."""
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_dedup_null_exc_type "
+            "ON faults (component, operation, message) WHERE exc_type IS NULL"
+        )
+    except sqlite3.IntegrityError:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _merge_duplicate_null_exc_type_rows(conn)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_dedup_null_exc_type "
+                "ON faults (component, operation, message) WHERE exc_type IS NULL"
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
+    """One-time cleanup for rows `record_fault()` wrote before the dedup fix
+    above - never deletes information, only consolidates it, per CLAUDE.md's
+    "accumulated history" rule for data/*.db files: for each (component,
+    operation, message) group of exc_type-NULL rows, the earliest-inserted
+    row (lowest id, matching how `_write`'s own ON CONFLICT already treats
+    every field it doesn't explicitly recompute - first insert wins) is kept
+    and updated with count=SUM(count) and last_seen=MAX(last_seen) across the
+    whole group; the rest are dropped. first_traceback, context, and severity
+    are left exactly as the kept row already had them - unchanged, not
+    reselected - matching `_write`'s own ON CONFLICT, which never updates
+    those fields on a repeat either. Real exception rows (exc_type NOT NULL,
+    already deduped correctly by the table constraint) and already-unique
+    exc_type-NULL rows (HAVING COUNT(*) > 1 excludes them) are untouched."""
+    conn.execute(
+        """
+        CREATE TEMP TABLE _fault_dedupe_merge AS
+        SELECT component, operation, message,
+               MIN(id) AS keeper_id,
+               SUM(count) AS total_count,
+               MAX(last_seen) AS max_last_seen
+        FROM faults
+        WHERE exc_type IS NULL
+        GROUP BY component, operation, message
+        HAVING COUNT(*) > 1
+        """
+    )
+    conn.execute(
+        """
+        UPDATE faults
+        SET count = (SELECT total_count FROM _fault_dedupe_merge m WHERE m.keeper_id = faults.id),
+            last_seen = (SELECT max_last_seen FROM _fault_dedupe_merge m WHERE m.keeper_id = faults.id)
+        WHERE id IN (SELECT keeper_id FROM _fault_dedupe_merge)
+        """
+    )
+    # `IS`, not `=`, for message (should-fix #2, adversarial review): the
+    # `message` column has no NOT NULL constraint, and SQL `=` against a
+    # NULL is never true - a NULL-message duplicate group would inflate the
+    # keeper's count in the UPDATE above but then never get its extra rows
+    # deleted here, double-counting. Currently unreachable in practice
+    # (record()/record_fault() both pass message through str(), so a
+    # caller's None becomes the literal string "None", never a real SQL
+    # NULL - confirmed live: 0 rows have message IS NULL today) but the
+    # column itself doesn't guarantee that, and `IS` costs nothing here.
+    conn.execute(
+        """
+        DELETE FROM faults
+        WHERE exc_type IS NULL
+          AND id NOT IN (SELECT keeper_id FROM _fault_dedupe_merge)
+          AND EXISTS (
+              SELECT 1 FROM _fault_dedupe_merge m
+              WHERE m.component = faults.component AND m.operation = faults.operation
+                AND m.message IS faults.message
+          )
+        """
+    )
+    conn.execute("DROP TABLE _fault_dedupe_merge")
 
 
 def record(component: str, operation: str, exc: BaseException,
@@ -162,12 +320,24 @@ def _write(component: str, operation: str, severity: str, exc_type: str | None,
         # ON CONFLICT keeps the FIRST traceback (the one with the original
         # stack) and bumps the count - a repeat adds evidence of frequency,
         # not another copy of the same stack.
+        #
+        # Two ON CONFLICT targets, chained (issue #543): the table's own
+        # UNIQUE constraint never fires when exc_type IS NULL (record_fault()
+        # always passes None there - see _ensure_null_exc_type_dedup_index's
+        # docstring above), so a second target names the partial index that
+        # covers exactly that case. SQLite requires each target to name a
+        # real constraint/index verbatim, including a partial index's own
+        # WHERE clause - only one target ever actually matches a given row,
+        # the other is simply not triggered.
         conn.execute(
             """
             INSERT INTO faults (component, operation, severity, exc_type, message,
                                 first_traceback, context, count, first_seen, last_seen)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT (component, operation, exc_type, message) DO UPDATE SET
+                count = count + 1,
+                last_seen = excluded.last_seen
+            ON CONFLICT (component, operation, message) WHERE exc_type IS NULL DO UPDATE SET
                 count = count + 1,
                 last_seen = excluded.last_seen
             """,

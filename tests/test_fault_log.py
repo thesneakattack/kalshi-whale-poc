@@ -275,6 +275,201 @@ def test_record_fault_stores_an_explicit_traceback():
     assert row["first_traceback"] == "Traceback (most recent call last):\n  fake stack\n"
 
 
+# --- issue #543: NULL exc_type defeats the UNIQUE constraint -----------
+
+def test_record_fault_with_the_same_message_dedupes_into_one_row():
+    """The bug: record_fault() always passes exc_type=None, and SQL NULL is
+    never equal to NULL for UNIQUE purposes, so the table-level constraint
+    never fired for this path - every call inserted a new row instead of
+    incrementing count. Confirmed live: loop_watchdog's stall fault alone
+    had 55,635 rows for 1 distinct message (issue #543)."""
+    for _ in range(500):
+        fl.record_fault("loop_watchdog", "stall", "event loop stalled")
+    rows = fl.recent()
+    assert len(rows) == 1
+    assert rows[0]["count"] == 500
+    assert rows[0]["exc_type"] is None
+
+
+def test_record_fault_different_messages_stay_distinct():
+    fl.record_fault("a", "op", "message one")
+    fl.record_fault("a", "op", "message two")
+    fl.record_fault("a", "op2", "message one")
+    fl.record_fault("b", "op", "message one")
+    assert len(fl.recent()) == 4
+
+
+def test_record_fault_dedup_coexists_with_record_dedup_on_the_same_key():
+    """Two independent dedup paths (the table's own UNIQUE constraint for
+    record()'s real exc_type, the new partial index for record_fault()'s
+    NULL exc_type) must not cross-contaminate rows that share component,
+    operation, and message but differ only in whether it's an exception."""
+    fl.record("shared", "op", _boom("same text"))
+    fl.record_fault("shared", "op", "same text")
+    fl.record("shared", "op", _boom("same text"))
+    fl.record_fault("shared", "op", "same text")
+    rows = fl.recent()
+    assert len(rows) == 2
+    by_type = {r["exc_type"]: r["count"] for r in rows}
+    assert by_type["OperationalError"] == 2
+    assert by_type[None] == 2
+
+
+def test_pre_existing_duplicate_null_exc_type_rows_are_merged_on_first_connect(monkeypatch, tmp_path):
+    """Simulates a real pre-fix production fault_log.db: many raw duplicate
+    NULL-exc_type rows already on disk, written before this fix existed.
+    CREATE UNIQUE INDEX itself raises IntegrityError against pre-existing
+    duplicates (verified directly, not assumed) - IF NOT EXISTS only skips
+    *re*-creation, not a first-creation constraint violation - so the module
+    must detect that, merge the duplicates, and retry, on its very first
+    _connect() after upgrading, not lose the fault store to a swallowed
+    exception."""
+    db_path = tmp_path / "legacy_fault_log.db"
+    monkeypatch.setattr(fl, "DB_PATH", db_path)
+
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        """
+        CREATE TABLE faults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL, operation TEXT NOT NULL, severity TEXT NOT NULL,
+            exc_type TEXT, message TEXT, first_traceback TEXT, context TEXT,
+            count INTEGER NOT NULL DEFAULT 1, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            UNIQUE (component, operation, exc_type, message)
+        )
+        """
+    )
+    now = time.time()
+    for i in range(50):
+        seed.execute(
+            "INSERT INTO faults (component, operation, severity, exc_type, message, "
+            "first_traceback, count, first_seen, last_seen) VALUES (?,?,?,?,?,?,1,?,?)",
+            ("loop_watchdog", "stall", "warn", None, "stalled",
+             "original-stack" if i == 0 else None, now - (50 - i), now - (50 - i)),
+        )
+    # a real exception row and a non-duplicated record_fault row, to confirm
+    # the merge only touches genuine NULL-exc_type duplicate groups
+    seed.execute(
+        "INSERT INTO faults (component, operation, severity, exc_type, message, "
+        "count, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+        ("other", "op", "error", "ValueError", "boom", 7, now - 5, now - 1),
+    )
+    seed.execute(
+        "INSERT INTO faults (component, operation, severity, exc_type, message, "
+        "count, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+        ("solo", "op", "warn", None, "only once", 1, now, now),
+    )
+    seed.commit()
+    seed.close()
+
+    # This call goes through the real module code path - it must trigger the
+    # guarded migration internally, not raise, and not silently swallow the
+    # store into "no rows" the way an unguarded IntegrityError would (every
+    # _connect() caller wraps exceptions broadly - see the module docstring).
+    assert fl.record_fault("loop_watchdog", "stall", "stalled") is True
+
+    rows = {r["component"]: r for r in fl.recent(limit=10)}
+    assert len(rows) == 3
+    assert rows["loop_watchdog"]["count"] == 51, "50 pre-existing + 1 new write must merge into one row"
+    assert rows["loop_watchdog"]["exc_type"] is None
+    assert rows["loop_watchdog"]["first_traceback"] == "original-stack", \
+        "the earliest row's traceback must survive the merge, not be discarded"
+    assert rows["other"]["count"] == 7 and rows["other"]["exc_type"] == "ValueError", \
+        "a real exception row must be untouched by the NULL-exc_type merge"
+    assert rows["solo"]["count"] == 1, "a non-duplicated record_fault row must be untouched"
+
+    # A second call must take the fast IF NOT EXISTS path (index already
+    # exists) and still dedupe correctly - the migration must not re-run.
+    assert fl.record_fault("loop_watchdog", "stall", "stalled") is True
+    assert fl.recent(component="loop_watchdog")[0]["count"] == 52
+
+
+def test_concurrent_first_writes_after_upgrade_do_not_lose_a_call(monkeypatch, tmp_path):
+    """Found by independent adversarial review of this fix (must-fix #1,
+    2026-09-03): fault_log.record_fault runs from genuine concurrent OS
+    threads, not just interleaved coroutines - loop_watchdog.py dispatches
+    its stall capture via asyncio.to_thread(fault_log.record_fault, ...),
+    and GET /api/health/faults (diagnostics/routes.py) does the same for
+    summary()/recent(). Against a legacy database with pre-existing
+    duplicates, two threads can both see the initial CREATE UNIQUE INDEX
+    IF NOT EXISTS raise IntegrityError before either commits a fix; both
+    then run the (idempotent) merge, and both retry creating the index -
+    the thread that loses the race must not have its call silently
+    dropped by an unguarded second CREATE UNIQUE INDEX raising
+    OperationalError (uncaught by the narrow `except sqlite3.
+    IntegrityError`, swallowed instead by the caller's broad `except
+    Exception` - a completeness violation, not a crash), nor by a lost-
+    update in the merge's own SUM(count) (found testing this fix, not
+    assumed - see _merge_duplicate_null_exc_type_rows' docstring). This
+    reproduced directly (not assumed) as part of the review, and
+    reproduces here too if the retry's IF NOT EXISTS or the merge's BEGIN
+    IMMEDIATE is ever dropped.
+
+    The seed connection sets WAL mode itself before writing the legacy
+    duplicates, deliberately - not a formality. Converting a database to
+    WAL mode for the first time needs exclusive access, and every real
+    `data/fault_log.db` has been in WAL mode for its entire life (set once,
+    ages ago, by whichever connection touched it first - it's a persistent
+    property of the file, confirmed by reading SQLite's own docs, not
+    reset per-connection). A database that's never been opened even once
+    hitting 8-way concurrency on its very first connection is a different,
+    pre-existing bug this fix didn't introduce (confirmed reproducible on
+    unmodified origin/main too, filed separately as issue #549, out of
+    scope for issue #543) - bootstrapping WAL mode here keeps this test
+    isolated to the one race this PR is actually responsible for."""
+    import threading
+
+    db_path = tmp_path / "race.db"
+    monkeypatch.setattr(fl, "DB_PATH", db_path)
+
+    seed = sqlite3.connect(db_path)
+    seed.execute("PRAGMA journal_mode=WAL")
+    seed.execute(
+        """
+        CREATE TABLE faults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL, operation TEXT NOT NULL, severity TEXT NOT NULL,
+            exc_type TEXT, message TEXT, first_traceback TEXT, context TEXT,
+            count INTEGER NOT NULL DEFAULT 1, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            UNIQUE (component, operation, exc_type, message)
+        )
+        """
+    )
+    now = time.time()
+    for i in range(20):
+        seed.execute(
+            "INSERT INTO faults (component, operation, severity, exc_type, message, "
+            "count, first_seen, last_seen) VALUES (?,?,?,?,?,1,?,?)",
+            ("loop_watchdog", "stall", "warn", None, "stalled", now - (20 - i), now - (20 - i)),
+        )
+    seed.commit()
+    seed.close()
+
+    n_threads = 8
+    barrier = threading.Barrier(n_threads)
+    results: list[bool] = []
+    results_lock = threading.Lock()
+
+    def _write():
+        barrier.wait()  # force every thread to hit the pre-fix duplicates together
+        result = fl.record_fault("loop_watchdog", "stall", "stalled")
+        with results_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=_write) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(results) == n_threads, "a thread never returned - deadlock or unhandled crash"
+    assert all(results), f"a concurrent write was silently dropped (returned False): {results}"
+
+    row = fl.recent(component="loop_watchdog")[0]
+    assert row["count"] == 20 + n_threads, \
+        "every pre-existing row and every concurrent write must be accounted for exactly once"
+
+
 def test_record_fault_tb_defaults_to_none_for_every_existing_caller():
     """Every one of this function's other 10+ call sites omits tb - this
     pins that omitting it still behaves exactly as before (first_traceback
