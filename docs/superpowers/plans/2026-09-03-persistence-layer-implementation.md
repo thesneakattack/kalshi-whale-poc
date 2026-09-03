@@ -28,15 +28,22 @@ pass" HARD RULE):**
   is the next, separate, still-gated stage (this document)
 
 **Verified fresh at plan-drafting time (2026-09-03), not assumed from the
-design's own now-hours-old numbers:** `docs/next-action.md` confirms Tier 0's
-own plan (`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`,
-PR #441, merged) is **still code-not-landed** — `services/market_history.py`'s
-`_connect()` has no `@contextlib.contextmanager` yet. This plan's scope (the
-25 `_connect()`-owning modules *not* in Tier 0's five, plus `candidate_log.db`'s
-contention fix) is file-disjoint from Tier 0's five modules
-(`market_history.py`, `title_cache.py`, `market_catalog/market_catalog.py`,
-`signal_log.py`, `fault_log.py`), so this plan does not block on Tier 0
-landing and makes no assumption about when it will.
+design's own now-hours-old numbers:** at drafting time, `docs/next-action.md`
+confirmed Tier 0's own plan
+(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`,
+PR #441, merged) was still code-not-landed. **PR-stage update:** Tier 0's
+code has since landed (`services/market_history.py:87-88` now has
+`@contextlib.contextmanager` on `_connect()`, confirmed against current
+`main` — PRs #499 and #501). This plan's scope (the 25 `_connect()`-owning
+modules *not* in Tier 0's five, plus `candidate_log.db`'s contention fix) is
+file-disjoint from Tier 0's five modules (`market_history.py`,
+`title_cache.py`, `market_catalog/market_catalog.py`, `signal_log.py`,
+`fault_log.py`), so this plan never blocked on Tier 0 landing — the
+conclusion drawn from the (now-outdated) premise still holds unchanged. Per
+the design's §1.5 step 4, Tier 0's five modules are now live candidates for
+Task 7's opportunistic-migration tracking below (this plan's own direct
+scope — Tasks 1-6 — is unaffected either way, since none of them touch a
+Tier 0 module).
 
 ## Design decisions this plan implements without re-litigating
 
@@ -216,11 +223,13 @@ tooling.
   Task 8's tracking record for item 16 must carry this forward to whichever
   future plan actually migrates a call site.
 - **Tier 0 dependency, stated precisely:** this plan's modules are
-  file-disjoint from Tier 0's five and do not require Tier 0's code to have
-  landed. If Tier 0 lands first, its five modules become candidates for
-  Task 7's opportunistic-migration tracking (per the design's §1.5 step 4);
-  if this plan lands first, nothing here needs to change when Tier 0
-  eventually lands, since neither touches the other's files.
+  file-disjoint from Tier 0's five and never required Tier 0's code to have
+  landed. **PR-stage update: Tier 0 landed first** (confirmed against
+  current `main` — see the note near the top of this document) — its five
+  modules are now live candidates for Task 7's opportunistic-migration
+  tracking below (per the design's §1.5 step 4), not a hypothetical future
+  case. Nothing in this plan's own direct scope (Tasks 1-6) changes as a
+  result, since none of them touch a Tier 0 module.
 - **Open item this plan does not resolve, flagged rather than silently
   decided:** the design's §7 names a `PRAGMA integrity_check` on
   `series_watcher.db` as a precondition "before any refresh job is first
@@ -265,6 +274,23 @@ zero runtime behavior for the running app. `services/db.py` defines no
 `PERSISTENCE_MODULE_PATHS` scanner keys off a module-level `DB_PATH =`
 assignment; `db.connect()` takes `db_path` as a parameter, so this file is
 invisible to that scanner and does not need registering there).
+
+**PR-stage note (found during this PR's own required review cycle):** a
+separate, already-merged initiative (`0e90287`, see Task 3's own correction
+note) shipped `services/capture_writer.py`'s `_STORE_DDL: dict[str, str]`,
+which already centralizes three of these tables' DDL
+(`raw_trades`/`rejected_candidates`/`rejection_events`) under a different
+name than this task's `db._DDL_REGISTRY`. The two are not in conflict —
+`db.register_ddl(table, ddl)` takes a plain string, so Tasks 3/5's calls
+register `db._DDL_REGISTRY` entries whose *value* is a reference to
+`capture_writer.py`'s own constant (`capture_writer.REJECTED_CANDIDATES_DDL_SQL`
+etc. — see Tasks 3/5's own corrected code), not a re-declaration of the DDL
+text. `db._DDL_REGISTRY` is the more general mechanism (any module can
+register any table, not just the three `capture_writer.py` already owns)
+and `_STORE_DDL` remains `capture_writer.py`'s own internal lookup for its
+own store-name-to-DDL dispatch — this task does not remove or replace it,
+only avoids introducing a *third*, independent copy of the same three
+tables' DDL text.
 
 - [ ] **Step 1: Write the failing tests first**
 
@@ -668,7 +694,7 @@ additive signature change doesn't break any existing caller.
 ### Task 3: `candidate_log.py`'s `_connect()` migrates to `services/db.py` (delivers §4.3 fix candidate 2)
 
 **Files:**
-- Modify: `services/candidate_log.py:76-145` (`_connect`, plus the module's
+- Modify: `services/candidate_log.py:76-113` (`_connect`, plus the module's
   import block)
 - Test: `tests/test_candidate_log.py` (extend existing file)
 
@@ -676,13 +702,18 @@ additive signature change doesn't break any existing caller.
 
 **Interfaces:** `_connect()` changes from a plain function returning
 `sqlite3.Connection` to a thin wrapper around `db.connect(...)` — every
-existing `with _connect() as conn:` call site (lines 239, 287, 387, 439,
-461, 481, confirmed via `grep -n "_connect(" services/candidate_log.py`
+existing `with _connect() as conn:` call site (lines 207, 255, 355, 407,
+429, 449, confirmed via `grep -n "_connect(" services/candidate_log.py`
 immediately before drafting this task: all six are `with _connect() as
-conn:`, zero bare usages) keeps working unmodified.
+conn:`, zero bare usages) keeps working unmodified. (**PR-stage correction**
+— re-verified against current `main` before this PR merges: line numbers
+above are current, not the plan's originally-cited 239/287/387/439/461/481
+— a separate, already-merged initiative shifted this file's contents; see
+the "PR-stage correction" note below Step 3 for the substantive change that
+caused it.)
 
 **A correction to the design's own §1.4 illustrative "After" example, found
-by reading `candidate_log.py:76-145` directly (never-guess HARD RULE):** the
+by reading `candidate_log.py:76-113` directly (never-guess HARD RULE):** the
 design's simplified example shows `_connect()` becoming a literal one-line
 `return db.connect(DB_PATH, tables=(...))`. The real function does more than
 two bare `CREATE TABLE` statements — it also creates two indexes
@@ -717,6 +748,12 @@ fixture — `grep -n "_redirect_db" tests/test_candidate_log.py` — for
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch, _redirect_db):
+    # PR-stage correction: tests/test_candidate_log.py has no module-level
+    # `import sqlite3` (only function-local occurrences elsewhere in the
+    # file, e.g. its existing test at line 353) — this test needs its own,
+    # or `sqlite3.connect` below raises NameError before the monkeypatch
+    # even applies.
+    import sqlite3
     closed = []
     real_connect = sqlite3.connect
 
@@ -764,7 +801,7 @@ attribute of the `candidate_log` module) against current `main`.
 
 - [ ] **Step 2: Read the exact current function before editing**
 
-Run: `sed -n '60,146p' services/candidate_log.py`. Confirm it still matches
+Run: `sed -n '60,114p' services/candidate_log.py`. Confirm it still matches
 this task's own "before" quotation above (already transcribed in full
 earlier in this plan's own investigation) before editing.
 
@@ -774,49 +811,85 @@ Add `from services import db` to the import block (`services/candidate_log.py:62
 alongside the existing `from services import capture_writer`). Register the
 DDL once, at module scope, and rewrite `_connect()`:
 
+**PR-stage correction (found during this PR's own required review cycle,
+after the plan-stage review had already run): a separate, already-merged
+initiative (`0e90287`, "refactor: one canonical DDL string per table, owned
+by capture_writer.py", Task 3c of `docs/superpowers/plans/2026-09-03-tier1-
+backend-hygiene.md`, merged the same day as this plan was drafted) already
+extracted both `rejected_candidates`' and `rejection_events`' DDL into named
+constants on `capture_writer.py` — `capture_writer.REJECTED_CANDIDATES_DDL_SQL`
+and `capture_writer.REJECTION_EVENTS_DDL_SQL`. `candidate_log.py`'s real,
+current `_connect()` already calls these instead of hand-typing the DDL.
+The code block below is corrected to register those constants rather than
+retype the DDL text — retyping it here would not just duplicate what
+`capture_writer.py` already centralizes, it would silently diverge from it:
+the canonical constants already bake `unit_cost REAL` into the `CREATE
+TABLE` itself (`capture_writer.py`'s own comment: "unit_cost baked in from
+the start here"), which a hand-typed copy transcribed from this plan's
+original drafting (before `0e90287` landed) would not include — installing
+a schema-revision-behind copy that would still pass
+`test_connect_still_creates_both_tables_indexes_and_unit_cost_columns`
+below for the wrong reason (via the retained `add_column_if_missing` calls,
+not from the DDL itself), silently un-pinning what
+`tests/test_candidate_log.py`'s existing
+`test_connect_creates_rejected_candidates_with_unit_cost_from_ddl` test
+exists to guard. The two `add_column_if_missing` calls stay exactly as
+below regardless — `capture_writer.py`'s own comment explicitly wants them
+retained as a no-op safety net for any pre-existing file created before the
+shared constant existed.**
+
 ```python
 from services import capture_writer, db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
-db.register_ddl(
-    "rejected_candidates",
-    """
-    CREATE TABLE IF NOT EXISTS rejected_candidates (
-        ticker TEXT NOT NULL,
-        strategy TEXT NOT NULL,
-        gate_name TEXT NOT NULL,
-        observed_value REAL,
-        threshold_value REAL,
-        side TEXT,
-        rejected_at REAL NOT NULL,
-        resolved INTEGER NOT NULL DEFAULT 0,
-        result TEXT,
-        resolved_at REAL,
-        PRIMARY KEY (ticker, strategy, gate_name)
-    )
-    """,
-)
-db.register_ddl(
-    "rejection_events",
-    """
-    CREATE TABLE IF NOT EXISTS rejection_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticker TEXT NOT NULL,
-        strategy TEXT NOT NULL,
-        gate_name TEXT NOT NULL,
-        observed_value REAL,
-        threshold_value REAL,
-        side TEXT,
-        rejected_at REAL NOT NULL,
-        resolved INTEGER NOT NULL DEFAULT 0,
-        result TEXT,
-        resolved_at REAL
-    )
-    """,
-)
+db.register_ddl("rejected_candidates", capture_writer.REJECTED_CANDIDATES_DDL_SQL)
+db.register_ddl("rejection_events", capture_writer.REJECTION_EVENTS_DDL_SQL)
+```
 
+The pre-`0e90287` hand-typed DDL text (kept here only as historical
+context for why the constants above are equivalent, not to be retyped
+anywhere):
 
+```python
+CREATE TABLE IF NOT EXISTS rejected_candidates (
+    ticker TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    gate_name TEXT NOT NULL,
+    observed_value REAL,
+    threshold_value REAL,
+    side TEXT,
+    rejected_at REAL NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    result TEXT,
+    resolved_at REAL,
+    PRIMARY KEY (ticker, strategy, gate_name)
+)
+-- capture_writer.REJECTED_CANDIDATES_DDL_SQL also bakes in unit_cost REAL,
+-- which this original hand-typed version (from this plan's initial
+-- drafting, before 0e90287 landed) did not - the canonical constant is the
+-- accurate, current version; this block is not live code.
+
+CREATE TABLE IF NOT EXISTS rejection_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    gate_name TEXT NOT NULL,
+    observed_value REAL,
+    threshold_value REAL,
+    side TEXT,
+    rejected_at REAL NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    result TEXT,
+    resolved_at REAL
+)
+-- same note: capture_writer.REJECTION_EVENTS_DDL_SQL also bakes in
+-- unit_cost REAL; this block is historical context only, not live code.
+```
+
+The actual `_connect()` implementation:
+
+```python
 @contextlib.contextmanager
 def _connect():
     """Every existing `with _connect() as conn:` call site keeps working
@@ -824,11 +897,15 @@ def _connect():
     Task 3 of docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md).
     Also sets an explicit busy_timeout pragma (db.connect()'s 5000ms default -
     unchanged from Python's own prior implicit default, now stated rather than
-    silent), the fix this plan's design named as §4.3 candidate 2. The two
-    CREATE INDEX statements and two add_column_if_missing calls below are not
-    expressible in db.register_ddl's single-statement-per-table model, so this
-    wrapper still runs them itself on the yielded connection - see this task's
-    own note on why this isn't a literal one-line wrapper."""
+    silent), the fix this plan's design named as §4.3 candidate 2. DDL for
+    both tables is registered from capture_writer.py's own canonical
+    constants (REJECTED_CANDIDATES_DDL_SQL / REJECTION_EVENTS_DDL_SQL - see
+    this task's PR-stage correction note above Step 3's code block), not
+    retyped here. The two CREATE INDEX statements and two
+    add_column_if_missing calls below are not expressible in
+    db.register_ddl's single-statement-per-table model, so this wrapper
+    still runs them itself on the yielded connection - see this task's own
+    note on why this isn't a literal one-line wrapper."""
     with db.connect(DB_PATH, tables=("rejected_candidates", "rejection_events")) as conn:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
@@ -863,23 +940,27 @@ evidence the migration is call-site-transparent.
 ### Task 4: Widen `resolve_from_market_results()`'s `flush_now()` busy-timeout budget (§4.3 fix candidate 1)
 
 **Files:**
-- Modify: `services/candidate_log.py:236-237` only (the two `flush_now()`
+- Modify: `services/candidate_log.py:204-205` only (the two `flush_now()`
   calls inside `resolve_from_market_results()`)
 - Test: `tests/test_candidate_log.py` (extend existing file)
 
 **Depends on:** Task 2 (`flush_now()`'s `busy_timeout_ms` override parameter
 must exist first).
 
-**Blast radius, stated precisely:** `candidate_log.py` has **six** call sites
-of `capture_writer.flush_now()` (lines 236-237, 286, 386, 437-438, 458-459,
-478-479 — confirmed via `grep -n "flush_now(" services/candidate_log.py`).
-Only the two inside `resolve_from_market_results()` (lines 236-237) are
-touched by this task. The other **five** functions (`gate_summary`,
-`population_gate_summary`, `clear_all`, `count_range`, `clear_range`) are
-route-facing/admin callers, not the tick-driven caller the design's §4.2
-mechanism analysis is about — their `flush_now()` calls keep the current
-50ms (`_CALLER_BUSY_TIMEOUT_MS`) budget the design says that default was
-"tuned for" (a UI/route-facing caller), unchanged by this task.
+**Blast radius, stated precisely:** `candidate_log.py` has **10** call sites
+of `capture_writer.flush_now()` across **six** functions (lines 204-205,
+254, 354, 405-406, 426-427, 446-447 — re-confirmed against current `main`
+during this PR's own review cycle via `grep -n "flush_now(" services/candidate_log.py`;
+the plan's originally-drafted line numbers, 236-237/286/386/437-438/458-459/478-479,
+have since shifted — a separate, already-merged initiative changed this
+file's contents, see Task 3's own PR-stage correction note). Only the two
+inside `resolve_from_market_results()` (lines 204-205) are touched by this
+task. The other **five** functions (`gate_summary`, `population_gate_summary`,
+`clear_all`, `count_range`, `clear_range`) are route-facing/admin callers,
+not the tick-driven caller the design's §4.2 mechanism analysis is about —
+their `flush_now()` calls keep the current 50ms (`_CALLER_BUSY_TIMEOUT_MS`)
+budget the design says that default was "tuned for" (a UI/route-facing
+caller), unchanged by this task.
 
 **Interfaces:** No signature change in this task (Task 2 already added
 `flush_now`'s `busy_timeout_ms` parameter) — only the two call sites' actual
@@ -893,10 +974,16 @@ production load today; `resolve_from_market_results()` runs from **two
 independent callers**, corrected here after independent adversarial
 re-verification found this task's original framing incomplete: `main.py`'s
 main tick loop (once per ~30-second tick, `_tick_interval_sec()`'s
-streaming-mode branch) **and** `services/settlement_resolver.py`'s
-separately-supervised `_settlement_resolver_loop()`, polling every
-`_SCHEDULER_TRIGGER_INTERVAL_SEC` = 5.0 seconds whenever a settlement is
-pending — both dispatched through the same `tick_executor` 2-worker thread
+streaming-mode branch) **and** `main.py`'s own separately-supervised
+`_settlement_resolver_loop()` (`main.py:714`, polling every
+`_SCHEDULER_TRIGGER_INTERVAL_SEC = 5.0` seconds — `main.py:445` — whenever a
+settlement is pending; **PR-stage correction**: an earlier version of this
+paragraph placed this loop and constant in `services/settlement_resolver.py`
+— they're actually in `main.py`; `services/settlement_resolver.py` supplies
+`_resolve_one_sync`, called from that loop, which is what actually calls
+`candidate_log.resolve_from_market_results()` at `settlement_resolver.py:179`
+and, per its own docstring, "runs on the tick executor's worker thread") —
+both dispatched through the same `tick_executor` 2-worker thread
 pool, so they can genuinely run concurrently on different threads, not just
 at staggered wall-clock moments. `settlement_resolver.py`'s own docstring
 notes settlements "cascade at boundary times," so the 5-second-cadence
@@ -954,7 +1041,9 @@ current calls pass no `busy_timeout_ms` kwarg at all) against current `main`.
 
 - [ ] **Step 2: Read the exact current call sites before editing**
 
-Run: `sed -n '234,238p' services/candidate_log.py`. Confirm it still reads
+Run: `sed -n '202,206p' services/candidate_log.py` (**PR-stage correction**:
+the plan's originally-cited `234,238` range now shows unrelated code — see
+Task 3's own correction note for why). Confirm it still reads
 `capture_writer.flush_now("rejected_candidates")` /
 `capture_writer.flush_now("rejection_events")` with no keyword argument
 before editing.
@@ -966,8 +1055,8 @@ Add near the top of `services/candidate_log.py`, after `DB_PATH`:
 ```python
 # Reuses capture_writer's own daemon-flush patience (1000ms) rather than a
 # new arbitrary number: resolve_from_market_results() runs from two
-# independent callers - main.py's ~30s tick loop and
-# settlement_resolver.py's separately-supervised 5s-poll-while-pending loop,
+# independent callers - main.py's own ~30s tick loop and main.py's own
+# separately-supervised 5s-poll-while-pending _settlement_resolver_loop(),
 # both via tick_executor's thread pool - neither is a request-latency-
 # sensitive path, so either can afford to wait as long as the daemon
 # thread's own periodic flush already does, instead of racing it on the far
@@ -1002,7 +1091,7 @@ Expected: every test passes, including the two new ones.
 ### Task 5: `series_watcher.py`'s `_connect()` migrates to `services/db.py`
 
 **Files:**
-- Modify: `services/series_watcher.py:151-207` (`_connect`, plus imports)
+- Modify: `services/series_watcher.py:151-186` (`_connect`, plus imports)
 - Test: `tests/test_series_watcher.py` (extend existing file)
 
 **Depends on:** Task 1.
@@ -1020,21 +1109,37 @@ design's §1.5 step 2 names `series_watcher.py`/`candidate_log.py`/
 (`idx_raw_trades_series`, `idx_raw_trades_ticker`, `idx_book_ticker`,
 `idx_book_series`) run on the yielded connection, same reasoning as Task 3's
 correction to the design's simplified example. Every existing `with
-_connect() as conn:` call site (lines 458, 484 — confirmed via `grep -n
-"_connect(" services/series_watcher.py`, both `with`-block usages, zero
-bare) keeps working unmodified.
+_connect() as conn:` call site (lines 419, 445 — **PR-stage correction**:
+re-confirmed against current `main`, superseding the plan's originally-cited
+458/484 for the same reason as Task 3's line-number corrections — confirmed
+via `grep -n "_connect(" services/series_watcher.py`, both `with`-block
+usages, zero bare) keeps working unmodified.
 
-**Explicitly out of scope for this task:** `_ensure_schema_aio` (a *separate*,
-already-existing async function a few lines below `_connect()`, used by
-`_aio_db.connection_for()`'s `schema_init` hook for the read-only diagnostics
-path) keeps its own independent copy of the `raw_trades`/`book_snapshots`
-DDL, unmigrated. The design's §1.4 names deduplicating this exact kind of
-DDL-triplication as one of the registry's engineering benefits, and having
-`_ensure_schema_aio` read from `db._DDL_REGISTRY["raw_trades"]` instead of
-its own copy is a real, reasonable future cleanup — but it touches the
-`_aio_db`/aiosqlite path this plan's §2 (Task 8) explicitly declines to
-change without its own dedicated review, so this task leaves it alone rather
-than quietly expanding scope. Named here so it isn't lost.
+**PR-stage correction to this task's DDL scope (found during this PR's own
+required review cycle):** the same already-merged initiative that changed
+Task 3's premise (`0e90287`, see Task 3's own correction note) also touched
+this module. `raw_trades`' DDL is now `capture_writer.RAW_TRADES_DDL_SQL` —
+`series_watcher.py`'s current `_connect()` calls it, not a hand-typed
+string. `book_snapshots`' DDL is **not** part of that refactor and remains
+hand-typed, unaffected. So this task's Step 3 registers `raw_trades` from
+the canonical constant and keeps `book_snapshots` as a literal transcription
+— see the corrected code block below.
+
+**Explicitly out of scope for this task, revised:** `_ensure_schema_aio` (a
+*separate*, already-existing async function a few lines below `_connect()`,
+used by `_aio_db.connection_for()`'s `schema_init` hook for the read-only
+diagnostics path) **already shares `capture_writer.RAW_TRADES_DDL_SQL`
+with `_connect()`** as of `0e90287` (its own docstring on current `main`
+says so explicitly) — the plan's original claim that it "keeps its own
+independent copy... unmigrated" is stale and is corrected here. Only
+`book_snapshots`' DDL remains independently hand-kept-in-sync between
+`_connect()` and `_ensure_schema_aio` (two copies, not three — the
+`raw_trades` triplication the design's §1.4 named is already down to one
+source of truth). Deduplicating `book_snapshots` the same way (`db.
+_DDL_REGISTRY["book_snapshots"]` read by both) remains a real, reasonable
+future cleanup, but still touches the `_aio_db`/aiosqlite path this plan's
+§2 (Task 8) explicitly declines to change without its own dedicated review,
+so this task still leaves it alone rather than quietly expanding scope.
 
 - [ ] **Step 1: Write the failing test first**
 
@@ -1077,27 +1182,61 @@ current `main`.
 
 - [ ] **Step 2: Read the exact current function before editing**
 
-Run: `sed -n '145,207p' services/series_watcher.py`. Confirm it still matches
-this plan's own earlier transcription (§ "Files"/"Interfaces" above, and this
-plan's own investigation) before editing — if not, stop and re-derive.
+Run: `sed -n '145,186p' services/series_watcher.py` (**PR-stage correction**:
+the plan's originally-cited `145,207` range reflects the pre-`0e90287` line
+count — see this task's own correction note above). Confirm it still
+matches this plan's own earlier transcription (§ "Files"/"Interfaces" above,
+and this plan's own investigation) — if not, stop and re-derive.
 
 - [ ] **Step 3: Apply the fix**
 
-Add `from services import db` to the import block. Register both tables' DDL
-at module scope (the exact `CREATE TABLE` bodies already transcribed above
-in this plan's investigation — copy verbatim from current source, do not
-retype from memory), then:
+Add `from services import db` to the import block. Register `raw_trades`'
+DDL from `capture_writer.RAW_TRADES_DDL_SQL` (**not** hand-typed — see this
+task's PR-stage correction note above); register `book_snapshots`' DDL from
+its exact `CREATE TABLE` body, copied verbatim from current source (still
+hand-typed, unaffected by the `0e90287` refactor — do not retype from
+memory), then:
 
 ```python
+db.register_ddl("raw_trades", capture_writer.RAW_TRADES_DDL_SQL)
+db.register_ddl(
+    "book_snapshots",
+    """
+    CREATE TABLE IF NOT EXISTS book_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        series TEXT NOT NULL,
+        observed_at REAL NOT NULL,
+        exchange_ts REAL,
+        price_dollars REAL,
+        yes_bid_dollars REAL,
+        yes_ask_dollars REAL,
+        yes_bid_size_fp REAL,
+        yes_ask_size_fp REAL,
+        volume_fp REAL,
+        open_interest_fp REAL,
+        dollar_volume REAL,
+        dollar_open_interest REAL,
+        last_trade_size_fp REAL,
+        raw_json TEXT NOT NULL
+    )
+    """,
+)
+
+
 @contextlib.contextmanager
 def _connect():
     """Every existing `with _connect() as conn:` call site keeps working
     unchanged - now backed by services/db.py's closing connect() (2026-09-03,
     Task 5 of docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md).
     This was one of the three modules the architecture audit's fd census
-    named with a demonstrated, measured leak contribution.
-    _ensure_schema_aio (below) deliberately keeps its own separate DDL copy -
-    see this task's own scope note on why."""
+    named with a demonstrated, measured leak contribution. raw_trades' DDL
+    comes from capture_writer.RAW_TRADES_DDL_SQL, already the single source
+    of truth shared with _ensure_schema_aio (below) as of a separate,
+    already-merged initiative (0e90287) - see this task's own PR-stage
+    correction note. book_snapshots' DDL is still independently hand-kept-
+    in-sync between the two functions - see this task's own scope note on
+    why that's not fixed here."""
     with db.connect(DB_PATH, tables=("raw_trades", "book_snapshots")) as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_series ON raw_trades (series, observed_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_trades_ticker ON raw_trades (ticker, observed_at)")
@@ -1150,7 +1289,15 @@ import rather than introducing an alias no other test in this file uses):
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
-    monkeypatch.setattr(observability, "DB_PATH", tmp_path / "observability.db")
+    # PR-stage correction: tests/test_observability.py has no sqlite3
+    # import at any scope (module-level or function-local) - without this,
+    # `sqlite3.connect` below raises NameError before the monkeypatch even
+    # applies.
+    # PR-stage correction (removed a redundant DB_PATH monkeypatch too):
+    # this file's own autouse `_isolated` fixture (tests/test_observability.py:37-40)
+    # already redirects DB_PATH to a tmp path for every test in the file -
+    # no need to set it again here.
+    import sqlite3
     closed = []
     real_connect = sqlite3.connect
 
@@ -1167,7 +1314,7 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
 
 
 def test_connect_still_creates_table_and_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(observability, "DB_PATH", tmp_path / "observability.db")
+    # DB_PATH already redirected by this file's autouse _isolated fixture.
     with observability._connect() as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "metric_samples" in tables
@@ -1235,6 +1382,17 @@ already touches one of them for an unrelated reason... rather than a
 dedicated sweep PR per module," with "a tracking issue (not a hard deadline)"
 keeping the remaining count visible. This task creates that record, not the
 migrations themselves.
+
+**PR-stage note:** Tier 0's five modules (excluded from the 22-module list
+below on purpose) already independently implemented the same closing-
+connection pattern this plan builds `services/db.py` for — via their own
+per-module `@contextlib.contextmanager`, not this shared module (they
+landed before `services/db.py` existed). They are not leaking and are not
+urgent; consolidating them onto `services/db.py` later would be a
+code-reuse cleanup, not a leak fix, and is optional follow-up scope for
+whoever picks up this tracking issue — not added to the 22-module list,
+since the design's §1.5 step 4 names this as a candidate only, not a
+requirement.
 
 **The exact list, re-derived from the design's §1.1 30-module list minus the
 5 Tier 0 modules and the 3 this plan migrates directly (Tasks 3/5/6):**
@@ -1556,6 +1714,12 @@ narrate.
    repo for a reference to these specific internals before writing this
    plan, only the three modules' own test files. A real gap if one exists
    elsewhere, caught by Step 1 regardless, but not pre-verified here.
+   **PR-stage update: closed.** `git grep -n "_add_column_if_missing"` across
+   `services/ tests/ main.py tools/` confirms every other definition is an
+   independent per-module copy (`paper_broker.py`, `risk_manager.py`,
+   `title_cache.py`, `signal_log.py`, etc.) — nothing outside
+   `services/candidate_log.py` references *its* copy. Deleting it in Task 3
+   is confirmed safe.
 5. **Task 8 and Task 9 produce `docs/open-decisions.md` lines whose "who
    decides"/next-action framing I wrote without checking with the user** —
    consistent with this repo's own convention for that file (many existing
