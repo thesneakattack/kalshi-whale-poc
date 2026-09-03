@@ -7,6 +7,8 @@ confidence_calibration.py/calibration_history.py have zero cross-imports
 with any other analytics sibling (checked directly before this split), the
 cleanest of the modules pulled out this pass.
 """
+import time
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -18,6 +20,14 @@ from services.quality import evidence_provenance
 from services.whale_calibration import calibration_history, confidence_calibration
 
 router = APIRouter()
+
+_REPORT_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/superpowers/
+# plans/2026-09-03-tier1-backend-hygiene.md: resolved_signals_with_
+# factors() cannot be query-bounded (it's a total-sample gate, not a
+# recency-scoped read - verified in this task's own research). 30s matches
+# Task 2's own History-tab de-poll interval for this exact route -
+# coordinated, not independently chosen.
+_report_cache: dict = {"cached_at": None, "value": None}
 
 # Same typed-confirmation-phrase gate as real trading - auto-applying a
 # config change with no human in the loop is a genuinely consequential
@@ -114,7 +124,13 @@ async def get_confidence_calibration_report():
             rows, cc_cfg["min_resolved_signals"], current_weights
         )
 
-    result = await tick_executor.run(_build_report)
+    now = time.time()
+    if _report_cache["cached_at"] is not None and (now - _report_cache["cached_at"]) < _REPORT_CACHE_TTL_SEC:
+        result = dict(_report_cache["value"])
+    else:
+        result = await tick_executor.run(_build_report)
+        _report_cache["cached_at"] = now
+        _report_cache["value"] = result
     result["evidence_provenance"] = evidence_provenance.current_completeness_state()
     return result
 
