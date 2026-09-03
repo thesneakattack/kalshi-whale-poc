@@ -38,7 +38,7 @@ e74096a-is-input-not-Task-1 note above.
 names across those modules, 0 cross-file duplicates (41 by one reviewer's count
 — `series_watcher` declares `book_snapshots` twice, sync and async, not a real
 duplicate; 0 duplicates holds either way). All 26 `_connect()`s are bare-return
-`-> sqlite3.Connection`, and all ~111 production call sites are
+`-> sqlite3.Connection`, and all 112 production call sites are
 `with _connect() as conn:` — sqlite3's `with conn:` is a *transaction* context
 manager, never a closing one, which is the leak in one sentence and makes the
 migration uniform. `services/diagnostics/store_stats.py` is **not** in scope
