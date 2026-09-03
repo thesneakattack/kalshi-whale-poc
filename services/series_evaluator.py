@@ -34,11 +34,12 @@ continuation of prior escalation.
 Same one-file-per-concern SQLite persistence idiom as every other
 services/*.py module - see CLAUDE.md.
 """
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
 
-from services import signal_log
+from services import db, signal_log
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "series_evaluator.db"
 
@@ -47,16 +48,7 @@ _STATUS_APPROVED = "approved"
 _STATUS_REJECTED = "rejected"
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_series_status(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS series_status (
@@ -70,7 +62,25 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
+
+
+db.register_schema("series_status", _init_series_status)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). WAL mode
+    (2026-08-11, real live incident: rollback-journal mode serializes ALL
+    writers and readers against each other for the whole transaction) is
+    set by db.connect() itself, same as every other migrated module.
+    tests/test_performance_regressions.py captures `series_evaluator.
+    _connect` by reference (real_connect = series_evaluator._connect) to
+    count calls - unaffected, since `with _connect() as conn:`'s syntax is
+    identical whether _connect() returns a raw connection or a context
+    manager."""
+    with db.connect(DB_PATH, tables=("series_status",)) as conn:
+        yield conn
 
 
 def record_trade_observed(series: str, now: float | None = None) -> None:

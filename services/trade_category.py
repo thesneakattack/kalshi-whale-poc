@@ -17,23 +17,17 @@ state["market_titles"]/state["event_titles"] at the exact moment main.py's
 trading loop places a trade - both already cached in memory every tick, so
 this costs zero new API calls. Own SQLite file, standard idiom.
 """
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
 
+from services import db
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trade_category.db"
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_trade_category(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS trade_category (
@@ -43,39 +37,54 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    # subcategory (2026-08-16 direct request: "before falling back to
-    # category winrate from series winrate, theres a middle step... by
-    # subcategory (e.g., baseball, football)"). Sourced from Kalshi's own
-    # per-event `competition` field (e.g. "Pro Baseball"), reverse-mapped
-    # to its SPORT ("Baseball") via category_metadata's sport_by_competition
-    # (main.py's _sport_for_event/_fetch_category_metadata) - checked
-    # docs/kalshi/get-filters-for-sports.md per standing instruction before
-    # guessing further: filters_by_sports nests competition WITHIN sport
-    # (filters_by_sports["Baseball"]["competitions"] contains "Pro
-    # Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several competitions,
-    # one sport), so "Baseball" is the real match for the user's own
-    # "baseball, football" examples, not the finer per-league string alone.
-    # NOT category_tags: that field's semantics changed under this same
-    # branch (kalshi-category-data-completeness Task 4) - it used to be
-    # the same full facet-filter vocabulary on every event in a category
-    # (no per-event information), but a task-review round found real
-    # frontend consumers depending on it and rewired it to real per-SERIES
-    # tags (main.py's _build_series_tags_cache/state["series_cache"]) -
-    # still not the finer sport/competition granularity this function
-    # needs (two events of the same series still share identical tags),
-    # so the reasoning above still holds, just via a different, now-
-    # accurate justification than the original "carries nothing" claim.
-    # Same "needs its own capture at entry time" reasoning as category
-    # itself (this module's own docstring) - market_catalog/event_titles
-    # are watchlist-scoped and rotate, so a historical trade can't be
-    # joined back to it after the fact without persisting it here too.
-    # Nullable/idempotent-migration: not every event carries a competition
-    # value (non-sports categories generally don't), and rows recorded
-    # before this field existed have none to backfill.
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(trade_category)")}
-    if "subcategory" not in cols:
-        conn.execute("ALTER TABLE trade_category ADD COLUMN subcategory TEXT")
-    return conn
+
+
+db.register_schema("trade_category", _init_trade_category)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). WAL mode
+    is set by db.connect() itself, same as every other migrated module.
+
+    subcategory (2026-08-16 direct request: "before falling back to
+    category winrate from series winrate, theres a middle step... by
+    subcategory (e.g., baseball, football)"). Sourced from Kalshi's own
+    per-event `competition` field (e.g. "Pro Baseball"), reverse-mapped
+    to its SPORT ("Baseball") via category_metadata's sport_by_competition
+    (main.py's _sport_for_event/_fetch_category_metadata) - checked
+    docs/kalshi/get-filters-for-sports.md per standing instruction before
+    guessing further: filters_by_sports nests competition WITHIN sport
+    (filters_by_sports["Baseball"]["competitions"] contains "Pro
+    Baseball"/"Japan NPB"/"Korea KBO"/"Mexico LMB" - several competitions,
+    one sport), so "Baseball" is the real match for the user's own
+    "baseball, football" examples, not the finer per-league string alone.
+    NOT category_tags: that field's semantics changed under this same
+    branch (kalshi-category-data-completeness Task 4) - it used to be
+    the same full facet-filter vocabulary on every event in a category
+    (no per-event information), but a task-review round found real
+    frontend consumers depending on it and rewired it to real per-SERIES
+    tags (main.py's _build_series_tags_cache/state["series_cache"]) -
+    still not the finer sport/competition granularity this function
+    needs (two events of the same series still share identical tags),
+    so the reasoning above still holds, just via a different, now-
+    accurate justification than the original "carries nothing" claim.
+    Same "needs its own capture at entry time" reasoning as category
+    itself (this module's own docstring) - market_catalog/event_titles
+    are watchlist-scoped and rotate, so a historical trade can't be
+    joined back to it after the fact without persisting it here too.
+    Nullable/idempotent-migration: not every event carries a competition
+    value (non-sports categories generally don't), and rows recorded
+    before this field existed have none to backfill.
+
+    The inlined PRAGMA table_info guard is replaced with the shared
+    db.add_column_if_missing - same idempotent-check shape, consolidating
+    onto one implementation (architecture audit's Sec 9.2 finding this
+    whole migration exists partly to close)."""
+    with db.connect(DB_PATH, tables=("trade_category",)) as conn:
+        db.add_column_if_missing(conn, "trade_category", "subcategory", "TEXT")
+        yield conn
 
 
 def record_category(ticker: str, category: str | None, now: float | None = None, subcategory: str | None = None) -> None:
