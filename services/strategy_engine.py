@@ -509,6 +509,46 @@ class FollowTheWhaleStrategy:
         if series in excluded_series:
             return self._skip(signal, f'series "{series}" is manually excluded')
 
+        # Watchlist entry gate (2026-09-03 off-watchlist entry bleed fix):
+        # whale detection runs exchange-wide on purpose (services/
+        # whalewatchers/kalshi_trade_tape.py's _resolve_unknown_markets
+        # resolves ANY off-watchlist market whose print clears the whale
+        # threshold, so exchange-wide subscription actually produces
+        # signals - see its own docstring), but nothing downstream ever
+        # narrowed back down to the user's configured trading universe
+        # before opening a position. Confirmed live: 17 of 29 open paper
+        # positions were on markets never in kalshi.markets_watchlist
+        # (KXMLBGAME, KXATPMATCH, KXLOLGAME among them) despite that list
+        # holding only Crypto/Commodities series - category/
+        # markets_watchlist were never read anywhere in this file before
+        # this fix. this_market (looked up above from the markets param,
+        # state["markets"] - the exact same per-tick watchlist assembly
+        # market_fetch._fetch_markets already computes, so this
+        # automatically respects markets_watchlist_mode/categories/
+        # discovery/ineligible_series without a second definition of
+        # "watchlist" to drift) not being found only means "not in THIS
+        # tick's fetched snapshot" - a pinned series can still legitimately
+        # miss one tick (e.g. a brand-new market instance not fetched yet),
+        # so series membership in the pinned list is checked as a second,
+        # independent path before rejecting. Only activates when the
+        # caller has wired BOTH markets= and a real cfg["kalshi"] section
+        # (every real caller, i.e. decision_bridge._handle_signal, always
+        # passes state["markets"] and the full app config) - same
+        # backward-compatible no-op convention category/me_complement
+        # already use, see this method's own docstring, applied to two
+        # params instead of one because this file's own test suite has a
+        # pre-existing case
+        # (test_falls_back_to_signal_close_time_when_ticker_not_in_markets)
+        # that passes a synthetic markets= list containing a DIFFERENT
+        # ticker than the signal's own, with no cfg["kalshi"] at all, to
+        # exercise the unrelated close-time-fallback path above - not a
+        # real watchlist snapshot, and must not be gated as if it were.
+        kalshi_cfg = cfg.get("kalshi")
+        if markets is not None and kalshi_cfg is not None and this_market is None:
+            pinned_series = set(kalshi_cfg.get("markets_watchlist") or [])
+            if series not in pinned_series:
+                return self._skip(signal, f'ticker "{signal.ticker}" is outside the configured watchlist')
+
         # strat_cfg["entry_threshold"] is already category/series-resolved
         # (see this method's own docstring + config_overrides.resolve()
         # call above) - no separate lookup needed here. effective_threshold

@@ -782,6 +782,69 @@ def test_empty_excluded_series_list_trades_normally(tmp_path, monkeypatch):
     assert decision["action"] == "trade"
 
 
+# ---- watchlist entry gate (2026-09-03 off-watchlist entry bleed fix) ------
+#
+# Live incident: whale detection runs exchange-wide (services/whalewatchers/
+# kalshi_trade_tape.py's _resolve_unknown_markets resolves ANY off-watchlist
+# market whose print clears the whale threshold, deliberately, for signal
+# completeness), but nothing downstream re-narrowed to the user's configured
+# trading universe before opening a position - confirmed live: 17 of 29 open
+# paper positions (KXMLBGAME, KXATPMATCH, KXLOLGAME, etc.) were on markets
+# never in kalshi.markets_watchlist, despite that list holding only
+# Crypto/Commodities series. category/markets_watchlist were never read
+# anywhere in this file (grep confirmed) prior to this fix.
+
+def test_skip_when_ticker_outside_watchlist_and_not_in_current_markets(tmp_path, monkeypatch):
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="KXMLBGAME-26SEP02-STLLAD", confidence=0.9, price=0.5),
+        {**_cfg(), "kalshi": {"markets_watchlist": ["KXBTC15M"]}},
+        markets=[{"ticker": "KXBTC15M-26SEP0317-T2389.99"}],
+    )
+    assert decision["action"] == "skip"
+    assert "watchlist" in decision["reason"]
+    assert broker.bankroll == 10000.0  # nothing traded
+
+
+def test_trades_when_ticker_present_in_current_markets_snapshot(tmp_path, monkeypatch):
+    # Merge-mode discovery: a series outside the pinned list that this
+    # tick's own market_fetch already discovered and included in the
+    # current watchlist snapshot is a legitimate trade, not a bleed.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5),
+        {**_cfg(), "kalshi": {"markets_watchlist": ["OTHER"]}},
+        markets=[{"ticker": "TICK-A"}],
+    )
+    assert decision["action"] == "trade"
+
+
+def test_trades_when_series_pinned_even_if_missing_from_current_markets_snapshot(tmp_path, monkeypatch):
+    # Staleness tolerance: a genuinely pinned series' brand-new market
+    # instance may not have been fetched into state["markets"] yet this
+    # tick - series membership in the pinned list is enough on its own.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5),
+        {**_cfg(), "kalshi": {"markets_watchlist": ["TICK"]}},
+        markets=[],
+    )
+    assert decision["action"] == "trade"
+
+
+def test_markets_param_omitted_does_not_apply_watchlist_gate(tmp_path, monkeypatch):
+    # Same backward-compatible "None means this caller didn't wire this
+    # dimension in" convention category/me_complement already use (see
+    # evaluate()'s own docstring) - a caller that never passes markets=
+    # (every other test in this file) must see unchanged behavior.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    decision = strategy.evaluate(
+        _signal(ticker="TICK-A", confidence=0.9, price=0.5),
+        {**_cfg(), "kalshi": {"markets_watchlist": ["OTHER"]}},
+    )
+    assert decision["action"] == "trade"
+
+
 # ---- check_exits (active position management) ----------------------------
 
 def _signal_dict(**overrides):
