@@ -585,3 +585,31 @@ def test_ddl_constants_are_exported_and_match_the_dict():
     assert cw._STORE_DDL["raw_trades"] is cw.RAW_TRADES_DDL_SQL
     assert cw._STORE_DDL["rejection_events"] is cw.REJECTION_EVENTS_DDL_SQL
     assert cw._STORE_DDL["rejected_candidates"] is cw.REJECTED_CANDIDATES_DDL_SQL
+
+
+def test_init_fn_helpers_create_their_tables(tmp_path):
+    from services import capture_writer
+
+    conn = sqlite3.connect(tmp_path / "t.db")
+    try:
+        capture_writer.init_raw_trades(conn)
+        capture_writer.init_rejected_candidates(conn)
+        capture_writer.init_rejection_events(conn)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert {"raw_trades", "rejected_candidates", "rejection_events"} <= tables
+    finally:
+        conn.close()
+
+
+def test_init_fn_helpers_are_stable_function_objects():
+    """D2's whole point: importing this module twice (module caching aside,
+    this pins the property register_schema's identity check depends on)
+    yields the same function object, not a fresh closure per import."""
+    from services import capture_writer
+    from services import capture_writer as cw2
+
+    assert capture_writer.init_raw_trades is cw2.init_raw_trades
+    assert capture_writer.init_rejected_candidates is cw2.init_rejected_candidates
+    assert capture_writer.init_rejection_events is cw2.init_rejection_events

@@ -195,6 +195,30 @@ REJECTED_CANDIDATES_DDL_SQL = """
         PRIMARY KEY (ticker, strategy, gate_name)
     )
 """
+
+
+def init_raw_trades(conn: sqlite3.Connection) -> None:
+    """Stable, importable function object for services/db.py's
+    register_schema("raw_trades", ...) - defined once here, not as a local
+    closure in series_watcher.py, so a second registration attempt for this
+    table name (e.g. a future consumer) compares equal under `is` rather
+    than raising a spurious conflict (2026-09-03 persistence-layer db.py
+    migration, D2)."""
+    conn.execute(RAW_TRADES_DDL_SQL)
+
+
+def init_rejected_candidates(conn: sqlite3.Connection) -> None:
+    """Same reasoning as init_raw_trades, for candidate_log.py's
+    register_schema("rejected_candidates", ...)."""
+    conn.execute(REJECTED_CANDIDATES_DDL_SQL)
+
+
+def init_rejection_events(conn: sqlite3.Connection) -> None:
+    """Same reasoning as init_raw_trades, for candidate_log.py's
+    register_schema("rejection_events", ...)."""
+    conn.execute(REJECTION_EVENTS_DDL_SQL)
+
+
 _STORE_DDL: dict[str, str] = {
     "raw_trades": RAW_TRADES_DDL_SQL,
     "rejection_events": REJECTION_EVENTS_DDL_SQL,
