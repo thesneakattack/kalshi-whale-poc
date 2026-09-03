@@ -93,13 +93,23 @@ commit → push → Woodpecker → PR → merge → delete branch
   self-review/adversarial-review/consolidation cycle still runs before
   `gh pr merge` — that is rigor, not approval ceremony.
 
-**GitHub-side enforcement (configured 2026-08-25):**
+**GitHub-side enforcement (configured 2026-08-25, contexts updated
+2026-09-03):**
 `gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` —
 `enforce_admins: true`, `allow_force_pushes: false`, `allow_deletions: false`,
 `required_pull_request_reviews: null`, and `required_status_checks.contexts` =
-`ci/woodpecker/pr/tests-pytest`, `.../tests-dependency-audit`,
+`ci/woodpecker/pr/tests-pytest-app`, `.../tests-pytest-tooling`,
+`.../tests-dependency-audit`,
 `.../quality-architecture-audit`, `.../quality-browser-e2e`,
-`.../kalshi-contract-fixtures`. Deliberately excludes
+`.../kalshi-contract-fixtures`. `tests-pytest.yml` (one context, always ran
+the whole ~3070-test suite unscoped on every PR/main push) was retired and
+replaced by two required contexts, `tests-pytest-app.yml`/
+`tests-pytest-tooling.yml`, split along the one boundary
+`tools/classify_pytest_app_vs_tooling.py` and the CI pipeline audit's own
+pytest-profile doc already proved safe (app-code tests and tooling tests
+are non-interacting) - each half still runs fully unscoped on the merge
+gate, they just run as two parallel required checks instead of one serial
+one. Deliberately excludes
 `ci/woodpecker/pr/quality-frontend-build`: it is path-filtered to `frontend/**`
 and posts no status when skipped, so requiring it would block every
 non-frontend PR. Update with `gh api -X PUT .../protection --input <file>`

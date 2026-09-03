@@ -1,0 +1,98 @@
+# Backend pytest suite, APP HALF - one of two required contexts that
+# replace the single tests-pytest.yml (retired 2026-09-03, see
+# tests-pytest-tooling.yml for the other half and
+# tools/classify_pytest_app_vs_tooling.py for the split boundary).
+#
+# Direct correction after repeated feedback that this repo's own CI audit
+# never actually reduced what the merge gate (PR event / main push) runs -
+# it stayed the full, unscoped ~3070-test suite on every PR regardless of
+# what changed, which is the literal "massive amount of pytests" complaint
+# that started this whole audit. This split is the fix: "app" (this file -
+# every test that imports something from services.* or main, anywhere in
+# its own source) and "tooling" (tests-pytest-tooling.yml - everything
+# else) are PROVEN non-interacting by this repo's own pytest-profile audit
+# doc ("An app-code change cannot affect the 79.8s of (c); a tools/hooks/
+# scripts change cannot affect the 365.6s of (a)",
+# docs/superpowers/research/2026-09-02-ci-pipeline-audit-pytest-profile.md)
+# - unlike the file-level path-to-test mapping this repo's own tests-pytest.yml
+# history already documents rejecting for good reason ("a change anywhere
+# in services/ or main.py can regress any other module"), this split
+# doesn't guess at finer-grained relevance WITHIN either half - each half
+# still runs unscoped, every time, on the merge gate. The win is running
+# two provably-independent halves as two parallel required contexts
+# instead of one serial ~3070-test run, not narrowing coverage.
+#
+# tests/conftest.py (Task 2 of the Quality Control Plane) redirects every
+# persistence module's DB_PATH into a temp dir and hard-blocks sqlite3.connect
+# against the real data/ directory before any test can run, so this container
+# never touches (and does not even receive) this repo's live data/*.db files.
+#
+# Same three tiers as the retired tests-pytest.yml (SKIP / full-unscoped on
+# PR-or-main-or-manual / testmon-scoped on a feature-branch push) - see
+# scripts/ci-testmon-run.sh's own header for the exact tier logic, now
+# parameterized by PYTEST_SPLIT below instead of hardcoded to the whole
+# tests/ directory.
+when:
+  - event: [push, pull_request, manual]
+
+# Full-history clone override, required by ci-fast-path-check below.
+#
+# Real bug found 2026-08-26 (this is the canonical copy of this
+# explanation - kept here, not duplicated, since it moved from the retired
+# tests-pytest.yml; tests-pytest-tooling.yml and the other
+# .woodpecker/*.yml files with an identical clone block point back here):
+# Woodpecker's default clone plugin sets `partial: true`, which its own
+# docs.md documents as "fetch the one commit and its blob objects...
+# overwrite depth with 1" - it silently forces `--depth=1` no matter what
+# `depth:` is configured to, and adds `--filter=tree:0` on top. Confirmed
+# live via the actual clone step log on two separate pipelines (a
+# docs-only push and a main-branch merge): `git fetch --no-tags --depth=1
+# --filter=tree:0 origin +<sha>:` in both cases - a shallow, single-commit
+# checkout with zero parent history.
+#
+# ci-fast-path-check's git merge-base (feature branches) and HEAD^1 diff
+# (main pushes) both require real ancestor history that a depth=1 clone
+# cannot have - a shallow repo has no relationship to any other commit, so
+# `git merge-base origin/main HEAD` (or `HEAD^1`) fails every time,
+# silently, and the script's own fail-safe rule ("any ambiguity means RUN,
+# never SKIP") swallows the failure into a permanent RUN verdict. Confirmed
+# via plugin-git's own source (github.com/woodpecker-ci/plugin-git
+# plugin.go's fetch()): `depth: 0` means the `--depth` flag is omitted
+# entirely (unlimited history), and `partial: false` is required or
+# `partial`'s own default overwrites any depth value back to 1 regardless.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
+steps:
+  - name: ci-fast-path-check
+    image: alpine/git
+    commands:
+      - mkdir -p build
+      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+
+  - name: pytest-app
+    image: python:3.13-slim
+    # Persistent uv download cache + testmon cache - see the retired
+    # tests-pytest.yml's own comments for the full measurement story on
+    # both. testmon's own cache subdirectory is keyed by branch AND split
+    # (scripts/ci-testmon-run.sh appends _app/_tooling) so this half never
+    # clobbers tests-pytest-tooling.yml's fingerprints.
+    volumes:
+      - wp-uv-cache:/root/.cache/uv
+      - wp-testmon-cache:/testmon-cache
+    environment:
+      PYTEST_SPLIT: app
+    commands:
+      - |
+        if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
+          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping the full pytest run"
+        else
+          pip install -q uv
+          uv pip install --system -r requirements-dev.txt
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+          sh scripts/ci-testmon-run.sh
+        fi
