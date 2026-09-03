@@ -4,25 +4,48 @@
 (PR #441, merged — 10 tasks, full self-review + independent adversarial
 review + consolidation cycle at both the artifact stage and the PR stage,
 both GO) via `superpowers:executing-plans` or
-`superpowers:subagent-driven-development`. It supersedes the previous
-version of this section: bound `/api/health/pipeline`'s per-store probes
-with a timeout (Task 1); close the connection-lifetime leak in five
-confirmed-leaking modules — `market_history.py`, `title_cache.py`,
-`market_catalog.py`, `signal_log.py`, `fault_log.py` (Tasks 2-6); stop
+`superpowers:subagent-driven-development`. **This is still a plan
+document only — none of the 10 tasks' code has been written yet.**
+Remaining: bound `/api/health/pipeline`'s per-store probes with a timeout
+(Task 1); close the connection-lifetime leak in five confirmed-leaking
+modules — `market_history.py`, `title_cache.py`, `market_catalog.py`,
+`signal_log.py`, `fault_log.py` (Tasks 2-6); stop
 `GET /api/health/faults` from blocking the event loop synchronously
-(Task 7); a read-only `PRAGMA integrity_check` on `market_history.db`
-(already run twice during the plan's own review, confirmed genuinely
-corrupt — `sqlite3.DatabaseError: database disk image is malformed`,
-reproduced three times total including a PR-stage recheck) and
-`market_catalog.db` (confirmed clean) with a human decision gate before
-any restore (Task 8); fd-count visibility + an early-warning fault
-(Task 9); full regression + live validation (Task 10). **Note recorded in
-the plan's own Task 10**: by the PR-stage review (2026-09-03, 02:59-03:00
-UTC) both `/api/health/pipeline` (0.19s) and `/api/health/faults`
-(0.036s) were responding quickly again, not hanging — the underlying code
-defects are still real and confirmed in current source, but re-measure
-live before assuming the specific hang durations cited in the plan are
-still reproducible on demand.
+(Task 7); fd-count visibility + an early-warning fault (Task 9); full
+regression + live validation (Task 10).
+
+**Task 8 (the `market_history.db`/`market_catalog.db` integrity check) is
+done, resolved differently than the plan's own default path** — see
+`docs/open-decisions.md` for the full account: `market_catalog.db` was
+confirmed clean; `market_history.db` was genuinely corrupt
+(`sqlite3.DatabaseError: database disk image is malformed`, reproduced
+four times across two review passes and one direct live check), fixed
+2026-09-03 ~03:42 UTC by running SQLite's own `.recover` tool against a
+safe copy of the live file rather than restoring the plan's only
+available (and far staler) backup — the recovered file had ~15 hours
+more data than the backup would have. App confirmed healthy afterward
+(`markets_watched: 551`, 4.89s tick). The corrupted original is preserved
+at `data/quarantine/20260903T034119Z-market_history-corrupt/`, not
+deleted. Root cause is still unconfirmed (correlated timing with the
+fd-leak window, not proven causation) — watch for recurrence once Tasks
+1-7/9/10's code actually lands.
+
+**Also note, from the plan's own PR-stage review**: by 2026-09-03
+02:59-03:00 UTC both `/api/health/pipeline` (0.19s) and
+`/api/health/faults` (0.036s) were responding quickly, not hanging — the
+underlying code defects (Tasks 1, 7) are still real and confirmed in
+current source, but re-measure live before assuming the specific hang
+durations cited in the plan are still reproducible on demand.
+
+**Beyond this plan**: the second-pass architecture audit's own Tier 0
+(§8, items 0-6) is only partly covered by PR #441 — items 3
+(`/api/health/faults`'s `hours`-scoping bug), 4 (the `raw_trades`
+backfill decision), 5 (an alerting consumer for `fault_log`), and 6
+(making the observability monitor survive its own stalls) were never
+scoped into any plan. Tier 1 (7 items), Tier 2 (10 items — the
+persistence-module rewrite, the DuckDB benchmark, the strategy edge/EV
+gate from §3), and Tier 3 (4 items) remain completely unplanned. Full
+detail in `docs/open-decisions.md`'s newest line.
 
 **`config/settings.yaml`'s uncommitted working-tree diff has grown to four
 changes**, not the two originally recorded: `kalshi.markets_watchlist_mode:
