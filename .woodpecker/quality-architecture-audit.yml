@@ -31,7 +31,7 @@
 # dubious-ownership check - this CI image genuinely has no git binary at
 # all, which is the unrelated reason generated_from_head stays null here).
 # Docs-only fast path added 2026-09-03 (CI pipeline audit finding: this
-# workflow never checked build/.ci-skip-verdict, unlike tests-pytest.yml/
+# workflow never checked build/.ci-skip-verdict, unlike tests-pytest-app.yml/
 # quality-browser-e2e.yml - a pure docs/.claude-only PR still paid this
 # workflow's full ~37s median cost every time). This does NOT relax the
 # "no path filter" reasoning above - that was about never narrowing to a
@@ -45,7 +45,7 @@ when:
   - event: [push, pull_request]
 
 # Full-history clone override, required by ci-fast-path-check below - same
-# reasoning as tests-pytest.yml's own identical block.
+# reasoning as tests-pytest-app.yml's own identical block.
 clone:
   - name: git
     image: woodpeckerci/plugin-git

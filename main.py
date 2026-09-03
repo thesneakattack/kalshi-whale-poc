@@ -1736,6 +1736,49 @@ async def flatten_all_positions(body: FlattenAllBody):
     }
 
 
+CLOSE_POSITIONS_CONFIRMATION_PHRASE = "CLOSE SELECTED POSITIONS"
+
+
+class ClosePositionsBody(BaseModel):
+    tickers: list[str]
+    confirmation_phrase: str
+    reason: str = "manual close"
+
+
+@app.post("/api/trading/close-positions")
+async def close_positions(body: ClosePositionsBody):
+    # Selective sibling of flatten-all above (2026-09-03, off-watchlist
+    # entry bleed remediation): flatten-all is all-or-nothing, and there
+    # was no path to close only a SUBSET of open positions - e.g. the ones
+    # a bug opened outside the user's configured watchlist while leaving
+    # legitimate ones open - short of a full flatten. Same typed-
+    # confirmation gate as flatten-all: a real, irreversible action, paper
+    # account only (a real-account equivalent isn't needed - real trading
+    # has never been enabled, see services/position/README.md).
+    if body.confirmation_phrase != CLOSE_POSITIONS_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation phrase did not match. Type exactly: "{CLOSE_POSITIONS_CONFIRMATION_PHRASE}"',
+        )
+    if not body.tickers:
+        raise HTTPException(status_code=400, detail="tickers must be a non-empty list")
+    closed = []
+    missing = []
+    for ticker in body.tickers:
+        if ticker not in broker.positions:
+            missing.append(ticker)
+            continue
+        price = state["latest_prices"].get(ticker, broker.positions[ticker].entry_price)
+        trade = broker.close_position(ticker, price, body.reason)
+        if trade is not None:
+            closed.append(trade)
+    bump_generation()
+    return {
+        "closed": [t.to_dict() for t in closed],
+        "missing": missing,
+    }
+
+
 @app.post("/api/toggle")
 async def toggle_running():
     state["running"] = not state["running"]
