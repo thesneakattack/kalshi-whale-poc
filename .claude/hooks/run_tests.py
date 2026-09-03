@@ -3,7 +3,9 @@
 module, inside the checkout that was edited. Scope is application code AND the
 workflow tooling (.claude/hooks/, tools/, scripts/) - the four-fix cascade on
 scripts/cleanup-worktrees.sh (2026-08-28) happened because tooling edits had no
-automatic test at all. CI (.woodpecker/tests-pytest.yml) is the only full-suite
+automatic test at all. CI (.woodpecker/tests-pytest-app.yml +
+tests-pytest-tooling.yml, split 2026-09-03 - see
+tools/classify_pytest_app_vs_tooling.py) is the only full-suite
 owner. `.claude/settings.json` must give this hook a timeout greater than
 BUDGET_SEC, or the harness kills it silently.
 

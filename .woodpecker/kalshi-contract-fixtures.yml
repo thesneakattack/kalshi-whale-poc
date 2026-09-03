@@ -1,7 +1,7 @@
 # Kalshi-facing contract/fixture tests, isolated into their own named check
 # for clearer failure attribution (a red "kalshi-contract" check means a
 # Kalshi request/response schema assumption broke, not an unrelated
-# regression elsewhere) - these are already exercised by tests-pytest.yml's
+# regression elsewhere) - these are already exercised by tests-pytest-app.yml's
 # full suite too; running them again here is deliberate duplication for
 # failure-isolation value, not a replacement for the full suite. No
 # real network access - fixture/contract-shape tests only (see
@@ -19,18 +19,18 @@
 # per-message type; WS position ticker extraction reading the wrong field
 # name) - see that test file's own module docstring for the full story.
 # Docs-only fast path added 2026-09-03 (CI pipeline audit finding: this
-# workflow never checked build/.ci-skip-verdict, unlike tests-pytest.yml/
+# workflow never checked build/.ci-skip-verdict, unlike tests-pytest-app.yml/
 # quality-browser-e2e.yml - a pure docs/.claude-only PR still paid this
 # workflow's full ~47s median cost every time). The 6 test files below can
 # never be affected by a change confined to docs/.claude - a SKIP verdict
-# here is exactly as safe as tests-pytest.yml's own use of it. Still runs
+# here is exactly as safe as tests-pytest-app.yml's own use of it. Still runs
 # and still posts its required status, only the pytest run inside becomes
 # a no-op.
 when:
   - event: [push, pull_request]
 
 # Full-history clone override, required by ci-fast-path-check below - same
-# reasoning as tests-pytest.yml's own identical block.
+# reasoning as tests-pytest-app.yml's own identical block.
 clone:
   - name: git
     image: woodpeckerci/plugin-git

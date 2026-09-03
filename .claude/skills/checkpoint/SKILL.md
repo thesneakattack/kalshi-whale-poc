@@ -42,7 +42,9 @@ description: This skill should be used at natural breakpoints in a long working 
    ```
    Read each `context` (`ci/woodpecker/push/<workflow>`) and its `state`
    independently; one `failure` means not verified.
-   - `tests-pytest` must succeed. Pull the failing step's log with
+   - `tests-pytest-app`/`tests-pytest-tooling` (split 2026-09-03, replaces
+     the former single `tests-pytest`) must both succeed. Pull the failing
+     step's log with
      `scripts/woodpecker-status --pipeline N --log STEP` (needs
      `WOODPECKER_TOKEN`; see that script's header) or the status's
      `target_url`. Fix, verify locally, commit, push.
