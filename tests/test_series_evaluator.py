@@ -392,24 +392,68 @@ def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch):
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
-def test_connect_does_not_leak_file_descriptors(tmp_path, monkeypatch):
-    """Adversarial review on the observability.py migration (PR #540)
-    required this as a committed artifact, not review-comment prose -
-    carried forward to every subsequent task in this migration."""
-    import os
+def test_connect_closes_every_connection_across_repeated_calls(tmp_path, monkeypatch):
+    """Originally written as an OS-level /proc/self/fd count diff (matching
+    PR #540's fix-list ask). That version produced a REAL CI failure on
+    this task's own PR (#545) under pytest-xdist's full-suite run:
+    89 != 161, a DROP, not a rise. Root-caused, not dismissed as a flake
+    (CLAUDE.md/memory: no-flake-classification-ever) - an un-.close()'d
+    sqlite3.Connection does NOT release its fd via CPython refcounting
+    alone (verified directly: dropping the last reference with gc
+    disabled leaves the fd open), so it sits until the next cyclic GC
+    pass. In a long-running xdist worker that has already executed
+    thousands of prior tests, an unrelated GC cycle can fire at any
+    point and reap OTHER tests' lingering garbage mid-measurement,
+    moving the count for reasons having nothing to do with this module.
+
+    Also verified the "obvious" fix (pinning gc.collect() at both
+    snapshot points) is WRONG, not just inelegant: run against this
+    file's own pre-migration (genuinely leaking) code, gc.collect()-
+    pinning makes before==after too - it reaps the leaked-but-now-
+    unreferenced connections along with the ambient noise, silently
+    masking the exact defect this test exists to catch.
+
+    This version sidesteps the whole class of problem: it counts actual
+    .close() calls via the same spy idiom as
+    test_connect_closes_its_connection above, extended across many
+    calls, instead of reading ambient OS process state. Deterministic
+    regardless of what any other test or the GC is doing."""
+    import sqlite3
 
     _se(tmp_path, monkeypatch)
+    opened = []
+    closed = []
+    real_connect = sqlite3.connect
 
-    def _open_fd_count():
-        return len(os.listdir("/proc/self/fd"))
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
 
-    before = _open_fd_count()
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        conn = _RecordingConnection(real_connect(*args, **kwargs))
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(se.db.sqlite3, "connect", _tracking_connect)
     for i in range(50):
         se.record_trade_observed(f"SER-FD-{i}", now=1000.0 + i)
     for _ in range(50):
         se.ineligible_series(now=2000.0)
-    after = _open_fd_count()
-    assert after == before
+    assert len(opened) == len(closed) == 100
 
 
 def test_connect_creates_table_in_autocommit_not_a_transaction(tmp_path, monkeypatch):
