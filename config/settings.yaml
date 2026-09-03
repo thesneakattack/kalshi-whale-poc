@@ -109,6 +109,24 @@ strategy:
   # cadence data is the owner of re-tuning it. 0 disables the staleness
   # trigger (deviation-only, as before).
   price_staleness_corroborate_sec: 120.0
+  # Strategy edge gate (docs/superpowers/plans/2026-09-03-strategy-edge-
+  # gate-implementation.md) - compares this app's own belief about a
+  # market (p_est) to the price it would actually pay (ask_now + fees),
+  # instead of gating entry on confidence alone. Every field below
+  # defaults to a value that changes nothing about current
+  # _validate_entry_price behavior until edge_gate_enabled is explicitly
+  # flipped true - same "ships fully built, opt-in" precedent as
+  # kelly_fraction_of_cap. See the design doc's §5 for full rationale;
+  # not restated per-field here to avoid two drifting copies of the same
+  # explanation.
+  edge_gate_enabled: false
+  edge_gate_min_edge: 0.04
+  edge_gate_fee_buffer_usd: 0.005
+  edge_gate_pre_print_offset_sec: 10.0
+  edge_gate_p_pre_max_age_sec: 600.0
+  edge_gate_min_bucket_n: 50
+  edge_gate_recompute_interval_sec: 3600
+  edge_gate_markout_offsets_sec: [300, 3600, null]
 risk:
   starting_bankroll: 10000
   max_daily_loss_pct: 0.8
