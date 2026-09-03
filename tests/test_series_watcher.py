@@ -666,3 +666,15 @@ def test_watched_series_defaults_to_kxbtc15m():
     assert sw.watched_series(None) == ["KXBTC15M"]
     assert sw.watched_series({"series_watcher": {"series": "KXETH15M"}}) == ["KXETH15M"]
     assert sw.watched_series({"series_watcher": {"series": ["A", "B"]}}) == ["A", "B"]
+
+
+def test_connect_uses_the_shared_raw_trades_ddl(tmp_path, monkeypatch):
+    """No more hand-duplicated CREATE TABLE text - services/series_watcher.py's
+    _connect() creates the same raw_trades table capture_writer.py's shared
+    RAW_TRADES_DDL_SQL defines, confirmed by actually creating a fresh table
+    via _connect() and reading its real column list back via PRAGMA
+    table_info, not by comparing source strings."""
+    monkeypatch.setattr(sw, "DB_PATH", tmp_path / "series_watcher.db")
+    with sw._connect() as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(raw_trades)").fetchall()]
+    assert "trade_id" in cols and "raw_json" in cols and len(cols) == 16

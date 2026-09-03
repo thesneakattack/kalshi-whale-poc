@@ -341,3 +341,20 @@ def test_count_range_and_clear_range_include_population_rows():
     remaining_population = cl.population_gate_summary(min_samples=0)
     assert len(remaining_population) == 1
     assert remaining_population[0]["gate_name"] == "entry_threshold"
+
+
+def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, monkeypatch):
+    """Task 3c: candidate_log.py's _connect() now creates rejected_candidates
+    (and rejection_events) from capture_writer's shared, unit_cost-inclusive
+    DDL directly, rather than relying on _add_column_if_missing to backfill
+    it after a bare CREATE - on a FRESH db the column exists from the start.
+    _add_column_if_missing stays as a no-op safety net for pre-existing
+    files (unchanged, not removed by this task)."""
+    import sqlite3
+
+    monkeypatch.setattr(cl, "DB_PATH", tmp_path / "candidate_log.db")
+    with cl._connect() as conn:
+        rc_cols = [r[1] for r in conn.execute("PRAGMA table_info(rejected_candidates)").fetchall()]
+        re_cols = [r[1] for r in conn.execute("PRAGMA table_info(rejection_events)").fetchall()]
+    assert "unit_cost" in rc_cols
+    assert "unit_cost" in re_cols
