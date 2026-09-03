@@ -51,7 +51,7 @@ one strangler-safe commit at a time, with every guard CI-owned.
 
 ---
 
-## T0 — Research, spec, plan, orchestrator skill
+### Task 1: T0 — Research, spec, plan, orchestrator skill
 
 - [x] `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`
 - [x] `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`
@@ -61,7 +61,7 @@ one strangler-safe commit at a time, with every guard CI-owned.
 
 ---
 
-## T1a — Guards first, stale docs (Python/CI only; zero JS change)
+### Task 2: T1a — Guards first, stale docs (Python/CI only; zero JS change)
 
 **Modify**
 - `tools/quality_audit/frontend_contract.py:141` — `glob("*.js")` → `rglob("*.js")`.
@@ -113,7 +113,7 @@ the new scanner; CI is green with the baseline; no doc still claims "no bundler"
 
 ---
 
-## T1b — Runtime foundation (no behaviour change)
+### Task 3: T1b — Runtime foundation (no behaviour change)
 
 **Modify**
 - `frontend/package.json` — `"type": "module"`; `dependencies`: `preact ^10.29`, `@preact/signals ^2.11`, `htm ^3.1`, `uplot ^1.6`; `devDependencies` + `preact-render-to-string ^6.7`; scripts:
@@ -148,7 +148,7 @@ backend-only push and appears in required contexts.
 
 ---
 
-## T1c — Mechanical move to `legacy/`
+### Task 4: T1c — Mechanical move to `legacy/`
 
 - [ ] `git mv frontend/src/js/*.js frontend/src/js/legacy/` (old `main.js` → `legacy/bootstrap.js`); new 1-line `src/js/main.js` importing it; rewrite relative import paths.
 - [ ] `tools/quality_audit/baseline.json` — path-based finding ids updated (same findings, new paths).
@@ -158,7 +158,7 @@ backend-only push and appears in required contexts.
 
 ---
 
-## T2 — Bridge + pilot panel: System Health
+### Task 5: T2 — Bridge + pilot panel: System Health
 
 **Modify** `legacy/polling-and-websocket.js` (+`publishState(state)` after the JSON parse; delete the `loadSystemHealth` call + import), `legacy/bootstrap.js` (`showView` also sets `currentView.value`), `legacy/config-panel.js` (`pollIntervalMs.value = …` next to `scheduleRefreshTimer`), `static/index.html` (wrap `system-health-summary`/`-findings` in `<div id="system-health">`; inner ids kept for `tests/test_browser_e2e.py:220-224`), `src/js/main.js` (mount).
 **Create** `panels/system-health/{index.js, model.js, CHEATSHEET.md}` (`OWNS`, `useTabLoader('terminal', load, {everyTick:true})`, `performance.measure('tick-render')` line), `panels/support/useTabLoader.js`, `test/panels/system-health/{model,render}.test.js`, `test/guards/container-ownership.test.js`.
@@ -173,7 +173,7 @@ the legacy poll loop no longer references the panel; ownership guard green.
 
 ---
 
-## T3 — Tabs, poll loop, WebSocket into `core/`
+### Task 6: T3 — Tabs, poll loop, WebSocket into `core/`
 
 **Create** `core/view.js` (VIEWS, `showView`, `.active` effect on `view-*`/`tab-btn-*`; `window.showView` kept as a documented surface until T9), `core/poll.js` (304/failure handling → `connectivity`; `startPolling` effect on `pollIntervalMs`; `registerLegacyTick`), `core/ws.js` (`terminalFeeds`, `tradeStreamStatus` signals; backoff), `panels/tab-bar/index.js` (renders the same `tab-btn-*` ids; replaces 6 inline handlers), `test/core/{poll,view}.test.js`.
 **Modify** `src/js/main.js` (bootstrap order; `document.body.dataset.bundle = 'loaded'`), `legacy/polling-and-websocket.js` (body → `legacyTick(state)`), `legacy/trading-gate-and-connectivity.js` (timer removed; `renderConnectivity` reads `connectivity.peek()`), `legacy/bootstrap.js` (shrinks), `tests/test_browser_e2e.py:164` (probe → `data-bundle`), `tests/test_e2e_terminal_static_and_api.py:85` (not `:65` — two 2026-08-30 Docker-Desktop-DNS-sentinel-skip commits pushed it down 20 lines, corrected 2026-09-03 freshness check; the `assert 'clearTerminalFeedCaches' in js_resp.text` line) (grep marker → `data-bundle`).
@@ -184,7 +184,7 @@ the legacy poll loop no longer references the panel; ownership guard green.
 
 ---
 
-## T4a — Backend: `GET /api/config/schema` (TDD)
+### Task 7: T4a — Backend: `GET /api/config/schema` (TDD)
 
 **Create** `services/config/schema_fields.py` (seeded), `services/config/schema.py` (`build_schema(cfg)`, `HIDDEN_PATHS`, YAML leaf walker), `tools/extract_config_schema_seed.py` (stdlib `html.parser` state machine over `#view-config`; cross-checks `config-panel.js` id→path assignments; emits `schema_fields.py`), `tests/test_config_schema.py`.
 **Modify** `services/config/routes.py` (+GET), `services/config/config_bounds.py` (moved here from bare `services/config_bounds.py` by commit `6e4338f`, 2026-08-27 — corrected 2026-08-31 catch-up review) (+`STOP_LOSS_CEILING`; docstring `:43`, same line number at the new path), `services/config/CHEATSHEET.md`, `baseline.json` (+`backend-route-unused:GET:/api/config/schema`, note "consumer lands in T5a").
@@ -203,7 +203,7 @@ the legacy poll loop no longer references the panel; ownership guard green.
 
 ---
 
-## T4b — Backend: schema-driven `POST /api/config` validation + `/validate` (TDD)
+### Task 8: T4b — Backend: schema-driven `POST /api/config` validation + `/validate` (TDD)
 
 **Create** `services/config/validation.py` (`validate_patch(schema, cfg, patch) → (errors, warnings)`).
 **Modify** `services/config/routes.py` (validate before merge; `POST /api/config/validate`), `tests/test_config_schema.py` (9 more tests, continuing T4a's numbering as tests 6–14 — corrected 2026-08-31 catch-up review, same phantom-list fix as T4a above: type mismatch rejected; static bounds enforced; enum values enforced; nullable fields accept `null`; patch-scoped `check_all` rejects vs. warns correctly; unknown field rejected; `/validate` is side-effect-free (no write); a `strategy_overrides` patch on a field that isn't `overridable: true` per the schema is rejected — pinned 2026-08-31 adversarial review, the prior "override scope respected" wording was ambiguous with `config_overrides._TIERS`'s `by_category`/`by_series` scoping, a separate concept; existing logging behavior unchanged), `baseline.json` (+validate route).
@@ -216,7 +216,7 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 
 ---
 
-## T5a — Config panel: schema-driven fields
+### Task 9: T5a — Config panel: schema-driven fields
 
 **Create** `panels/config/{index.js, model.js, field.js, CHEATSHEET.md}`, `test/panels/config/model.test.js` (**patch-parity** against `legacy/config-panel.js:126-230` semantics — not `:125-229`, shifted +1 line by commit `8b5f7ab`'s `close_positions_first` reset-flag insertion, corrected 2026-09-03 freshness check), render test with a 2-field fixture schema, a Playwright test (fixture schema → inputs; forced 400 with `errors` → inline message).
 **Modify** `static/index.html:566-912` → `<div id="config-panel">` (legend kept; reset/session/watchlist stay legacy until T5b), `legacy/config-panel.js` (delete `loadConfig` field lines `:14-96`), delete `legacy/polling-and-websocket.js:197-233` (provider status → computed), `legacy/advisory-calibration.js:63-76` → `jumpTo(path)` via `data-config-path`.
@@ -226,7 +226,7 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 
 ---
 
-## T5b — Config panel: overrides, watchlist/search, reset
+### Task 10: T5b — Config panel: overrides, watchlist/search, reset
 
 **Create** `panels/config/{overrides.js, watchlist.js, reset.js}` (+ pure `mergeOverride`/`removeOverride` tests).
 **Delete** `legacy/config-panel.js`, `static/index.html:913-968`, `tools/extract_config_schema_seed.py`.
@@ -236,7 +236,7 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 
 ---
 
-## T6 — Charts module
+### Task 11: T6 — Charts module
 
 **Create** `charts/{TimeSeriesChart.js, series.js, theme.js, candlestick.js, sparkline.js}`, `test/charts/series.test.js`, Playwright test (10-point `equity_history` fixture → `#equity-chart canvas`).
 **Modify** `legacy/equity-and-cards.js:117-158` (not `:97-138` — two 2026-09-02 commits, `pnlRowTint`/`marketResultBadgeHTML` extraction and the trade-log gradient/market-result column extending to more views, added ~20 net lines above `renderEquityChart`; corrected 2026-09-03 freshness check) → signature-preserving adapter (all six call sites upgrade), `legacy/screener-and-header.js` (imports moved renderers), `static/css/dashboard.css` (+vendored uPlot block), `bundle-budget.json` unchanged (100 KB covers it).
@@ -246,19 +246,19 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 
 ---
 
-## T7a — History core
+### Task 12: T7a — History core
 
 `panels/history/{index.js, model.js, trade-table.js, suggestion-card.js}` from `legacy/history-core.js`; paging/sort as `useSignal` state; `history-pnl-chart` via `TimeSeriesChart`.
 - [ ] Render tests per branch; `npm run check`.
 - [ ] Commit: `refactor(frontend): History core as a Preact panel`
 
-## T7b — Advisory + calibration
+### Task 13: T7b — Advisory + calibration
 
 `panels/advisory/`, `panels/calibration/`; delete `advisoryApplyInFlight`/`calibrationApplyInFlight`; add `happy-dom`; node-identity interaction test; Playwright Apply flow via route fixtures; retire the Selenium duplicate (`tests/test_browser_e2e.py:167-193`) or add `window.__e2e`.
 - [ ] `npm run check`; `pytest tests/test_browser_playwright_e2e.py --collect-only`.
 - [ ] Commit: `refactor(frontend): Advisory and Calibration panels with keyed rendering; drop the in-flight guards`
 
-## T7c — Regime, candidate log, backtest sweeps, series evaluator, market analyst
+### Task 14: T7c — Regime, candidate log, backtest sweeps, series evaluator, market analyst
 
 One `panels/<name>/` each (`useTabLoader('history', …, {everyTick:true})`); delete `refreshHistoryInsightsIfActive` and `legacy/advisory-calibration.js`; the `feedTheAnalyst` inline handler goes.
 - [ ] `npm run check`; baseline −19 exports.
@@ -266,11 +266,11 @@ One `panels/<name>/` each (`useTabLoader('history', …, {everyTick:true})`); de
 
 ---
 
-## T8a — Header, account toggle, banners, status badges
+### Task 15: T8a — Header, account toggle, banners, status badges
 `panels/header/`; `accountMode` signal (+localStorage effect); badge renderers from `legacy/trading-gate-and-connectivity.js`.
 - [ ] `#bankroll` E2E stays green. Commit: `refactor(frontend): header/account/status panels`
 
-## T8b — Portfolio
+### Task 16: T8b — Portfolio
 `panels/portfolio/` — equity chart, **one** `PositionsPanel` replacing both `positions-list` writers, netting groups, dummies/shadow, trading-gate confirm flow; delete `legacy/trade-log-and-real.js`.
 - [ ] Run `dimensional-analysis` on displayed P&L/cost/exposure; browser check paper↔real. Commit: `refactor(frontend): Portfolio panels; unify paper/real positions`
 - [ ] **Open question carried over from the realtime remediation plan's P3.5 (2026-08-27):** a live report ("having a large amount of open positions causes things to lag or crash") was traced backend-side to `exit_engine.check_exits` (see
@@ -282,21 +282,21 @@ One `panels/<name>/` each (`useTabLoader('history', …, {everyTick:true})`); de
   with a large (e.g. 200+) synthetic position fixture; add a per-row keyed store only
   if it's actually slow, not preemptively.
 
-## T8c — Terminal
+### Task 17: T8c — Terminal
 `panels/terminal/` — keyed signal/decision feed (delete `renderFeedListSmooth` and dead `renderSignals`), funnel, watchlist table, control buttons.
 - [ ] Commit: `refactor(frontend): Terminal panels; remove the dead signals-only feed`
 
-## T8d — Markets + Whale Watch
+### Task 18: T8d — Markets + Whale Watch
 `panels/markets/` (shared `MarketTable`, filters as signals), `panels/whale-watch/`; `core/market-meta.js` replaces the `Object.assign` caches; delete `legacy/whale-watch.js`, `legacy/equity-and-cards.js`.
 - [ ] Measure tick-render with a 500-row fixture; add the per-row keyed store **only if** > 16 ms. Commit: `refactor(frontend): Markets and Whale Watch panels`
 
-## T8e — Market-detail + Help modals
+### Task 19: T8e — Market-detail + Help modals
 `panels/market-detail/`, `panels/help/`; remaining inline handlers and `__backdropMouseDownOnSelf` gone; delete `legacy/screener-and-header.js`, `legacy/shared-utils.js`.
 - [ ] Browser check ESC/backdrop close. Commit: `refactor(frontend): modals as panels; legacy/ is empty`
 
 ---
 
-## T9 — Cleanup, strict guards, docs sync
+### Task 20: T9 — Cleanup, strict guards, docs sync
 
 - [ ] Delete `src/js/legacy/`; `window.*` → 0 (or exactly `__e2e`); graph guard → no cycles anywhere; `no-unused-vars: error`.
 - [ ] `--minify`; measure; ratchet `bundle-budget.json` to the measured size + 10 %.
