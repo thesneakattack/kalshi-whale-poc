@@ -30,10 +30,36 @@
 # against a bind-mounted repo owned by the host uid, tripping git's
 # dubious-ownership check - this CI image genuinely has no git binary at
 # all, which is the unrelated reason generated_from_head stays null here).
+# Docs-only fast path added 2026-09-03 (CI pipeline audit finding: this
+# workflow never checked build/.ci-skip-verdict, unlike tests-pytest.yml/
+# quality-browser-e2e.yml - a pure docs/.claude-only PR still paid this
+# workflow's full ~37s median cost every time). This does NOT relax the
+# "no path filter" reasoning above - that was about never narrowing to a
+# specific path (services/ vs frontend/), since either can independently
+# break the frontend-api-contract scanner. The docs-only SKIP verdict is
+# strictly narrower and always safe: it only fires when NOTHING outside
+# docs/.claude/root-scaffold changed at all, which by definition can't
+# affect any of this step's scanners. Still runs and still posts its
+# required status.
 when:
   - event: [push, pull_request]
 
+# Full-history clone override, required by ci-fast-path-check below - same
+# reasoning as tests-pytest.yml's own identical block.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
 steps:
+  - name: ci-fast-path-check
+    image: alpine/git
+    commands:
+      - mkdir -p build
+      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+
   - name: architecture-audit
     image: python:3.13-slim
     # Persistent uv download cache, shared across pipelines and runs. uv made
@@ -55,34 +81,44 @@ steps:
     volumes:
       - wp-uv-cache:/root/.cache/uv
     commands:
-      # uv instead of pip: measured 5s vs 78s for this same
-      # requirements-dev.txt on python:3.13-slim (both runs back to back on
-      # the same contended host, so the ratio is the meaningful part, not
-      # the absolute numbers). Four of this repo's pipelines pay this exact
-      # install, and it was the single largest cost in the two slowest
-      # steps. --system installs into the image's own interpreter rather
-      # than a venv, which is what every step here already assumed pip was
-      # doing. Resolution is unchanged: same requirements file, same pins.
-      - pip install -q uv
-      - uv pip install --system -r requirements-dev.txt
-      - >
-        python -m tools.quality_audit --repo-root .
-        --baseline tools/quality_audit/baseline.json
-        --json-out build/quality-audit.json
-      - python -m tools.project_manifest --check static/project-manifest.json --repo-root .
-      # Scoped static type check of the Kalshi integration boundary
-      # (Phase C Task C1, mypy.ini pins scope to services/kalshi/). A
-      # separately identifiable command so a type failure reads as a type
-      # failure in the log, not as a generic audit error.
-      - python -m mypy --config-file mypy.ini
+      - |
+        if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
+          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping the architecture audit"
+        else
+          # uv instead of pip: measured 5s vs 78s for this same
+          # requirements-dev.txt on python:3.13-slim (both runs back to
+          # back on the same contended host, so the ratio is the
+          # meaningful part, not the absolute numbers). Four of this
+          # repo's pipelines pay this exact install, and it was the
+          # single largest cost in the two slowest steps. --system
+          # installs into the image's own interpreter rather than a
+          # venv, which is what every step here already assumed pip was
+          # doing. Resolution is unchanged: same requirements file, same
+          # pins.
+          pip install -q uv
+          uv pip install --system -r requirements-dev.txt
+          python -m tools.quality_audit --repo-root . \
+            --baseline tools/quality_audit/baseline.json \
+            --json-out build/quality-audit.json
+          python -m tools.project_manifest --check static/project-manifest.json --repo-root .
+          # Scoped static type check of the Kalshi integration boundary
+          # (Phase C Task C1, mypy.ini pins scope to services/kalshi/). A
+          # separately identifiable command so a type failure reads as a
+          # type failure in the log, not as a generic audit error.
+          python -m mypy --config-file mypy.ini
+        fi
 
   # Woodpecker has no first-class "upload artifact" step; the JSON report
   # is exposed as build log output instead so a failing run's evidence
-  # stays inspectable without needing separate artifact storage.
+  # stays inspectable without needing separate artifact storage. No report
+  # exists on a SKIP run (the step above never wrote one) - cat's own
+  # nonzero exit on a missing file would otherwise fail this step and, via
+  # its own `status: [failure, success]` matcher, still print a real error
+  # instead of the skip message.
   - name: print-report
     image: python:3.13-slim
     when:
       - event: [push, pull_request]
         status: [failure, success]
     commands:
-      - cat build/quality-audit.json
+      - cat build/quality-audit.json 2>/dev/null || echo "docs/.claude-only change - architecture-audit skipped, no report generated"

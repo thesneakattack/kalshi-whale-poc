@@ -18,10 +18,33 @@
 # checking the plural channel name instead of the real singular
 # per-message type; WS position ticker extraction reading the wrong field
 # name) - see that test file's own module docstring for the full story.
+# Docs-only fast path added 2026-09-03 (CI pipeline audit finding: this
+# workflow never checked build/.ci-skip-verdict, unlike tests-pytest.yml/
+# quality-browser-e2e.yml - a pure docs/.claude-only PR still paid this
+# workflow's full ~47s median cost every time). The 6 test files below can
+# never be affected by a change confined to docs/.claude - a SKIP verdict
+# here is exactly as safe as tests-pytest.yml's own use of it. Still runs
+# and still posts its required status, only the pytest run inside becomes
+# a no-op.
 when:
   - event: [push, pull_request]
 
+# Full-history clone override, required by ci-fast-path-check below - same
+# reasoning as tests-pytest.yml's own identical block.
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      partial: false
+      depth: 0
+
 steps:
+  - name: ci-fast-path-check
+    image: alpine/git
+    commands:
+      - mkdir -p build
+      - sh scripts/ci-skip-heavy-suite.sh | tee build/.ci-skip-verdict
+
   - name: kalshi-fixture-contracts
     image: python:3.13-slim
     # Persistent uv download cache, shared across pipelines and runs. uv made
@@ -43,21 +66,27 @@ steps:
     volumes:
       - wp-uv-cache:/root/.cache/uv
     commands:
-      # uv instead of pip: measured 5s vs 78s for this same
-      # requirements-dev.txt on python:3.13-slim (both runs back to back on
-      # the same contended host, so the ratio is the meaningful part, not
-      # the absolute numbers). Four of this repo's pipelines pay this exact
-      # install, and it was the single largest cost in the two slowest
-      # steps. --system installs into the image's own interpreter rather
-      # than a venv, which is what every step here already assumed pip was
-      # doing. Resolution is unchanged: same requirements file, same pins.
-      - pip install -q uv
-      - uv pip install --system -r requirements-dev.txt
-      - >
-        python -m pytest -v
-        tests/test_kalshi_client.py
-        tests/test_kalshi_account_client.py
-        tests/test_kalshi_trade_ws.py
-        tests/test_kalshi_fees.py
-        tests/test_whalewatchers_kalshi_trade_tape.py
-        tests/test_kalshi_contracts.py
+      - |
+        if [ "$(cat build/.ci-skip-verdict 2>/dev/null || echo RUN)" = "SKIP" ]; then
+          echo "docs/.claude-only change (scripts/ci-skip-heavy-suite.sh) - skipping the kalshi contract/fixture run"
+        else
+          # uv instead of pip: measured 5s vs 78s for this same
+          # requirements-dev.txt on python:3.13-slim (both runs back to
+          # back on the same contended host, so the ratio is the
+          # meaningful part, not the absolute numbers). Four of this
+          # repo's pipelines pay this exact install, and it was the
+          # single largest cost in the two slowest steps. --system
+          # installs into the image's own interpreter rather than a
+          # venv, which is what every step here already assumed pip was
+          # doing. Resolution is unchanged: same requirements file, same
+          # pins.
+          pip install -q uv
+          uv pip install --system -r requirements-dev.txt
+          python -m pytest -v \
+            tests/test_kalshi_client.py \
+            tests/test_kalshi_account_client.py \
+            tests/test_kalshi_trade_ws.py \
+            tests/test_kalshi_fees.py \
+            tests/test_whalewatchers_kalshi_trade_tape.py \
+            tests/test_kalshi_contracts.py
+        fi
