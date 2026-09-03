@@ -1,18 +1,35 @@
 # Next action
 
-**Single next action: finish the persistence-layer db.py migration's planning
-pipeline.** PR #505 (design spec, `phase:spec`) is at its PR-stage
-consolidation, written by `autotrade-a7`, citing `autotrade-3b`'s two review
-artifacts. When that says GO: merge #505, then a7 writes the implementation
-plan (`docs/superpowers/plans/`), with `autotrade-a3` as its independent
-adversarial reviewer. **No code has been written for this migration and none
-should be until that plan clears its own review cycle** — CLAUDE.md's "nothing
-advances on one pass" governs, and `autotrade-73`'s
-`fix/db-foundation-must-fix-tests` branch is deliberately held unmerged for
-exactly this reason (it is input to the plan's Task 1, not Task 1 itself, and
-it still carries the path-keyed design the spec rejected).
+**Single next action: execute
+`docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`**
+(merged, PR #516 — 15 tasks, full review cycle at both artifact and PR stage).
+Its planning pipeline is complete: research, design/spec, and implementation
+plan are all merged, and the API-shape decision is signed off.
 
-## State as of 2026-09-03 ~12:15 UTC
+**Do not read a task list out of this file.** The plan is the task list, and
+`gh pr list` plus `git log origin/main` are the only current record of what has
+shipped. This section names the stage; it does not track progress inside it,
+because a status snapshot in a file every session reads goes stale within the
+hour and then actively misleads — that has now happened twice in one day.
+
+**Gates that hold regardless of where execution has got to:**
+
+- **Task 1 (`services/db.py`) blocks every other task.** It is Gate 0: the
+  module plus its 16 tests must land before any module migrates onto it.
+- **Tasks 6, 7 and 8 — `risk_manager.py`, `paper_broker.py`,
+  `candidate_ledger.py` — are safety-adjacent and need a human go-ahead before
+  starting**, not just at review. They touch the daily-loss kill switch and the
+  broker. Each gets its own dedicated PR and a full diff review; "the pattern
+  was mechanical for the last five modules" is exactly the reasoning that walks
+  something past scrutiny, and it is not sufficient here.
+- **Author and reviewer stay separate**, for code as for documents: whoever
+  implements a task does not review it, and the adversarial pass is a fresh
+  agent with no memory of writing it.
+- `autotrade-73`'s `fix/db-foundation-must-fix-tests` (`e74096a`) is **input to
+  Task 1, not Task 1** — Task 1 adopts its tests (including the lock-contention
+  one) but not its path-keyed registry, which the design rejected.
+
+## Reference state — 2026-09-03 ~12:15 UTC (facts, not progress)
 
 **Merged today, on `main`:** Tier0 live-incident remediation (PR #501, fd-leak
 fixes in five modules, verified live), Tier1 backend-hygiene/de-polling
@@ -87,65 +104,7 @@ session is lost.
 
 ---
 
-**Historical below this line — completed work, not current action.**
-
-**TIER0/TIER1 COMPLETE AND VERIFIED LIVE (2026-09-03, 03:50 UTC)**
-
-Both critical tiers executed and verified:
-- **Tier0 (live-incident remediation):** PR #501 merged, all 12 CI contexts green, zero regressions. App confirmed healthy — no fd exhaustion, routes responding normally.
-- **Tier1 (backend-hygiene):** PR #500 merged, 9 tasks complete. De-polling deployed and verified live (throttle constants in bundle, routes within SLA, historical 504-storm pattern gone from nginx logs).
-
----
-
-**TIER2 IMPLEMENTATION NOW IN PROGRESS (Multi-session parallel execution)**
-
-Three work streams active with autonomous peer sessions:
-
-### Stream 1: Strategy-Edge Gate Implementation (autotrade-3b)
-**Status:** 8/10 tasks merged. **CRITICAL MILESTONE: Task 8 (gate implementation) MERGED — 3149/3149 tests passing, inertness proven.**
-
-- Task 8: ✅ MERGED (patched gate to raise if invoked, ran 146 tests, zero invocations — structurally confirmed safe)
-- Task 9: 🚀 NOW EXECUTING (depends on Task 8, just landed)
-- Task 10: ⏳ QUEUED (full regression + live validation)
-- **ETA for completion:** ~45–60 minutes if all tasks run clean (next milestone after Task 10 → CI + PR + merge)
-
-**Next single action:** Monitor Task 9 completion → Task 10 → full regression validation → CI green → merge to main. No blocker gates.
-
-### Stream 2: Persistence-Layer Planning Cycle (autotrade-a3 + autotrade-a7 + autotrade-73)
-**Status:** Three-stage parallel planning (research → implementation plan → baseline measurement). Coordination error corrected this cycle.
-
-**Assignments now explicit and confirmed:**
-- autotrade-a3: Research doc (what's broken, why db.py solves it) — **AWAITING FINAL CONFIRMATION** (flagged twice for clarity, not yet started)
-- autotrade-a7: Implementation plan (batching strategy, rollout, risk mitigation) — **CONFIRMED, READY TO START** (awaiting scope clarity from research)
-- autotrade-73: Baseline measurement (current fd/fault patterns, db sizes) — **JUST ASSIGNED** (redirected from completed de-polling verification)
-
-**Next single action:** autotrade-a3 confirms research doc assignment → all three stages run in parallel → convergence review cycle before any code implementation.
-
----
-
-**CONVERGENCE & CONTINUITY**
-
-All work tracked in `docs/coordination-status-2026-09-03.md` (live, updated at each convergence point).
-
-For session resumption:
-1. Read this file (source of truth for "what's next")
-2. Read `docs/coordination-status-2026-09-03.md` (current status of all streams)
-3. Check `ListAgents` (verify all peer sessions still active)
-4. Check latest `git log origin/main` (confirm no unexpected merges)
-5. Pick up where the stream left off — no re-briefing needed
-
----
-
-**COMPLETION TIMELINE**
-
-- Strategy-edge completion: ~45–60 min (Task 8 just done, Tasks 9-10 executing now)
-- Persistence planning cycle: parallel with strategy-edge, readiness depends on autotrade-a3's confirmation
-- **Target morning deliverable:** All Tier2 work verified in CI, PRs merged to main, live app validated
-
-**No external dependencies. All blockers internal to peer coordination — currently resolved.**
-
----
-
-**Below (historical, for reference — not current action)**
-
-The rest of this file documents completed work (Tier0, Tier1, PR reviews, database recovery incidents). See git log for full incident records and review cycles.
+Superseded status snapshots are deliberately not kept in this file, because
+`orient.sh` prints the whole thing into every session banner. Previous versions
+are in git (`git log -p --follow docs/next-action.md`); parked decisions live in
+`docs/open-decisions.md`, which the same banner prints separately.
