@@ -36,10 +36,17 @@ subagent passes agree on this, and it's a manual `try/finally: conn.close()` pat
 `with` statement, so it isn't subject to the same mistake. Two different connection patterns in
 one file; only the primary `_connect()` needs migrating.
 
-**A second correction**: the assignment's framing cited "22 bare test callers" in
-`tools/coordination_engine.py` as the precedent finding. Directly recounted:
-`grep -n "_connect()" tests/test_coordination_engine.py` → **15** calls, all bare (zero use
-`with`). The correct number is 15, not 22.
+**A count that needed a wider scope, not a correction**: the assignment's framing cited "22
+bare test callers" for `tools/coordination_engine.py`'s `_connect()`. An initial recount against
+only `tests/test_coordination_engine.py` found 15 and this document briefly (and wrongly)
+called the "22" figure an error. It wasn't — 22 is the right number, just spread across four
+test files that all import and call `coordination_engine._connect()` directly, not one:
+`tests/test_coordination_engine.py` (15), `tests/test_quality_coordination_branch_domain.py`
+(4: L80, L106, L126, L149), `tests/test_quality_coordination_cli.py` (2: L72, L88),
+`tests/test_quality_coordination_cleanup_actions.py` (1: L95) — 15+4+2+1 = 22, all bare, zero
+using `with`. Verified via `grep -rnE '_connect\b' tests/ | grep coordination`. The
+single-file 15 figure is also accurate, just for a narrower scope than the original claim was
+actually about.
 
 ## Module-by-module findings
 
@@ -315,8 +322,10 @@ method, and event-loop exposure. All `_connect()` bodies below are confirmed to 
 - **Tables**: `signal_state`, `coordination_runs`, `cleanup_actions`.
 - **Call sites** (module): `_connect()` is called only by external callers, not internally —
   functions take `conn` as a parameter.
-- **Tests**: **15 bare `_connect()` calls, zero using `with`** (directly recounted — see
-  correction above; the original "22" figure was wrong). `tests/test_coordination_engine.py`
+- **Tests**: **22 bare `_connect()` calls across four test files, zero using `with`** — see
+  "A count that needed a wider scope" above for the per-file breakdown (15 in
+  `test_coordination_engine.py` alone, 22 total across all four `tests/test_quality_coordination_*.py`
+  files that also call `ce._connect()` directly). `tests/test_coordination_engine.py`
   monkeypatches `DB_PATH` per-test.
 - **Event loop**: explicitly N/A — the module's own docstring (L11-12) states it's "never
   imported by main.py or any part of the live trading app, per CLAUDE.md's 'Workflow/tooling
