@@ -51,7 +51,7 @@ def _mark_seen(self, trade_id: str, exchange_ts: float | None = None) -> None:
         self._seen_trade_ids.discard(oldest)
 ```
 
-No lock anywhere in the class (`__init__`, `kalshi_trade_tape.py:222-249`, declares
+No lock anywhere in the class (`__init__`, `kalshi_trade_tape.py:223-253`, declares
 `_seen_trade_ids`, `_seen_order`, `_market_cache`, `_resolve_failed_tickers`, `stats`
 — no synchronization primitive among them).
 
@@ -92,7 +92,7 @@ loop, in both call paths that reach it — confirmed by tracing both callers:
 
 `_scoring_pool.run` (`_scoring_pool.py:39-41`): `return await
 loop.run_in_executor(_executor, fn)` — `_executor` is a module-level 4-worker
-`ThreadPoolExecutor` (`_scoring_pool.py:31`), shared process-wide by this module.
+`ThreadPoolExecutor` (`_scoring_pool.py:35`), shared process-wide by this module.
 Both call paths dispatch to the same pool of OS threads.
 
 ## 3. The two paths are genuinely concurrent — traced, not assumed
@@ -162,14 +162,17 @@ double-processing already happened and cannot be undone after the fact).
 
 **How likely is this in practice?** It requires trade_id X to be simultaneously
 `(a)` pending in `candidate_retry`'s queue (meaning its first resolve attempt failed
-or was capacity-truncated — see `kalshi_trade_tape.py:434-448`,
-`_resolve_unknown_markets`'s own `truncated`/exception handling, both of which call
-`candidate_retry.enqueue`) and `(b)` re-presented on the live WS trade stream around
-the same moment. The code's own H4/Task-11 design comment
-(`kalshi_trade_tape.py:452-458`) explicitly names *both* paths as valid recovery
-routes for the same once-failed trade_id — "a real chance on a later presentation
-instead (this trade_id's next appearance in the trade tape, **or** Task 12's retry
-queue)" — meaning the system's own design already anticipates a trade_id can
+or was capacity-truncated — see `kalshi_trade_tape.py:456-465` (the `truncated`
+branch, its own `candidate_retry.enqueue` call at line 463) and `:470-486` (the
+exception branch, its own `candidate_retry.enqueue` call at line 486), both inside
+`_resolve_unknown_markets`) and `(b)` re-presented on the live WS trade stream
+around the same moment. The code's own H4/Task-11 design comment
+(`kalshi_trade_tape.py:559-561`, inside `_process_trades_sync` — a distinct
+function from, though describing the same underlying fix as, the exception branch's
+own comment at `:474` above) explicitly names *both* paths as valid recovery routes for the
+same once-failed trade_id — "a real chance on a later presentation instead (this
+trade_id's next appearance in the trade tape, **or** Task 12's retry queue)" —
+meaning the system's own design already anticipates a trade_id can
 legitimately travel through either path, just not (as far as this investigation can
 tell) through the possibility of *both at once*. Whether Kalshi's own stream
 redelivers/replays a trade close in time to a resolve failure is outside this
