@@ -35,6 +35,7 @@ best-effort - a failed delivery still leaves the alert recorded and
 visible via GET /api/alerts/*, so nothing is ever silently lost even if
 notification delivery itself is broken.
 """
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
@@ -55,6 +56,23 @@ DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "alert_log.db
 # condition is still bad after a restart, re-alerting once is the safer
 # default over silently assuming a human already knows.
 _last_known_bad: dict[str, bool] = {}
+
+# 2026-09-03, Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
+# hygiene.md: asyncio.create_task()'s own documentation - "Save a
+# reference to the result of this function, to avoid a task disappearing
+# mid-execution. The event loop only keeps weak references to tasks."
+# task_supervisor.supervise() already returns a real Task; all 3 of this
+# module's own fire-and-forget dispatch call sites discarded it. Standard
+# asyncio idiom (a set + add_done_callback to discard once complete), not
+# a hand-rolled task registry.
+_background_tasks: set = set()
+
+
+def _supervise_background(coro_fn, *, component: str, operation: str) -> "asyncio.Task":
+    task = task_supervisor.supervise(coro_fn, component=component, operation=operation)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def _connect() -> sqlite3.Connection:
@@ -88,7 +106,7 @@ def record_alert(category: str, severity: str, message: str, context: str | None
             (category, severity, message, context, now),
         )
         alert_id = cur.lastrowid
-    task_supervisor.supervise(
+    _supervise_background(
         lambda: _dispatch_notification(category, severity, message, now),
         component="alerting", operation="dispatch_notification",
     )
@@ -267,7 +285,7 @@ def _check_transition(category: str, is_bad: bool, severity: str, bad_message, r
         # nothing would ever resolve). Still worth notifying about, though -
         # dispatched directly, same fire-and-forget mechanism.
         resolve_category(category)
-        task_supervisor.supervise(
+        _supervise_background(
             lambda: _dispatch_notification(category, "info", resolved_message, time.time()),
             component="alerting", operation="dispatch_notification",
         )
@@ -291,7 +309,7 @@ def _expire_stale_crash_alerts(cfg: dict, now: float | None = None) -> None:
         return
     now = now if now is not None else time.time()
     for alert_id in expire_old_alerts("crash", max_age_sec, now=now):
-        task_supervisor.supervise(
+        _supervise_background(
             lambda alert_id=alert_id: _dispatch_notification(
                 "crash", "info",
                 f"Crash alert #{alert_id} auto-resolved after {max_age_sec}s with no recurrence", now,
