@@ -56,3 +56,61 @@ def test_connect_enables_wal_mode():
     with candidate_ledger._connect() as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode.lower() == "wal"
+
+
+def test_connect_closes_its_connection(monkeypatch):
+    """Task 8 of docs/superpowers/plans/2026-09-03-persistence-layer-db-
+    migration-implementation.md: candidate_ledger migrates onto services/
+    db.py's closing connect(), same as every other module in this plan.
+    _RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here via Task 3's precedent (tests/test_candidate_log.py)."""
+    import sqlite3
+    from services import candidate_ledger
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(candidate_ledger.db.sqlite3, "connect", _tracking_connect)
+    with candidate_ledger._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_candidates_table():
+    from services import candidate_ledger
+    with candidate_ledger._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "candidates" in tables
+
+
+def test_connect_sets_explicit_busy_timeout_pragma():
+    from services import candidate_ledger
+    with candidate_ledger._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
