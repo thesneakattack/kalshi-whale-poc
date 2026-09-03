@@ -1,82 +1,107 @@
 # Next action
 
-**Start the brainstorming/design cycle from tonight's comprehensive
-architecture audit** (`docs/superpowers/research/2026-09-02-architecture-
-audit-and-rewrite-considerations.md`, PR #430 + follow-up PR #431 —
-`phase:research`, full self-review + independent adversarial review +
-consolidation cycle at both the artifact stage and the PR stage, both GO).
-Direct request, overnight/autonomous session: audit DRY, hand-rolled-vs-
-framework tradeoffs, frontend framework choice, SQLite fitness, trade-
-critical/app-facing decoupling, polling load, comparison against real
-auto-trading systems, an audit of predictionmarketspicks.com's tooling,
-and whether the strategy should target edge/mispricing/confidence/size.
-**Verdict: no full rewrite needed** — every measured defect is localized
-and individually fixable. §13 gives a full prioritized action plan; Tier 1
-(do first, days not weeks): (1) stop polling `/api/quality/summary` and
-the two `tick_executor` routes on their fixed 6s dashboard timers — this
-absorbs and supersedes issue #410's original next-action item below with
-far deeper, corrected live measurement (§2, §4 of the audit); (2) fix 3
-real safety-adjacent DRY bugs found: the unsupervised auto-apply path
-silently skipping human-declined suggestions, `RiskManager` missing a
-zero-bankroll guard `ShadowTrader` already has, and duplicated table DDL
-against live multi-GB `.db` files; (3) a newly-found, previously-
-unreported data-plane defect from the audit's own adversarial review: 237
-`error`-severity `raw_trades` `flush` faults in the last 24h that **drop
-rows outright**, not just contend for a lock — root-cause via
-`superpowers:systematic-debugging` before any DuckDB migration. §14 lists
-several other open design questions this audit deliberately left for a
-human call, including one raised by a same-day, unrelated PR (#429, which
-removed CLAUDE.md's "one SQLite file per concern" mandate): does that
-change what §5's SQLite-fitness recommendations should be?
+**The app is currently watching zero markets and stuck in a 44-minute
+tick — check this before anything else in this file.** Confirmed live
+twice ten minutes apart (2026-09-03 01:16 and 01:26 UTC): `GET
+/api/health/pipeline` returns `markets_watched: 0` and
+`last_tick_duration_sec: 2642.07`, identical across both probes (the tick
+has not completed since, not merely large), 45 of 46 open positions stale
+over 300 s. Full evidence and two uneliminated hypotheses (a genuinely
+empty pinned watchlist right now vs. `market_catalog.db`/`market_history.db`
+possibly unreadable or corrupt — see the malformed-database fault below) in
+`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+§4.7. First step: re-read `/api/health/pipeline` a few minutes apart with
+no other change to rule out "nothing open right now"; if it persists, run
+`PRAGMA integrity_check` (read-only) on `market_catalog.db` and
+`market_history.db` before touching the config below. Only after that,
+decide whether the uncommitted `config/settings.yaml` changes (see next
+paragraph) should be reverted — that is the config owner's call.
 
-**Issue #410's original next-action text (superseded in measurement depth
-by the audit above, not yet fixed in code)**: tick_executor pool
-starvation (`analytics/routes.py`'s `get_candidate_log_summary` and
-`whale_calibration/routes.py`'s `get_confidence_calibration_report`, both
-`await tick_executor.run(...)`, confirmed against current source at
-`analytics/routes.py:103` and `whale_calibration/routes.py:117`). During
-PR #414's own required Task 5 live-validation window (2026-09-01, 16 min,
-real WS traffic, no synthetic load), real browser traffic (nginx access
-log, client `172.18.0.2` via
-`autotrade.webfoundry.dev`) hit **9 upstream timeouts each** on
-`/api/confidence-calibration/report` and `/api/candidate-log/summary` in a
-~4-minute window, correlated with `last_tick_duration_sec` spiking to
-96.56-138.5s (vs. a healthy 4-24s baseline seen earlier in the same run) -
-consistent with these two routes' `tick_executor.run()` calls competing with
-the tick loop's own trading-critical `tick_executor` usage for the same 2
-workers. This likely explains the live symptom directly reported this
-session ("as soon as i start clicking around in the app things start to
-degrade... but they also degrade on their own without any action" - a
-dashboard tab polling either endpoint saturates the pool on its own, user
-interaction compounds it). Full evidence posted to issue #410
-(https://github.com/thesneakattack/kalshi-whale-poc/issues/410#issuecomment-5500274545).
-**Also found in the same window, separate and not yet root-caused:**
-`/api/quality/summary` (services/quality/routes.py) hit 6 timeouts too,
-despite using its own dedicated `_diagnostics_pool.py` (NOT tick_executor,
-per PR #409 Task 8) - should be isolated from this specific mechanism, needs
-its own look before assuming the same cause. **Mechanism note (2026-09-02):**
-`_diagnostics_pool.py` no longer exists - PR #420 replaced it with
-`services/diagnostics/_aio_db.py`, and PR #424 (a separate, later live
-incident on the same route, post-#420) fixed one real unscoped-query cause
-of `/api/quality/summary` slowness. This original 2026-09-01 finding (from
-real WS traffic under `_diagnostics_pool.py`, before either PR existed) was
-never independently re-investigated against the current code path - don't
-assume PR #424 closed it without checking; it addressed a different
-symptom (5-concurrent stalls found live post-#420) via a different
-mechanism than whatever caused these 6 pre-#420 timeouts. Use
-`superpowers:systematic-debugging`: measure real per-call query cost for
-`population_gate_summary()`/`_build_report()` before choosing a fix shape
-(pool isolation vs. query-cost reduction - issue #410's own note is that
-isolation alone may just relocate the slowness if the underlying query is
-also genuinely slow), per the data-plane HARD RULE. Two other follow-ups,
-lower priority: issue #412 (WS reconnect churn - PR #414 already fixed the
-inline-flush mechanism that caused *total* request-silence freezes; #412's
-narrower remaining scope, if any, needs re-assessment against tonight's
-evidence before further investigation, since tonight's residual stalls now
-have a more specific, already-tracked explanation) and issue #411 (a CI
-`push/tests-pytest` failure that didn't reproduce locally or on the
-`pr/tests-pytest` context for the same commit - needs a valid Woodpecker
-token to read the actual log, since the stored one was stale).
+**`market_history.db` shows a corruption-class fault, not just a
+failed-open.** `DatabaseError: database disk image is malformed`, 45
+occurrences, last seen 2026-09-02 20:44:11 UTC (found live, not in the
+original incident sweep below). Run `PRAGMA integrity_check` before any
+further writes to that file; if it reports damage, restore from
+`services/backup/backup.py`'s most recent pre-incident snapshot rather than
+continue writing to a possibly-corrupt file.
+
+**`config/settings.yaml`'s uncommitted working-tree diff has grown to four
+changes**, not the two originally recorded: `kalshi.markets_watchlist_mode:
+merge → exclusive`, `kalshi.max_children_per_parent: 5 → 0`,
+`kalshi.categories` narrowed from ten entries to two (`Crypto`,
+`Commodities`), and the calibration-audit comment block wiped a third time.
+Re-run `git diff config/settings.yaml` to see the current state before
+deciding anything — it may have changed again since this was written.
+
+**Then, pin and fix the file-descriptor leak that took the app down for 6.8 hours
+today, before anything else from either architecture audit** — Tier 0 of
+`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+(§4.1, §8), via `superpowers:systematic-debugging`. What is established
+(log-confirmed, not inferred): at 2026-09-02 08:24 UTC the live uvicorn
+worker hit its 1,024-descriptor limit (`OSError: [Errno 24] Too many open
+files`, 116 log lines); until the 14:45 UTC hot-reload every SQLite open
+failed intermittently across ≥7 components (1,187 `unable to open database
+file`/`readonly database` lines), `capture_writer` took its non-lock *drop*
+path 1,127 times (414 `raw_trades`, 356 `rejection_events`, 357
+`rejected_candidates` batches — sizes unrecoverable, counters reset by the
+reload), `market_history` lost 717 ticker snapshots, outbound Kalshi HTTP
+failed DNS with `[Too many open files]`, `task_supervisor` restarted three
+crashed schedulers, and observability capture has a 408-minute hole with no
+fault row of its own. Nothing tracked it: no issue, no alert
+(`alerting.check_and_alert` monitors three conditions and never reads
+`fault_log`), no mention in this file until now. The replacement worker
+(started 17:32 UTC) held 425–619 fds at 35–40 min of uptime, 366 of them
+`data/*.db` handles (144 on `market_history.db`, 92 `market_catalog.db`, 80
+`signal_log.db`, opened read-write at position 0, only 2 on the matching
+`-wal`). It has recurred at least once since (a live re-sample found the
+descriptor count climbing again), though a third live sample at a longer
+uptime found no incident — the leak looks coupled to diagnostic/API
+request volume, not a fixed wall-clock period; treat it as urgent, not as
+"every N hours" (§4.1's "Recurrence" note). Mechanism candidates and
+falsifiers, in order, are in §4.1: `gc.collect()`-and-recensus
+(traceback/cycle retention), `contextlib.closing` on one of
+`services/title_cache.py`'s five `_connect()` call sites (the
+smallest reproducer, ≥40 handles from one site), the three hand-rolled
+connection caches. Source fact behind all of them: 30 modules define their
+own `_connect()`, 26 never call `close()`, `with sqlite3.Connection` does
+not close. Do not "fix" it by raising `ulimit -n`. Same PR: fd count in
+`/api/health/pipeline` + a `fault_log` row at 80% of `RLIMIT_NOFILE`.
+
+**Then, in this order (second pass §8 Tier 0/1):** fix
+`GET /api/health/faults` so `hours` scopes the `faults` list, not only the
+`summary` (`services/diagnostics/routes.py:489-496` — this label defect is
+why the first audit, its adversarial reviewer, and the previous version of
+this file all reported "237 `raw_trades` faults in the last 24h that drop
+rows": that row is lifetime, last seen 2026-08-30 16:08 UTC, fixed by
+`13680e5` the same day, zero recurrence — **the first audit's Tier-1 item 3
+is closed, not open**); decide whether to backfill the 08:24–14:45 UTC
+`raw_trades` gap from Kalshi REST (your call, `docs/open-decisions.md`);
+give the faults an automated consumer (schedule `tools/soak_analyzer.py`'s
+checks in-process — allowed since PR #429 removed the tooling/app
+separation rule); move observability capture off the loop it measures;
+add stack capture on stall to `loop_watchdog` (the container cannot run
+`py-spy`: no `CAP_SYS_PTRACE`) *before* any stall fix; then the first
+audit's de-polling item — which the nginx access log now shows fixes the
+504 bursts (foreground History tab at 6 s → 411–2,305 per hour; same tab
+browser-throttled to ~1/min → 0–10) and is **not** expected to fix the
+60–130 s event-loop stalls, which occur in every hour regardless of
+dashboard activity (§3.2, §3.3).
+
+**Issue #410's original next-action text (superseded twice — by the first
+audit's measurement and now by the second pass's log evidence; not yet fixed
+in code)**: tick_executor pool starvation on `analytics/routes.py:103` and
+`whale_calibration/routes.py:117,152` (both `await tick_executor.run(...)`,
+still present at `f12bb46`), polled every 6 s by the History tab. The
+"9 upstream timeouts each in a ~4-minute window" finding from 2026-09-01 is
+now a 13-hour access-log series: `/api/candidate-log/summary` 596 × 504 vs
+589 × 200 to the browser; `/api/confidence-calibration/report` 442 vs 519;
+`/api/state` 544 × 504 + 375 × 499. `/api/quality/summary`'s separate
+slowness stands (13.7 s single probe at 17:54 UTC) but the browser fetched
+it only 35 times in 13 hours — it matters as the `CLAUDE.md` "start here"
+endpoint, not as dashboard load. Issues #412 (WS reconnect churn — 11,236
+messages discarded on reconnect in the current 40-minute process; 78,457
+dropped in one capture window at 04Z when the ingest queue hit its 20,000
+cap) and #411 (unreproduced CI push-context failure) are unchanged.
 
 ---
 
@@ -133,6 +158,25 @@ are in `docs/open-decisions.md`'s newest lines.
 is needed for pre-existing root-owned leftovers in other worktrees (see
 below) — `ddev exec -s fastapi` can no longer force through them now that
 it runs as the host user.
+
+## Recently resolved (2026-09-02, architecture-audit second-pass session)
+
+- **Second pass over the architecture audit** (`docs/superpowers/research/
+  2026-09-02-architecture-audit-second-pass.md` + self-review + independent
+  adversarial review + consolidation, `phase:research`; PR number in the
+  merge commit). Direct request: "do another pass ... especially now that
+  Claude's understanding of project rules has changed." Re-derived §5/§8/§9
+  of the first audit under the post-PR-#429/#436 rule set (persistence
+  module now recommended; three "correctly hand-rolled" verdicts reversed on
+  run history; DuckDB downgraded to benchmark-first), re-measured the live
+  app (routes, stalls, whale-pipeline latency, nginx access-log natural
+  experiment, fd census), corrected ten first-audit claims (§5 C1–C10), and
+  found the 6.8-hour fd-exhaustion incident above — which began twenty
+  minutes after the first audit's monitor ended and was mid-flight during
+  that audit's own PR-stage review. Docs only; no code, config, or data
+  changed; `config/settings.yaml`'s working-tree diff left untouched and
+  described in `docs/open-decisions.md`. The first audit is left as merged
+  plus a pointer note at its top.
 
 ## Recently resolved (2026-09-02, overnight autonomous audit session)
 
