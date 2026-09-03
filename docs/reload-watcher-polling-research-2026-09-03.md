@@ -15,22 +15,32 @@ produced it.
 
 ## 1. Polling premise: confirmed independently
 
-**Correction, caught by round-2 adversarial review:** this doc's earlier
-draft claimed issue #513's evidence (PID `981356`, from `docker top`) was
-a host-namespace PID that "does not exist inside the container's PID
-namespace," making its zero-inotify result invalid. That claim was itself
-wrong, unverified when written. `docker inspect -f '{{.State.Pid}}'` on
-this container returns `981356` — the container has no separate init
-process, so container PID 1 *is* host PID 981356, the same process viewed
-through two different `/proc` mount namespaces. The issue's own commands,
-re-run directly against that PID from the host side, return the same valid
-zero this doc found from inside the container. **The issue's evidence was
-never wrong; this doc's claim that it was is the thing that needed
-correcting.** Left visible here rather than silently edited away, same as
-this doc's other corrections. None of this changes the underlying finding
-— zero inotify watches, confirmed from two different namespaces looking at
-the same process — only the framing around whose earlier evidence needed
-fixing.
+**Two corrections layered on each other here, both left visible rather than
+silently edited away, because the second one changes what the first one
+actually established.** This doc's first draft claimed issue #513's PID
+(`981356`, from `docker top`) "does not exist inside the container's PID
+namespace," invalidating its zero-inotify result. Round-2 adversarial
+review corrected that: `docker inspect -f '{{.State.Pid}}'` on this
+container returns `981356` — the container has no separate init process,
+so container PID 1 *is* host PID 981356, the same process viewed through
+two different `/proc` mount namespaces. That much is true and settled.
+
+But round 2 then concluded the issue's *original evidence-gathering
+method* was valid, which doesn't follow from "it's the same process."
+The issue's own commands were run via `docker exec` — *inside* the
+container's own namespace, where `/proc/981356` (the host-side PID number)
+does not exist, only `/proc/1` does. Reproduced directly: `find /proc/
+981356/fd -lname 'anon_inode:inotify'` run inside the container errors
+with "No such file or directory" — no watches were actually checked, the
+command failed against a path that isn't there. Piped through `| wc -l`
+with stderr not redirected to it (as a typical inline shell command would
+be run), that failure's error text never reaches `wc -l`, so it reports
+`0` — a **spurious zero, indistinguishable from a genuine "checked, and
+there are none" result**, exactly the "a retry that succeeds is not
+verification" trap this repo's own HARD RULE names. The conclusion (zero
+inotify watches) is correct and independently confirmed here at container
+PID 1; the original evidence did not actually support it, even though it
+happened to agree with the true answer.
 
 Located and confirmed the process from inside the container independently
 either way:
@@ -484,10 +494,13 @@ blast radius, not a follow-up step on this fix.
 
 ## Summary for whoever picks up the fix/plan stage
 
-- Polling premise: confirmed independently, from inside the container
-  (PID 1) and cross-checked that it's the same process the issue's
-  host-namespace PID 981356 pointed at all along — the issue's own
-  evidence was valid; the *why* is watchfiles'
+- Polling premise: confirmed independently at container PID 1 — the
+  correct answer, but the issue's own original evidence (a `docker exec`
+  check against host-namespace PID 981356, a path that doesn't exist
+  inside the container's own `/proc`) returned a spurious zero rather than
+  a real one, an important distinction from "the evidence was valid,"
+  which round-2 review's own correction got wrong before this final pass;
+  the *why* is watchfiles'
   own blanket `_auto_force_polling()` WSL2-kernel check
   (`watchfiles/main.py:358-367`), not a bind-mount inotify-propagation
   failure as issue #513 stated — falsified directly: inotify works in the

@@ -31,29 +31,55 @@ recheck, per CLAUDE.md's "nothing advances on one pass" HARD RULE.
    surprise: this doc's own round-1-derived claim that issue #513 used an
    invalid PID was itself wrong — the cited host-namespace PID and the
    container's PID 1 are the same process viewed through two different
-   `/proc` mount namespaces, and the issue's original zero-inotify result
-   was valid all along.
-5. This consolidation, with the fix-list recheck below.
+   `/proc` mount namespaces.
+5. **Third correction (autotrade-1d, the issue's own author, after reading
+   the round-2 fix):** round 2's F1 conclusion overreached. "Same process"
+   does not imply "the original evidence-gathering method was valid" —
+   the issue's commands were run via `docker exec`, *inside* the
+   container's own namespace, where `/proc/981356` doesn't exist (only
+   `/proc/1` does). Independently reproduced before touching the doc:
+   running `find /proc/981356/fd -lname 'anon_inode:inotify'` inside the
+   container errors on the missing path; piped through `wc -l` without
+   `2>&1`, that error never reaches the count, so it silently reports
+   `0` — a spurious zero indistinguishable from a genuine "checked, none
+   found" result. §1 rewritten a third time to state the precise, now
+   fully-verified position: the conclusion (zero inotify watches) is
+   correct, independently confirmed at container PID 1; the original
+   evidence did not actually support it, despite agreeing with the true
+   answer.
+6. This consolidation, with the fix-list recheck below.
 
 ## Adjudication
 
-No disagreement between any two review passes to adjudicate on the merits
-— each round's findings were either accepted outright (matching the
-pattern established in round 1) or, in F1's case, corrected a claim this
-doc itself had introduced during round 1's fix, not a disagreement between
-reviewers. Round 2 was explicitly asked to try to overturn round 1's
+One genuine disagreement to adjudicate: round 2's F1 ("the issue's
+original evidence was valid all along") versus the third correction ("the
+conclusion was right, the evidence-gathering method was not"). Resolved on
+the merits, not by which ran last — reproduced the exact command shape
+(`docker exec` targeting the host-namespace PID number from inside the
+container) directly before accepting the third correction, and it does
+produce a spurious zero via the namespace mismatch, confirming round 2's
+F1 conflated "same process" with "valid check" and the third correction is
+the accurate one. Every other finding across both rounds was either
+accepted outright (matching the pattern established in round 1) or, in
+F1's original half, corrected a claim this doc itself had introduced
+during round 1's fix, not a disagreement between reviewers. Round 2 was
+explicitly asked to try to overturn round 1's
 central correction and could not, which is the strongest form of
 confirmation this process can produce for that claim.
 
 ## Round 2 fix-list recheck (item by item, against the current file)
 
-1. **F1 (HIGH) — false "wrong PID" framing.** §1 rewritten: no longer
-   claims issue #513's PID was invalid; states plainly that the
-   host-namespace PID and container PID 1 are the same process, the
-   issue's original result was valid, and this doc's own earlier framing
-   (introduced during the round-1 fix) was the thing that needed
-   correcting. Fixed in both §1's opening paragraphs and the Summary's
-   first bullet.
+1. **F1 (HIGH) — false "wrong PID" framing, then corrected a second time.**
+   §1 rewritten twice: first to state (per round 2) that the host-namespace
+   PID and container PID 1 are the same process and the issue's original
+   result was valid; then, per the third correction, refined further —
+   "same process" is true and kept, but "the original evidence was valid"
+   overreached, since the issue's `docker exec`-run command targeted a PID
+   number that doesn't exist inside the container's own namespace and
+   would return a spurious rather than genuine zero. Final state: the
+   conclusion is correct and independently confirmed at container PID 1;
+   the original evidence-gathering method did not actually support it.
+   Fixed in §1's opening paragraphs and the Summary's first bullet.
 2. **F2 (MEDIUM-HIGH) — §4C/§4D falsely presented as combinable.** §4D
    rewritten to state they're mutually exclusive (`WATCHFILES_POLL_
    DELAY_MS` has zero effect while `force_polling` is off, confirmed
@@ -108,7 +134,11 @@ reload watcher's walk while the container's `working_dir` is `/app`, and
 that the recommended fix is `WATCHFILES_FORCE_POLLING=false` rather than
 `--reload-dir` scoping — and neither could overturn it; round 2 was
 explicitly tasked with trying. Every supporting-detail issue either round
-found has been corrected in the current file. This is ready for the
+found has been corrected in the current file, including a third,
+independently-verified correction to round 2's own F1 (not a new gap
+either review missed, but a genuine disagreement between round 2 and the
+issue's own author, resolved on reproduced evidence rather than
+seniority). This is ready for the
 fix/plan stage to consume: the concrete next action is adding a new
 `environment:` block to `.ddev/docker-compose.fastapi.yaml`'s `fastapi`
 service with `WATCHFILES_FORCE_POLLING=false`, a `ddev restart`, and the
