@@ -223,8 +223,11 @@ def test_stale_local_main_does_not_hide_a_branch_merged_into_origin_main(tmp_pat
 
 
 def test_diverged_local_main_does_not_abort_the_sweep(tmp_path):
-    """4f35ea5: the courtesy ff-only merge of local main failing must not kill the whole
-    script under set -e before the loop starts."""
+    """4f35ea5 originally guarded the courtesy ff-only merge's `|| true` against
+    aborting the script under set -e. #535 removed that merge entirely (it was
+    silently deploying the live app - see the notice tests below), so this now
+    retargets to what replaced it: a diverged local main gets a diverged notice
+    and is never pulled, and the sweep still completes."""
     primary, wt, env = _setup(tmp_path)
     clone = tmp_path / "clone"
     _git(["clone", "-q", "-b", "main", str(tmp_path / "origin.git"), str(clone)], tmp_path)
@@ -237,9 +240,84 @@ def test_diverged_local_main_does_not_abort_the_sweep(tmp_path):
     (primary / "local.txt").write_text("l\n")
     _git(["add", "local.txt"], primary)
     _git(["commit", "-q", "-m", "local work"], primary)
+    before = _git(["rev-parse", "main"], primary)
     r = _run(primary, env)
     assert r.returncode == 0, r.stderr
     assert "removed: feat/x" in r.stdout and not wt.exists()
+    assert _git(["rev-parse", "main"], primary) == before, "local main must not be pulled"
+    assert "diverged from origin/main (1 ahead, 1 behind)" in r.stderr
+
+
+def test_script_never_advances_local_main_and_reports_how_far_behind(tmp_path):
+    """#535: the removed fast-forward was an unannounced deploy - a .py-touching
+    pull in the primary (ddev's bind mount) fires uvicorn --reload. The script
+    must never move local main, in either mode, and must say how far behind it
+    is instead of pulling silently."""
+    primary, wt, env = _setup(tmp_path)
+    before = _git(["rev-parse", "main"], primary)
+    clone = tmp_path / "clone2"
+    _git(["clone", "-q", "-b", "main", str(tmp_path / "origin.git"), str(clone)], tmp_path)
+    _git(["config", "user.email", "t@example.com"], clone)
+    _git(["config", "user.name", "T"], clone)
+    (clone / "remote2.txt").write_text("r2\n")
+    _git(["add", "remote2.txt"], clone)
+    _git(["commit", "-q", "-m", "remote-only work"], clone)
+    _git(["push", "-q", "origin", "main"], clone)
+
+    r_dry = _run(primary, env, "--dry-run")
+    assert r_dry.returncode == 0, r_dry.stderr
+    assert _git(["rev-parse", "main"], primary) == before
+    assert "local main is 1 commit(s) behind origin/main - not pulling" in r_dry.stderr
+
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert _git(["rev-parse", "main"], primary) == before
+    assert "local main is 1 commit(s) behind origin/main - not pulling" in r.stderr
+    assert "uvicorn --reload" in r.stderr and "merge --ff-only origin/main" in r.stderr
+
+
+def test_no_behind_notice_when_local_main_is_already_current(tmp_path):
+    primary, wt, env = _setup(tmp_path)
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "behind origin/main" not in r.stderr and "diverged" not in r.stderr
+
+
+def test_no_upstream_branch_with_stale_local_head_is_still_removed(tmp_path):
+    """AR-3/AR-4 gate (2026-09-03 adversarial review of #535's fix): feat/x is
+    pushed without -u in _setup(), so it has no configured upstream. With the
+    fast-forward removed, git branch -d's fallback-to-HEAD check would refuse
+    once local main no longer contains feat/x's tip (open-decisions #35's live
+    incident shape), aborting the sweep after the worktree is already gone.
+    -D trusts the script's own merge-base --is-ancestor proof against
+    refs/remotes/origin/main (already fresh from the fetch) instead of
+    re-deriving a weaker one from HEAD."""
+    primary, wt, env = _setup(tmp_path)
+    initial = _git(["rev-list", "--max-parents=0", "HEAD"], primary)
+    _git(["reset", "--hard", initial], primary)
+    r = _run(primary, env)
+    assert r.returncode == 0, r.stderr
+    assert "removed: feat/x" in r.stdout and not wt.exists()
+    assert "feat/x" not in _branches(primary)
+
+
+def test_a_branch_whose_tip_has_commits_not_yet_in_origin_main_is_kept_even_with_a_merged_pr(tmp_path):
+    """AR-3: under -D, this refusal ('branch has commits not yet in main', :252-253)
+    is the ONLY guard left between a gh-reported MERGED PR and deleting commits
+    that aren't actually in origin/main yet - unlike -d, -D has no independent
+    merge check of its own to fall back on."""
+    primary, wt, env = _setup(tmp_path)
+    (wt / "y.txt").write_text("y\n")
+    _git(["add", "y.txt"], wt)
+    _git(["commit", "-q", "-m", "unmerged followup"], wt)
+
+    r = _run(primary, env, "--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert "keeping: feat/x (branch has commits not yet in main)" in r.stdout
+
+    r2 = _run(primary, env)
+    assert r2.returncode == 0, r2.stderr
+    assert wt.exists() and "feat/x" in _branches(primary) and "0 removed, 1 kept" in r2.stdout
 
 
 def test_undeletable_cache_falls_back_to_ddev_and_leaves_no_dangling_worktree(tmp_path):
