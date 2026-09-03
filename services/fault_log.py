@@ -75,6 +75,18 @@ def _connect():
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     try:
+        # busy_timeout FIRST, before journal_mode (issue #543 follow-up:
+        # found by testing the concurrency fix, not reasoned out in
+        # advance): converting a fresh database to WAL mode itself needs
+        # exclusive access, so on a database no connection has ever opened
+        # in WAL mode yet, multiple threads racing to connect for the first
+        # time can have every statement past the first one fail with
+        # "database is locked" - including this PRAGMA itself - if
+        # busy_timeout isn't already in effect. A connection's busy_timeout
+        # defaults to 0 (fail instantly) until this statement runs, so it
+        # must be the very first thing executed on any new connection, not
+        # the second. Same 5000ms default services/db.py already uses.
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             """
@@ -130,21 +142,63 @@ def _ensure_null_exc_type_dedup_index(conn: sqlite3.Connection) -> None:
     it succeeds, either the index already exists (near-every call, negligible
     cost) or the database was already clean. Only on IntegrityError -
     meaning duplicates are actually present - does this run the one-time
-    merge below and retry; every _connect() after that first successful
-    creation takes the fast IF NOT EXISTS path forever, since the previously
-    running app process cannot be pointed at two different data/fault_log.db
-    files at once."""
+    merge below and retry.
+
+    Both statements below carry `IF NOT EXISTS` - not just the first
+    (independent adversarial review of this fix, must-fix #1, 2026-09-03):
+    `fault_log.record_fault()` genuinely runs from concurrent OS threads,
+    not just interleaved coroutines - `loop_watchdog.py`'s stall capture
+    dispatches it via `asyncio.to_thread`, and `GET /api/health/faults`
+    (diagnostics/routes.py) does the same for `summary()`/`recent()`. Two
+    threads can both observe the pre-fix duplicates and both raise
+    IntegrityError on their first attempt before either commits a fix; both
+    then run the (idempotent - a second pass over an already-merged table
+    finds nothing `HAVING COUNT(*) > 1`) merge, and without IF NOT EXISTS
+    here, the thread that loses the race hits `CREATE UNIQUE INDEX` on an
+    index the winner already created, raising `OperationalError` (not
+    `IntegrityError` - not caught by the `except` above, escaping to the
+    caller's broad `except Exception` and silently dropping that one
+    `record_fault()`/`summary()`/`recent()` call).
+
+    `BEGIN IMMEDIATE` around the merge+retry (found the hard way: fixing
+    must-fix #1 above alone made the *first* race's symptom - a silently
+    dropped call - go away, but a second, subtler race was still there,
+    caught by running this fix's own new concurrency test rather than
+    assuming green meant done): `_merge_duplicate_null_exc_type_rows`'s
+    first statement, `CREATE TEMP TABLE ... AS SELECT`, is DDL - confirmed
+    directly that Python's sqlite3 module does not open a transaction for
+    DDL (`conn.in_transaction` stays `False` across it, unlike DML) - so
+    its `SUM(count)`/`MAX(last_seen)` read was not atomic with the UPDATE/
+    DELETE that use it. Two connections could both read the same pre-merge
+    duplicate rows, both compute the same aggregate, and the second one to
+    write would overwrite rather than add to the first one's numbers -
+    undercounting silently, no exception at all (reproduced directly: 8
+    concurrent threads against 20 pre-existing rows landed on 21 or 23
+    instead of 28 in roughly 1 of 8 real trials before this fix). `BEGIN
+    IMMEDIATE` takes the write lock before the read, so the read-then-write
+    below runs as one atomic unit against every other writer - the
+    `busy_timeout` set in `_connect()` above is what this waits on instead
+    of failing instantly when another connection already holds that lock.
+    Verified empirically (dozens of trials, exact count every time) after
+    this fix - see `test_concurrent_first_writes_after_upgrade_do_not_
+    lose_a_call` in tests/test_fault_log.py, which catches both races."""
     try:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_dedup_null_exc_type "
             "ON faults (component, operation, message) WHERE exc_type IS NULL"
         )
     except sqlite3.IntegrityError:
-        _merge_duplicate_null_exc_type_rows(conn)
-        conn.execute(
-            "CREATE UNIQUE INDEX idx_faults_dedup_null_exc_type "
-            "ON faults (component, operation, message) WHERE exc_type IS NULL"
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _merge_duplicate_null_exc_type_rows(conn)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_dedup_null_exc_type "
+                "ON faults (component, operation, message) WHERE exc_type IS NULL"
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
@@ -182,6 +236,15 @@ def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
         WHERE id IN (SELECT keeper_id FROM _fault_dedupe_merge)
         """
     )
+    # `IS`, not `=`, for message (should-fix #2, adversarial review): the
+    # `message` column has no NOT NULL constraint, and SQL `=` against a
+    # NULL is never true - a NULL-message duplicate group would inflate the
+    # keeper's count in the UPDATE above but then never get its extra rows
+    # deleted here, double-counting. Currently unreachable in practice
+    # (record()/record_fault() both pass message through str(), so a
+    # caller's None becomes the literal string "None", never a real SQL
+    # NULL - confirmed live: 0 rows have message IS NULL today) but the
+    # column itself doesn't guarantee that, and `IS` costs nothing here.
     conn.execute(
         """
         DELETE FROM faults
@@ -190,7 +253,7 @@ def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
           AND EXISTS (
               SELECT 1 FROM _fault_dedupe_merge m
               WHERE m.component = faults.component AND m.operation = faults.operation
-                AND m.message = faults.message
+                AND m.message IS faults.message
           )
         """
     )

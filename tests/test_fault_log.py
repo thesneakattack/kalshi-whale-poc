@@ -384,6 +384,92 @@ def test_pre_existing_duplicate_null_exc_type_rows_are_merged_on_first_connect(m
     assert fl.recent(component="loop_watchdog")[0]["count"] == 52
 
 
+def test_concurrent_first_writes_after_upgrade_do_not_lose_a_call(monkeypatch, tmp_path):
+    """Found by independent adversarial review of this fix (must-fix #1,
+    2026-09-03): fault_log.record_fault runs from genuine concurrent OS
+    threads, not just interleaved coroutines - loop_watchdog.py dispatches
+    its stall capture via asyncio.to_thread(fault_log.record_fault, ...),
+    and GET /api/health/faults (diagnostics/routes.py) does the same for
+    summary()/recent(). Against a legacy database with pre-existing
+    duplicates, two threads can both see the initial CREATE UNIQUE INDEX
+    IF NOT EXISTS raise IntegrityError before either commits a fix; both
+    then run the (idempotent) merge, and both retry creating the index -
+    the thread that loses the race must not have its call silently
+    dropped by an unguarded second CREATE UNIQUE INDEX raising
+    OperationalError (uncaught by the narrow `except sqlite3.
+    IntegrityError`, swallowed instead by the caller's broad `except
+    Exception` - a completeness violation, not a crash), nor by a lost-
+    update in the merge's own SUM(count) (found testing this fix, not
+    assumed - see _merge_duplicate_null_exc_type_rows' docstring). This
+    reproduced directly (not assumed) as part of the review, and
+    reproduces here too if the retry's IF NOT EXISTS or the merge's BEGIN
+    IMMEDIATE is ever dropped.
+
+    The seed connection sets WAL mode itself before writing the legacy
+    duplicates, deliberately - not a formality. Converting a database to
+    WAL mode for the first time needs exclusive access, and every real
+    `data/fault_log.db` has been in WAL mode for its entire life (set once,
+    ages ago, by whichever connection touched it first - it's a persistent
+    property of the file, confirmed by reading SQLite's own docs, not
+    reset per-connection). A database that's never been opened even once
+    hitting 8-way concurrency on its very first connection is a different,
+    pre-existing bug this fix didn't introduce (confirmed reproducible on
+    unmodified origin/main too, filed separately as issue #549, out of
+    scope for issue #543) - bootstrapping WAL mode here keeps this test
+    isolated to the one race this PR is actually responsible for."""
+    import threading
+
+    db_path = tmp_path / "race.db"
+    monkeypatch.setattr(fl, "DB_PATH", db_path)
+
+    seed = sqlite3.connect(db_path)
+    seed.execute("PRAGMA journal_mode=WAL")
+    seed.execute(
+        """
+        CREATE TABLE faults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL, operation TEXT NOT NULL, severity TEXT NOT NULL,
+            exc_type TEXT, message TEXT, first_traceback TEXT, context TEXT,
+            count INTEGER NOT NULL DEFAULT 1, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            UNIQUE (component, operation, exc_type, message)
+        )
+        """
+    )
+    now = time.time()
+    for i in range(20):
+        seed.execute(
+            "INSERT INTO faults (component, operation, severity, exc_type, message, "
+            "count, first_seen, last_seen) VALUES (?,?,?,?,?,1,?,?)",
+            ("loop_watchdog", "stall", "warn", None, "stalled", now - (20 - i), now - (20 - i)),
+        )
+    seed.commit()
+    seed.close()
+
+    n_threads = 8
+    barrier = threading.Barrier(n_threads)
+    results: list[bool] = []
+    results_lock = threading.Lock()
+
+    def _write():
+        barrier.wait()  # force every thread to hit the pre-fix duplicates together
+        result = fl.record_fault("loop_watchdog", "stall", "stalled")
+        with results_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=_write) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(results) == n_threads, "a thread never returned - deadlock or unhandled crash"
+    assert all(results), f"a concurrent write was silently dropped (returned False): {results}"
+
+    row = fl.recent(component="loop_watchdog")[0]
+    assert row["count"] == 20 + n_threads, \
+        "every pre-existing row and every concurrent write must be accounted for exactly once"
+
+
 def test_record_fault_tb_defaults_to_none_for_every_existing_caller():
     """Every one of this function's other 10+ call sites omits tb - this
     pins that omitting it still behaves exactly as before (first_traceback
