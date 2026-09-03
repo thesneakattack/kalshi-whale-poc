@@ -255,18 +255,74 @@ def _widgets(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS widgets (id INTEGER PRIMARY KEY)")
 
 
+class _RecordingConnection:
+    """Wraps a real sqlite3.Connection to track close() calls without
+    mutating the connection object itself.
+
+    **Correction applied 2026-09-03, after this plan's own Task 1 was
+    implemented (PR #518)**: this document's first draft monkeypatched
+    `conn.close` directly on a real `sqlite3.Connection` instance
+    (`conn.close = lambda: ...`) - that raises `AttributeError:
+    'sqlite3.Connection' object attribute 'close' is read-only` on this
+    container's Python (3.13, confirmed empirically via TDD's own RED step
+    while implementing this exact task, not assumed). This repo already has
+    a working, already-merged pattern for this shape
+    (`tests/test_signal_log.py`'s `test_connect_closes_its_connection`,
+    Tier 0's own Task 5): wrap the real connection instead of mutating it,
+    delegate everything else via `__getattr__`, and also delegate
+    `__enter__`/`__exit__` since `db.connect()`'s body does `with conn:` for
+    its own commit/rollback semantics (the fd-closing `finally: conn.
+    close()` is a separate, outer step). Every "closes its connection" test
+    in this plan (Tasks 1, 3-13) uses this same wrapper - defined once per
+    test file, since each task targets a different test module."""
+
+    def __init__(self, inner, closed: list):
+        self._inner = inner
+        self._closed = closed
+
+    def close(self):
+        self._closed.append(True)
+        self._inner.close()
+
+    def __enter__(self):
+        self._inner.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._inner.__exit__(*exc_info)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _closing_sqlite_connect(closed: list, *, real_connect=None):
+    """real_connect defaults to sqlite3.connect - but by test time that name
+    already refers to tests/support/runtime_isolation.py's own
+    _guarded_connect (installed once, repo-wide, at collection time), not
+    the true unwrapped function. That's fine for every test in this task
+    except the corrupted-file one below: _guarded_connect does its own
+    conn.execute("PRAGMA synchronous=OFF") immediately inside itself, so a
+    corrupted file's DatabaseError fires there - before this wrapper ever
+    gets a connection to attach close-tracking to, and before db.py's own
+    conn = sqlite3.connect(db_path) line (deliberately outside its try:)
+    even returns. Real, unwrapped sqlite3.connect() is lazy (verified
+    directly during this task's own implementation, PR #518: it does not
+    touch the file's contents at all, only the first real execute() does) -
+    production is unaffected, only this specific test's simulation of
+    "connect against a corrupted file" needs the true original to
+    accurately reproduce that laziness."""
+    real_connect = real_connect or sqlite3.connect
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs), closed)
+
+    return _tracking_connect
+
+
 def test_connect_closes_on_normal_exit(tmp_path, monkeypatch):
     _fresh_registry(monkeypatch)
     closed = []
-    real_connect = sqlite3.connect
-
-    def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
-
-    monkeypatch.setattr(db.sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(db.sqlite3, "connect", _closing_sqlite_connect(closed))
     with db.connect(tmp_path / "t.db") as conn:
         conn.execute("SELECT 1")
     assert closed == [True]
@@ -275,15 +331,7 @@ def test_connect_closes_on_normal_exit(tmp_path, monkeypatch):
 def test_connect_closes_even_on_exception(tmp_path, monkeypatch):
     _fresh_registry(monkeypatch)
     closed = []
-    real_connect = sqlite3.connect
-
-    def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
-
-    monkeypatch.setattr(db.sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(db.sqlite3, "connect", _closing_sqlite_connect(closed))
     with pytest.raises(ValueError):
         with db.connect(tmp_path / "t.db") as conn:
             raise ValueError("caller-side failure")
@@ -295,15 +343,7 @@ def test_connect_closes_on_setup_failure_before_yield(tmp_path, monkeypatch):
     yield (here, a schema init_fn that raises) must not leak the connection."""
     _fresh_registry(monkeypatch)
     closed = []
-    real_connect = sqlite3.connect
-
-    def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
-
-    monkeypatch.setattr(db.sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(db.sqlite3, "connect", _closing_sqlite_connect(closed))
 
     def _boom(conn: sqlite3.Connection) -> None:
         raise RuntimeError("schema init failed")
@@ -396,19 +436,15 @@ def test_connect_on_corrupted_db_file_still_closes(tmp_path, monkeypatch):
     market_history/record_snapshot_from_ticker, DatabaseError 'database disk
     image is malformed,' 2026-09-02 18:21-20:44 UTC. The exception must
     propagate through finally: conn.close() the same as any other exception."""
+    from tests.support.runtime_isolation import _original_connect
+
     _fresh_registry(monkeypatch)
     bad = tmp_path / "corrupt.db"
     bad.write_bytes(b"not a sqlite file" * 100)
     closed = []
-    real_connect = sqlite3.connect
-
-    def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
-
-    monkeypatch.setattr(db.sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(
+        db.sqlite3, "connect", _closing_sqlite_connect(closed, real_connect=_original_connect)
+    )
     with pytest.raises(sqlite3.DatabaseError):
         with db.connect(bad) as conn:
             conn.execute("SELECT * FROM sqlite_master")
@@ -805,15 +841,37 @@ Add to `tests/test_candidate_log.py` (reuse the existing `_redirect_db` fixture)
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch, _redirect_db):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(cl.db.sqlite3, "connect", _tracking_connect)
     with cl._connect() as conn:
@@ -951,15 +1009,37 @@ Add to `tests/test_series_watcher.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(sw.db.sqlite3, "connect", _tracking_connect)
     with sw._connect() as conn:
@@ -1113,15 +1193,37 @@ Add to `tests/test_observability.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(obs.db.sqlite3, "connect", _tracking_connect)
     with obs._connect() as conn:
@@ -1233,15 +1335,37 @@ Add to `tests/test_risk_manager.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(rm.db.sqlite3, "connect", _tracking_connect)
     tracker = rm.RiskManager(db_path=tmp_path / "rm.db")
@@ -1372,15 +1496,37 @@ Add to `tests/test_paper_broker.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(pb.db.sqlite3, "connect", _tracking_connect)
     broker = pb.PaperBroker(db_path=tmp_path / "pb.db")
@@ -1479,15 +1625,37 @@ Add to `tests/test_candidate_ledger.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(candidate_ledger.db.sqlite3, "connect", _tracking_connect)
     with candidate_ledger._connect() as conn:
@@ -1784,15 +1952,37 @@ Add to `tests/test_coordination_engine.py`:
 
 ```python
 def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
     import sqlite3
+
     closed = []
     real_connect = sqlite3.connect
 
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def _tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        real_close = conn.close
-        conn.close = lambda: (closed.append(True), real_close())[-1]
-        return conn
+        return _RecordingConnection(real_connect(*args, **kwargs))
 
     monkeypatch.setattr(ce.db.sqlite3, "connect", _tracking_connect)
     with ce._connect() as conn:
