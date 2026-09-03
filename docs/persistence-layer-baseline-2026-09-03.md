@@ -7,14 +7,19 @@ current `_connect()` implementation patterns. All findings below are read
 directly from source, the live app's `/api/health/pipeline`, and
 `data/fault_log.db` — nothing here is inferred or assumed.
 
-## 1. `_connect()` implementation patterns across the 38 modules
+## 1. `_connect()` implementation patterns across the 39 modules
 
-`grep -rl 'def _connect\|sqlite3.connect' services/ tools/ main.py` finds 38
-files with their own connection logic (37 real modules + one README). Every
+`grep -rl 'def _connect\|sqlite3.connect' services/ tools/ main.py` finds 40
+files with their own connection logic (39 real modules + one README). Every
 file was individually checked (not just grep-shape-matched) for whether its
-connection actually gets closed. Four distinct patterns exist:
+connection actually gets closed. Four distinct patterns exist. (Self-review
+correction, 2026-09-03: the original version of this doc said "38 files, 37
+real modules" here — its own four buckets below already summed to 39, not
+37; this header never matched the body it introduced. Re-ran the grep fresh
+during self-review rather than trusting the original count: 40 total is
+current and correct, and the four buckets below sum to 39 exactly.)
 
-- **Leaking — fresh connection per call, `with conn:` only, never closed (25
+- **Leaking — fresh connection per call, `with conn:` only, never closed (26
   modules)**: `conn = sqlite3.connect(db_path); with conn: ...`, no
   `conn.close()` anywhere near it. This is a real fd leak, not a style
   choice — Python's `sqlite3.Connection.__exit__` commits or rolls back the
@@ -60,8 +65,10 @@ connection actually gets closed. Four distinct patterns exist:
   persistent `aiosqlite.Connection` per (event loop, db_path) pair — a real,
   already-working pooling precedent the new `db.py` could model itself on.
 
-**Net: 25 modules (24 in `services/`, 1 in `tools/`) still carry the exact
-leak pattern Tier0 fixed in only 5**, plus 2 files (`backup.py`,
+**Net: 26 modules (25 in `services/`, 1 in `tools/`) still carry the exact
+leak pattern Tier0 fixed in only 5** (self-review correction: the original
+"25 (24 services, 1 tools)" undercounted its own listed names by one — the
+list above already names 25 services/ modules, not 24), plus 2 files (`backup.py`,
 `store_stats.py`) that are split — half-fixed already, half still leaking.
 This is the single largest structural finding for the migration's impact
 estimate — a unified `db.py` needs to either close-on-exit by construction
@@ -143,7 +150,7 @@ to without adding it.
 
 ## Summary for the implementation plan
 
-- The leak pattern Tier0 fixed in 5 modules is structurally present in 25
+- The leak pattern Tier0 fixed in 5 modules is structurally present in 26
   more (plus 2 split-pattern files, half-fixed already) — the migration
   should treat "close on exit by construction" as a correctness requirement
   of the new `db.py`, not an optional improvement, given it's already
