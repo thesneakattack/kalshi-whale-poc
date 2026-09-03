@@ -115,18 +115,47 @@ calibration window is, in practice, capped at ~7 days by retention — worth
 flagging on its own, since it bounds how far back *any* future
 calibration measurement can ever look, not just this one.
 
-The exemplar markets named in the original draft (`KXGOLD15M`,
-`KXSILVER15M`, `KXETHD-...`) were also wrong — re-checked per-family, they
-are actually reasonably well covered (`KXGOLD15M` and `KXSILVER15M` both
-~62-64% covered, only 23-25% genuinely zero-snapshot). The real
-within-retention coverage gap concentrates in `KXMVECROSSCATEGORY`
-(16.1% of all misses, **100% zero-snapshot at every age** — a distinct
-failure from either retention or fast rotation) and the sports-match
-families (`KXATPMATCH`, `KXMLBGAME`, `KXWTAMATCH`, `KXATPCHALLENGERMATCH`
-— collectively ~47% of all misses, 83-99% zero-snapshot). This is a real,
-separate finding worth its own follow-up (why these specific families
-never get a first `market_history` snapshot at all, as distinct from the
-general retention-boundary effect), out of scope to fix here. It is *not*
+**Correction, second pass — round-2 adversarial review caught this doc's
+own first correction repeating the exact mistake it was fixing:** the
+prior version of this paragraph replaced the wrong exemplars with a new
+set, but sourced their "share of misses" and "zero-snapshot" figures from
+the **all-window** (30-day) population while labeling them a
+**within-retention** finding — the same volume-vs-coverage-rate
+conflation the retention correction above exists to prevent, since
+"has this ticker ever had a snapshot" is itself partly a retention
+measurement, and a family's all-window zero-snapshot rate can look far
+worse than its actual within-retention rate.
+
+Re-measured restricted specifically to signals ≤7 days old (the only
+population where "no p_pre" isn't explainable by retention alone):
+
+| family | share of within-retention (≤7d) misses | zero-snapshot, within-retention |
+|---|---|---|
+| `KXGOLD15M` | **30.1% — the largest single contributor** | 22.8% |
+| `KXMVECROSSCATEGORY` | 20.6% | **100.0% — genuine, at every age** |
+| `KXATPMATCH` | 5.9% | 23.9% |
+| `KXWTAMATCH` | 2.6% | 44.6% |
+| `KXATPCHALLENGERMATCH` | 3.6% | 55.7% |
+| `KXMLBGAME` | 3.0% | 23.1% |
+| `KXETHD` | — | 26.8% (51.2% covered — worse than gold/silver, not in the same tier) |
+
+Two genuinely distinct things, not one: **`KXGOLD15M` is the single
+largest *volume* contributor to the within-retention gap** — not because
+it's poorly covered per-signal (22.8% zero-snapshot is a moderate rate),
+but because it generates far more signals than any other family, so even
+a moderate miss rate produces the largest absolute count. It does **not**
+belong on a "well covered, drop from the exemplar list" list, which the
+prior draft wrongly put it on. **`KXMVECROSSCATEGORY` is the worst
+*per-signal coverage* — 100% zero-snapshot at every age, a real,
+qualitatively different failure** (every signal on this family's tickers
+lacks history, not just old ones). The sports-match families' apparent
+80-99% zero-snapshot rates in the all-window view were mostly a retention
+artifact — restricted to ≤7d, their actual coverage is meaningfully
+better (23.9-55.7% zero-snapshot) than the all-window figures suggested,
+though still not good. This is a real, separate finding worth its own
+follow-up (why `KXGOLD15M`'s sheer volume and `KXMVECROSSCATEGORY`'s
+complete lack of coverage both persist within the retention window), out
+of scope to fix here. It is *not*
 what drives §3's fail-open rate, though — see §3's own note on why that
 section isn't contaminated by the retention mechanism.
 
@@ -148,37 +177,56 @@ neutral pass-through.** `q_pre_now` is `unit_cost` at the most recent
 `market_history` snapshot at or before `as_of - edge_gate_pre_print_
 offset_sec` (10s), itself accepted up to `edge_gate_p_pre_max_age_sec`
 (600s) stale — so in practice `q_pre_now` can reflect a price up to ~610s
-before the print, not a clean "10 seconds before," and given §1's coverage
-sparsity many real `q_pre` values sit near that stale end; `ask_now` is
-the unit cost the trade would actually pay. Since `delta=0.0` means "no
-measured edge from being right about direction," the gate falls back to
-demanding the price already moved the trader's way before it will admit
-the trade — the opposite of "chasing" a print, though a looser reading of
-"since the pre-print snapshot" than the clean 10-second framing suggests.
-The margin required is `fee + min_edge`, not a flat number: `fee =
+before the print, not a clean "10 seconds before." **Correction, caught by
+round-2 adversarial review: the prior version of this sentence speculated
+"many real `q_pre` values sit near that stale end" without measuring it —
+false.** Measured over the §1 attached population (n≈51,900): median
+staleness is 17.4s, p90 43.6s, p99 199.9s, with 0% exceeding the 600s
+ceiling — the ~610s bound is real but rarely approached; in practice this
+is close to the clean "10 seconds before" framing, not a loose one.
+`ask_now` is the unit cost the trade would actually pay. Since `delta=0.0`
+means "no measured edge from being right about direction," the gate falls
+back to demanding the price already moved the trader's way before it will
+admit the trade — the opposite of "chasing" a print. The margin required
+is `fee + min_edge`, not a flat number: `fee =
 taker_fee_per_contract(price, ticker) + 0.005`, so the floor is ~0.045 at
-the cheapest/priciest contracts and closer to ~0.06 within the CLAUDE.md-
-flagged 0.60-0.95 band specifically, where the per-contract fee itself is
-larger.
+the cheapest/priciest contracts; within the CLAUDE.md-flagged 0.60-0.95
+band it isn't a single value either — closer to ~0.062 at the 0.60 end and
+back down near the ~0.045 floor by 0.95, since the per-contract fee itself
+varies across that range rather than sitting at one number.
 
 **Correction, caught by adversarial review: this doesn't only matter as a
 hypothetical.** The doc's first draft claimed "neither condition [`category
 is None`, or an under-sized cell] is currently occurring for any real
 cell, per §1" — §1 only established the second half (0 existing cells
-below the floor). It said nothing about `category is None`, which §1's own
-numbers show is common: **81.7% of p_pre-attached signals have no
-`trade_category` row at all.** A third case also exists that neither draft
-named: a `(category, price_band)` combination that simply has zero rows
-attached returns the same 0.0 fallback (`confidence_calibration.py:479`'s
-`_delta_cache.get(..., 0.0)`) — `trade_category.db` has categories
-(`Climate and Weather`, `Economics`, `Entertainment`) that never produce a
-cell at all. **Correct, narrower statement: no *existing* (category,
-price_band) cell is under-sized, but a live signal with no category, or
-one in a category that's never formed a cell, hits this strict filter
-right now** — not a hypothetical confined to "a brand-new category." §3's
-own "0 uncalibrated hits among 121 evaluable trades" is the actual
-empirical check that this isn't currently biting the trades that make it
-past the earlier fail-open filters, and that finding stands.
+below the floor). It said nothing about `category is None`, and §1's own
+81.7%-no-category figure was then wrongly carried into this section as if
+it described live runtime risk. **Second correction, caught by round-2
+review: that 81.7% is an artifact of `trade_category.db` specifically —
+the offline table `recompute_deltas`'s own attachment recipe queries — not
+a measure of what the live gate actually sees.** The live gate's category
+comes from a different, denser source: `state["event_titles"]` via
+`category = event_info.get("category")` (`services/whale_stream/
+decision_bridge.py:104-105`), which supplies a category for roughly 73.3%
+of the same signal population versus `trade_category.db`'s 28.3% — so the
+live no-category rate is closer to **~27%, not ~82%**. A third case also
+exists that no draft named until now: a `(category, price_band)`
+combination that simply has zero rows attached returns the same 0.0
+fallback (`confidence_calibration.py:479`'s `_delta_cache.get(..., 0.0)`)
+— `trade_category.db` has categories (`Climate and Weather`, `Economics`,
+`Entertainment`) that never produce a cell at all, and this part of the
+finding is unaffected by the category-source correction above, since the
+delta cache itself is built from the offline table regardless of which
+source the *live* category lookup uses. **Correct, narrower statement: no
+*existing* (category, price_band) cell is under-sized, but a live signal
+with no category (~27% of the time, not ~82%), or one in a category
+that's never formed a cell, hits this strict filter right now** — a real,
+current condition, just at roughly a third of the rate this section
+originally implied. §3's own "0 uncalibrated hits among 121 evaluable
+trades" is the actual empirical check that this isn't currently biting
+the trades that make it past the earlier fail-open filters, and that
+finding stands regardless of which category source is used — §3's own
+methodology note (below) confirms 0 verdict flips between the two.
 
 ## 3. Headline number: how many of the recent trades would the gate reject
 
@@ -202,15 +250,28 @@ Simulated `_edge_gate_check`'s exact math per trade using **today's**
 calibration state (the real question a flip-the-switch-now decision needs:
 would enabling the gate right now have rejected these), not a
 point-in-time-historical recalibration. One disclosed methodological
-substitution, caught by adversarial review: this simulation attaches
-category via `trade_category.categories_for_tickers` (the same source §1
-uses), while the live gate's runtime category actually comes from
-`market_lookup._category_by_ticker()` (`decision_bridge.py:125`, an
-in-memory map built from `event_titles`) — same vocabulary, but with
-materially denser real-time coverage than the DB table. No practical
-divergence found in this run (0 of the evaluable trades hit a delta=0.0
-fallback either way), but a live-enabled gate would see more categorized
-signals than this offline simulation does.
+substitution: this simulation attaches category via `trade_category.
+categories_for_tickers` (the same source §1 uses), while the live gate's
+runtime category actually comes from `state["event_titles"]` via
+`category = event_info.get("category")` (`services/whale_stream/
+decision_bridge.py:104-105`, set before the whale-signal path calls into
+`_validate_entry_price` at `:125` — **correction, citation fixed by
+round-2 adversarial review: the original draft named
+`market_lookup._category_by_ticker()`, which is real but is used on the
+*fill*-confirmation paths (`:177, :200`), not the signal-evaluation path
+this doc's simulation actually mirrors**) — same vocabulary either way,
+but with materially denser real-time coverage than the offline DB table
+(§2: ~73.3% category coverage live vs. 28.3% from `trade_category.db`).
+Round-2 adversarial review re-ran this simulation with the live-style
+category source substituted in directly and reported **0 verdict flips**
+— every trade that was evaluable and admitted/rejected under the offline
+category source got the identical verdict under the denser live-style
+source, confirming the "no practical divergence" claim empirically rather
+than resting on the 0-fallback count alone. (Not independently re-run a
+third time here — `state["event_titles"]` is live, in-memory app state,
+not something a standalone offline script can query the way it can query
+a `data/*.db` file, so this specific check depends on however the
+reviewer accessed it; noted as attributed rather than re-verified.)
 
 ```
 total entry trades checked:                        319
@@ -356,34 +417,47 @@ So `realized_pnl` subtracts both the entry fee and the exit fee from that
 gross figure; every number below is **net of both trading fees**,
 commensurable with the gate's own fee-inclusive `edge` criterion.
 
-Independently reproduced (not just taken from the adversarial review) on a
-slightly later snapshot of the same live data:
+Independently reproduced on a slightly later snapshot of the same live
+data. **This table itself went through a real bug fix, worth showing
+rather than hiding:** the first version of this matching script had a
+double-counting defect — for a ticker with more than one entry before its
+next close, both entries independently matched the *same* close row
+(nothing marked a close as "already claimed"), so `closed + still_open`
+exceeded the actual entry count in every row (85+12=97 against 94
+would-REJECT entries, etc.) and the reject row's own stated mean didn't
+match its stated sum÷closed. Caught by round-2 adversarial review's own
+arithmetic check. Fixed with a proper consume-once pairing (each close
+event walks a per-ticker time-ordered queue and is claimed by exactly one
+entry, matching how `paper_broker` actually holds one position per
+ticker) and re-run:
 
 ```
               entries  closed  still_open   sum realized    mean     win%
-would-REJECT      94      85      12          +$7,159.49   +$68.84   78.8%
-would-ADMIT       29      12       1          +$1,098.45   +$91.54   66.7%  (n=12, small)
-fail-open        204     196       3          +$5,082.91   +$25.93   57.1%
+would-REJECT     118     108      10          +$6,580.44   +$60.93   77.8%
+would-ADMIT       13      12       1          +$1,098.45   +$91.54   66.7%  (n=12, small)
+fail-open        204     201       3          +$4,408.76   +$21.93   57.2%
 ```
 
-(Counts differ slightly from §3's 92/31/196 split — this was run at a
-later moment with a few more trades in the window and a different,
-independently-written matching script; the qualitative shape is what
-matters, not exact parity between the two runs.)
-
-**Worth naming directly rather than leaving for a reader to notice: this
-doc's own adversarial review, using its own independent matching script on
-an earlier snapshot, got +$5,456.90 for the same would-REJECT cohort —
-not +$7,159.49.** The two figures genuinely disagree in magnitude, which
-would read as sloppiness if left unaddressed. It isn't: two independently
-written implementations, run against two different moments of a live,
-continuously-trading database, are not expected to agree on an exact
-dollar figure — what they *do* agree on is the sign and the ordering:
-would-REJECT was profitable, and at least as profitable per the win-rate
-comparison as would-ADMIT, under both independent measurements. Read that
-agreement as corroboration of the finding's direction, not confirmation of
-either specific number; neither dollar figure should be quoted on its own
-as *the* answer.
+Every row now reconciles (`closed + still_open = entries`), and the
+`sum/closed` identity holds against each stated mean. This is now a
+**third** independent measurement of the same finding, on a third
+snapshot: round-2 adversarial review's own reconciled rerun got would-
+REJECT at 78.4% win / +$68.42 mean; this corrected rerun gets 77.8% win /
++$60.93 mean; the doc's original (buggy) figure was 78.8% win / a
+mean that turned out not to match its own sum. **All three land in the
+same place: would-REJECT's win rate is the highest of the three buckets,
+and its mean/sum realized P&L is solidly positive** — the specific dollar
+figure has moved with each fix and each snapshot, which is expected of a
+live, continuously-trading database measured by independently-written
+scripts, and is a reason to trust the *sign and ordering* rather than any
+single number, not a reason to distrust the finding. Round-2 review also
+checked something none of the three raw measurements did: **capital-
+normalized return** (P&L ÷ capital deployed, since a high-unit-cost
+cohort can post a high win rate on a mediocre return) — would-REJECT led
+there too, at 20.7% return on capital versus would-ADMIT's 18.2% and
+fail-open's 11.1%. That check is the strongest form of confirmation in
+this doc, since it controls for a confound none of the win-rate/mean-P&L
+framings above do.
 
 **One more limitation worth stating plainly rather than modeling: this
 ignores opportunity cost.** The would-REJECT cohort's realized P&L is
@@ -398,12 +472,13 @@ computed one. The finding supports "these specific trades made money," not
 "taking them was the best available use of the capital."
 
 **Leading with the number that actually matters for an EV decision: the
-would-REJECT cohort's net-of-fees realized P&L was +$7,159.49 over 85
-closed positions — positive, and larger in total than would-ADMIT's
-+$1,098.45 over 12 (though on far more trades, so not directly comparable
-per-trade without more data).** The 78.8% win rate is supporting color,
-not the headline — a high win rate alone is not evidence of positive EV
-(a strategy can win often and still lose money on large losses), and this
+would-REJECT cohort's net-of-fees realized P&L was solidly positive across
+all three independent measurements (roughly +$5,500 to +$7,200 depending
+on script/snapshot, most recently +$6,580.44 over 108 closed positions),
+and its capital-normalized return (20.7%) led both other cohorts.** The
+77-79% win rate seen across all three runs is supporting color, not the
+headline — a high win rate alone is not evidence of positive EV (a
+strategy can win often and still lose money on large losses), and this
 repo's own retired 70%/70% win-rate target is a standing reminder of that
 exact confusion. **On the dollar figure, which is the correct one: the
 would-REJECT cohort was straightforwardly profitable, not a cohort of
@@ -415,7 +490,9 @@ applies to §3 applies doubly here: one ~20-hour session, ticker-level
 "first close after entry" matching that doesn't correctly attribute P&L
 under position-netting or partial closes, several rejected entries still
 open (their eventual P&L unknown), and a session that happened to be
-strongly profitable overall (bankroll 10,000 → 16,763), which could
+strongly profitable overall (bankroll 10,000 → 16,763 as of this doc's
+first measurement — a live figure that keeps moving; 16,296 by round-2
+review's own check, minutes-to-hours later), which could
 compress or exaggerate any real difference between cohorts. **Stated
 plainly rather than left implicit: this window can support "profitable in
 this specific ~20-hour stretch," and nothing stronger — it cannot support
@@ -453,10 +530,13 @@ that already works, caught by adversarial review:** the original draft
 claimed the *admitted* path's `decision["edge_gate"]` "already
 transfers to observe-only unchanged," implying that side of the picture
 was solved. Traced further: `decision["edge_gate"]` (populated at
-`strategy_engine.py:811-812, 836-837`) has **zero consumers anywhere** in
-the codebase (`grep -rn edge_gate main.py services/ static/ frontend/`
-finds only those two writes) — it flows into `state["decision_feed"]`, a
-transient ring buffer capped at 50 entries
+`strategy_engine.py:811-812, 836-837`) has **zero production consumers** —
+a bare `grep -rn edge_gate main.py services/ static/ frontend/` returns
+~40 lines (config keys, comments, the `EntryValidation` field itself),
+but scoping to actual reads of the dict key finds only the two writes,
+plus a test assertion (`tests/test_strategy_engine.py:1653-1654`) that
+reads it directly — no production code path does. It flows into
+`state["decision_feed"]`, a transient ring buffer capped at 50 entries
 (`services/whale_stream/decision_bridge.py:130-131`) plus a live
 WebSocket broadcast, and the only thing that persists durably is
 `candidate_ledger.record_decision(signal.id, decision.get("action",
@@ -469,7 +549,11 @@ On the *rejected* path specifically, the caller (`evaluate()`, `:731-736`)
 currently calls `candidate_log.record_rejection(ticker, "whale_follow",
 gate_name, observed_value, threshold_value, side=side,
 unit_cost=unit_cost)` — `record_rejection`'s own signature
-(`services/candidate_log.py:116-119`) has no field for the full detail
+(`services/candidate_log.py:116-119` as of this branch's base commit;
+noted by round-2 review that `origin/main` has since moved this function
+to lines 92-95 via a merged migration PR — the argument-list claim below
+holds in both versions, only the line number will drift once this branch
+merges) has no field for the full detail
 blob; only `observed_value`/`threshold_value` (which the edge gate's call
 site maps to `edge`/`min_edge` alone) get persisted. `q_pre` and `delta`
 are computed but never captured anywhere today for a rejected signal —
@@ -498,15 +582,19 @@ research), but this is concrete enough to size as a task, not a guess.
 every number below is a volume/count measurement — how many trades the
 gate touches — not an outcome measurement. §3.6 found (indicatively, on
 one ~20-hour session, net of trading fees so it's commensurable with the
-gate's own fee-inclusive rejection criterion) that the trades the gate
-would have rejected were net **+$7,159.49**, not a losing cohort — the
-dollar figure is the one that matters for an EV decision; its 78.8% win
-rate is supporting color, not itself evidence of profitability, and
-leaning on win rate alone is the same mistake behind this repo's own
-retired 70%/70% target. That window can support "profitable in this
-specific stretch" and nothing stronger — one session says nothing about
-another in markets whose regime shifts this fast. Nothing here shows
-flipping the gate on would improve results, and nothing here shows it
+gate's own fee-inclusive rejection criterion, and confirmed three separate
+times by independently-written scripts on three different data snapshots)
+that the trades the gate would have rejected were solidly profitable
+(net realized P&L in the +$5,500 to +$7,200 range across the three
+measurements) and led on capital-normalized return (20.7%) — not a losing
+cohort. The dollar/return figures are what matters for an EV decision;
+their 77-79% win rate across all three runs is supporting color, not
+itself evidence of profitability, and leaning on win rate alone is the
+same mistake behind this repo's own retired 70%/70% target. That window
+can support "profitable in this specific stretch" and nothing stronger —
+one session says nothing about another in markets whose regime shifts
+this fast. Nothing here shows flipping the gate on would improve results,
+and nothing here shows it
 wouldn't — that question was never actually answered, and it's the one
 that matters most.**
 
@@ -530,20 +618,24 @@ that matters most.**
   own correction — not a lifetime-average sample), during an unusually
   profitable run (bankroll 10,000 → 16,763).
 - **The gate can only evaluate 38.6% of entries at all** (61.4% fail
-  open on missing price-history coverage) — flipping it on would filter
-  roughly three-quarters of a minority of trades, not three-quarters of
-  everything. **The root cause of that coverage gap was misdiagnosed in
-  this doc's first draft** (caught by adversarial review): it isn't
-  primarily fast-rotating 15-minute/hourly markets never getting a first
-  snapshot — it's `market_history.retention_hours: 168` (7 days) pruning
-  price history faster than the nominal 30-day calibration window assumes,
-  plus a genuine, separate zero-coverage hole in `KXMVECROSSCATEGORY` and
-  the sports-match families specifically. The practical consequence is the
-  same either way (the gate can't evaluate a majority of entries), but the
-  fix would be different: retention tuning or accepting the ~7-day
-  effective window, not speeding up snapshot capture for specific market
-  types. §3 itself (all entries <1 day old) is *not* contaminated by the
-  retention mechanism, so its own 61.4% figure stands as measured.
+  open) — flipping it on would filter roughly three-quarters of a
+  minority of trades, not three-quarters of everything. **This doc's
+  first draft had conflated two different coverage gaps over two
+  different populations, caught and separated by round-2 adversarial
+  review:** §1's 71.3% figure is over the full 30-day calibration
+  population, where ~60% of the gap is `market_history.retention_hours:
+  168` (7 days) pruning history faster than the nominal 30-day window
+  assumes — a real effect, but not what drives this bullet's 61.4%
+  number. §3's 61.4% is a *different*, more recent population (all
+  entries <1 day old, provably outside retention's reach) where §3.5
+  already established the fix would need to be *faster capture coverage*,
+  not retention tuning — the first draft's Summary wrongly imported §1's
+  "it's retention, not capture speed" conclusion onto §3's genuinely
+  different, capture-limited number. Keep the two separate: §1's 30-day
+  gap needs retention tuning or accepting a ~7-day effective calibration
+  window; §3's <1-day gap needs `market_history` capturing new-market
+  snapshots faster, which §3.5's own flat widening-curve already pointed
+  at before this Summary bullet mangled the conclusion.
 - The un-evaluable 61.4% is not disproportionately in the 0.60-0.95 band
   (in-band coverage is actually 8 points *better* than out-of-band, §3.5)
   — the gate isn't blind precisely where the original concern lives, it's
