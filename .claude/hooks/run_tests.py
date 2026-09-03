@@ -3,7 +3,9 @@
 module, inside the checkout that was edited. Scope is application code AND the
 workflow tooling (.claude/hooks/, tools/, scripts/) - the four-fix cascade on
 scripts/cleanup-worktrees.sh (2026-08-28) happened because tooling edits had no
-automatic test at all. CI (.woodpecker/tests-pytest.yml) is the only full-suite
+automatic test at all. CI (.woodpecker/tests-pytest-app.yml +
+tests-pytest-tooling.yml, split 2026-09-03 - see
+tools/classify_pytest_app_vs_tooling.py) is the only full-suite
 owner. `.claude/settings.json` must give this hook a timeout greater than
 BUDGET_SEC, or the harness kills it silently.
 
@@ -35,18 +37,45 @@ def _in_scope(file_path: str) -> bool:
     return any(f"/{s}" in file_path or file_path.startswith(s) for s in SCOPES)
 
 
+# Explicit overrides, checked before the generic package-name glob below.
+# CI pipeline audit Tier 2 #5/#6 (2026-09-03): two real local-feedback gaps
+# found by inspecting real edit frequency against this hook's own mapping -
+# app_state.py mapped to zero tests despite 18 commits/7d (it has no
+# dedicated test file; it's main.py's own extracted singleton wiring per
+# its docstring, so it shares main.py's {main,routes} bucket), and
+# services/kalshi/{websocket,public}.py's bare stems matched the "kalshi"
+# package-name glob below, pulling in all 18 test_kalshi*.py files (387
+# tests, 55.5s serial - over this hook's own 55s budget before any
+# ddev-exec/interpreter overhead). Narrowed to each file's real import-graph
+# dependents, confirmed via `grep -oE "from services\.kalshi[a-zA-Z_.]*
+# import" tests/test_kalshi_*.py`; re-derive that grep if either file's own
+# imports change enough to plausibly add/drop a dependent test file, don't
+# assume this list stays accurate forever.
+_STEM_OVERRIDES: dict[str, set[str]] = {
+    "app_state": {"main", "routes"},
+    "websocket": {
+        "kalshi_contracts", "kalshi_trade_ws", "kalshi_ws_consumer_liveness",
+        "kalshi_ws_ingest_metrics", "kalshi_ws_signing_credentials", "kalshi_ws_two_consumers",
+    },
+    "public": {"kalshi_account_client", "kalshi_client", "kalshi_public_gateway"},
+}
+
+
 def tests_for(file_path: str, tests_dir: Path) -> list[Path]:
     p = Path(file_path)
     if p.name.startswith("test_") and p.name.endswith(".py"):
         t = tests_dir / p.name
         return [t] if t.exists() else []
     stem = p.stem.replace("-", "_")
-    stems = {stem} if stem != "main" else {"main", "routes"}
-    for pkg_root in ("services", "tools"):
-        if pkg_root in p.parts:
-            i = p.parts.index(pkg_root)
-            if len(p.parts) > i + 2:
-                stems.add(p.parts[i + 1])  # package name, e.g. "exits", "kanban_sync"
+    if stem in _STEM_OVERRIDES:
+        stems = set(_STEM_OVERRIDES[stem])
+    else:
+        stems = {stem} if stem != "main" else {"main", "routes"}
+        for pkg_root in ("services", "tools"):
+            if pkg_root in p.parts:
+                i = p.parts.index(pkg_root)
+                if len(p.parts) > i + 2:
+                    stems.add(p.parts[i + 1])  # package name, e.g. "exits", "kanban_sync"
     return sorted({t for s in stems for t in tests_dir.glob(f"test_{s}*.py")})
 
 

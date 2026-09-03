@@ -11,9 +11,16 @@ description: This skill should be used at natural breakpoints in a long working 
    implementation work pending, stop and create an initiative branch first
    (`.claude/rules/branching-and-ci.md`).
 
-2. **Verify.** The per-edit hook already ran each edited module's tests. Run
-   whatever else the change warrants — the full suite locally is fine when the
-   change is broad or risky; CI runs it regardless.
+2. **Verify.** The per-edit hook already ran each edited module's tests.
+   Run a targeted extra check if something specific still needs confirming
+   (a narrow set of tests, actively being debugged) — but don't run the
+   full suite locally for a broad/risky change "to be sure" (2026-09-03:
+   this was happening routinely, duplicating what step 6 already confirms
+   for free). If full-suite confidence is wanted before pushing, trigger it
+   on Woodpecker instead of locally: `scripts/woodpecker-trigger`, then
+   `scripts/woodpecker-status --pipeline N` (see CLAUDE.md's "Branching, CI,
+   sessions" section). CI runs the full suite regardless of what happens
+   here.
 
 3. **Review scope.** `git status` and `git diff --stat`: nothing unexpected
    staged (a stray `data/*.db`, `.env`, session scratch, unverified
@@ -35,7 +42,9 @@ description: This skill should be used at natural breakpoints in a long working 
    ```
    Read each `context` (`ci/woodpecker/push/<workflow>`) and its `state`
    independently; one `failure` means not verified.
-   - `tests-pytest` must succeed. Pull the failing step's log with
+   - `tests-pytest-app`/`tests-pytest-tooling` (split 2026-09-03, replaces
+     the former single `tests-pytest`) must both succeed. Pull the failing
+     step's log with
      `scripts/woodpecker-status --pipeline N --log STEP` (needs
      `WOODPECKER_TOKEN`; see that script's header) or the status's
      `target_url`. Fix, verify locally, commit, push.

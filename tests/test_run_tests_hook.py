@@ -70,6 +70,25 @@ def test_tests_for_maps_hooks_tool_packages_scripts_and_test_files(tmp_path):
     assert m.tests_for("tests/test_missing.py", tmp_path) == []
 
 
+def test_tests_for_applies_stem_overrides_before_the_package_glob(tmp_path):
+    # CI pipeline audit Tier 2 #5/#6 (2026-09-03): app_state.py mapped to
+    # zero tests (no dedicated test file exists for it); services/kalshi/
+    # {websocket,public}.py's bare stems matched the generic "kalshi"
+    # package-name glob, pulling in all test_kalshi*.py files regardless
+    # of relevance. Both now route through _STEM_OVERRIDES instead.
+    for n in ("test_main_scheduler_loops.py", "test_routes_health.py", "test_kalshi_client.py",
+              "test_kalshi_trade_ws.py", "test_kalshi_census.py", "test_other.py"):
+        (tmp_path / n).write_text("")
+    m = _load()
+    assert _names(m.tests_for("services/app_state.py", tmp_path)) == \
+        ["test_main_scheduler_loops.py", "test_routes_health.py"]
+    assert _names(m.tests_for("services/kalshi/public.py", tmp_path)) == ["test_kalshi_client.py"]
+    assert _names(m.tests_for("services/kalshi/websocket.py", tmp_path)) == ["test_kalshi_trade_ws.py"]
+    # test_kalshi_census.py is deliberately excluded from both overrides
+    # (neither file imports from it) - confirms the override narrows scope
+    # rather than only adding to it.
+
+
 def test_container_cwd_is_app_for_primary_and_subpath_for_worktree(tmp_path):
     hook = _load()
     primary = tmp_path / "repo"

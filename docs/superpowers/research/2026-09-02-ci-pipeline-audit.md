@@ -338,6 +338,31 @@ provide — not further investigation time:
    the two workflows needing real Kalshi/GitHub egress if cron jobs ever
    move to Woodpecker. Neither blocks any Tier 1/2 recommendation above.
 
+**Resolved (2026-09-03).** Both items above are now answered — the
+`.env` in the primary checkout (not visible from a fresh git worktree,
+which never receives gitignored files) already held a push+admin-scoped
+`WOODPECKER_TOKEN`, distinct from the pull-only one this audit's sessions
+had been using throughout; this was found only after the user pointed
+directly at `.env`, not through this session's own investigation.
+
+1. **Cron.** `GET /api/repos/1/cron` → `null` with the admin-scoped token
+   — this repo has **zero cron jobs configured today**. The three
+   weekly-cron GitHub Actions workflows (`docs-drift-check.yml`,
+   `kalshi-contract.yml`, `performance.yml`) remain exactly where they
+   were; nothing has migrated to Woodpecker cron. The
+   `trusted.network`/cron-egress interaction question is therefore moot
+   for now — there is no cron job to check it against.
+2. **Never-started-workflow-at-supersede.** Found a real, exact example
+   with the admin-scoped token: pipeline #390 (`main`, commit `b20b527`,
+   superseded by #393) shows `tests-dependency-audit` and `tests-pytest`
+   with `state: "skipped"`, `started: null`, `finished: null` — genuinely
+   never dispatched before the pipeline was superseded (the other three
+   workflows had already started or finished). The corresponding GitHub
+   commit status (`gh api .../commits/b20b527.../status`) confirms the
+   inference exactly: both show `pending`/"Pipeline is pending", never
+   resolved to `error` or any other terminal state, on that commit,
+   permanently. Matches §5.1's source-derived prediction precisely.
+
 ## Supporting documents
 
 - `2026-09-02-ci-pipeline-audit-woodpecker-mechanics.md`

@@ -53,7 +53,12 @@
 # Usage: sh scripts/ci-skip-heavy-suite.sh   (run from repo root, after clone)
 set -u
 
-SAFE_PATTERN='^(docs/|\.claude/|README(\.[A-Za-z]+)?$|CHANGELOG\.md$|ROADMAP\.md$|BUNDLE_README\.md$|INSTALL_.*\.md$|START_.*\.md$|PACKAGE_MANIFEST\.json$)'
+# .gitignore/.gitattributes/.editorconfig added 2026-09-03 (direct report:
+# a real PR touching only .gitignore paid the full suite - none of these
+# three are ever read by application code, tests, or CI itself, only by
+# git/editor tooling on the developer's machine, so they're exactly as
+# safe as the doc/root-scaffold files already covered here.
+SAFE_PATTERN='^(docs/|\.claude/|README(\.[A-Za-z]+)?$|CHANGELOG\.md$|ROADMAP\.md$|BUNDLE_README\.md$|INSTALL_.*\.md$|START_.*\.md$|PACKAGE_MANIFEST\.json$|\.gitignore$|\.gitattributes$|\.editorconfig$)'
 
 run() { echo "RUN"; exit 0; }
 skip() { echo "SKIP"; exit 0; }
