@@ -505,6 +505,57 @@ def test_flatten_all_also_flattens_the_real_account_when_trading_enabled(monkeyp
     _reset_trading_state()
 
 
+# --- POST /api/trading/close-positions (2026-09-03, off-watchlist entry ---
+# bleed remediation: flatten-all is all-or-nothing, and there was no path
+# to close only a SUBSET of open positions - e.g. the ones a bug opened
+# outside the user's configured watchlist while leaving legitimate ones
+# open - without a full flatten. Selective sibling of flatten-all, same
+# typed-confirmation-gate shape. ------------------------------------------
+
+def test_close_positions_rejects_wrong_confirmation_phrase():
+    resp = client.post("/api/trading/close-positions", json={"tickers": ["TICK-A"], "confirmation_phrase": "not it"})
+    assert resp.status_code == 400
+    assert "confirmation phrase" in resp.json()["detail"].lower()
+
+
+def test_close_positions_rejects_empty_ticker_list():
+    resp = client.post("/api/trading/close-positions", json={"tickers": [], "confirmation_phrase": "CLOSE SELECTED POSITIONS"})
+    assert resp.status_code == 400
+
+
+def test_close_positions_closes_only_the_specified_tickers():
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+    main.broker.open_position("TICK-B", "no", size=10, price=0.4, reason="entry")
+    main.broker.open_position("TICK-C", "yes", size=10, price=0.3, reason="entry")
+
+    resp = client.post(
+        "/api/trading/close-positions",
+        json={"tickers": ["TICK-A", "TICK-B"], "confirmation_phrase": "CLOSE SELECTED POSITIONS"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {t["ticker"] for t in body["closed"]} == {"TICK-A", "TICK-B"}
+    assert body["missing"] == []
+    assert set(main.broker.positions.keys()) == {"TICK-C"}
+    main.broker.reset(starting_bankroll=10000.0)
+
+
+def test_close_positions_reports_tickers_with_no_open_position_as_missing():
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "yes", size=10, price=0.5, reason="entry")
+
+    resp = client.post(
+        "/api/trading/close-positions",
+        json={"tickers": ["TICK-A", "TICK-NEVER-OPENED"], "confirmation_phrase": "CLOSE SELECTED POSITIONS"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {t["ticker"] for t in body["closed"]} == {"TICK-A"}
+    assert body["missing"] == ["TICK-NEVER-OPENED"]
+    main.broker.reset(starting_bankroll=10000.0)
+
+
 def test_state_endpoint_reports_trading_enabled_flag():
     _reset_trading_state()
     resp = client.get("/api/state")
@@ -640,8 +691,16 @@ def test_scan_catalog_batch_only_marks_genuinely_succeeded_series_scanned():
         "series": [{"ticker": "SER-GOOD", "category": "Sports"}, {"ticker": "SER-BAD", "category": "Sports"}],
     }
     fake = _FakeCatalogScanClient(failing_tickers={"SER-BAD"})
-    cfg = config_store_module.config_store.get()
-    cfg["kalshi"]["live_markets_only"] = True
+    # Isolated from whatever config/settings.yaml's own kalshi.categories
+    # currently says (2026-09-03 fix: this test broke when that list was
+    # narrowed to Crypto/Commodities for the off-watchlist entry bleed
+    # remediation) - _scan_catalog_batch filters all_series to cfg["kalshi"]
+    # ["categories"] membership (catalog_scan.py), and this test's own
+    # fixture series are "Sports", so the category this test cares about
+    # must be pinned here, not inherited from the live config file.
+    cfg = {**config_store_module.config_store.get(), "kalshi": {
+        **config_store_module.config_store.get()["kalshi"], "live_markets_only": True, "categories": ["Sports"],
+    }}
 
     asyncio.run(main._scan_catalog_batch(fake, cfg))
 
