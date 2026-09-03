@@ -1,4 +1,4 @@
-# Dependency vulnerability audit - separate workflow from tests-pytest.yml
+# Dependency vulnerability audit - separate workflow from tests-pytest-app.yml
 # on purpose (mirrors the former tests.yml's job split): a dependency CVE
 # isn't a code regression and its red/green shouldn't be conflated with
 # "did the tests pass." Reads pinned versions straight from the
@@ -9,7 +9,7 @@
 # this workflow never checked any skip verdict at all - not even the
 # docs-only one). pip-audit reads pinned version strings straight from
 # requirements*.txt and never executes any application code, so unlike
-# tests-pytest.yml/kalshi-contract-fixtures.yml (where a narrow path filter
+# tests-pytest-app.yml/kalshi-contract-fixtures.yml (where a narrow path filter
 # would risk missing a real regression via an untraced transitive
 # dependency - confirmed the hard way for kalshi-contract-fixtures.yml,
 # see its own comment) this workflow's real dependency surface is exactly
@@ -24,7 +24,7 @@ when:
   - event: [push, pull_request]
 
 # Full-history clone override, required by ci-fast-path-check below - same
-# reasoning as tests-pytest.yml's own identical block (its own comment has
+# reasoning as tests-pytest-app.yml's own identical block (its own comment has
 # the full story: Woodpecker's default clone plugin silently forces
 # --depth=1 unless partial:false is also set, and the skip script's git
 # merge-base/HEAD^1 diff needs real ancestor history to work at all).
