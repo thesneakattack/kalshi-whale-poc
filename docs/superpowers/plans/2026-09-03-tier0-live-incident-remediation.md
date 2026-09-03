@@ -133,8 +133,8 @@ dependency minimalism is a real strength, not a gap to fix here.
 ## Global Constraints
 
 - **No fix for the fd-exhaustion root *cause*** (which thread/reference
-  actually retains the leaked connections) beyond Tasks 2-5's four
-  confirmed modules — the audit names 22 more modules with the identical
+  actually retains the leaked connections) beyond Tasks 2-6's five
+  confirmed modules — the audit names 21 more modules with the identical
   no-`close()` shape and explicitly defers consolidating all of them into
   one persistence module to Tier 2, a separate, larger initiative this
   plan does not start.
@@ -159,7 +159,7 @@ dependency minimalism is a real strength, not a gap to fix here.
   cost, stated as an estimate in the code comment, and Task 10's live
   validation is where it gets checked against real behavior, not assumed
   correct on landing.
-- **`contextlib.closing` is not used** for Tasks 2-5's fix (the audit's own
+- **`contextlib.closing` is not used** for Tasks 2-6's fix (the audit's own
   §5.2 named it as the natural fix and it would work, but it changes every
   call site's syntax from `with _connect(...) as conn:` to `with
   contextlib.closing(_connect(...)) as conn:` — a larger, noisier diff
@@ -170,18 +170,18 @@ dependency minimalism is a real strength, not a gap to fix here.
   an oversight.
 - **Why no separate spec doc:** the "nothing advances on one pass" HARD
   RULE's pipeline is research → design/spec → implementation plan for
-  work carrying a design decision. This plan's three fixes are each a
+  work carrying a design decision. This plan's four fixes are each a
   narrow, mechanical application of an existing, already-proven pattern in
   this exact codebase (`asyncio.wait_for` bounding a gather; a
   `contextlib.contextmanager`-wrapped connection function; a read-only
-  `PRAGMA` check before any write decision) — not a novel design requiring
-  its own comparison-of-alternatives document the way the frontend
-  migration or the Kalshi integration boundary did. This plan's
-  Architecture section above states every design choice and its
-  rationale directly, serving the same function a short spec would for
-  work this narrow. Flagged explicitly for this plan's own adversarial
-  review to check whether that judgment call is justified, rather than
-  silently assumed.
+  `PRAGMA` check before any write decision; `asyncio.to_thread` moving a
+  blocking call off the event loop) — not a novel design requiring its own
+  comparison-of-alternatives document the way the frontend migration or
+  the Kalshi integration boundary did. This plan's Architecture section
+  above states every design choice and its rationale directly, serving
+  the same function a short spec would for work this narrow. Flagged
+  explicitly for this plan's own adversarial review to check whether that
+  judgment call is justified, rather than silently assumed.
 - This repo has no `pytest-asyncio`. Test async functions with
   `asyncio.run(module.async_func(...))` inside a plain `def test_...`,
   never `@pytest.mark.asyncio`/`async def test_...` (verified convention:
@@ -460,7 +460,7 @@ regression the fix closes.
 - [ ] **Step 2: Read the exact current function before editing**
 
 Run: `sed -n '86,99p' services/market_history.py`. Confirm it still matches
-this plan's Architecture section's quoted excerpt before editing — if not,
+this task's own Step 3 "before" block, quoted below, before editing — if not,
 stop and re-derive the diff from current source.
 
 - [ ] **Step 3: Apply the fix**
@@ -745,7 +745,7 @@ Expected: **fails** against current `main`.
 - [ ] **Step 2: Read the exact current function before editing**
 
 Run: `sed -n '150,161p' services/signal_log.py`. Confirm it still matches
-this plan's Architecture section's quoted excerpt before editing.
+this task's own Step 3 "before" block, quoted below, before editing.
 
 - [ ] **Step 3: Apply the fix**
 
@@ -796,9 +796,10 @@ but the first draft of this plan fixed only the second. `fault_log.py` has
 the identical non-closing `_connect()` shape as Tasks 2-5's four modules
 and was not counted among them. Fixing it here, in the same mechanical
 form, closes that gap rather than leaving it as a silent, undisclosed
-exclusion (the plan explicitly disclosed excluding the other 22 modules
-with this shape — this one is directly implicated by this plan's own
-diagnosis, so it does not belong in that "deferred" set).
+exclusion (the plan explicitly disclosed excluding the 21 genuinely-
+deferred modules with this shape, Tier 2's scope — this one is directly
+implicated by this plan's own diagnosis, so it does not belong in that
+"deferred" set).
 
 **Files:**
 - Modify: `services/fault_log.py` (imports, `:58-82` `_connect`)
@@ -1297,6 +1298,24 @@ Expected: every test in the file passes, including both new ones.
 resolve the live symptoms, per this repo's own standing practice (matching
 every precedent plan's own final task, e.g.
 `docs/superpowers/plans/2026-09-01-event-loop-blocking-fix1.md`'s Task 5).
+
+**Note on this plan's own trigger evidence going stale between review
+passes:** by the time this plan's PR-stage review ran (2026-09-03,
+02:59-03:00Z, roughly 25-50 minutes after the numbers cited throughout
+this plan and its own artifact-stage review were gathered), both
+`GET /api/health/pipeline` (0.19s) and `GET /api/health/faults` (0.036s)
+were responding quickly, not hanging. This does not mean the underlying
+defects aren't real — the missing per-item timeout in `asyncio.gather()`
+(Task 1) and the fully-synchronous, no-thread-hop SQLite calls (Task 7)
+are confirmed present in current source regardless of whether they are
+manifesting as a hang at any given moment — but it does mean the
+"currently stuck" / "live incident in progress" framing used throughout
+this plan (drafted from a specific incident window) is a historical
+trigger, not a guaranteed live symptom whoever executes this plan will
+still be able to reproduce on demand. Steps 1-3 below already require
+re-measuring live before drawing any conclusion; do not skip that
+re-measurement on the assumption the numbers cited earlier in this
+document are still current.
 
 - [ ] **Step 1: Run the full local test suite**
 

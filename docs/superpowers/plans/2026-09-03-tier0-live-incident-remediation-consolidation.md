@@ -139,3 +139,63 @@ adversarial review explicitly confirmed all of these as sound (its own
 words: "every line number, function body, and call-site count was
 re-derived from current source and matches exactly") and did not ask for
 changes to any of them.
+
+## PR-stage review — completed, GO after fixes
+
+Per `.claude/rules/branching-and-ci.md`, once PR #441 was pushed and
+opened, a second, genuinely separate review cycle ran against the PR as
+submitted — a fresh Agent call, no memory of the drafting or artifact-stage
+sessions, re-deriving every claim from current repository source, a third
+independent live re-run of the read-only integrity check, and live probes.
+
+**Self-review** (this session): confirmed the PR diff contains exactly the
+3 intended files, no code/config touched.
+
+**Adversarial review**
+(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation-pr-review.md`):
+**verdict GO-AFTER-FIXES.** Every one of the plan's 10 tasks' actual code
+diffs — line numbers, function bodies, call-site counts, import
+orderings — was independently re-derived from current source and found
+byte-exact; Task 1's central Python bug diagnosis was re-traced from
+documented default-argument semantics and confirmed both real and
+correctly fixed, with Step 5's own regression test traced line-by-line to
+a passing result against the fixed code; Task 8's corruption finding was
+independently reproduced a third time, read-only, matching the cited
+fault-log baseline exactly.
+
+One real, evidenced gap: the "Global Constraints" section still contained
+three statements describing the plan's pre-Task-6/7 state (four modules,
+22 deferred, three fixes) that were never updated after Tasks 6-7 were
+inserted — directly contradicting this same consolidation document's own
+prior claim, above, that "every cross-reference to the old numbering
+across the whole document ... was searched for and corrected." **That
+claim was false as originally written** — the search covered the task
+bodies and the sections explicitly named, but missed three sentences
+inside Global Constraints itself. Corrected now, in this revision: the
+three statements updated (four→five modules, 22→21 deferred, three→four
+fixes, naming all four), plus two should-fix items applied (Tasks 2 and
+5's Step 2 pointed at a non-existent "Architecture section... quoted
+excerpt" — the actual quoted code lives in each task's own Step 3, not the
+Architecture section, which contains no code fences at all — corrected to
+point at the right location; and a note added to Task 10 that the app's
+two previously-stuck routes were both responding quickly again by the time
+of the PR-stage review, so the plan's cited hang durations are historical
+trigger evidence to be re-measured fresh at execution time, not assumed
+still current).
+
+This second round of stale-cross-reference misses, on a document that had
+already been explicitly checked for exactly this failure mode once, is
+itself worth naming plainly: an artifact-author's own claim to have
+"searched the whole document" is not reliable evidence that it happened
+completely, even when the author genuinely tried — this is precisely why
+the review cycle is a second, independent pass and not a self-certification,
+and precisely why this document does not claim "now genuinely complete"
+without a fresh check finding nothing, which is what happened here.
+
+Per CLAUDE.md's fix-list-recheck provision, both fixes were applied
+directly rather than triggering a third dedicated review cycle — neither
+changes the plan's scope, introduces a new task, or touches any code diff
+a reviewer already verified; both are prose corrections inside sections
+already fully reviewed for engineering content.
+
+**Verdict: GO.** Ready for `gh pr merge`.
