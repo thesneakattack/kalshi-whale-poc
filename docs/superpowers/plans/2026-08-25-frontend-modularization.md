@@ -1,5 +1,17 @@
 # Frontend Modularization Execution Plan
 
+> **Freshness check — corrected 2026-09-03:** 10 commits landed against
+> `frontend/src/js/`/`static/index.html` since 2026-08-25 (plus unrelated churn
+> in `CLAUDE.md`/`ROADMAP.md`), drifting five of this plan's `file:line`
+> citations. All five corrected below (T1a's `CLAUDE.md`/`ROADMAP.md` stale-doc
+> list, T3's test-marker citation, T5a's patch-parity range, T6's
+> `renderEquityChart` range) — none change a task's file list, acceptance
+> criteria, or commit message. No task was found already done or partially
+> done (no `legacy/`/`core/`/`lib/`/`charts/`/`panels/` directories exist yet;
+> `frontend/package.json` still has zero `preact`/`@preact/signals`/`htm`
+> deps). Full investigation:
+> `docs/superpowers/plans/2026-09-03-frontend-modularization-freshness-check.md`.
+
 > **Agentic execution — corrected 2026-08-31 catch-up review:** `.claude/skills/plan-task/`
 > (which this line previously pointed at, itself the successor to the bespoke
 > `frontend-modularization-task` skill folded into it 2026-08-28) no longer exists — it was
@@ -60,11 +72,17 @@ one strangler-safe commit at a time, with every guard CI-owned.
   names); these are **ratchets**, removals are expected every task.
 - Stale docs — **corrected 2026-08-31 adversarial review, two rounds** (first pass fixed
   the `config_bounds.py` path and dead orchestration pointer elsewhere in this doc but
-  missed this specific list; second pass caught the remainder): `CLAUDE.md:148` (not
-  `:292-294` — the file was rewritten smaller since this plan was written, "no framework
-  build" language now lives there); `frontend/src/js/shared-utils.js:5-18`;
+  missed this specific list; second pass caught the remainder), **re-corrected 2026-09-03
+  freshness check** (`CLAUDE.md` was rewritten smaller again after 08-31 — 15+ further
+  commits touched it; `ROADMAP.md`'s citation was already wrong at 08-31 review time from
+  unrelated line-shifting edits, not from anything in scope here — see
+  `docs/superpowers/plans/2026-09-03-frontend-modularization-freshness-check.md`):
+  `CLAUDE.md:132` (not `:148` or `:292-294` — "no framework
+  build" language now lives in the "Quick file map" line); `frontend/src/js/shared-utils.js:5-18`;
   `frontend/src/js/main.js:12-17`; `.github/workflows/quality.yml:42-43` (delete the
-  no-op diff step); `tools/quality_audit/source.py:25-27`; `ROADMAP.md:206` (6 views).
+  no-op diff step); `tools/quality_audit/source.py:25-27`; `ROADMAP.md:414` (not `:206`,
+  which is now an unrelated backup/retention-policy line — 6 views vs. the "7-tab toggle"
+  phrase actually at `:414`).
   **Dropped, not replaced**: the original `polling-and-websocket.js:43-47` citation (no
   "committed bundle" claim exists anywhere in that file today — re-grep for the actual
   location at execution time if this specific staleness still needs fixing) and all
@@ -158,7 +176,7 @@ the legacy poll loop no longer references the panel; ownership guard green.
 ## T3 — Tabs, poll loop, WebSocket into `core/`
 
 **Create** `core/view.js` (VIEWS, `showView`, `.active` effect on `view-*`/`tab-btn-*`; `window.showView` kept as a documented surface until T9), `core/poll.js` (304/failure handling → `connectivity`; `startPolling` effect on `pollIntervalMs`; `registerLegacyTick`), `core/ws.js` (`terminalFeeds`, `tradeStreamStatus` signals; backoff), `panels/tab-bar/index.js` (renders the same `tab-btn-*` ids; replaces 6 inline handlers), `test/core/{poll,view}.test.js`.
-**Modify** `src/js/main.js` (bootstrap order; `document.body.dataset.bundle = 'loaded'`), `legacy/polling-and-websocket.js` (body → `legacyTick(state)`), `legacy/trading-gate-and-connectivity.js` (timer removed; `renderConnectivity` reads `connectivity.peek()`), `legacy/bootstrap.js` (shrinks), `tests/test_browser_e2e.py:164` (probe → `data-bundle`), `tests/test_e2e_terminal_static_and_api.py:65` (grep marker → `data-bundle`).
+**Modify** `src/js/main.js` (bootstrap order; `document.body.dataset.bundle = 'loaded'`), `legacy/polling-and-websocket.js` (body → `legacyTick(state)`), `legacy/trading-gate-and-connectivity.js` (timer removed; `renderConnectivity` reads `connectivity.peek()`), `legacy/bootstrap.js` (shrinks), `tests/test_browser_e2e.py:164` (probe → `data-bundle`), `tests/test_e2e_terminal_static_and_api.py:85` (not `:65` — two 2026-08-30 Docker-Desktop-DNS-sentinel-skip commits pushed it down 20 lines, corrected 2026-09-03 freshness check; the `assert 'clearTerminalFeedCaches' in js_resp.text` line) (grep marker → `data-bundle`).
 
 - [ ] Tests: 304 leaves `appState` untouched; failure increments; success publishes then calls the legacy tick exactly once; `showView` persists to localStorage.
 - [ ] `npm run check`; `/run` browser smoke (tabs, live dot); baseline −6 inline handlers.
@@ -200,7 +218,7 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 
 ## T5a — Config panel: schema-driven fields
 
-**Create** `panels/config/{index.js, model.js, field.js, CHEATSHEET.md}`, `test/panels/config/model.test.js` (**patch-parity** against `legacy/config-panel.js:125-229` semantics), render test with a 2-field fixture schema, a Playwright test (fixture schema → inputs; forced 400 with `errors` → inline message).
+**Create** `panels/config/{index.js, model.js, field.js, CHEATSHEET.md}`, `test/panels/config/model.test.js` (**patch-parity** against `legacy/config-panel.js:126-230` semantics — not `:125-229`, shifted +1 line by commit `8b5f7ab`'s `close_positions_first` reset-flag insertion, corrected 2026-09-03 freshness check), render test with a 2-field fixture schema, a Playwright test (fixture schema → inputs; forced 400 with `errors` → inline message).
 **Modify** `static/index.html:566-912` → `<div id="config-panel">` (legend kept; reset/session/watchlist stay legacy until T5b), `legacy/config-panel.js` (delete `loadConfig` field lines `:14-96`), delete `legacy/polling-and-websocket.js:197-233` (provider status → computed), `legacy/advisory-calibration.js:63-76` → `jumpTo(path)` via `data-config-path`.
 
 - [ ] `npm run check`; **manual browser check required**: save a field → Change History row; jump chip from History lands on the field; whale sim/real sections follow the provider.
@@ -221,7 +239,7 @@ value does not block an unrelated save; 400 bodies carry string `detail` + `erro
 ## T6 — Charts module
 
 **Create** `charts/{TimeSeriesChart.js, series.js, theme.js, candlestick.js, sparkline.js}`, `test/charts/series.test.js`, Playwright test (10-point `equity_history` fixture → `#equity-chart canvas`).
-**Modify** `legacy/equity-and-cards.js:97-138` → signature-preserving adapter (all six call sites upgrade), `legacy/screener-and-header.js` (imports moved renderers), `static/css/dashboard.css` (+vendored uPlot block), `bundle-budget.json` unchanged (100 KB covers it).
+**Modify** `legacy/equity-and-cards.js:117-158` (not `:97-138` — two 2026-09-02 commits, `pnlRowTint`/`marketResultBadgeHTML` extraction and the trade-log gradient/market-result column extending to more views, added ~20 net lines above `renderEquityChart`; corrected 2026-09-03 freshness check) → signature-preserving adapter (all six call sites upgrade), `legacy/screener-and-header.js` (imports moved renderers), `static/css/dashboard.css` (+vendored uPlot block), `bundle-budget.json` unchanged (100 KB covers it).
 
 - [ ] `npm run check`; chrome-devtools check that the canvas node identity survives 3 ticks (no flicker, no scroll reset).
 - [ ] Commit: `feat(frontend): uPlot-backed charts module replacing the SVG polyline rebuilds`
