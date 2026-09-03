@@ -19,13 +19,15 @@ this module import-side-effect-free (no eager PaperBroker/RiskManager
 construction) and makes the pure mapping function trivially testable with a
 synthetic dict.
 """
+import contextlib
 import json
 import sqlite3
 import time
 from pathlib import Path
 
 from services import (
-    candidate_retry, capture_writer, fault_log, http_client, loop_watchdog, strategy_engine, whale_pipeline_perf,
+    candidate_retry, capture_writer, db, fault_log, http_client, loop_watchdog, strategy_engine,
+    whale_pipeline_perf,
 )
 from services.exits import exit_engine
 from services.quality.models import QualityFinding
@@ -38,10 +40,7 @@ _RATE_LIMIT_WINDOW_HOURS = 1.0  # QCP Task 10 anomaly rule - see runtime_finding
 _RATE_LIMIT_MIN_OCCURRENCES = 3  # "repeated," not one isolated hit
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_metric_samples(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS metric_samples (
@@ -52,11 +51,35 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_metric_samples_metric_time "
-        "ON metric_samples(metric, observed_at)"
-    )
-    return conn
+
+
+db.register_schema("metric_samples", _init_metric_samples)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). The
+    CREATE INDEX statement isn't expressible in a table's registered
+    init_fn (index creation isn't table schema), so this wrapper still runs
+    it itself, the same shape candidate_log.py and series_watcher.py use.
+
+    db.connect() also sets busy_timeout to 5000ms explicitly; that is
+    sqlite3's existing implicit default made visible (D3), not a new
+    number. Event-loop exposure is unchanged by this migration and is not
+    fixed by it: history() and summary() are still called with no dispatch
+    from services/observability/routes.py's async handlers - tracked as
+    item 2 of issue #530, measured 0.79-1.02s at the route's default
+    hours=24 and ~7.66s at hours=720 (docs/task5-observability-gate1-
+    preflight-2026-09-03.md). A migrated _connect() blocks for at least as
+    long as before plus close()'s own cost; making that worse would be a
+    defect, fixing it is out of this plan's scope."""
+    with db.connect(DB_PATH, tables=("metric_samples",)) as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metric_samples_metric_time "
+            "ON metric_samples(metric, observed_at)"
+        )
+        yield conn
 
 
 def record_sample(
