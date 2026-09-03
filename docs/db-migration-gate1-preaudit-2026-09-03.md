@@ -22,7 +22,7 @@ Per-module read of the actual `_connect()` body and schema/DDL init path, in ful
   - **13 `_add_column_if_missing` calls** (`:209, 210, 215, 216, 222, 226, 236, 242, 243, 244, 245, 265, 266`) — by far the most schema evolution of the 5 modules. Every one is a real, separately-dated migration (config_fingerprint, entry_fee/fee, hold_to_settlement, signal_seen_at, excluded, four netting_* columns, two pending_orders columns) — the migrated callback needs all 13, in order, not a representative subset.
   - One explicit index: `CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)` — `:237`.
   - No `busy_timeout` PRAGMA (same gap as `risk_manager.py`), no `row_factory`, no `isolation_level`.
-- Instance-method wrapper: `def _connect(self): return _connect(self.db_path)` — `:337-338`, identical shape to `risk_manager.py`. Real call sites all use `with self._connect() as conn:` (`:294` and 8 more, per the earlier orphan-check survey).
+- Instance-method wrapper: `def _connect(self): return _connect(self.db_path)` — `:337-338`, identical shape to `risk_manager.py`. Real call sites all use `with self._connect() as conn:` — 10 of them: `:294, 414, 465, 477, 637, 709, 759, 785, 799, 808` (adversarial-review correction: originally miscounted as 9 via the earlier orphan-check survey).
 - Monkeypatch mechanics: identical pattern and identical comment shape to `risk_manager.py` — `self.db_path = db_path or DB_PATH` (`:278`), documented at `:272-277` as resolved at construction time specifically so `monkeypatch.setattr(pb, "DB_PATH", ...)` keeps working.
 - Test call-site shape: `tests/test_paper_broker.py` has **zero direct `_connect()` calls** — same as `risk_manager.py`, public-API-only.
 
