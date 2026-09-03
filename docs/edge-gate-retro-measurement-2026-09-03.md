@@ -345,10 +345,19 @@ inform an EV decision.
 Matched each of the 319 entries to the first subsequent close on the same
 ticker and parsed the broker's own recorded realized P&L
 (`paper_broker.py:620`'s `reason=f"closed: {reason} (realized
-{realized_pnl:+.2f})"`, a real per-position figure — mark-to-market minus
-entry and exit fees, not re-derived). Independently reproduced (not just
-taken from the adversarial review) on a slightly later snapshot of the
-same live data:
+{realized_pnl:+.2f})"`). **Confirmed net of fees, not gross — checked
+directly from source rather than assumed, since the gate's own rejection
+criterion is fee-inclusive and a gross-vs-net mismatch would make the
+comparison meaningless:** `realized_pnl = self.mark_to_market(ticker,
+exit_price) - pos.entry_fee - close_fee` (`paper_broker.py:611`), and
+`mark_to_market()` itself (`:829-835`) is pure gross price-delta —
+`direction * (current_price - entry_price) * size`, no fee term at all.
+So `realized_pnl` subtracts both the entry fee and the exit fee from that
+gross figure; every number below is **net of both trading fees**,
+commensurable with the gate's own fee-inclusive `edge` criterion.
+
+Independently reproduced (not just taken from the adversarial review) on a
+slightly later snapshot of the same live data:
 
 ```
               entries  closed  still_open   sum realized    mean     win%
@@ -362,13 +371,18 @@ later moment with a few more trades in the window and a different,
 independently-written matching script; the qualitative shape is what
 matters, not exact parity between the two runs.)
 
-**The would-REJECT cohort was not a cohort of losers — its win rate
-(78.8%) was the highest of the three, and its per-trade mean (+$68.84) was
-comparable to, not clearly worse than, would-ADMIT's (+$91.54, though on
-only 12 closed trades — too few to weight heavily).** On this data, a gate
-that had been on would have removed a profitable cohort roughly as strong
-as the one it kept, in exchange for filtering out the (much larger)
-rejected volume.
+**Leading with the number that actually matters for an EV decision: the
+would-REJECT cohort's net-of-fees realized P&L was +$7,159.49 over 85
+closed positions — positive, and larger in total than would-ADMIT's
++$1,098.45 over 12 (though on far more trades, so not directly comparable
+per-trade without more data).** The 78.8% win rate is supporting color,
+not the headline — a high win rate alone is not evidence of positive EV
+(a strategy can win often and still lose money on large losses), and this
+repo's own retired 70%/70% win-rate target is a standing reminder of that
+exact confusion. **On the dollar figure, which is the correct one: the
+would-REJECT cohort was straightforwardly profitable, not a cohort of
+losers.** A gate that had been on would have removed a profitable cohort,
+in exchange for filtering out the (much larger) rejected volume.
 
 **This is explicitly indicative, not a conclusion**, and every caveat that
 applies to §3 applies doubly here: one ~20-hour session, ticker-level
@@ -376,11 +390,17 @@ applies to §3 applies doubly here: one ~20-hour session, ticker-level
 under position-netting or partial closes, several rejected entries still
 open (their eventual P&L unknown), and a session that happened to be
 strongly profitable overall (bankroll 10,000 → 16,763), which could
-compress or exaggerate any real difference between cohorts. It does not
-show the gate is bad, and it does not show the gate is good — it shows
-that **volume rejected is not evidence of quality improved**, and this doc
-otherwise never checked the difference. A real answer needs a longer
-window, correct netting-aware P&L attribution per entry, and ideally
+compress or exaggerate any real difference between cohorts. **Stated
+plainly rather than left implicit: this window can support "profitable in
+this specific ~20-hour stretch," and nothing stronger — it cannot support
+"profitable" as a general claim.** This app trades crypto and commodities
+series whose character changes on short timescales; one session's regime
+(direction, volatility, which whale signals fired) is not evidence about
+any other session's. It does not show the gate is bad, and it does not
+show the gate is good — it shows that **volume rejected is not evidence of
+quality improved**, and this doc otherwise never checked the difference. A
+real answer needs a longer window spanning multiple regimes, correct
+netting-aware P&L attribution per entry, and ideally
 several different market regimes, none of which this research pass
 attempted.
 
@@ -450,12 +470,19 @@ research), but this is concrete enough to size as a task, not a guess.
 
 **The single most important thing this doc can tell the decision-maker:
 every number below is a volume/count measurement — how many trades the
-gate touches — not an outcome measurement. §3.6 found (indicatively, on a
-small, noisy sample) that the trades the gate would have rejected were
-*not* worse performers than the trades it would have kept; if anything
-they had a higher win rate. Nothing here shows flipping the gate on would
-improve results, and nothing here shows it wouldn't — that question was
-never actually answered, and it's the one that matters most.**
+gate touches — not an outcome measurement. §3.6 found (indicatively, on
+one ~20-hour session, net of trading fees so it's commensurable with the
+gate's own fee-inclusive rejection criterion) that the trades the gate
+would have rejected were net **+$7,159.49**, not a losing cohort — the
+dollar figure is the one that matters for an EV decision; its 78.8% win
+rate is supporting color, not itself evidence of profitability, and
+leaning on win rate alone is the same mistake behind this repo's own
+retired 70%/70% target. That window can support "profitable in this
+specific stretch" and nothing stronger — one session says nothing about
+another in markets whose regime shifts this fast. Nothing here shows
+flipping the gate on would improve results, and nothing here shows it
+wouldn't — that question was never actually answered, and it's the one
+that matters most.**
 
 - The edge-gate math and its calibration inputs are sound and well-
   covered where they currently apply: all 18 real (category, price_band)
