@@ -993,3 +993,68 @@ def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch):
     broker = pb.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "pb.db")
     with broker._connect() as conn:
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+# --- history-push trigger points (docs/superpowers/specs/2026-09-03-
+# history-event-driven-design.md §2/§4.3 - loadTradingHistory/loadAdvisory/
+# loadRegimeSegmentation are trade close/open-driven) ------------------------
+
+
+def test_open_position_notifies_history_push(tmp_path, monkeypatch):
+    from services import history_push
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    trade = broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+
+    assert trade is not None
+    assert calls == [1]
+
+
+def test_open_position_rejected_by_the_halted_guard_does_not_notify(tmp_path, monkeypatch):
+    """The `if self.risk is not None and self.risk.halted: return None` early
+    guard is a no-op, not a real write - must not fire a push."""
+    from services import history_push
+    from services.risk_manager import RiskManager
+
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.risk = RiskManager(
+        starting_bankroll=1000.0, max_daily_loss_pct=0.5, kill_switch_enabled=True,
+        db_path=tmp_path / "risk_state.db",
+    )
+    broker.risk.halted = True
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    trade = broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+
+    assert trade is None
+    assert calls == []
+
+
+def test_close_position_notifies_history_push(tmp_path, monkeypatch):
+    from services import history_push
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+    broker.open_position("TICK-A", "yes", 10, 0.5, "test")
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    trade = broker.close_position("TICK-A", 0.6, "test-close")
+
+    assert trade is not None
+    assert calls == [1]
+
+
+def test_close_position_on_a_missing_ticker_does_not_notify(tmp_path, monkeypatch):
+    """`if not pos: return None` - no position existed, so this is a no-op,
+    not a real write."""
+    from services import history_push
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=1000.0)
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    trade = broker.close_position("NEVER-OPENED", 0.6, "test-close")
+
+    assert trade is None
+    assert calls == []

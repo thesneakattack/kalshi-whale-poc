@@ -149,8 +149,6 @@ async function refresh() {
     // The market-detail modal can be open regardless of which tab is behind
     // it, so it isn't covered by the active-tab branches above.
     if (marketDetailTicker) refreshMarketDetail();
-
-    refreshHistoryInsightsIfActive();
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;
@@ -185,6 +183,17 @@ function connectWebSocket() {
         }
       } else if (payload.type === 'trade_stream_status') {
         renderTradeStreamStatus(payload.status);
+      } else if (payload.type === 'history_updated') {
+        // Backend push (services/history_push.py) - a real write happened
+        // to trade_log/signal_log/candidate_ledger/calibration_history/
+        // config_performance. No payload beyond the type tag (design
+        // §4.2) - just re-run the same full-batch refetch
+        // refreshHistoryInsightsIfActive() already performs, which itself
+        // no-ops unless currentView === 'history'. Its own
+        // HISTORY_INSIGHTS_REFRESH_MS throttle still applies here too, so
+        // a burst of history_updated messages degrades to the same
+        // cadence as before, just only while there's real activity.
+        refreshHistoryInsightsIfActive();
       }
     } catch (err) {
       console.error('Invalid websocket event', err, event.data);

@@ -21,6 +21,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import history_push
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "calibration_history.db"
 
 
@@ -82,6 +84,12 @@ def record_snapshot(report: dict, now: float | None = None) -> None:
                 json.dumps(per_factor), json.dumps(report["current_weights"]),
             ),
         )
+    # History-push hook (design §2/§4.3 - loadCalibrationHistory is driven
+    # by this snapshot, on its own hours-scale cooldown - "event-driven,
+    # but slow": a push here fires far less often than the 30s coalescing
+    # window would ever throttle, since record_snapshot itself only runs
+    # every snapshot_interval_sec, default 21600s).
+    history_push.mark_history_changed()
 
 
 def history(limit: int = 100) -> list[dict]:

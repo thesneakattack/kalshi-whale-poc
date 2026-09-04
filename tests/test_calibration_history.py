@@ -70,3 +70,18 @@ def test_clear_all_wipes_every_snapshot():
     ch.record_snapshot(_report(), now=1000.0)
     ch.clear_all()
     assert ch.history() == []
+
+
+# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
+# history-event-driven-design.md §2/§4.3 - loadCalibrationHistory, "event-
+# driven but slow") -----------------------------------------------------
+
+
+def test_record_snapshot_notifies_history_push(monkeypatch):
+    from services import history_push
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    ch.record_snapshot(_report(), now=1000.0)
+
+    assert calls == [1]
