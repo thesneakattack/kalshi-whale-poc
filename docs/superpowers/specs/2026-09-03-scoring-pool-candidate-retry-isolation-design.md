@@ -71,14 +71,37 @@ when the original design assumed ~1 concurrent WS-path caller.
   established by PR #555 and is not this document's job to re-tune. What this document scopes
   is *whether the retry path shares that specific pool*, not whether 4 is the right number for
   the WS path alone.
-- **Correctness precondition, verified before any option below is viable**: the #546 fix (PR
-  #555 — `self._seen_lock` guarding `_seen_trade_ids`/`_seen_order`) must keep working
-  regardless of which pool runs `_process_trades_sync`. Confirmed directly:
-  `kalshi_trade_tape.py:273`'s `self._seen_lock = threading.Lock()` is an **instance** attribute
-  on the provider object — a real OS-level mutex, not scoped to a particular
-  `ThreadPoolExecutor`. Any thread from any pool that holds a reference to the same provider
-  instance correctly contends for the same lock. **Splitting the pool does not reopen #546** —
-  verified, not assumed.
+- **Correctness precondition, verified before any option below is viable — corrected on
+  adversarial review, see the note below**: the #546 fix (PR #555 — `self._seen_lock` guarding
+  `_seen_trade_ids`/`_seen_order`) must keep working regardless of which pool runs
+  `_process_trades_sync`. Confirmed directly: `kalshi_trade_tape.py:273`'s
+  `self._seen_lock = threading.Lock()` is an **instance** attribute on the provider object — a
+  real OS-level mutex, not scoped to a particular `ThreadPoolExecutor`. Any thread from any pool
+  that holds a reference to the *same provider instance* correctly contends for the same lock —
+  this part is genuinely verified, not assumed. **Splitting the pool does not reopen #546.**
+
+  **What the original draft did not verify, and should not have called "verified": that the WS
+  path and the candidate-retry path always reference the same provider instance in the first
+  place.** They usually do (both read `services/app_state.py:109`'s `whale_provider =
+  get_active_provider()`, directly or via a `from ... import whale_provider` copy) — but that
+  assumption is false in a real, live, reachable path: `main.py`'s `POST /api/accounts/connect`
+  and `POST /api/accounts/{provider}/disconnect` handlers (`:1934-1953`) do
+  `global whale_provider; whale_provider = get_active_provider()` on reconnect/disconnect of the
+  active provider, which rebinds only `main.py`'s own module-level name — not
+  `services/app_state.py`'s original attribute, and not `services/whale_stream/
+  whale_stream_handlers.py`'s separately-imported copy (a `from X import Y` binding, never
+  re-synced). After such a reconnect, the WS-trade path (which reads
+  `whale_stream_handlers.py`'s own `whale_provider` name) and the candidate-retry path (which
+  reads `main.py`'s, since `_candidate_retry_loop` is itself defined there) end up on **two
+  different provider instances, each with its own separate `_seen_lock`/`_seen_trade_ids`/
+  `_seen_order`** — silently defeating #546's actual cross-path guarantee. **This bug is
+  orthogonal to pool topology and equally present today, before any option in this document is
+  built — it does not change which option to recommend, and splitting the pool does not make it
+  worse or better.** Filed separately as issue #565, since a finding living only inside this
+  document is a finding nobody acts on (this repo's own standing practice, e.g. #546 itself).
+  The correctness claim above is accurate for what it actually verified (lock scope); it should
+  not have been phrased as covering the instance-identity assumption too, since that was never
+  checked.
 - **Exchange-wide hot path measurement**: the WS-path side of `_scoring_pool` remains
   unmeasured-here per CLAUDE.md's requirement for hot-path changes; this document's own
   benchmark section (§5) is explicit about what is and isn't measured.
@@ -211,6 +234,14 @@ already established, not re-derived from scratch.
   queueing between WS dispatch and the `_scoring_pool.run(...)` call inside `fetch_signals`.
 - `services/whalewatchers/kalshi_trade_tape.py:322-420` (`fetch_signals`, `score_recovered_trade`)
   → both call sites into `_scoring_pool.run(...)`, confirmed at lines 364 and 415.
+- **Correction from adversarial review**: `fetch_signals()` has a third production caller not
+  originally listed — `main.py:1221` (the tick-loop's non-streaming fallback path, taken when
+  `_streaming_trade_tape_enabled()` is False). Doesn't change this document's scope or
+  recommendation: that predicate is the exact same gate `_candidate_retry_loop` checks
+  (`main.py:796`) before it runs at all, so this caller and candidate-retry are mutually
+  exclusive by construction — never concurrent, never contending for the same pool slot at the
+  same time. Named here for a genuinely complete call-site census, not because it changes the
+  1-worker sizing rationale.
 - `services/candidate_retry.py:103-168` (`run_pending`, full body) → confirmed strictly serial
   `for trade_id in list(_pending): ... await provider.score_recovered_trade(...)`, no
   `asyncio.gather`/`create_task` — the basis for this design's 1-worker sizing.
