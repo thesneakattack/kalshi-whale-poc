@@ -98,6 +98,22 @@ function refreshHistoryInsightsIfActive() {
   loadMarketAnalyst();
 }
 
+// Event-driven push (docs/superpowers/specs/2026-09-03-history-event-
+// driven-design.md, services/history_push.py + polling-and-websocket.js's
+// 'history_updated' WS branch) replaces refresh()'s old unconditional
+// every-poll call into refreshHistoryInsightsIfActive() - History's
+// refresh is now decoupled from /api/state's own cadence entirely. This
+// safety-net poll is the design's own stated mitigation (§6) for the one
+// gap that push can't close: a future write path that doesn't call
+// history_push.mark_history_changed() fails silently (no error, the tab
+// just looks stale) rather than being detected. 300000ms (5min) is a
+// design-time choice, not a measurement (§4.4 says so explicitly): an
+// order of magnitude above the WS client's own worst reconnect backoff
+// (wsReconnectDelayMs, capped at 30000ms) - "the WS is down and nobody
+// noticed" bounds at a few minutes of staleness, not longer.
+const HISTORY_SAFETY_NET_POLL_MS = 300000;
+setInterval(refreshHistoryInsightsIfActive, HISTORY_SAFETY_NET_POLL_MS);
+
 // First-run walkthrough (ROADMAP.md P1) - auto-opens the Help modal once,
 // on a browser that's never seen this app before (localStorage flag set by
 // openHelp() itself, so both the automatic and manual paths mark it seen

@@ -525,6 +525,37 @@ def test_resolve_from_market_results_with_no_rows_returns_zero(tmp_path, monkeyp
     assert log.resolve_from_market_results("NOPE", "yes") == 0
 
 
+# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
+# history-event-driven-design.md §2/§4.3 - loadBacktestSweeps/
+# loadCalibrationReport are signal-resolution-driven) -----------------------
+
+
+def test_mark_resolved_notifies_history_push(tmp_path, monkeypatch):
+    from services import history_push
+    log = _log(tmp_path, monkeypatch)
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    log.mark_resolved(1, correct=True)  # same "id needn't pre-exist" convention this file's other mark_resolved tests already use
+
+    assert calls == [1]
+
+
+def test_resolve_from_market_results_notifies_history_push_only_when_rows_change(tmp_path, monkeypatch):
+    from services import history_push
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("TICK-A", "yes", 1000, 0.8, "simulated", seen_at=time.time() - 3600)
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+
+    assert log.resolve_from_market_results("NOPE", "yes") == 0  # no rows touched
+    assert calls == []
+
+    assert log.resolve_from_market_results("TICK-A", "yes") == 1  # a real write
+    assert calls == [1]
+
+
 def test_resolved_signals_with_factors_orders_by_seen_at_ascending(tmp_path, monkeypatch):
     log = _log(tmp_path, monkeypatch)
     # Logged out of chronological order - the old behavior (unspecified

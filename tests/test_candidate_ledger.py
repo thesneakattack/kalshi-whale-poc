@@ -114,3 +114,22 @@ def test_connect_sets_explicit_busy_timeout_pragma():
     from services import candidate_ledger
     with candidate_ledger._connect() as conn:
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
+# history-event-driven-design.md §2/§4.3) -----------------------------------
+
+
+def test_record_decision_notifies_history_push(monkeypatch):
+    """loadCandidateLogSummary is candidate-decision-driven per the design's
+    own trigger table - record_decision() must call
+    history_push.mark_history_changed() on every real write."""
+    from services import candidate_ledger, history_push
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+
+    candidate_ledger.claim("t1")
+    candidate_ledger.record_decision("t1", "trade")
+
+    assert calls == [1]

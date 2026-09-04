@@ -23,6 +23,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from services import history_push
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "config_performance.db"
 
 # The only strategy field that isn't a tunable knob - deliberately excluding
@@ -155,6 +157,17 @@ def log_applied_change(
                 trade_count, fingerprint_before, fingerprint_after, 1 if auto_applied else 0, source,
             ),
         )
+    # History-push hook (design §2/§4.3 - loadChangeHistory). Fired
+    # unconditionally for both the manual and auto-apply paths, not just
+    # auto-apply as design §2's table suggested exempting - that exemption
+    # was scoped to "the client already knows" for the ONE browser tab that
+    # made the manual apply call and already re-fetches on its own POST
+    # response; a second connected tab/browser watching the same dashboard
+    # has no way to know about a manual change otherwise. Hooking this
+    # write function directly (design §4.3 option 2) is what makes that
+    # coverage free rather than requiring a second call-site enumeration
+    # pass for "every manual-apply route too."
+    history_push.mark_history_changed()
 
 
 def recent_applied_changes(limit: int = 50, offset: int = 0) -> list[dict]:

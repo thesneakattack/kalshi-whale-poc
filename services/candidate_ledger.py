@@ -13,7 +13,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import db
+from services import db, history_push
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_ledger.db"
 
@@ -69,6 +69,14 @@ def claim(trade_id: str, *, ticker: str | None = None, now: float | None = None)
 def record_decision(trade_id: str, decision: str) -> None:
     with _connect() as conn:
         conn.execute("UPDATE candidates SET decision = ? WHERE trade_id = ?", (decision, trade_id))
+    # History-push hook (docs/superpowers/specs/2026-09-03-history-event-
+    # driven-design.md §4.3/§2 - loadCandidateLogSummary is candidate-
+    # decision-driven). Runs on a tick_executor worker thread in production
+    # (decision_bridge.py's await tick_executor.run(lambda: candidate_ledger.
+    # record_decision(...))) - history_push.mark_history_changed() is the
+    # thread-safe choke point, safe to call unconditionally from here
+    # regardless of which thread this function runs on.
+    history_push.mark_history_changed()
 
 
 def decision_for(trade_id: str) -> str | None:

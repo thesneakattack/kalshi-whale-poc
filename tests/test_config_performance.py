@@ -258,3 +258,40 @@ def test_diff_patch_treats_a_field_missing_from_old_cfg_as_none():
     old_cfg = {"strategy": {}}
     patch = {"strategy": {"take_profit_pct": 0.5}}
     assert cp.diff_patch(old_cfg, patch) == [("strategy.take_profit_pct", None, 0.5)]
+
+
+# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
+# history-event-driven-design.md §2/§4.3 - loadChangeHistory. Fired for
+# BOTH manual and auto-apply sources - see log_applied_change's own comment
+# for why the design's per-source exemption doesn't apply once the hook
+# lives inside the write function itself) --------------------------------
+
+
+def test_log_applied_change_notifies_history_push_for_manual_source(tmp_path, monkeypatch):
+    from services import history_push
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.05, new_value=0.1,
+        rationale="test rationale", trade_count=30,
+        fingerprint_before="fp1", fingerprint_after="fp2", auto_applied=False,
+    )
+
+    assert calls == [1]
+
+
+def test_log_applied_change_notifies_history_push_for_auto_applied_source(tmp_path, monkeypatch):
+    from services import history_push
+    monkeypatch.setattr(cp, "DB_PATH", tmp_path / "config_performance.db")
+
+    calls = []
+    monkeypatch.setattr(history_push, "mark_history_changed", lambda: calls.append(1))
+    cp.log_applied_change(
+        config_path="strategy.entry_threshold", old_value=0.05, new_value=0.1,
+        rationale="test rationale", trade_count=30,
+        fingerprint_before="fp1", fingerprint_after="fp2", auto_applied=True, source="unified-advisory",
+    )
+
+    assert calls == [1]
