@@ -99,3 +99,54 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
     asyncio.run(analytics_routes.get_candidate_log_summary())
 
     assert len(calls) == 2, "a call after the TTL has elapsed should recompute, not reuse the stale cache"
+
+
+def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receipt(monkeypatch):
+    """Issue #410 cache-alignment bug (docs/superpowers/research/2026-09-04-
+    issue-410-tick-executor-measurement.md Sec 3.4): `cached_at` was stamped
+    with a `now` captured BEFORE awaiting the query, so a 15-22s query
+    burned 53-73% of its own 30s TTL before the entry was even written.
+
+    The frontend polls on a 30000ms throttle measured from when it last
+    FIRED (frontend/src/js/main.js:79-98), so the next poll lands at
+    T_fire + [30, 36)s - at or past a TTL window measured from the previous
+    FIRE instant, meaning essentially every scheduled poll missed. Each miss
+    re-occupies one of tick_executor's 2 workers, the same pool
+    candidate_ledger.claim()/record_decision() uses on the live per-signal
+    decision path.
+
+    This reproduces the real steady-state pattern rather than the
+    implementation detail: a 20s query, then a second poll 33s after the
+    FIRST FIRED (mid-window). Stamping at completion makes that a hit."""
+    calls = []
+    fake_now = [1_000_000.0]
+    query_duration_sec = 20.0
+
+    async def _slow_run(fn):
+        calls.append(1)
+        fake_now[0] += query_duration_sec  # the query itself takes 20s
+        return fn()
+
+    monkeypatch.setattr(analytics_routes.tick_executor, "run", _slow_run)
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(
+        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
+    )
+    monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
+
+    # Poll 1 fires at t=0, completes at t=20.
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+    assert calls == [1]
+    assert analytics_routes._population_gates_cache["cached_at"] == 1_000_000.0 + query_duration_sec, (
+        "cached_at must be the completion instant, not the request-receipt instant"
+    )
+
+    # Poll 2 fires 33s after poll 1 FIRED - squarely inside the real
+    # frontend's [30, 36)s window. 33 - 20 = 13s of cache age < 30s TTL.
+    fake_now[0] = 1_000_000.0 + 33.0
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert len(calls) == 1, (
+        "a poll landing in the frontend's real [30, 36)s window must hit the cache; "
+        "stamping cached_at at request-receipt made every scheduled poll a miss"
+    )

@@ -127,7 +127,19 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         population_gates = await tick_executor.run(
             lambda: candidate_log.population_gate_summary(min_population_samples)
         )
-        _population_gates_cache["cached_at"] = now
+        # Stamped at COMPLETION, not at the `now` captured on request
+        # receipt above (issue #410, docs/superpowers/research/2026-09-04-
+        # issue-410-tick-executor-measurement.md Sec 3.4). This query costs
+        # 15-22s and is rising with rejection_events' unbounded growth, so
+        # stamping it with the receipt instant burned 53-73% of its own 30s
+        # TTL before the entry was even written. The frontend throttles on
+        # 30000ms measured from when it last FIRED (frontend/src/js/main.js:
+        # 79-98), so the next poll lands at T_fire + [30, 36)s - at or past
+        # a window measured from the previous fire, making essentially every
+        # scheduled poll a miss. Each miss re-occupies one of tick_executor's
+        # 2 workers, shared with candidate_ledger.claim()/record_decision()
+        # on the live per-signal decision path.
+        _population_gates_cache["cached_at"] = time.time()
         _population_gates_cache["value"] = population_gates
     return {
         "gates": candidate_log.gate_summary(),

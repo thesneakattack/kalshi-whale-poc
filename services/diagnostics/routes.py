@@ -36,7 +36,7 @@ from services.reset import trade_archive
 from services.diagnostics import diagnostics
 from services.diagnostics import store_stats
 from services.diagnostics import trade_capture_reconciliation
-from services.app_state import account, state, trade_stream, whale_provider
+from services.app_state import account, get_whale_provider, state, trade_stream
 from services import whale_pipeline_perf
 from services import http_client
 from services.whalewatchers.kalshi_trade_tape import _MAX_SEEN_TRADE_IDS, min_contracts_for
@@ -143,9 +143,12 @@ async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float 
     now = time.time()
     window_end = now - max(lag_sec, 0.0)
     window_start = window_end - max(minutes, 0.1) * 60.0
-    seen_by_id = getattr(whale_provider, "seen_exchange_ts_by_id", None)
+    # Resolved once, so the whole reconciliation reads one instance's
+    # seen-record even if a reconnect swaps the provider mid-call (#565).
+    provider = get_whale_provider()
+    seen_by_id = getattr(provider, "seen_exchange_ts_by_id", None)
     if not callable(seen_by_id):
-        return {"error": f"active whale provider {getattr(whale_provider, 'name', '?')!r} keeps no seen-record; "
+        return {"error": f"active whale provider {getattr(provider, 'name', '?')!r} keeps no seen-record; "
                          "reconciliation needs kalshi_trade_tape"}
     wwk_cfg = cfg.get("whale_watcher_kalshi") or {}
     ingest = trade_stream.ingest_metrics() if hasattr(trade_stream, "ingest_metrics") else {}
@@ -166,7 +169,7 @@ async def get_trade_capture_reconciliation(minutes: float = 5.0, lag_sec: float 
             min_contracts_for=lambda ticker: min_contracts_for(ticker, wwk_cfg),
             max_pages=max(1, min(max_pages, 50)),
             ingest_evidence=evidence,
-            seen_horizon_ts=whale_provider.seen_horizon_ts(),
+            seen_horizon_ts=provider.seen_horizon_ts(),
         )
     finally:
         await client.close()
@@ -479,9 +482,9 @@ async def get_pipeline_health(exact_rows: bool = False):
             "messages_received": getattr(trade_stream, "messages_received", None),
             "dropped_messages": getattr(trade_stream, "dropped_messages", None),
             "exchange_wide": getattr(trade_stream, "exchange_wide_trades", None),
-            "dedup_ids_held": len(getattr(whale_provider, "_seen_trade_ids", ())),
+            "dedup_ids_held": len(getattr(get_whale_provider(), "_seen_trade_ids", ())),
             "dedup_cap": _MAX_SEEN_TRADE_IDS,
-            "provider_stats": getattr(whale_provider, "stats", None),
+            "provider_stats": getattr(get_whale_provider(), "stats", None),
             # Live queue-health snapshot (I1, services/kalshi/websocket.py's
             # ingest_metrics): per-class counts, depth/high-water, oldest
             # message age, queue-wait and handler-time windows, server

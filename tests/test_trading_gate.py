@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from services import app_state as app_state_module
 from services import candidate_log as cl_module
 from services import capture_writer as cw_module
 from services.config import config_performance as cp_module
@@ -2836,7 +2837,9 @@ def _stub_trade_signal_provider(monkeypatch):
                 "price": 0.5, "size": 10, "reason": "r",
             }]
 
-    monkeypatch.setattr(wsh_module, "whale_provider", _StubProvider())
+    # Patched on app_state, the single source of truth every path resolves
+    # through since #565 - whale_stream_handlers no longer owns a copy.
+    monkeypatch.setattr(app_state_module, "_whale_provider", _StubProvider())
 
 
 def _spy_on_check_exits(monkeypatch):

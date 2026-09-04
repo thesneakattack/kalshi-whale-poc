@@ -106,7 +106,35 @@ whale_sim = WhaleSimulator(
     size_range=tuple(cfg["whale_signal"]["whale_size_range"]),
     bias=cfg["whale_signal"]["bias"],
 )
-whale_provider = get_active_provider()  # only active if its own env vars are set — see services/whalewatchers/
+_whale_provider = get_active_provider()  # only active if its own env vars are set — see services/whalewatchers/
+
+
+def get_whale_provider():
+    """The one live whale-watcher provider instance, for every path that
+    needs it. Read through this, never `from services.app_state import
+    whale_provider` — issue #565: the account endpoints re-instantiate the
+    provider on connect/disconnect, and a name copied at import time keeps
+    pointing at the dead instance. That matters beyond staleness because
+    each provider owns its own _seen_trade_ids/_seen_order/_seen_lock
+    (issue #546's dedupe ledger), so two live instances mean the WS-trade
+    path and the candidate-retry path silently stop sharing it. The
+    module attribute is private precisely so the old copied-import spelling
+    fails loudly at import time instead of going stale at runtime."""
+    return _whale_provider
+
+
+def reload_whale_provider():
+    """Re-instantiate the active provider and make it the one every path
+    resolves to. The single mutation point - called by
+    POST /api/accounts/connect and POST /api/accounts/{provider}/disconnect
+    so a credential change takes effect immediately. Returns the new
+    instance. Note the new instance starts with an empty dedupe ledger,
+    which is correct: it is a different connection to the exchange, and the
+    alternative (carrying IDs across a credential change) would suppress
+    genuinely new prints."""
+    global _whale_provider
+    _whale_provider = get_active_provider()
+    return _whale_provider
 # Kalshi's demo and production environments use separate credentials and
 # separate hosts (KALSHI_API_KEY_ID/KALSHI_PRIVATE_KEY_PATH for one won't
 # authenticate against the other) — KALSHI_ACCOUNT_BASE_URL lets the account
@@ -362,11 +390,11 @@ state = {
     "last_poll": None,
     "error": None,
     "trade_stream_status": {
-        "enabled": whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled,
+        "enabled": get_whale_provider().name == "kalshi_trade_tape" and trade_stream.enabled,
         "connected": False,
         "error": None,
         "ws_url": trade_stream.status.get("ws_url"),
-        "mode": "stream" if whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled else "poll",
+        "mode": "stream" if get_whale_provider().name == "kalshi_trade_tape" and trade_stream.enabled else "poll",
     },
     # market_lifecycle_v2 observability (2026-08-17) - a genuinely new,
     # never-before-observed-live channel (see main.py._process_stream_
@@ -382,7 +410,7 @@ state = {
     # 1-second reporting window rolls over after the exchange-wide trade
     # stream starts flowing.
     "trade_stream_perf": None,
-    "whale_source": whale_provider.name if whale_provider.enabled else "simulated",
+    "whale_source": get_whale_provider().name if get_whale_provider().enabled else "simulated",
     "account": {
         "connected": account.enabled, "balance": None, "positions": None, "fills": None,
         "error": None, "trading_enabled": account.trading_enabled,

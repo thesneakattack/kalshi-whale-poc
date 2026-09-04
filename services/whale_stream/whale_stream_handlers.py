@@ -25,7 +25,7 @@ from services.exits import position_netting
 from services.kalshi import websocket as kalshi_websocket
 from services.market_events import event_lifecycle
 from services.position.account_positions import _slim_fill, _slim_position
-from services.app_state import broker, bump_generation, state, strategy, trade_stream, whale_provider
+from services.app_state import broker, bump_generation, get_whale_provider, state, strategy, trade_stream
 from services.config.config_store import config_store
 from services.kalshi.public import KalshiPublicGateway
 from services.market_catalog import market_catalog
@@ -118,7 +118,7 @@ def _streaming_trade_tape_enabled() -> bool:
     # replace the polled trade tape when the real trade-tape provider is active
     # AND websocket credentials loaded successfully. Fallback stays on the
     # existing REST polling path otherwise.
-    return whale_provider.name == "kalshi_trade_tape" and trade_stream.enabled
+    return get_whale_provider().name == "kalshi_trade_tape" and trade_stream.enabled
 
 
 _stream_client_cache: dict[str, KalshiPublicGateway] = {}
@@ -237,7 +237,7 @@ async def _process_stream_trade(trade: dict) -> None:
         config_fp = config_performance.fingerprint(cfg_now)
         _fetch_signals_started_at = time.monotonic()
         perf.record_stage("config", _fetch_signals_started_at - _capture_done_at)
-        signals = await whale_provider.fetch_signals(
+        signals = await get_whale_provider().fetch_signals(
             market_context={
                 "markets": state["markets"], "trade_tape": [trade], "cfg": cfg_now,
                 # Lets the provider resolve a market that isn't on the watchlist

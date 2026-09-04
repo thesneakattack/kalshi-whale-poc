@@ -200,3 +200,55 @@ def test_confidence_calibration_report_recomputes_after_ttl_expires(monkeypatch)
     asyncio.run(calibration_routes.get_confidence_calibration_report())
 
     assert len(calls) == 2, "a call after the TTL has elapsed should recompute, not reuse the stale cache"
+
+
+def test_confidence_calibration_report_cache_is_stamped_at_completion_not_request_receipt(monkeypatch):
+    """Issue #410 cache-alignment bug, sibling of the identical defect in
+    services/analytics/routes.py (docs/superpowers/research/2026-09-04-
+    issue-410-tick-executor-measurement.md Sec 3.4): `cached_at` was stamped
+    with a `now` captured BEFORE awaiting _build_report(), whose real cost
+    is ~5.5s (a ~2s fetch plus a ~3.4s pure-Python bucket/factor pass), so
+    the entry was already seconds stale when written.
+
+    Both this route and candidate-log/summary are polled together in one
+    batch by refreshHistoryInsightsIfActive() on a 30000ms throttle measured
+    from when it last FIRED, so both missing together is what can occupy
+    both of tick_executor's 2 workers at once - the pool shared with
+    candidate_ledger.claim()/record_decision() on the live decision path."""
+    calls = []
+    fake_now = [1_000_000.0]
+    build_duration_sec = 5.5
+
+    monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
+
+    def _slow_fetch():
+        calls.append(1)
+        fake_now[0] += build_duration_sec  # _build_report()'s real measured cost
+        return []
+
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors", _slow_fetch)
+    monkeypatch.setattr(
+        calibration_routes.confidence_calibration, "generate_calibration_report",
+        lambda rows, min_n, weights: {"report": None, "gated_reason": "stub", "resolved_count": 0},
+    )
+    monkeypatch.setattr(
+        calibration_routes.evidence_provenance, "current_completeness_state",
+        lambda: {"degraded": False, "defects": [], "checked_at": 0.0},
+    )
+    monkeypatch.setattr(calibration_routes, "_report_cache", {"cached_at": None, "value": None})
+    monkeypatch.setattr(calibration_routes.time, "time", lambda: fake_now[0])
+
+    asyncio.run(calibration_routes.get_confidence_calibration_report())
+    assert calls == [1]
+    assert calibration_routes._report_cache["cached_at"] == 1_000_000.0 + build_duration_sec, (
+        "cached_at must be the completion instant, not the request-receipt instant"
+    )
+
+    # Second poll 33s after the first FIRED - inside the frontend's real
+    # [30, 36)s window. 33 - 5.5 = 27.5s of cache age < 30s TTL.
+    fake_now[0] = 1_000_000.0 + 33.0
+    asyncio.run(calibration_routes.get_confidence_calibration_report())
+
+    assert len(calls) == 1, (
+        "a poll landing in the frontend's real [30, 36)s window must hit the cache"
+    )
