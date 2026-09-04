@@ -26,9 +26,12 @@ automatically (once per real UTC calendar day, not once per tick) before
 doing its own check - every existing call site gets this for free with no
 new call needed.
 """
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
+
+from services import db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "risk_state.db"
 
@@ -37,25 +40,7 @@ def _today(now: float | None = None) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(now if now is not None else time.time()))
 
 
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
-    # Same idiom as services/signal_log.py/config_performance.py -
-    # CREATE TABLE IF NOT EXISTS alone doesn't add a column to an existing
-    # table with existing rows.
-    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
-
-
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_risk_meta(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS risk_meta (
@@ -66,13 +51,28 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
-    # Nullable on purpose - a pre-existing row from before this column
-    # existed has no real "day" to compare against yet; _load() below seeds
-    # it from today's date on first read rather than assuming a rollover is
-    # due immediately (that decision belongs to a deliberate one-time
-    # /api/risk/resume-style action, not an automatic migration side effect).
-    _add_column_if_missing(conn, "risk_meta", "day_start_date", "TEXT")
-    return conn
+
+
+db.register_schema("risk_meta", _init_risk_meta)
+
+
+@contextlib.contextmanager
+def _connect(db_path: Path):
+    # WAL mode (2026-08-11, real live incident): rollback-journal mode
+    # serializes ALL writers and readers against each other for the whole
+    # transaction; WAL lets readers proceed concurrently with a writer and
+    # is the standard hardening step for exactly the bursty-write scenario
+    # that took the app down (trade-tape volume overwhelming a per-call
+    # sqlite3.connect()). idempotent - safe to run on every connect.
+    with db.connect(db_path, tables=("risk_meta",)) as conn:
+        # Nullable on purpose - a pre-existing row from before this column
+        # existed has no real "day" to compare against yet; _load() below
+        # seeds it from today's date on first read rather than assuming a
+        # rollover is due immediately (that decision belongs to a deliberate
+        # one-time /api/risk/resume-style action, not an automatic migration
+        # side effect).
+        db.add_column_if_missing(conn, "risk_meta", "day_start_date", "TEXT")
+        yield conn
 
 
 class RiskManager:
