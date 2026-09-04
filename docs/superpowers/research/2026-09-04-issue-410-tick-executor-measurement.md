@@ -20,10 +20,18 @@ from unbounded table growth, independent of any code change. Both routes still r
 
 Recommended fix family: **not** a bolted-on dedicated `ThreadPoolExecutor` (the `_scoring_pool.py`
 pattern issue #410's own text names) but the newer, better-precedented pattern this exact
-codebase already used three days before #410 was filed — rewrite the blocking synchronous
-`sqlite3` reads to native `aiosqlite` (`services/quality/routes.py`'s `run_offline()`,
-`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`), which
-removes the thread-pool dependency entirely rather than relocating it to a second pool. See
+codebase already used the same day #410 was filed, ~7 hours after
+(`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md` was
+committed 2026-09-01T22:47Z; #410 was filed 2026-09-01T15:41Z — corrected here after adversarial
+review falsified the original "three days before" claim, which was backwards) — rewrite the
+blocking synchronous `sqlite3` reads to native `aiosqlite`
+(`services/quality/routes.py`'s `run_offline()`). This removes the thread-pool dependency for
+`population_gate_summary()`, which converts cleanly (pure SQL `GROUP BY`, trivial post-processing)
+— but **not** for `whale_calibration`'s `_build_report()`: its dominant 3.4s cost
+(`_bucket_win_rates`/`_factor_report`) is pure Python with no database access at all, so an
+aiosqlite rewrite alone doesn't touch it. That path needs aiosqlite for its ~2s fetch *plus* a
+separate offload (e.g. `asyncio.to_thread`, the same mechanism `services/quality/routes.py` uses
+right next to `run_offline()` for its own non-DB-driver-shaped work) for the compute pass. See
 "Recommendation" below for the full ranked comparison and the independent, orthogonal cache-bug
 fix this doesn't replace.
 
