@@ -2,11 +2,15 @@
 resolve consumer-blocking fix - docs/superpowers/research/2026-09-03-
 trade-resolve-consumer-blocking-solution-comparison.md §3 finding F6):
 self._seen_trade_ids/_seen_order are touched by _process_trades_sync, which
-runs on services/whalewatchers/_scoring_pool.py's worker threads, from TWO
-independently-scheduled callers - the WS stream's own consumer
-(fetch_signals -> _process_trades_timed) and main.py's
-_candidate_retry_loop (score_recovered_trade), both submitting to the SAME
-4-worker pool. _process_trades_sync's own docstring used to claim "only
+runs on worker threads, from TWO independently-scheduled callers - the WS
+stream's own consumer (fetch_signals -> _process_trades_timed) and
+main.py's _candidate_retry_loop (score_recovered_trade). They submit to
+two different pools as of issue #563 (_scoring_pool.py and
+_candidate_retry_pool.py respectively; they shared one 4-worker pool when
+this race was found), which does NOT close this race: both still mutate
+the SAME provider instance's _seen_trade_ids/_seen_order from different OS
+threads, so the lock below is still what closes it.
+_process_trades_sync's own docstring used to claim "only
 ever touched from within one in-flight fetch_signals() call at a time" -
 correct when written (2026-08-11, the tick loop awaited each call
 serially), silently invalidated by two later, unrelated commits that never

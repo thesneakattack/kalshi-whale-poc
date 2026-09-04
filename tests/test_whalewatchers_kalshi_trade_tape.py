@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 
 import pytest
@@ -158,29 +159,77 @@ def test_score_recovered_trade_is_now_a_coroutine_function():
     assert inspect.iscoroutinefunction(provider.score_recovered_trade)
 
 
-def test_score_recovered_trade_runs_on_the_dedicated_scoring_pool_and_scores_the_trade():
-    from services.whalewatchers import kalshi_trade_tape
-
-    pool_calls = []
-    real_run = kalshi_trade_tape._scoring_pool.run
-
-    async def spy(fn):
-        pool_calls.append(fn)
-        return await real_run(fn)
-
+def test_score_recovered_trade_runs_on_the_candidate_retry_pool_and_scores_the_trade():
+    """Issue #563: this path moved OFF _scoring_pool (which the WS-trade
+    path keeps to itself) onto its own 1-worker pool. Asserts both halves -
+    the new pool receives the submission AND the trade still scores
+    identically - so a regression that routes it back to the shared pool
+    fails here rather than silently reinstating the sharing."""
     import services.whalewatchers.kalshi_trade_tape as ktt_module
-    orig_run = ktt_module._scoring_pool.run
-    ktt_module._scoring_pool.run = spy
+
+    retry_pool_calls = []
+    scoring_pool_calls = []
+    real_retry_run = ktt_module._candidate_retry_pool.run
+
+    async def retry_spy(fn):
+        retry_pool_calls.append(fn)
+        return await real_retry_run(fn)
+
+    async def scoring_spy(fn):
+        scoring_pool_calls.append(fn)
+        raise AssertionError("candidate-retry scoring must not use _scoring_pool")
+
+    orig_retry_run = ktt_module._candidate_retry_pool.run
+    orig_scoring_run = ktt_module._scoring_pool.run
+    ktt_module._candidate_retry_pool.run = retry_spy
+    ktt_module._scoring_pool.run = scoring_spy
     try:
         provider = KalshiTradeTapeProvider()
         trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
         market = _market()
         signals = asyncio.run(provider.score_recovered_trade(trade, market, {}, time.time()))
     finally:
-        ktt_module._scoring_pool.run = orig_run
-    assert len(pool_calls) == 1
+        ktt_module._candidate_retry_pool.run = orig_retry_run
+        ktt_module._scoring_pool.run = orig_scoring_run
+    assert len(retry_pool_calls) == 1
+    assert scoring_pool_calls == []
     assert len(signals) == 1
     assert signals[0].ticker == market["ticker"]
+
+
+def test_the_two_scoring_paths_use_disjoint_worker_threads():
+    """The actual isolation property this change delivers, made falsifiable
+    rather than asserted in prose: the WS path's scoring and the
+    candidate-retry path's scoring run on threads from different pools, so
+    neither can occupy a worker the other needs. Before issue #563's fix
+    both names started with 'whale-scoring'."""
+    import services.whalewatchers.kalshi_trade_tape as ktt_module
+
+    seen_threads = []
+    real_process = ktt_module.KalshiTradeTapeProvider._process_trades_sync
+
+    def _record_thread(self, *args, **kwargs):
+        seen_threads.append(threading.current_thread().name)
+        return real_process(self, *args, **kwargs)
+
+    ktt_module.KalshiTradeTapeProvider._process_trades_sync = _record_thread
+    try:
+        provider = KalshiTradeTapeProvider()
+        market = _market()
+        ws_trade = _trade(count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes")
+        asyncio.run(provider.fetch_signals(
+            market_context={"markets": [market], "trade_tape": [ws_trade], "cfg": {}},
+        ))
+        retry_trade = _trade(
+            trade_id="retry-1", count_fp="10000.00", yes_price_dollars="0.60", taker_side="yes",
+        )
+        asyncio.run(provider.score_recovered_trade(retry_trade, market, {}, time.time()))
+    finally:
+        ktt_module.KalshiTradeTapeProvider._process_trades_sync = real_process
+
+    assert len(seen_threads) == 2, seen_threads
+    assert seen_threads[0].startswith("whale-scoring"), seen_threads
+    assert seen_threads[1].startswith("candidate-retry-scoring"), seen_threads
 
 
 def test_fetch_signals_below_contract_threshold_logs_unit_cost_too():
