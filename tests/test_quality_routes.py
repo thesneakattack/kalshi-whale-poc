@@ -152,3 +152,78 @@ def test_quality_summary_has_no_evidence_provenance_findings_when_clean(monkeypa
 
     ids = [f["finding_id"] for f in resp.json()["findings"]]
     assert not any(i.startswith("evidence_provenance:") for i in ids)
+
+
+def test_quality_summary_dispatches_its_blocking_calls_off_the_event_loop(monkeypatch):
+    """Issue #530: this route ran undispatched synchronous DB/file reads
+    directly in its async body. Direct read of the current source (not the
+    census doc's grep-based list alone, which named
+    alerting.active_alerts/fault_log.summary/research.latest/
+    observability.runtime_findings but missed three more reached directly in
+    this same handler body: storage_health.inventory_data_dir,
+    storage_health.storage_findings, and backup.latest, the last one buried
+    as an inline argument expression) found seven genuine undispatched
+    call sites, not four.
+
+    Excluded from this test on purpose, each independently confirmed by
+    direct read: alerting.alert_findings (pure computation over an
+    already-fetched list) and evidence_provenance.findings (its whole call
+    graph - settlement_resolver.snapshot/index_feed.ingestion.snapshot/
+    capture_writer.dropped_count - is in-memory counters, no I/O)
+    genuinely need no dispatch; diagnostics.run_offline is already awaited
+    and runs natively on aiosqlite (a separate, already-fixed piece, per
+    this file's own module docstring and services/diagnostics/diagnostics.py's
+    comment), so re-wrapping it here would be redundant, not a fix.
+
+    Same spy idiom as tests/test_loop_watchdog.py's
+    test_stall_captures_a_stack_and_records_it_off_the_loop: the spy checks
+    whether asyncio.get_running_loop() succeeds *inside* the real call. This
+    proves the call actually left the event loop (ran on a worker thread),
+    not merely that asyncio.to_thread was invoked somewhere - a mock of
+    asyncio.to_thread itself could pass while the real dispatch was wired
+    wrong."""
+    import asyncio
+
+    from services.alerting import alerting
+    from services.backup import backup
+    from services import fault_log
+    from services.observability import observability
+    from services.research import research
+    from services.storage_health import storage_health
+
+    on_loop: dict[str, bool] = {}
+
+    def _spy(name, real):
+        def wrapper(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_loop[name] = True
+            except RuntimeError:
+                on_loop[name] = False
+            return real(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(alerting, "active_alerts", _spy("active_alerts", alerting.active_alerts))
+    monkeypatch.setattr(fault_log, "summary", _spy("fault_log_summary", fault_log.summary))
+    monkeypatch.setattr(research, "latest", _spy("research_latest", research.latest))
+    monkeypatch.setattr(
+        observability, "runtime_findings", _spy("runtime_findings", observability.runtime_findings)
+    )
+    monkeypatch.setattr(
+        storage_health, "inventory_data_dir", _spy("inventory_data_dir", storage_health.inventory_data_dir)
+    )
+    monkeypatch.setattr(
+        storage_health, "storage_findings", _spy("storage_findings", storage_health.storage_findings)
+    )
+    monkeypatch.setattr(backup, "latest", _spy("backup_latest", backup.latest))
+
+    resp = client.get("/api/quality/summary")
+
+    assert resp.status_code == 200
+    expected = {
+        "active_alerts", "fault_log_summary", "research_latest", "runtime_findings",
+        "inventory_data_dir", "storage_findings", "backup_latest",
+    }
+    assert set(on_loop.keys()) == expected, f"not every target call site was exercised: {on_loop}"
+    still_on_loop = {name for name, was_on_loop in on_loop.items() if was_on_loop}
+    assert not still_on_loop, f"these calls still ran synchronously on the event loop: {still_on_loop}"

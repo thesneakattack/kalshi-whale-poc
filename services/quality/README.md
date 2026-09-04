@@ -78,15 +78,50 @@ enabled, a single isolated blip).
 
 ## Hot-path impact
 
-None. `GET /api/quality/summary` is an on-demand HTTP handler only — it is
-never called from `main.py`'s `trading_loop`, so hitting it (however
-often) has zero effect on tick timing. Its own cost is bounded by what it
-composes: `observability.runtime_findings` (pure, reads already-computed
-`state`), `storage_health.inventory_data_dir` (the cheap file-stat tier,
-never the deep scan), `alerting.active_alerts()`/`fault_log.summary()`
-(small indexed queries), `diagnostics.run_offline` (explicitly excludes
-the one live-network check, `check_coverage`) — no source here does any
-network I/O, proven directly by `tests/test_quality_routes.py::
+**Corrected 2026-09-04 (issue #530) — the "None" claim below was stale and
+inaccurate.** `GET /api/quality/summary` is never called *from*
+`main.py`'s `trading_loop`, but until this fix seven of its own composed
+calls (`observability.runtime_findings`, `storage_health.
+inventory_data_dir`, `backup.latest`, `storage_health.storage_findings`,
+`alerting.active_alerts`, `research.latest`, `fault_log.summary`) ran
+synchronously on the same asyncio event loop the WS trading callbacks and
+every other route share — so while one of those calls was in flight,
+*nothing else* on the process could run, trading loop included. This is
+exactly what PR #424's own prior finding already showed live ("5
+concurrent `GET /api/quality/summary` requests stalling an unrelated
+`GET /api/state` for minutes") — this README's "zero effect on tick
+timing" framing was never true for that failure mode, only for the
+unrelated (true) claim that this route isn't *called from* the trading
+loop. Fixed by wrapping each of the seven in `asyncio.to_thread` (see
+`routes.py`'s own module docstring for the full rationale, live
+measurements, and why `diagnostics.run_offline`/`alerting.alert_findings`/
+`evidence_provenance.findings` were deliberately left as-is). One
+important corrected expectation: direct live measurement (docker exec
+against real production `data/*.db` files, 2026-09-04, re-measured after
+adversarial review found the DB files had grown between passes) found the
+seven newly-dispatched calls sum to roughly 100-300ms today — cheap, but
+climbing as `fault_log.db`/`observability.db` grow, not a fixed "under
+100ms" number. The route's own multi-second-to-30+s total latency
+(docs/event-loop-blocking-routes-census-2026-09-03.md) is still
+dominated by `diagnostics.run_offline()` (measured ~9.1s against the same
+live data), which yields control genuinely and frequently (~1,100 real
+awaited aiosqlite yields per call) — but per `_aio_db.py`'s own docstring
+also has its own pre-existing, undisclosed, out-of-scope on-loop CPU
+chunks between those yields (>=280ms measured 2026-09-01, likely more
+now), not addressed by this fix. This fix stops the route from stalling
+*other* requests while it runs; it does not make the route itself fast,
+does not close `run_offline()`'s own separate on-loop-CPU gap, and never
+claimed to do either.
+
+Original (still-true) sub-claims, updated for the above: its own cost is
+bounded by what it composes: `observability.runtime_findings` (pure,
+reads already-computed `state`, plus one small indexed query via
+`_repeated_rate_limit_hits_finding`), `storage_health.inventory_data_dir`
+(the cheap file-stat tier, never the deep scan), `alerting.
+active_alerts()`/`fault_log.summary()` (small indexed queries),
+`diagnostics.run_offline` (explicitly excludes the one live-network
+check, `check_coverage`) — no source here does any network I/O, proven
+directly by `tests/test_quality_routes.py::
 test_quality_summary_makes_no_kalshi_network_calls`.
 
 ## Failure behavior
