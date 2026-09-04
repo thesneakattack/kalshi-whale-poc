@@ -8,34 +8,44 @@ runs again on the same trade_id.
 Unwired by this task deliberately - Task 10 gates _handle_signal on
 claim(), Task 27 gates reconciliation-recovered trades on it too. This
 task only ships the table and its API, additive and inert."""
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
+
+from services import db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_ledger.db"
 
 _duplicate_count = 0
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect. Added
-    # here (code-review fix, finding #4) - every sibling persistence module
-    # already has this; this one was missed, and claim()/record_decision()
-    # are called on the exchange-wide hot path (a claim per whale-sized
-    # print), the same write-volume shape the original incident was.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_candidates(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS candidates ("
         "trade_id TEXT PRIMARY KEY, ticker TEXT, claimed_at REAL NOT NULL, decision TEXT)"
     )
-    return conn
+
+
+db.register_schema("candidates", _init_candidates)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site (claim,
+    record_decision, decision_for, stats) keeps working unchanged - now
+    backed by services/db.py's closing connect() (Task 8 of docs/
+    superpowers/plans/2026-09-03-persistence-layer-db-migration-
+    implementation.md). WAL mode (2026-08-11, real live incident:
+    rollback-journal mode serializes ALL writers and readers against each
+    other for the whole transaction, and claim()/record_decision() sit on
+    the exchange-wide hot path, a claim per whale-sized print - the same
+    bursty-write shape that took the app down) and the busy_timeout
+    pragma are now db.connect()'s job, not this module's - the simplest
+    migration in the plan, no extra statements needed beyond the
+    registered table itself."""
+    with db.connect(DB_PATH, tables=("candidates",)) as conn:
+        yield conn
 
 
 def claim(trade_id: str, *, ticker: str | None = None, now: float | None = None) -> bool:
