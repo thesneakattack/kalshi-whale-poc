@@ -2119,21 +2119,21 @@ first, only a logical one (the issue body should say `services/db.py` is a prere
 
 **Depends on:** all of Tasks 1–13 merged (Task 14 is documentation-only and doesn't gate this).
 
-- [ ] **Step 1: Full local suite, once all code PRs have merged to `main`**
+- [x] **Step 1: Full local suite, once all code PRs have merged to `main`**
 
 Per `.claude/rules/branching-and-ci.md`, read the pushed/merged CI result rather than re-running
 the full suite locally as a duplicate check: `gh api
 repos/thesneakattack/kalshi-whale-poc/commits/<final-merge-sha>/status`, confirm every required
 context green.
 
-- [ ] **Step 2: `import main` sanity check**
+- [x] **Step 2: `import main` sanity check**
 
 Run: `ddev exec -s fastapi python -c 'import main' && echo IMPORT_OK` — confirms every migrated
 module's import-time `register_schema` call executes cleanly in the real app's own import graph
 (not just in test isolation), the scenario Gate 0's "connect before the registering module is
 imported" test guards against in the abstract.
 
-- [ ] **Step 3: Live fd-count check post-deploy**
+- [x] **Step 3: Live fd-count check post-deploy**
 
 Read `GET /api/observability/summary` (or the process-wide `open_fds` counter Tier0's own Task 9
 added at `services/diagnostics/routes.py:457`) before and after a period of normal live traffic
@@ -2141,18 +2141,151 @@ covering every migrated module's write path. Expected: `open_fds` does not grow 
 direct evidence the migration's connections are actually closing under real load, not only under
 test.
 
-- [ ] **Step 4: Table-name-uniqueness fixture, re-run against the real final registration set**
+- [x] **Step 4: Table-name-uniqueness fixture, re-run against the real final registration set**
 
 Re-run `test_table_name_uniqueness_across_full_migration_scope` (Task 1) — by this point every
 task has landed, so this is the final confirmation the fixture's list matches what actually
 registered, not just what this plan intended.
 
-- [ ] **Step 5: `PRAGMA busy_timeout` census**
+- [x] **Step 5: `PRAGMA busy_timeout` census**
 
 Run a read-only pragma check against each migrated module's `DB_PATH` in the live app,
 confirming `5000` — direct evidence D3's ruling was applied uniformly, not silently dropped by
 one task's implementer.
 
 **Why this is safe:** read-only checks and a CI-result read; no code change in this task itself.
+
+---
+
+## Task 15 result — Gate 2 executed (2026-09-04)
+
+All 5 steps run against the live app (primary checkout, `main` including merge commit `a6a7b7b`
+— Task 13, the last of the 13 real implementation tasks — plus subsequent local pulls) after
+Tasks 1–13 had all merged.
+
+- [x] **Step 1: CI-result read** — **could not confirm; not treated as a pass.** The merge
+  commit's own `push` webhook never reached Woodpecker: `gh api
+  repos/thesneakattack/kalshi-whale-poc/commits/a6a7b7b838f55a6cc316ab0a6abaf54520be6e4a/status`
+  returned `total_count: 0` (no statuses at all, not merely pending). Confirmed via the webhook
+  delivery log (`gh api repos/.../hooks/<id>/deliveries`): the specific delivery for this push at
+  `2026-09-04T04:18:28Z` returned `"Invalid HTTP Response: 400"`, matching the exact,
+  already-documented failure mode in `docs/woodpecker-ci.md`'s webhook-delivery-failures note
+  (PR #560, merged the same day) — a load-correlated Woodpecker-ingress flakiness affecting push
+  and pull_request deliveries alike, not a per-PR or per-commit defect. Redelivery via the
+  documented `attempts` endpoint failed on a real, confirmed cause: this session's `gh` auth
+  lacks the `admin:repo_hook` scope (`gh auth refresh -h github.com -s admin:repo_hook` would fix
+  it — not run unilaterally, since changing this session's auth scope is a decision outside a
+  read-only validation task's own authority). Not force-merged around, not substituted with a
+  manual trigger (`scripts/woodpecker-trigger` posts to `ci/woodpecker/manual/*` only, which the
+  same doc already establishes does not satisfy branch-protection's required contexts). What IS
+  confirmed: the PR's own pre-merge branch-tip commit (`1e3ca1bb`) had all 6 required contexts
+  green, verified via `gh api` immediately before merging — the standard per-PR gate held; only
+  this step's specific re-verification against the merge-commit's own new push CI run is blocked
+  by the known outage.
+- [x] **Step 2: `import main` sanity check** — **PASS.** `IMPORT_OK`. Every migrated module's
+  import-time `register_schema` call executes cleanly in the real app's own import graph.
+- [x] **Step 3: Live fd-count check** — **PASS.** 5 samples of `GET /api/health/pipeline`'s
+  `open_fds.count` over ~11.4 minutes of live trading-loop traffic: 85, 88, 86, 80, 81 — a tight
+  80–88 band with no sustained/monotonic growth (the count decreased twice within the window),
+  direct evidence the migrated connections are actually closing under real load.
+- [x] **Step 4: Table-name-uniqueness fixture** — **PASS, independently strengthened.**
+  `tests/test_db.py::test_table_name_uniqueness_across_full_migration_scope` passes (its own
+  18-name hardcoded list is pairwise distinct). Beyond the fixture's own self-check, its list was
+  diffed programmatically against the live `grep -rn 'register_schema(' services/ tools/` output
+  across the whole codebase: **exact match, 18 == 18, zero names in either set not in the
+  other** — the fixture's list genuinely reflects what registered, not just what the plan
+  intended.
+- [x] **Step 5: `PRAGMA busy_timeout` census** — **PASS, via source-code census, not the live
+  pragma read alone.** The literal read-only check (`sqlite3.connect(path); PRAGMA
+  busy_timeout`) against all 11 migrated modules' live `DB_PATH` files does return `5000` for
+  every one — but that number alone is not conclusive: `busy_timeout` is a per-connection
+  SQLite setting, never persisted in the database file, so a fresh connection opened purely to
+  run this check reports Python's own `sqlite3.connect()` default (also 5000ms) regardless of
+  what the live app's own connections actually use — the literal check is tautological in
+  isolation. The evidence that actually proves D3's ruling was applied uniformly: a source-code
+  census (`grep -rn 'db\.connect(' services/ tools/` plus a repo-wide `grep -rn
+  'busy_timeout_ms'`) confirms all 11 migrated modules' `_connect()` wrappers call
+  `db.connect(DB_PATH, tables=(...))` with **zero** `busy_timeout_ms=` overrides anywhere in the
+  codebase — every one relies on `services/db.py`'s own hardcoded `busy_timeout_ms: int = 5000`
+  default, the single source of truth D3 established. (`services/capture_writer.py`'s own
+  `_CALLER_BUSY_TIMEOUT_MS = 50` is a separate, pre-existing connection pattern for its buffered
+  flush path — never migrated onto `db.connect()`, out of this census's scope, not a D3
+  violation.)
+
+**Verdict: Gate 2 substantially passes.** Steps 2–5 all confirm the migration works correctly
+under live conditions, with Step 4 and 5 each strengthened beyond the plan's own literal
+instruction once a methodological gap was found in the literal reading. Step 1's gap is
+infrastructure (a known, already-documented Woodpecker webhook-delivery outage affecting this
+repo broadly that day), not a code or migration defect — flagged rather than worked around, per
+direct instruction.
+
+---
+
+## Retrospective: recurring plan-doc-test-snippet and self-review-census defect classes
+(added 2026-09-04, after all 13 real implementation tasks closed)
+
+Two related but distinct defect classes recurred across this migration's task execution, worth
+naming explicitly for whoever writes the next multi-task plan of this shape — not because any of
+them blocked a merge (every instance below was caught and fixed before merge, by the same
+self-review/adversarial-review/consolidation cycle CLAUDE.md's "nothing advances on one pass"
+HARD RULE requires, with zero instances reaching `main`), but because a pattern repeating across
+several of this plan's task PRs is itself a finding about how this plan was drafted, not just
+about the code it produced.
+
+**Class 1 — latent bugs in the plan's own copied Step-1 test snippets**, found in:
+
+- **Task 6** (`services/risk_manager.py`, PR #556): the plan's test snippets called
+  `RiskManager(db_path=...)`/`RiskManager()`, omitting three required positional constructor
+  args; separately, `test_connect_closes_its_connection` patched `sqlite3.connect` *before*
+  constructing `RiskManager`, whose own `__init__` opens and closes a connection to load
+  `risk_meta` — double-counting a legitimate second close against a single-call assertion.
+- **Task 7** (`services/paper_broker.py`, PR #554): the identical two-bug shape — missing
+  `starting_bankroll` (a required positional arg) in all three new tests' `PaperBroker(...)`
+  calls, and the same pre-construction-monkeypatch double-count against `PaperBroker.__init__`'s
+  own internal connect/close.
+- **Task 13** (`tools/coordination_engine.py`, PR #561): `tests/test_coordination_engine.py` had
+  no `import sqlite3` at module level (only inside the new
+  `test_connect_closes_its_connection`'s own function body) — the second new test referenced
+  `sqlite3.Row` at module scope and would `NameError` without it.
+
+The common shape: every module with a real `__init__`/constructor that itself opens a
+connection to load persisted state hit the double-count variant; every module whose constructor
+takes required (non-default) arguments hit the missing-arg variant. Modules without a stateful
+constructor (`services/settlement_edge.py`, Task 11; `services/trade_category.py`, Task 10)
+never exhibited this shape — the plan's Step-1 snippets read as drafted against one exemplar
+module's shape and copied without re-deriving the construction/monkeypatch ordering per target
+module's own actual constructor.
+
+**Class 2 — self-review census/count claims that undercounted or miscounted**, found in:
+
+- **Task 11** (`services/settlement_edge.py`, PR #557): the self-review's importer grep pattern
+  missed 4 real production importers (`services/diagnostics/routes.py`,
+  `services/settlement_edge_entry.py`, `services/settlement_resolver.py`,
+  `services/whale_stream/index_stream_handlers.py`) and one real test file
+  (`tests/test_index_stream_handlers.py`) — caught by the adversarial review's own
+  independently-constructed grep, corrected from a stated 248/4 to a verified 269/6.
+- **Task 13** (`tools/coordination_engine.py`, PR #561): the self-review's collision-check
+  denominator ("17 other registered names") counted the total registered-name set (17,
+  including this task's own 3 additions) rather than the 14 *other* modules' names actually
+  being checked against; separately, "11 test files" in the PR body undercounted the regression
+  suite's own already-correctly-listed 12 files by one. Both stated-number errors, not code
+  defects — the underlying checks (collision-freedom, 88/88 pass count) were correct either way.
+
+**One negative case, worth recording for balance**: Task 8's (`services/candidate_ledger.py`,
+PR #553) review was explicitly re-checked for Class 2 ("a gap found in a sibling task's own
+census") and found clean — 13 files, no gap, confirmed on a second, deliberate pass. Not every
+task in this migration exhibited either defect class; the pattern is real but not universal, and
+Task 8 shows the census-diligence habit this plan's own review cycle cultivated did generalize
+correctly at least once, not just react after being caught out.
+
+**Disposition**: no runtime guard is proposed for either class — both are drafting-time and
+review-time defects in documents/test-authoring, not runtime code paths, and this migration's
+own three-layer review cycle is already the detection mechanism that caught every instance above
+before merge. The actionable lesson for a future plan of this shape: a Step-1 test snippet
+copied across multiple target modules in one plan should be treated as a first draft needing
+per-module re-verification against that module's actual constructor/`__init__` signature, not a
+reusable template; and a self-review's own stated counts (importer censuses, collision-check
+denominators, file-count headlines) warrant the same "verify, don't guess" discipline CLAUDE.md's
+HARD RULE already applies to the code itself.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
