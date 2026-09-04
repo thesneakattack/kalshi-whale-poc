@@ -2804,29 +2804,29 @@ def test_process_stream_ticker_missing_kalshi_config_falls_back_to_default(monke
     assert "TICK-A" in main.broker.positions  # no KeyError, gate defaulted to open
 
 
-def test_process_stream_trade_check_exits_is_not_throttled(monkeypatch):
-    """_process_stream_trade's own check_exits call (line ~231) is
-    deliberately NOT gated by ticker_exit_check_min_interval_sec - it only
-    fires when fetch_signals returns a signal, already self-throttled by
-    construction. Back-to-back calls within the 2.0s window must both
-    reach check_exits, unlike the ticker path above."""
-    calls = []
-    real_check_exits = main.strategy.check_exits
+# --- _process_stream_trade: trade_exit_check_min_interval_sec throttle
+# (2026-09-03 live-incident fix, parallel to _process_stream_ticker's own
+# throttle above). This call used to be deliberately unthrottled - see the
+# removed test_process_stream_trade_check_exits_is_not_throttled this
+# block replaces - reasoning "fires only on an emitted signal (~0.1-0.5% of
+# trades), already self-throttled by construction." Real measured cost has
+# a long tail (401ms avg, 15.6s max observed) that frequency alone doesn't
+# bound: 38 of 43 recent WS reconnects correlate with a 10-76s event-loop
+# stall, consistent with 2+ long-tail check_exits draws stacking within a
+# burst of correlated whale activity. See trade_exit_check_min_interval_
+# sec's own comment in config/settings.yaml for the full mechanism.
 
-    def _spy_check_exits(*args, **kwargs):
-        calls.append(1)
-        return real_check_exits(*args, **kwargs)
-
-    monkeypatch.setattr(main.strategy, "check_exits", _spy_check_exits)
+def _stub_trade_signal_provider(monkeypatch):
+    """Shared setup for the throttle tests below: makes _process_stream_
+    trade reach its check_exits call site for ticker TICK-A without needing
+    a fully valid whale-signal dict shape (open_position/evaluate/etc.) -
+    only "was check_exits reached, and how many times" is in scope for
+    these tests, same reasoning the removed not-throttled test used."""
     monkeypatch.setattr(wsh_module, "_streaming_trade_tape_enabled", lambda: True)
 
     async def _noop_handle_signal(*args, **kwargs):
         return None
 
-    # Stubbed so this test doesn't also need a fully valid whale-signal
-    # dict shape (open_position/evaluate/etc.) just to reach check_exits -
-    # only the "was check_exits reached, and how many times" question is
-    # in scope here.
     monkeypatch.setattr(wsh_module, "_handle_signal", _noop_handle_signal)
 
     class _StubProvider:
@@ -2837,6 +2837,21 @@ def test_process_stream_trade_check_exits_is_not_throttled(monkeypatch):
             }]
 
     monkeypatch.setattr(wsh_module, "whale_provider", _StubProvider())
+
+
+def _spy_on_check_exits(monkeypatch):
+    calls = []
+    real_check_exits = main.strategy.check_exits
+
+    def _spy_check_exits(*args, **kwargs):
+        calls.append(1)
+        return real_check_exits(*args, **kwargs)
+
+    monkeypatch.setattr(main.strategy, "check_exits", _spy_check_exits)
+    return calls
+
+
+def _reset_trade_stream_state():
     main.state["running"] = True
     main.state["signal_feed"] = []
     main.state["markets"] = []
@@ -2847,14 +2862,130 @@ def test_process_stream_trade_check_exits_is_not_throttled(monkeypatch):
     main.state["trade_tape"] = []
     main.broker.reset(starting_bankroll=10000.0)
 
-    trade_msg = {
-        "trade_id": "T-1", "market_ticker": "TICK-A", "yes_price_dollars": "0.5",
-        "count": 10, "taker_side": "yes",
-    }
-    asyncio.run(main._process_stream_trade(dict(trade_msg)))
-    asyncio.run(main._process_stream_trade(dict(trade_msg)))
 
-    assert len(calls) == 2  # both calls reached check_exits - no throttle applied
+_TRADE_MSG = {
+    "trade_id": "T-1", "market_ticker": "TICK-A", "yes_price_dollars": "0.5",
+    "count": 10, "taker_side": "yes",
+}
+
+
+def test_process_stream_trade_check_exits_throttles_repeat_calls_within_the_interval(monkeypatch):
+    # No config_store.get() monkeypatch: relies on the real, currently
+    # committed config/settings.yaml default (kalshi.
+    # trade_exit_check_min_interval_sec: 2.0), same reasoning as the ticker
+    # throttle tests above.
+    wsh_module._last_trade_exit_check_at = 0.0
+    calls = _spy_on_check_exits(monkeypatch)
+    _stub_trade_signal_provider(monkeypatch)
+    _reset_trade_stream_state()
+
+    # First call: throttle gate is at 0.0, so `now - 0.0 >= 2.0` is true -
+    # check_exits runs.
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+    # Second call, immediately after: within the 2.0s window, so check_exits
+    # must be skipped entirely.
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+
+    assert len(calls) == 1  # the second call was throttled
+
+
+def test_process_stream_trade_check_exits_runs_again_once_the_interval_elapses(monkeypatch):
+    # Simulate "2+ seconds have already passed" the same way the ticker
+    # throttle test does - backdate the module's last-run timestamp rather
+    # than sleeping.
+    wsh_module._last_trade_exit_check_at = time.time() - 5.0
+    calls = _spy_on_check_exits(monkeypatch)
+    _stub_trade_signal_provider(monkeypatch)
+    _reset_trade_stream_state()
+
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+
+    assert len(calls) == 1  # gate was open - check_exits ran
+
+
+def test_process_stream_trade_check_exits_throttle_reads_the_config_value_live(monkeypatch):
+    """A 0.0 interval (or any interval already elapsed) must never block -
+    proves the gate reads config_store.get() fresh each call rather than a
+    module-level constant, matching ticker_exit_check_min_interval_sec's
+    own test above and this file's other live-reloadable kalshi.*
+    settings."""
+    _cfg = dict(main.config_store.get())
+    _cfg["kalshi"] = {**_cfg["kalshi"], "trade_exit_check_min_interval_sec": 0.0}
+    monkeypatch.setattr(main.config_store, "get", lambda: _cfg)
+    wsh_module._last_trade_exit_check_at = time.time()  # "just ran" - would block a >0 interval
+    calls = _spy_on_check_exits(monkeypatch)
+    _stub_trade_signal_provider(monkeypatch)
+    _reset_trade_stream_state()
+
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+
+    assert len(calls) == 1
+
+
+def test_process_stream_trade_check_exits_missing_kalshi_config_falls_back_to_default(monkeypatch):
+    """Several tests in this file monkeypatch config_store.get() to a
+    partial dict with no "kalshi" key at all - the throttle must fail open
+    to the documented 2.0s default (config/settings.yaml's own value)
+    rather than raising, exactly as the ticker throttle's own equivalent
+    test above does. _stream_market_client (called unconditionally while
+    building fetch_signals' market_context, unrelated to this throttle) is
+    stubbed out here since IT does direct cfg["kalshi"]["base_url"]
+    indexing and would otherwise raise first, on a pre-existing code path
+    this test isn't exercising."""
+    monkeypatch.setattr(wsh_module, "_stream_market_client", lambda cfg: None)
+    _cfg = {k: v for k, v in main.config_store.get().items() if k != "kalshi"}
+    monkeypatch.setattr(main.config_store, "get", lambda: _cfg)
+    wsh_module._last_trade_exit_check_at = 0.0
+    calls = _spy_on_check_exits(monkeypatch)
+    _stub_trade_signal_provider(monkeypatch)
+    _reset_trade_stream_state()
+
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+
+    assert len(calls) == 1  # no KeyError, gate defaulted to open
+
+
+def test_process_stream_trade_throttled_skip_is_covered_by_ticker_path_safety_net(monkeypatch):
+    """The nuance this fix has to get right (not just copy the ticker
+    throttle blindly): unlike the ticker path - a call that fires 10+/sec
+    and would very likely fire again within milliseconds regardless of
+    throttling - the trade path's check_exits call only fires when a
+    signal was actually emitted (~0.1-0.5% of trades). A skipped call here
+    is not obviously "will just run again soon" the same way a skipped
+    ticker-path call is.
+
+    This proves the actual safety net directly instead of assuming it:
+    exit_engine.check_exits scans ALL open positions off shared broker/
+    state on every call, regardless of which path (trade or ticker)
+    triggered it - so a position that needed closing and got skipped by
+    the (now-throttled) trade-path call is still closed by the very next
+    _process_stream_ticker call, which independently re-evaluates the
+    identical broker/state and is not gated by trade_exit_check_min_
+    interval_sec at all. Uses market_results as the trigger (exit_engine.
+    check_exits' own docstring: "checked first and unconditionally, not
+    behind any opt-in flag") so this doesn't also depend on take_profit/
+    stop_loss/auto_exit strategy config - only on check_exits actually
+    running for TICK-A's position, by whichever path gets there first."""
+    wsh_module._last_trade_exit_check_at = time.time()  # "just ran" - trade path's own gate is closed
+    wsh_module._last_ticker_exit_check_at = 0.0  # ticker path's own gate is open
+    _stub_trade_signal_provider(monkeypatch)
+    _reset_trade_stream_state()
+    main.state["signal_feed"] = ["placeholder"]  # non-empty - opens the ticker path's own signal_feed gate
+    main.state["market_results"] = {"TICK-A": "yes"}  # settled - any check_exits call closes this unconditionally
+    main.broker.open_position("TICK-A", "yes", 100, 0.5, "r")
+
+    asyncio.run(main._process_stream_trade(dict(_TRADE_MSG)))
+
+    # Throttled: the trade path's own check_exits call did not run this
+    # time, so the settled position is still open.
+    assert "TICK-A" in main.broker.positions
+
+    # The ticker path's own, independently-throttled check_exits call picks
+    # up the exact same open position (shared broker/state) and closes it -
+    # the safety net that bounds the trade-path skip above to a few
+    # seconds of staleness, not a missed exit.
+    asyncio.run(main._process_stream_ticker({"ticker": "TICK-A", "yes_bid_dollars": "0.5"}))
+    assert "TICK-A" not in main.broker.positions
 
 
 # --- _process_stream_lifecycle: market_lifecycle_v2 (2026-08-17,

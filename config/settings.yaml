@@ -51,6 +51,49 @@ kalshi:
   # than the pre-streaming baseline while cutting this block's
   # invocation rate roughly 20x at the observed message rate.
   ticker_exit_check_min_interval_sec: 2.0
+  # 2026-09-03 live-incident fix (parallel to ticker_exit_check_min_interval_
+  # sec above, same mechanism, different trigger): _process_stream_trade's
+  # own check_exits/check_pending_fills/position_netting.review-free
+  # check_exits call was left deliberately unthrottled when the ticker fix
+  # above shipped, reasoning "fires only on an emitted signal (~0.1-0.5% of
+  # trades), already self-throttled by construction." That frequency
+  # argument was real but incomplete: real measured cost has a long tail
+  # (401ms average, 15.6s max observed - ~39x tail-to-average), and this
+  # call never yields mid-run, so a burst of correlated whale activity
+  # (several signal-emitting trade messages close together) can put 2+
+  # long-tail draws back to back on the single-threaded event loop. 38 of
+  # 43 recent WS reconnects ("keepalive ping timeout", ping_timeout=20s,
+  # services/kalshi/websocket.py) correlate with a 10-76s stall, consistent
+  # with that stacking (96,325 trades discarded across those reconnects).
+  # This throttle caps how often the block can START, reducing how many
+  # chances a burst gets to draw the long tail more than once - it does not
+  # bound one already-running call's own duration (a lone 15.6s call still
+  # fits under the 20s timeout with margin; two draws in a row still can
+  # not be ruled out by a min-interval gate alone, since the elapsed time
+  # while the first call runs already exceeds most reasonable intervals by
+  # the time a second candidate is evaluated - stated as a known residual
+  # risk, not eliminated).
+  #
+  # Same 2.0s value as ticker_exit_check_min_interval_sec, deliberately:
+  # check_exits scans ALL open positions off shared broker/state on every
+  # call regardless of which trade/ticker triggered it, and
+  # _process_stream_ticker's own throttled check_exits call already
+  # independently re-evaluates that identical position set at least once
+  # every ticker_exit_check_min_interval_sec (2.0s) as long as ticker
+  # messages keep flowing (10+/sec exchange-wide, effectively guaranteed) -
+  # so a skipped trade-path call is not a missed exit-forever, just a wait
+  # of up to the SAME ~2.0-2.1s worst-case staleness bound PR #526 already
+  # accepted for the ticker path, not a new or larger one. A third,
+  # WS-independent backstop also exists: main.py's trading_loop calls
+  # check_exits completely unthrottled every kalshi.safety_net_interval_sec
+  # (currently 30s) on a REST-poll cadence, documented as "a safety net in
+  # streaming mode" - bounds worst-case staleness to ~30s even under a
+  # total WS outage. Note this and the ticker path run on independent
+  # timers (each starts at 0.0), so this throttle bounds repetition within
+  # each path, not two long-tail draws firing close together across paths
+  # right after process start - a narrower version of the same residual
+  # risk already disclosed above, not a new one.
+  trade_exit_check_min_interval_sec: 2.0
   request_timeout_sec: 10
   trade_stream_exchange_wide: true
   market_lifecycle_stream_enabled: true
