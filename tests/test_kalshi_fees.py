@@ -458,3 +458,27 @@ def test_forced_exit_quote_yes_with_no_bid_on_file_uses_the_fallback():
     assert forced_exit_quote("yes", None, 0.30, unknown_fallback=0.42) == 0.42
     # A real zero bid is still a real zero bid.
     assert unit_cost("yes", forced_exit_quote("yes", 0.0, 0.30, unknown_fallback=0.42)) == pytest.approx(0.0)
+
+
+def test_neither_quote_helper_ever_returns_a_dollar_per_contract_for_no():
+    # The one invariant this entire change set exists to enforce: a NO exit
+    # must never be paid $1.00/contract off a quote, because that is
+    # indistinguishable from the market having settled NO. A yes_ask of 0.0
+    # reached exactly that through both helpers (round-4 review found it in
+    # forced_exit_quote; sellable_quote, the AUTOMATED path, had it too and
+    # the review missed it) whenever the bid was 0.0 or absent so the crossed
+    # check could not fire.
+    for bid in (None, 0.0, 0.5, 1.0):
+        q = sellable_quote("no", bid, 0.0)
+        assert q is None or unit_cost("no", q) < 1.0, f"sellable_quote paid $1.00 at bid={bid}"
+        f = forced_exit_quote("no", bid, 0.0, unknown_fallback=0.60)
+        assert unit_cost("no", f) < 1.0, f"forced_exit_quote paid $1.00 at bid={bid}"
+    # A zero ask routes to the fallback, not to a total loss: a genuinely
+    # empty book announces itself as ask 1.0000, so 0.0 is garbage, and
+    # booking a wipeout on ambiguous data was round 3's lesson.
+    assert forced_exit_quote("no", 0.0, 0.0, unknown_fallback=0.60) == 0.60
+    # The real empty book still books zero, unchanged.
+    assert unit_cost("no", forced_exit_quote("no", 0.0, 1.0, unknown_fallback=0.60)) == pytest.approx(0.0)
+    # YES keeps its mirror zero as a REAL $0.00 - a yes_bid of 0.00 is a real,
+    # common state (nobody bidding), unlike a yes_ask of 0.00.
+    assert unit_cost("yes", forced_exit_quote("yes", 0.0, 0.3, unknown_fallback=0.6)) == pytest.approx(0.0)

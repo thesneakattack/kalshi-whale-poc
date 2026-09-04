@@ -424,7 +424,15 @@ def sellable_quote(
     if side == "yes":
         # No bid at all means nobody will buy this YES position.
         return yes_bid if yes_bid is not None and yes_bid > 0.0 else None
-    if yes_ask is None or yes_ask >= 1.0:
+    # yes_ask >= 1.00 is a NO bid of 0.00 - the empty-book shape that
+    # manufactured the phantom payouts. yes_ask <= 0.00 is not a real quote
+    # at all (YES would be free) and MUST be caught here: it is reachable
+    # whenever the bid is 0.0 or absent, so the crossed check below cannot
+    # fire, and unit_cost("no", 0.0) is $1.00/contract - the exact
+    # fabrication this change set exists to kill, on the automated exit path.
+    # Found 2026-09-04 round 4, which reported it only against
+    # forced_exit_quote; it was here too.
+    if yes_ask is None or yes_ask >= 1.0 or yes_ask <= 0.0:
         return None
     bid = yes_bid if crossed_against is _CROSSED_AGAINST_YES_BID else crossed_against
     if bid is not None and yes_ask < bid:
@@ -475,7 +483,11 @@ def forced_exit_quote(
     zero-proceeds was a real defect (2026-09-04 round-3 review): a CROSSED
     book means the two quotes disagree, which is unknown, not worthless.
     With state["latest_prices"] substituting a fabricated 0.5 for any
-    missing bid (main.py:1108, `or 0.5`), a NO position on a market with a
+    missing bid (`or 0.5` - and NOT only at main.py:1109: the same
+    fabrication is written at whale_stream_handlers.py:345, the WS primary
+    writer, and at main.py:495, which feeds the market_history snapshots
+    used as "independent" corroboration, so that corroboration is not
+    independent of this defect at all), a NO position on a market with a
     real ask of 0.01 read as crossed and booked $0.00/contract against a
     true value of $0.99 - measured live at 65 of 209 active markets. Note
     that fabricated 0.5 is the root enabler here and is NOT fixed by this
@@ -487,6 +499,20 @@ def forced_exit_quote(
             return unknown_fallback                 # unknown: no ask on file
         if yes_ask >= 1.0:
             return 1.0                              # genuinely empty book -> $0.00/contract
+        # An ask of 0.00 is NOT a real quote (YES would be free) and must
+        # never fall through: unit_cost("no", 0.0) is $1.00/contract, the
+        # exact fabrication this change set exists to kill. Routed to the
+        # fallback rather than to zero-proceeds - deliberately diverging from
+        # the round-4 review's suggested `return 1.0`. A genuinely empty book
+        # announces itself as ask 1.0000 (docs/kalshi/
+        # sample_event_response.json), so a 0.0 ask is garbage or missing
+        # data, and round 3's lesson was precisely that booking a total loss
+        # on ambiguous data is the worse error. The YES branch below keeps
+        # its mirror-image zero as a real $0.00, because a yes_bid of 0.00 IS
+        # a real and common state - nobody bidding - confirmed live on this
+        # app's own book snapshots (bid 0.0 / ask 1.0, both sizes 0).
+        if yes_ask <= 0.0:
+            return unknown_fallback                 # not a real quote -> unknown
         if yes_bid is not None and yes_ask < yes_bid:
             return unknown_fallback                 # quotes contradict each other -> unknown
         return yes_ask
