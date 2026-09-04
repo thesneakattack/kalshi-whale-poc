@@ -2119,7 +2119,12 @@ first, only a logical one (the issue body should say `services/db.py` is a prere
 
 **Depends on:** all of Tasks 1–13 merged (Task 14 is documentation-only and doesn't gate this).
 
-- [x] **Step 1: Full local suite, once all code PRs have merged to `main`**
+- [ ] **Step 1: Full local suite, once all code PRs have merged to `main`** — attempted, not
+  confirmed; see "Task 15 result" below. Left unchecked per this repo's own "leave a real gate
+  unchecked rather than pre-checking it" convention, since the gate's actual requirement
+  (confirm every required context green on the final merge commit) was not met — a known
+  infrastructure outage, not a code defect, blocked it. Check this box only once a real CI
+  result for the final merge (or its equivalent re-verification) lands.
 
 Per `.claude/rules/branching-and-ci.md`, read the pushed/merged CI result rather than re-running
 the full suite locally as a duplicate check: `gh api
@@ -2163,7 +2168,7 @@ All 5 steps run against the live app (primary checkout, `main` including merge c
 — Task 13, the last of the 13 real implementation tasks — plus subsequent local pulls) after
 Tasks 1–13 had all merged.
 
-- [x] **Step 1: CI-result read** — **could not confirm; not treated as a pass.** The merge
+- [ ] **Step 1: CI-result read** — **could not confirm; not treated as a pass.** The merge
   commit's own `push` webhook never reached Woodpecker: `gh api
   repos/thesneakattack/kalshi-whale-poc/commits/a6a7b7b838f55a6cc316ab0a6abaf54520be6e4a/status`
   returned `total_count: 0` (no statuses at all, not merely pending). Confirmed via the webhook
