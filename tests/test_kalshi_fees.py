@@ -437,3 +437,24 @@ def test_sellable_quote_explicit_none_crossed_against_skips_the_crossed_check():
     assert sellable_quote("no", 0.90, 0.40, crossed_against=None) == 0.40
     # Omitting it entirely still checks against yes_bid.
     assert sellable_quote("no", 0.90, 0.40) is None
+
+
+def test_forced_exit_quote_treats_a_crossed_book_as_unknown_not_worthless():
+    # 2026-09-04 round-3 review, severe. state["latest_prices"] substitutes a
+    # fabricated 0.5 for any missing bid (main.py:1108, `or 0.5`), so a NO
+    # position on a market with a real ask of 0.01 read as "crossed" and
+    # booked $0.00/contract against a true value of $0.99 - measured live at
+    # 65 of 209 active markets. Quotes disagreeing is unknown, not worthless.
+    assert forced_exit_quote("no", 0.5, 0.01, unknown_fallback=0.30) == 0.30
+    assert forced_exit_quote("no", 0.70, 0.40, unknown_fallback=0.70) == 0.70
+    # A genuinely empty book is still worth zero, which is the whole point of
+    # keeping the two cases apart.
+    assert unit_cost("no", forced_exit_quote("no", 0.5, 1.0, unknown_fallback=0.30)) == pytest.approx(0.0)
+
+
+def test_forced_exit_quote_yes_with_no_bid_on_file_uses_the_fallback():
+    # Latent in the round-2 version: this returned 0.0, booking a total loss,
+    # and was safe only because callers happened to pre-substitute a price.
+    assert forced_exit_quote("yes", None, 0.30, unknown_fallback=0.42) == 0.42
+    # A real zero bid is still a real zero bid.
+    assert unit_cost("yes", forced_exit_quote("yes", 0.0, 0.30, unknown_fallback=0.42)) == pytest.approx(0.0)

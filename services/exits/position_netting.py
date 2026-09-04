@@ -353,8 +353,22 @@ def describe_groups(
             # NULL` instead - `trades.fee` already holds each leg's own
             # real per-leg fee, from this same taker_fee call at this same
             # price. See paper_broker.Trade.netting_exit_fee_usd.
+            # Priced at the SAME quote review() will actually execute at
+            # (2026-09-04 round-3 review): this used latest_prices for both
+            # sides while execution moved to the real bid, so for a NO leg
+            # the comment above - "this same taker_fee call at this same
+            # price" - had quietly become false, and the fee curve peaks at
+            # 0.5 and vanishes near 0/1, so the stored netting_exit_fee_usd
+            # could be off by ~100%.
             exit_fee_cost = sum(
-                kalshi_fees.taker_fee(pos.size, latest_prices.get(t, pos.entry_price), ticker=t)
+                kalshi_fees.taker_fee(
+                    pos.size,
+                    kalshi_fees.forced_exit_quote(
+                        pos.side, latest_prices.get(t, pos.entry_price),
+                        (latest_asks or {}).get(t), unknown_fallback=pos.entry_price,
+                    ) if latest_asks is not None else latest_prices.get(t, pos.entry_price),
+                    ticker=t,
+                )
                 for t, pos in members
             )
             entry["recommendation"] = {

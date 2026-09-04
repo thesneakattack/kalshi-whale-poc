@@ -468,14 +468,33 @@ def forced_exit_quote(
     fell back to a price near break-even. Missing data is not evidence of an
     empty book.
 
-    A YES position never reaches the fallback: it sells into yes_bid and
-    does not consult the ask at all."""
-    if side == "no" and yes_ask is None:
-        return unknown_fallback
-    quote = sellable_quote(side, yes_bid, yes_ask)
-    if quote is not None:
-        return quote
-    return 0.0 if side == "yes" else 1.0
+    Written out explicitly rather than delegating the decision to
+    sellable_quote(), because that function's single None answer collapses
+    three very different causes - unknown, empty, and contradictory - and a
+    forced exit has to price each one differently. Routing them all to
+    zero-proceeds was a real defect (2026-09-04 round-3 review): a CROSSED
+    book means the two quotes disagree, which is unknown, not worthless.
+    With state["latest_prices"] substituting a fabricated 0.5 for any
+    missing bid (main.py:1108, `or 0.5`), a NO position on a market with a
+    real ask of 0.01 read as crossed and booked $0.00/contract against a
+    true value of $0.99 - measured live at 65 of 209 active markets. Note
+    that fabricated 0.5 is the root enabler here and is NOT fixed by this
+    function; see this module's callers and the PR's own follow-up note."""
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
+    if side == "no":
+        if yes_ask is None:
+            return unknown_fallback                 # unknown: no ask on file
+        if yes_ask >= 1.0:
+            return 1.0                              # genuinely empty book -> $0.00/contract
+        if yes_bid is not None and yes_ask < yes_bid:
+            return unknown_fallback                 # quotes contradict each other -> unknown
+        return yes_ask
+    if yes_bid is None:
+        return unknown_fallback                     # unknown: no bid on file
+    if yes_bid <= 0.0:
+        return 0.0                                  # genuinely no bid -> $0.00/contract
+    return yes_bid
 
 
 def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:
