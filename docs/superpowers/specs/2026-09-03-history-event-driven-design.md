@@ -103,7 +103,7 @@ Two distinct drivers, both in `frontend/src/js/`:
 
 1. **`loadTradingHistory()`** (`history-core.js:14-42`) — fires once, unconditionally, only
    when the History tab is opened (`main.js:46`, `showView('history')`). Fetches
-   `/api/trading-history`, then chains 9 more loaders (`loadAdvisory`,
+   `/api/trading-history`, then chains 10 more loaders (`loadAdvisory`,
    `loadDeclinedSuggestions`, `loadMarketAnalyst`, `loadSeriesEvaluator`,
    `loadChangeHistory`, `loadCalibrationReport`, `loadCalibrationHistory`,
    `loadRegimeSegmentation`, `loadCandidateLogSummary`, `loadBacktestSweeps`). Not on a
@@ -144,7 +144,7 @@ Every endpoint below was traced to its actual data source, not assumed from its 
 | `loadCalibrationHistory` — `/api/confidence-calibration/history` | `calibration_history.history()` — periodic snapshots | `calibration_history.record_snapshot()`, fired from `_maybe_run_auto_apply` on an hours-scale cooldown (`snapshot_interval_sec`, default 21600s) | **event-driven, but slow** — a push tied to trade/signal events would fire far more often than this resource actually changes; correctly classified as "periodic re-computation with (usually) nothing new to report" between snapshots |
 | `loadChangeHistory` — `/api/advisory/applied-changes` | `config_performance`'s applied-change log | `config_performance.log_applied_change()`, fired either by a manual Apply click (route handler, client already re-fetches after its own POST) or by auto-apply (hours-scale cooldown, `_maybe_run_auto_apply`) | **event-driven for the auto-apply case only** — the manual case needs no push, the client already knows |
 | `loadDeclinedSuggestions` — `/api/suggestions/declined` | `suggestion_decisions` store | only ever changes via this same client's own decline/undecline click (`history-core.js:274-317`) | **no push needed** — nothing else writes this |
-| `loadMarketAnalyst` — `/api/market-analyst/status`, `/api/market-analyst/analyses` | `market_analyst_agent`'s stored per-market/per-series/full-spectrum analyses | only ever written from that package's own `/analyze`/`/apply` POST routes (confirmed: `grep -rn "per_market\.\|per_series\.\|full_spectrum\." main.py services/*.py services/*/*.py` outside `services/market_analyst_agent/` itself returns nothing) — an explicit, costly (LLM-call-gated) user action | **click-triggered, no push needed** |
+| `loadMarketAnalyst` — `/api/market-analyst/status`, `/api/market-analyst/analyses` | `market_analyst_agent`'s stored per-market/per-series/full-spectrum analyses | only ever written from that package's own `/analyze`/`/apply` POST routes. Corrected after adversarial review: the naive grep for the write pattern outside `services/market_analyst_agent/` returns one hit (`diagnostics.py:191`), but it's a false positive — an unrelated local dict variable of the same name, not an actual write path. The conclusion (no external writer) holds on direct read of that call site, just not on the grep alone. | **click-triggered, no push needed** |
 | `loadSeriesEvaluator` — `/api/series-evaluator/status` | `series_evaluator` | same shape as market analyst — user-initiated evaluation runs | **click-triggered, no push needed** |
 
 One write path considered and **excluded**: `services/research/research.py`'s
@@ -153,13 +153,15 @@ One write path considered and **excluded**: `services/research/research.py`'s
 frontend/src/js/*.js` returns nothing — nothing on the dashboard reads this today. Not a
 History-tab trigger because it isn't a History-tab data source at all right now.
 
-**Net finding**: 6 of the 10 periodically-refreshed loaders are driven by one of three real,
-enumerable write events (trade close/open, signal resolution, candidate decision); one
-(`loadCalibrationHistory`) is driven by a much slower fourth event
+**Net finding** (corrected after adversarial review caught the bucket count double-counting
+`loadTradingHistory`, which is click-triggered per §1, not one of the 10 periodically-refreshed
+loaders this table classifies): **5** of the 10 periodically-refreshed loaders are driven by one
+of three real, enumerable write events (trade close/open, signal resolution, candidate
+decision); one (`loadCalibrationHistory`) is driven by a much slower fourth event
 (`calibration_history.record_snapshot`); one (`loadChangeHistory`) is driven by a mix of a
 fifth event (auto-apply's `log_applied_change`) and client-own-action (manual apply); three
 (`loadDeclinedSuggestions`, `loadMarketAnalyst`, `loadSeriesEvaluator`) need no push at all —
-the client already knows to refresh after its own action. **None of the 10 is pure
+the client already knows to refresh after its own action. 5+1+1+3 = 10. **None of the 10 is pure
 "recompute for the sake of recomputing with nothing possibly new"** — every one traces to a
 real, identifiable write, which is the precondition for event-driven refresh actually being
 correct rather than cosmetic.
@@ -524,6 +526,12 @@ implementation-stage work:**
   `position_netting.py:410`, `strategy_engine.py:815`'s `open_position` sibling) were **not**
   individually re-verified for event-loop-vs-worker-thread execution context — only the
   hottest one (`whale_stream_handlers.py:283-287`) and the manual-close route were confirmed.
+  Adversarial review found `exit_engine.py` actually has a **fifth** `close_position` call
+  site (`:102`, inside `close_if_settled`, alongside the already-listed `:410` inside
+  `check_exits`) — both execute in the same calling context as the already-analyzed
+  `check_exits` call sites, so this doesn't change the threading conclusion, only this
+  citation's completeness. Noted for the record rather than silently fixed, since the count
+  itself is what was wrong, not the underlying claim.
   This is stated as an assumption in §4.3, not asserted as checked, but a reader skimming
   only the recommendation in §4.3's closing paragraph could miss that caveat if they don't
   read the bullet list above it — worth calling out explicitly here too.
