@@ -55,17 +55,34 @@ delaying when it lands on disk - population_gate_summary()/clear_all()/
 count_range()/clear_range() each flush the buffer first so no caller ever
 sees a stale undercount or an incomplete wipe.
 """
+import asyncio
 import contextlib
 import sqlite3
 import time
 from pathlib import Path
 
 from services import capture_writer, db
+from services.diagnostics import _aio_db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
 db.register_schema("rejected_candidates", capture_writer.init_rejected_candidates)
 db.register_schema("rejection_events", capture_writer.init_rejection_events)
+
+
+# Shared by _connect() and _ensure_schema_aio() below (issue #410) rather
+# than being written out twice - same reason services/series_watcher.py
+# extracted its own _IDX_*_SQL constants when it grew a second, async
+# schema path: two hand-kept-in-sync copies of an index definition is one
+# more thing that can silently drift, and an index that exists on only one
+# of the two paths is a 15-22s query plan difference, not a cosmetic one.
+_IDX_REJECTION_EVENTS_GATE_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
+)
+_IDX_REJECTION_EVENTS_UNRESOLVED_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
+    "WHERE resolved = 0"
+)
 
 
 @contextlib.contextmanager
@@ -77,16 +94,71 @@ def _connect():
     tables / aren't CREATE TABLE at all), so this wrapper still runs them
     itself on the yielded connection."""
     with db.connect(DB_PATH, tables=("rejected_candidates", "rejection_events")) as conn:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate ON rejection_events (strategy, gate_name)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
-            "WHERE resolved = 0"
-        )
+        conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
+        conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
         db.add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
         db.add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
         yield conn
+
+
+# One definition, executed by both population_gate_summary() and its async
+# sibling - issue #410. Kept as a module constant rather than inlined twice
+# so the two paths cannot drift into answering the same question with
+# different SQL.
+_POPULATION_GATE_SQL = """
+    SELECT strategy, gate_name,
+           COUNT(*) AS rejected_count,
+           SUM(CASE WHEN resolved THEN 1 ELSE 0 END) AS resolved_count,
+           SUM(CASE WHEN resolved AND side IN ('yes', 'no') THEN 1 ELSE 0 END) AS sided_total,
+           SUM(CASE WHEN resolved AND side IN ('yes', 'no') AND result = side
+               THEN 1 ELSE 0 END) AS sided_wins,
+           SUM(unit_cost) AS unit_cost_total,
+           COUNT(unit_cost) AS unit_cost_n
+    FROM rejection_events
+    GROUP BY strategy, gate_name
+"""
+
+
+async def _ensure_schema_aio(conn) -> None:
+    """The async mirror of _connect()'s own DDL, passed to
+    _aio_db.connection_for() as its schema_init hook. Same shape, same
+    shared SQL constants, and for the same reason as
+    services/series_watcher.py's function of this name - a plain SQL string
+    executes identically through `conn.execute(sql)` (sync) and
+    `await conn.execute(sql)` (aiosqlite); only the caller's execute differs.
+
+    Not optional and not defensive boilerplate: _connect() re-runs every one
+    of these statements on EVERY call, so this module's read paths have
+    always been self-healing - a missing table, or a rejection_events file
+    that does not exist yet, repairs itself on the next read.
+    _aio_db.connection_for()'s own docstring names this exact case ("pass one
+    when the caller previously relied on a plain sqlite3.connect()-adjacent
+    helper that also ran CREATE TABLE IF NOT EXISTS on every call"), because
+    dropping it turns "no data yet" into a hard error.
+
+    Runs ONCE per (loop, db_path) on first open rather than per call - that
+    is _aio_db's contract, and it is the one real behavioural difference
+    from the sync path. Harmless here: the only writer to this file is this
+    same process, so a table cannot disappear underneath a cached
+    connection."""
+    await conn.execute(capture_writer.REJECTED_CANDIDATES_DDL_SQL)
+    await conn.execute(capture_writer.REJECTION_EVENTS_DDL_SQL)
+    await conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
+    await conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
+    await _add_column_if_missing_aio(conn, "rejected_candidates", "unit_cost", "REAL")
+    await _add_column_if_missing_aio(conn, "rejection_events", "unit_cost", "REAL")
+    await conn.commit()
+
+
+async def _add_column_if_missing_aio(conn, table: str, column: str, coltype: str) -> None:
+    """Async mirror of services/db.py's add_column_if_missing(), which takes
+    a synchronous sqlite3.Connection and so cannot be reused here. Same two
+    statements in the same order (PRAGMA table_info, then a guarded ALTER)
+    against the same tables, so the two paths converge on identical
+    schema."""
+    cols = {row[1] for row in await conn.execute_fetchall(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def record_rejection(
@@ -329,20 +401,54 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     _FLUSH_BATCH, a no-op when nothing is buffered."""
     capture_writer.flush_now("rejection_events")
     with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT strategy, gate_name,
-                   COUNT(*) AS rejected_count,
-                   SUM(CASE WHEN resolved THEN 1 ELSE 0 END) AS resolved_count,
-                   SUM(CASE WHEN resolved AND side IN ('yes', 'no') THEN 1 ELSE 0 END) AS sided_total,
-                   SUM(CASE WHEN resolved AND side IN ('yes', 'no') AND result = side
-                       THEN 1 ELSE 0 END) AS sided_wins,
-                   SUM(unit_cost) AS unit_cost_total,
-                   COUNT(unit_cost) AS unit_cost_n
-            FROM rejection_events
-            GROUP BY strategy, gate_name
-            """,
-        ).fetchall()
+        rows = conn.execute(_POPULATION_GATE_SQL).fetchall()
+    return _summarize_population_rows(rows, min_samples)
+
+
+async def population_gate_summary_async(min_samples: int = 30) -> list[dict]:
+    """Async sibling of population_gate_summary() above, for callers that
+    are already on the event loop (services/analytics/routes.py's GET
+    /api/candidate-log/summary). Same query, same output, same contract -
+    only the transport differs. Issue #410, implementing
+    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md.
+
+    Why aiosqlite rather than the dedicated pool that design rejected: this
+    function is ENTIRELY SQL-bound, so there is nothing here for a worker
+    thread to usefully own. Re-measured at implementation time against the
+    live 28.7M-row table (design Sec 6 asks for exactly this
+    re-confirmation, and the number it was written against had already
+    moved): the GROUP BY costs 18.2-22.5s warm and the Python that shapes
+    its output costs 0.000s, because the query returns 11 grouped rows, not
+    28.7M. Sending it through tick_executor bought nothing except a
+    15-22s occupancy of one of that pool's 2 workers - workers shared with
+    candidate_ledger.claim()/record_decision() on the live per-signal
+    decision path.
+
+    The sync version above is NOT deprecated by this one and must not be
+    deleted: services/research/research.py's run_and_store() reaches it
+    from a plain synchronous function (itself already offloaded wholesale
+    via asyncio.to_thread), where awaiting anything is not available.
+
+    capture_writer.flush_now() goes through asyncio.to_thread rather than
+    running inline: it is a blocking SQLite WRITE (bounded by _FLUSH_BATCH,
+    usually trivial, but a write on a contended file is exactly the thing
+    that is never safe to do on the event loop). The sync version pays it
+    on whatever thread already owns it."""
+    await asyncio.to_thread(capture_writer.flush_now, "rejection_events")
+    conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+    rows = await conn.execute_fetchall(_POPULATION_GATE_SQL)
+    return _summarize_population_rows(rows, min_samples)
+
+
+def _summarize_population_rows(rows, min_samples: int) -> list[dict]:
+    """The pure-Python half of population_gate_summary(), shared verbatim by
+    the sync and async paths so the two can never drift into reporting
+    different numbers from the same rows.
+
+    Takes plain sqlite3 tuples OR aiosqlite.Row objects - both are
+    sequences, so the unpacking below is identical for either. Costs
+    0.000s in practice (measured, implementation-time): the SQL already
+    reduced 28.7M rows to 11 groups before anything reaches here."""
     out = []
     for strategy, gate_name, rejected_count, resolved_count, sided_total, sided_wins, \
             unit_cost_total, unit_cost_n in rows:

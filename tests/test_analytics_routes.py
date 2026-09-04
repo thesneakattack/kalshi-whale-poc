@@ -15,6 +15,7 @@ import asyncio
 
 import pytest
 
+from services import tick_executor
 from services.analytics import routes as analytics_routes
 
 
@@ -31,22 +32,43 @@ def _reset_population_gates_cache():
     analytics_routes._population_gates_cache = {"cached_at": None, "value": None}
 
 
-def test_candidate_log_summary_runs_population_gate_summary_via_tick_executor(monkeypatch):
-    calls = []
+def test_candidate_log_summary_never_routes_population_gates_through_tick_executor(monkeypatch):
+    """Deliberately the INVERSE of the assertion this test made until issue
+    #410 (it was named ..._runs_population_gate_summary_via_tick_executor).
+
+    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+    Sec 5 asks for exactly this inversion as its permanent
+    detection-for-recurrence: the route must reach candidate_log's native
+    aiosqlite path, never tick_executor's 2-worker pool, which is shared
+    with candidate_ledger.claim()/record_decision() on the live per-signal
+    decision path. A future refactor that silently routes this 15-22s query
+    back onto that pool fails here instead of quietly costing trade
+    latency.
+
+    Patches the shared services.tick_executor module itself rather than an
+    attribute on the route module - services/analytics/routes.py no longer
+    imports it at all, and patching the shared module catches a re-added
+    call arriving by any import path, not just the one name this module
+    used to bind."""
+    tick_executor_calls = []
+    async_calls = []
 
     async def _spy_run(fn):
-        calls.append(fn)
+        tick_executor_calls.append(fn)
         return fn()
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
+    async def _stub_async(min_samples):
+        async_calls.append(min_samples)
+        return [{"stub": "pop"}]
+
+    monkeypatch.setattr(tick_executor, "run", _spy_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_async)
 
     result = asyncio.run(analytics_routes.get_candidate_log_summary())
 
-    assert len(calls) == 1
+    assert tick_executor_calls == [], "population_gates must not go through tick_executor any more"
+    assert async_calls == [30], "the async aiosqlite path should have been called once, with min_samples"
     assert result == {"gates": [{"stub": "gates"}], "population_gates": [{"stub": "pop"}]}
 
 
@@ -59,15 +81,12 @@ def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch
     existing comment documents the pre-2026-08-26-fix 17-38s figure)."""
     calls = []
 
-    async def _spy_run(fn):
+    async def _spy_async(min_samples):
         calls.append(1)
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     asyncio.run(analytics_routes.get_candidate_log_summary())
     asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -81,15 +100,12 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
     _POPULATION_GATES_CACHE_TTL_SEC between the two calls."""
     calls = []
 
-    async def _spy_run(fn):
+    async def _spy_async(min_samples):
         calls.append(1)
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     fake_now = [1_000_000.0]
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
@@ -122,16 +138,13 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
     fake_now = [1_000_000.0]
     query_duration_sec = 20.0
 
-    async def _slow_run(fn):
+    async def _slow_async(min_samples):
         calls.append(1)
         fake_now[0] += query_duration_sec  # the query itself takes 20s
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _slow_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _slow_async)
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
 
     # Poll 1 fires at t=0, completes at t=20.
