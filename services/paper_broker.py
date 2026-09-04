@@ -9,13 +9,14 @@ silently resetting it to config/settings.yaml's starting_bankroll — same
 pattern as services/signal_log.py. A plain restart loads what's there;
 only an explicit reset() (POST /api/reset) wipes it.
 """
+import contextlib
 import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from services import kalshi_fees
+from services import db, kalshi_fees
 from services.risk_manager import RiskManager
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_broker.db"
@@ -150,26 +151,7 @@ class Trade:
         return asdict(self)
 
 
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
-    # data/paper_broker.db is a live file the running dev server reads/writes
-    # (CLAUDE.md) - CREATE TABLE IF NOT EXISTS alone doesn't add a column to
-    # an existing table with existing rows, so new columns need an explicit,
-    # idempotent ALTER TABLE guarded by a check, not just the CREATE above.
-    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
-
-
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    # WAL mode (2026-08-11, real live incident): rollback-journal mode
-    # serializes ALL writers and readers against each other for the whole
-    # transaction; WAL lets readers proceed concurrently with a writer and
-    # is the standard hardening step for exactly the bursty-write scenario
-    # that took the app down (trade-tape volume overwhelming a per-call
-    # sqlite3.connect()). idempotent - safe to run on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_broker_meta(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS broker_meta (
@@ -179,6 +161,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+
+
+def _init_positions(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS positions (
@@ -190,6 +175,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+
+
+def _init_trades(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS trades (
@@ -203,46 +191,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
-    # Config-variant fingerprinting (docs/advisory-engine-plan.md) - added
-    # after both tables above already shipped and have live rows, hence the
-    # guarded ALTER TABLE rather than a column in the CREATE statements.
-    _add_column_if_missing(conn, "positions", "config_fingerprint", "TEXT")
-    _add_column_if_missing(conn, "trades", "config_fingerprint", "TEXT")
-    # Real fee modeling (docs/prediction-market-strategy-alignment-plan.md
-    # Part 2.2) - same idempotent-migration pattern, added after both tables
-    # already had live rows. NULL on pre-existing rows reads back as None,
-    # handled explicitly wherever these are reconstructed from the DB below.
-    _add_column_if_missing(conn, "positions", "entry_fee", "REAL")
-    _add_column_if_missing(conn, "trades", "fee", "REAL")
-    # Position.hold_to_settlement (2026-08-23, services/settlement_edge_entry.py) -
-    # same idempotent-migration pattern, added after this table already had
-    # live rows. 0/NULL on every pre-existing row reads back as False via
-    # the `or 0` below, which is correct: no position opened before this
-    # field existed was ever a settlement-edge entry.
-    _add_column_if_missing(conn, "positions", "hold_to_settlement", "INTEGER")
-    # Trade.signal_seen_at (2026-08-16 direct report - see that field's own
-    # docstring) - same idempotent-migration pattern, added after this
-    # table already had live rows.
-    _add_column_if_missing(conn, "trades", "signal_seen_at", "REAL")
-    # excluded (2026-08-17 direct request/incident: a real WTA position -
-    # Cirstea/Kalinskaya - was closed by check_exits at a fabricated
-    # exit_price of 0.0 one tick after market_history's own REST-polled
-    # price had sat pinned at 0.99 for 13+ minutes - real damage to real
-    # (paper) bankroll, and real contamination of every downstream win-rate
-    # /P&L statistic that reads this table. Same non-destructive idiom
-    # signal_log.excluded already established: a bad CLOSE row is flagged,
-    # never deleted, so history stays a first-class asset (CLAUDE.md) while
-    # ceasing to count as evidence. See PaperBroker.correct_erroneous_close.
-    _add_column_if_missing(conn, "trades", "excluded", "INTEGER NOT NULL DEFAULT 0")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)")
-    # Netting decision inputs (issue #213, 2026-08-30; see Trade) - same
-    # idempotent-migration pattern, the live table already had rows. NULL
-    # on every pre-existing row and every non-netting row IS the meaning
-    # ("no bar was computed"), not a gap to backfill.
-    _add_column_if_missing(conn, "trades", "netting_improvement_usd", "REAL")
-    _add_column_if_missing(conn, "trades", "netting_bar_usd", "REAL")
-    _add_column_if_missing(conn, "trades", "netting_vol_ratio", "REAL")
-    _add_column_if_missing(conn, "trades", "netting_exit_fee_usd", "REAL")
+
+
+def _init_pending_orders(conn: sqlite3.Connection) -> None:
     # Maker/limit-order path (2026-08-15, docs/profit-maximization-
     # assessment-2026-08-15.md direct request) - own table, same
     # persistence idiom as positions/trades, so a resting order survives a
@@ -262,9 +213,77 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
-    _add_column_if_missing(conn, "pending_orders", "signal_seen_at", "REAL")
-    _add_column_if_missing(conn, "pending_orders", "confidence", "REAL")
-    return conn
+
+
+db.register_schema("broker_meta", _init_broker_meta)
+db.register_schema("positions", _init_positions)
+db.register_schema("trades", _init_trades)
+db.register_schema("pending_orders", _init_pending_orders)
+
+
+@contextlib.contextmanager
+def _connect(db_path: Path):
+    """Every existing `with _connect() as conn:`/`with self._connect() as
+    conn:` call site keeps working unchanged - now backed by services/db.py's
+    closing connect(). WAL mode and the busy_timeout pragma are set by
+    db.connect() itself, same as every other migrated module.
+
+    The 13 add_column_if_missing calls and the one index below keep their
+    original relative order (undisturbed since each column/table shipped) -
+    in particular, the idx_trades_excluded index runs immediately after the
+    `excluded` column it indexes (call #7), not after all 13 calls; SQLite's
+    CREATE INDEX doesn't actually care when the column was added as long as
+    it exists first, but preserving the original ordering removes any
+    question of whether reordering is truly inert."""
+    with db.connect(
+        db_path, tables=("broker_meta", "positions", "trades", "pending_orders")
+    ) as conn:
+        # Config-variant fingerprinting (docs/advisory-engine-plan.md) - added
+        # after both tables above already shipped and have live rows, hence
+        # the guarded ALTER TABLE rather than a column in the CREATE
+        # statements.
+        db.add_column_if_missing(conn, "positions", "config_fingerprint", "TEXT")
+        db.add_column_if_missing(conn, "trades", "config_fingerprint", "TEXT")
+        # Real fee modeling (docs/prediction-market-strategy-alignment-plan.md
+        # Part 2.2) - same idempotent-migration pattern, added after both
+        # tables already had live rows. NULL on pre-existing rows reads back
+        # as None, handled explicitly wherever these are reconstructed from
+        # the DB below.
+        db.add_column_if_missing(conn, "positions", "entry_fee", "REAL")
+        db.add_column_if_missing(conn, "trades", "fee", "REAL")
+        # Position.hold_to_settlement (2026-08-23, services/settlement_edge_entry.py) -
+        # same idempotent-migration pattern, added after this table already
+        # had live rows. 0/NULL on every pre-existing row reads back as False
+        # via the `or 0` below, which is correct: no position opened before
+        # this field existed was ever a settlement-edge entry.
+        db.add_column_if_missing(conn, "positions", "hold_to_settlement", "INTEGER")
+        # Trade.signal_seen_at (2026-08-16 direct report - see that field's
+        # own docstring) - same idempotent-migration pattern, added after
+        # this table already had live rows.
+        db.add_column_if_missing(conn, "trades", "signal_seen_at", "REAL")
+        # excluded (2026-08-17 direct request/incident: a real WTA position -
+        # Cirstea/Kalinskaya - was closed by check_exits at a fabricated
+        # exit_price of 0.0 one tick after market_history's own REST-polled
+        # price had sat pinned at 0.99 for 13+ minutes - real damage to real
+        # (paper) bankroll, and real contamination of every downstream
+        # win-rate/P&L statistic that reads this table. Same non-destructive
+        # idiom signal_log.excluded already established: a bad CLOSE row is
+        # flagged, never deleted, so history stays a first-class asset
+        # (CLAUDE.md) while ceasing to count as evidence. See
+        # PaperBroker.correct_erroneous_close.
+        db.add_column_if_missing(conn, "trades", "excluded", "INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_excluded ON trades (excluded)")
+        # Netting decision inputs (issue #213, 2026-08-30; see Trade) - same
+        # idempotent-migration pattern, the live table already had rows. NULL
+        # on every pre-existing row and every non-netting row IS the meaning
+        # ("no bar was computed"), not a gap to backfill.
+        db.add_column_if_missing(conn, "trades", "netting_improvement_usd", "REAL")
+        db.add_column_if_missing(conn, "trades", "netting_bar_usd", "REAL")
+        db.add_column_if_missing(conn, "trades", "netting_vol_ratio", "REAL")
+        db.add_column_if_missing(conn, "trades", "netting_exit_fee_usd", "REAL")
+        db.add_column_if_missing(conn, "pending_orders", "signal_seen_at", "REAL")
+        db.add_column_if_missing(conn, "pending_orders", "confidence", "REAL")
+        yield conn
 
 
 class PaperBroker:
@@ -334,7 +353,7 @@ class PaperBroker:
                         ticker, side, size, limit_price, placed_at, expires_at, reason, fp, signal_seen_at, confidence,
                     )
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         return _connect(self.db_path)
 
     def can_trade(self, ticker: str, cooldown_sec: float) -> bool:
