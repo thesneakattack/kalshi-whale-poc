@@ -44,12 +44,13 @@ design, on a longer, separately-configured cadence into their own
 LARGE_BACKUP_DIR - see _maybe_run_large_backup's own docstring for why.
 """
 import asyncio
+import contextlib
 import shutil
 import sqlite3
 import time
 from pathlib import Path
 
-from services import fault_log, task_supervisor
+from services import db, fault_log, task_supervisor
 from services.app_state import state
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
@@ -84,19 +85,7 @@ _DEFAULT_LARGE_FILES = frozenset({"series_watcher.db", "candidate_log.db", "mark
 # these dominated data/backups/ before this split existed.
 
 
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str):
-    # Same idiom as services/candidate_log.py/services/title_cache.py -
-    # CREATE TABLE IF NOT EXISTS alone doesn't add a column to an existing
-    # table with existing rows.
-    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
-
-
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_backup_runs(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS backup_runs (
@@ -112,14 +101,28 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs (started_at)")
-    # tier (2026-08-30): which of the two independent backup cadences a run
-    # belongs to - "regular" (small, account-critical files) or "large"
-    # (the permanently-growing history files). NULL on rows written before
-    # this column existed; recent()/latest() treat NULL as "regular" since
-    # that's the cadence those historical runs actually ran on.
-    _add_column_if_missing(conn, "backup_runs", "tier", "TEXT")
-    return conn
+
+
+db.register_schema("backup_runs", _init_backup_runs)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). The
+    CREATE INDEX statement isn't expressible in backup_runs' registered
+    init_fn (it isn't a CREATE TABLE), so this wrapper still runs it
+    itself on the yielded connection, same as add_column_if_missing below."""
+    with db.connect(DB_PATH, tables=("backup_runs",)) as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs (started_at)")
+        # tier (2026-08-30): which of the two independent backup cadences a
+        # run belongs to - "regular" (small, account-critical files) or
+        # "large" (the permanently-growing history files). NULL on rows
+        # written before this column existed; recent()/latest() treat NULL
+        # as "regular" since that's the cadence those historical runs
+        # actually ran on.
+        db.add_column_if_missing(conn, "backup_runs", "tier", "TEXT")
+        yield conn
 
 
 def _data_db_files(*, exclude: frozenset[str] = frozenset(), only: frozenset[str] | None = None) -> list[Path]:
