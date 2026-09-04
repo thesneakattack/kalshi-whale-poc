@@ -404,12 +404,36 @@ def test_sellable_quote_rejects_an_unknown_side():
 
 
 def test_forced_exit_quote_matches_sellable_quote_when_the_book_is_real():
-    assert forced_exit_quote("no", 0.20, 0.30) == 0.30
-    assert forced_exit_quote("yes", 0.20, 0.30) == 0.20
+    assert forced_exit_quote("no", 0.20, 0.30, unknown_fallback=0.9) == 0.30
+    assert forced_exit_quote("yes", 0.20, 0.30, unknown_fallback=0.9) == 0.20
 
 
-def test_forced_exit_quote_pays_zero_not_one_on_an_unsellable_book():
+def test_forced_exit_quote_pays_zero_not_one_on_an_empty_book():
     # "Nobody will buy this" is worth nothing, not everything. The old path
     # returned (1 - yes_bid) = $1.00/contract here.
-    assert unit_cost("no", forced_exit_quote("no", 0.0, 1.0)) == pytest.approx(0.0)
-    assert unit_cost("yes", forced_exit_quote("yes", 0.0, None)) == pytest.approx(0.0)
+    assert unit_cost("no", forced_exit_quote("no", 0.0, 1.0, unknown_fallback=0.9)) == pytest.approx(0.0)
+    assert unit_cost("yes", forced_exit_quote("yes", 0.0, None, unknown_fallback=0.9)) == pytest.approx(0.0)
+
+
+def test_forced_exit_quote_uses_the_fallback_when_the_ask_is_merely_UNKNOWN():
+    # 2026-09-04 adversarial review D5: state["latest_asks"] is deliberately
+    # sparse (12% of active markets carried no ask when measured), so folding
+    # "no ask on file" into the empty-book branch would book a total loss on
+    # every one of them - a worse error than the bug being fixed. Missing
+    # data is not evidence of an empty book.
+    assert forced_exit_quote("no", 0.20, None, unknown_fallback=0.62) == 0.62
+
+
+def test_forced_exit_quote_yes_side_never_consults_the_ask():
+    # A YES position sells into the bid, so a missing ask is irrelevant to it
+    # and must not divert it to the fallback.
+    assert forced_exit_quote("yes", 0.20, None, unknown_fallback=0.99) == 0.20
+
+
+def test_sellable_quote_explicit_none_crossed_against_skips_the_crossed_check():
+    # An explicit None means "no valid bid to compare against", which must
+    # NOT collapse back to the yes_bid comparison - that is what a caller
+    # means when yes_bid is only a historical entry-price fallback.
+    assert sellable_quote("no", 0.90, 0.40, crossed_against=None) == 0.40
+    # Omitting it entirely still checks against yes_bid.
+    assert sellable_quote("no", 0.90, 0.40) is None

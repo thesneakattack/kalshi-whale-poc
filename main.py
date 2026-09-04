@@ -1313,7 +1313,8 @@ async def trading_loop():
             # survived per-position rules - see services/exits/position_netting.py
             # for the payout-profile math. Entirely opt-in
             # (position_netting.enabled, default False) and a no-op until
-            # deliberately turned on.
+            # deliberately turned on - which it HAS been: config/settings.yaml
+            # carries enabled: true, so this path is live, not dormant.
             for close_decision in position_netting.review(
                 broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg,
                 latest_asks=state["latest_asks"],
@@ -1922,6 +1923,7 @@ async def close_positions(body: ClosePositionsBody):
             pos.side,
             state["latest_prices"].get(ticker, pos.entry_price),
             state["latest_asks"].get(ticker),
+            unknown_fallback=pos.entry_price,
         )
         trade = broker.close_position(ticker, price, body.reason)
         if trade is not None:

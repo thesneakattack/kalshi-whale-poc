@@ -365,9 +365,16 @@ def unit_cost(side: str, yes_price: float | None) -> float | None:
     raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
 
 
+# Sentinel for sellable_quote's crossed_against: distinguishes "caller said
+# nothing, use yes_bid" from an explicit None meaning "there is no valid bid
+# to check crossing against, skip that check". A plain None default collapses
+# those two into one and silently reinstates the yes_bid comparison.
+_CROSSED_AGAINST_YES_BID = object()
+
+
 def sellable_quote(
     side: str, yes_bid: float | None, yes_ask: float | None,
-    *, crossed_against: float | None = None,
+    *, crossed_against: float | None = _CROSSED_AGAINST_YES_BID,
 ) -> float | None:
     """The price, in YES terms, at which an open `side` position can actually
     be SOLD right now - or None when it cannot be sold at all.
@@ -408,7 +415,10 @@ def sellable_quote(
     a stale REST bid against a live WS ask is not like-for-like and would
     refuse legitimate NO exits on a market that has genuinely moved, so that
     caller passes the raw WS bid here while still pricing off the
-    corroborated one. Defaults to `yes_bid` (same value for both jobs)."""
+    corroborated one. Omitted entirely, it defaults to `yes_bid` (same
+    value for both jobs); passed as an explicit None it SKIPS the crossed
+    check, which is what a caller means when the ticker has no live quote
+    at all and `yes_bid` is only a historical entry-price fallback."""
     if side not in ("yes", "no"):
         raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
     if side == "yes":
@@ -416,26 +426,52 @@ def sellable_quote(
         return yes_bid if yes_bid is not None and yes_bid > 0.0 else None
     if yes_ask is None or yes_ask >= 1.0:
         return None
-    bid = crossed_against if crossed_against is not None else yes_bid
+    bid = yes_bid if crossed_against is _CROSSED_AGAINST_YES_BID else crossed_against
     if bid is not None and yes_ask < bid:
         return None
     return yes_ask
 
 
-def forced_exit_quote(side: str, yes_bid: float | None, yes_ask: float | None) -> float:
+def forced_exit_quote(
+    side: str, yes_bid: float | None, yes_ask: float | None, *, unknown_fallback: float,
+) -> float:
     """sellable_quote(), but never None - for the manual "get flat now" paths
     (POST /api/trading/flatten-all, POST /api/trading/close-positions,
     position netting) where refusing to close is not an option the caller
     has, unlike an automated exit check that can simply leave the position
     alone until the next tick.
 
-    An unsellable book resolves to ZERO proceeds - yes_price 0.0 for a YES
-    position, 1.00 for a NO one, both of which unit_cost() turns into $0.00
-    per contract - never to the fabricated $1.00 the old (1 - yes_bid) path
-    produced. "Nobody will buy this" is worth nothing, not everything; the
-    2026-09-04 repair credited exactly $0.00 to the one live position that
-    hit this case (KXETHD-26SEP0418-T2449.99, yes_ask 1.00 with zero resting
-    size, market resolving YES), rather than guess a price."""
+    Three cases, and the distinction between the last two is the whole point
+    of this function existing separately from sellable_quote():
+
+    - Sellable: the real quote, same as sellable_quote().
+    - A genuinely EMPTY book (yes_ask >= 1.00, i.e. a NO bid of 0.00):
+      ZERO proceeds - yes_price 0.0 for YES, 1.00 for NO, both of which
+      unit_cost() turns into $0.00/contract. Never the fabricated $1.00 the
+      old (1 - yes_bid) path produced. "Nobody will buy this" is worth
+      nothing, not everything; the 2026-09-04 repair credited exactly $0.00
+      to the one live position that hit this case
+      (KXETHD-26SEP0418-T2449.99, yes_ask 1.00 with zero resting size,
+      market resolving YES).
+    - An UNKNOWN quote - a NO position with no ask on file at all -
+      `unknown_fallback`, which every caller sets to the position's own
+      entry price so no P&L is invented in either direction.
+
+    That third case is not hypothetical and is why `unknown_fallback` is
+    required rather than defaulted (2026-09-04 adversarial review, D5):
+    state["latest_asks"] is deliberately sparse - main.py only writes a
+    ticker's ask when the exchange actually sent one, "genuinely missing,
+    not defaulted" - and measured live, 25 of 209 active markets (12%)
+    carried no ask at all. Folding missing data into the empty-book branch
+    would book a total loss on every one of those, which is a worse error
+    than the bug this whole change set exists to fix: the old code at least
+    fell back to a price near break-even. Missing data is not evidence of an
+    empty book.
+
+    A YES position never reaches the fallback: it sells into yes_bid and
+    does not consult the ask at all."""
+    if side == "no" and yes_ask is None:
+        return unknown_fallback
     quote = sellable_quote(side, yes_bid, yes_ask)
     if quote is not None:
         return quote

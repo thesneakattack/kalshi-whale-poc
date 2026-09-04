@@ -709,7 +709,9 @@ class PaperBroker:
             pos = self.positions[ticker]
             price = latest_prices.get(ticker, pos.entry_price)
             if latest_asks is not None:
-                price = kalshi_fees.forced_exit_quote(pos.side, price, latest_asks.get(ticker))
+                price = kalshi_fees.forced_exit_quote(
+                    pos.side, price, latest_asks.get(ticker), unknown_fallback=pos.entry_price,
+                )
             trade = self.close_position(ticker, price, reason)
             if trade is not None:
                 closed.append(trade)

@@ -2165,3 +2165,44 @@ def test_check_exits_corroborated_bid_does_not_suppress_a_no_exit_as_crossed(tmp
     # against, so the sale is priced and goes through at the NO bid (1-0.60).
     assert len(decisions) == 1
     assert "TICK-A" not in broker.positions
+
+
+def test_check_exits_refuses_a_no_exit_on_an_ask_the_rest_read_contradicts(tmp_path, monkeypatch):
+    # 2026-09-04 adversarial review, D7. Checking crossing against the raw WS
+    # bid (the D2 fix) removed the NO side's only defense against a garbage
+    # LOW ask. A tick quoting bid 0.00 / ask 0.05 while market_history's
+    # independent REST read sits at 0.99 passes the crossed test, and would
+    # sell a near-worthless NO position for $0.95/contract - the 2026-08-17
+    # WTA incident relocated to the other side.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.10, reason="entry")
+    monkeypatch.setattr(mh_module, "recent_price", lambda *a, **k: 0.99)
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.0}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 0.05},
+    )
+
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before)
+
+
+def test_check_exits_crossed_check_is_skipped_when_there_is_no_live_bid(tmp_path, monkeypatch):
+    # 2026-09-04 adversarial review, D8: yes_bid falls back to the position's
+    # entry_price when the ticker has no live quote, and comparing a live ask
+    # against a historical entry price false-refuses. With no live bid the
+    # crossed check has nothing valid to compare and is skipped.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.90, reason="entry")
+
+    # No entry in latest_prices at all; ask 0.40 is below the 0.90 entry price.
+    decisions = strategy.check_exits(
+        {}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 0.40},
+    )
+
+    assert len(decisions) == 1
+    assert "TICK-A" not in broker.positions

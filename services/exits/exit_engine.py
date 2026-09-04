@@ -252,8 +252,12 @@ def check_exits(
 
         yes_bid = latest_prices.get(ticker, pos.entry_price)
         # Kept unsubstituted for the crossed-book check below - see the
-        # crossed_against argument at the sellable_quote call site.
-        raw_yes_bid = yes_bid
+        # crossed_against argument at the sellable_quote call site. None
+        # (not the entry-price fallback yes_bid carries) when this ticker has
+        # no live quote at all, so the crossed check is skipped entirely
+        # rather than comparing a live ask against a historical entry price
+        # and false-refusing (2026-09-04 adversarial review, D8).
+        raw_yes_bid = latest_prices.get(ticker)
         # Corroborate against market_history's independently
         # REST-polled price before trusting a single websocket tick for
         # a stop-loss/take-profit decision (2026-08-17, direct
@@ -333,6 +337,24 @@ def check_exits(
         current_price = kalshi_fees.sellable_quote(
             pos.side, yes_bid, yes_ask, crossed_against=raw_yes_bid,
         )
+        # The ask gets the SAME independent corroboration the bid already has
+        # (2026-09-04 adversarial review, D7). Checking crossing against the
+        # raw WS bid fixed a false-refusal on rallying markets, but it also
+        # removed the NO side's only defense against a garbage-LOW ask: a
+        # single bad tick quoting bid 0.00 / ask 0.05 while market_history's
+        # independent REST read sits at 0.99 passes the crossed test (0.05 >=
+        # 0.00) and would sell a near-worthless NO position for $0.95/contract
+        # - the 2026-08-17 WTA incident exactly, relocated to the other side.
+        # Requiring the ask to agree with the REST read within the same
+        # deviation band catches that while still allowing D2's real rally
+        # (a 0.60 ask against a 0.62 corroborated bid is well inside it).
+        if (
+            current_price is not None
+            and pos.side == "no"
+            and corroborated is not None
+            and abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION
+        ):
+            current_price = None
         if current_price is None:
             if ticker not in _unsellable_book_logged:
                 _unsellable_book_logged.add(ticker)
