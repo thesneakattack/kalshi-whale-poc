@@ -17,17 +17,42 @@ hour and then actively misleads — that has now happened twice in one day.
 - **Task 1 (`services/db.py`) blocks every other task.** It is Gate 0: the
   module plus its 16 tests must land before any module migrates onto it.
 - **Tasks 6, 7 and 8 — `risk_manager.py`, `paper_broker.py`,
-  `candidate_ledger.py` — are safety-adjacent and need a human go-ahead before
-  starting**, not just at review. They touch the daily-loss kill switch and the
-  broker. Each gets its own dedicated PR and a full diff review; "the pattern
-  was mechanical for the last five modules" is exactly the reasoning that walks
-  something past scrutiny, and it is not sufficient here.
+  `candidate_ledger.py`** — David gave the go-ahead to start these
+  2026-09-03 ~22:35 UTC. The human-authorization gate is satisfied; the
+  scrutiny gate is not relaxed by that: each still gets its own dedicated PR,
+  a full diff review, and the same "not mechanical, same as the others" care
+  named below, because they touch the daily-loss kill switch and the broker.
 - **Author and reviewer stay separate**, for code as for documents: whoever
   implements a task does not review it, and the adversarial pass is a fresh
   agent with no memory of writing it.
 - `autotrade-73`'s `fix/db-foundation-must-fix-tests` (`e74096a`) is **input to
   Task 1, not Task 1** — Task 1 adopts its tests (including the lock-contention
   one) but not its path-keyed registry, which the design rejected.
+
+## Standing priority (David, 2026-09-03 ~22:20-22:35 UTC): data-plane stability first
+
+Two direct instructions, both still in force: **merge what's ready ASAP**, and
+**refocus all work on data-plane stability and low latency** — ahead of
+frontend/Preact/DRY-sweep/config-store items on the architecture audit's Tier
+2/3 list, which wait. Concretely, David wants:
+
+- **The critical trade stream decoupled entirely from history and diagnostics**
+  — not sharing consumers, thread pools, or queues. `#542`'s solution-comparison
+  doc (merged, see below) already found the shared-consumer shape
+  (`realtime_data_plane.two_consumer_mode: true` means trade and ticker share
+  one queue/consumer today) and the shared `_scoring_pool` between the WS
+  consumer and `_candidate_retry_loop` (also load-bearing in `#546`). This maps
+  to the architecture audit's Tier 3 items 25/26 (two-process split;
+  read-only process for soak/history checks; push more state over the
+  dashboard WebSocket).
+- **History's modules stop polling on a fixed interval** and become on-demand/
+  event-driven — update only when there's something new to give, not on a
+  timer regardless of state.
+- **`autotrade-b4` is assigned to lead the research stage for this**, once
+  their current task (`#546`, the trade_id dedupe race) lands — they hold the
+  deepest live context on the exact consumer/queue architecture involved. Not
+  started yet as of this writing; do not start the design stage before a
+  research artifact clears its own review cycle, per the standing HARD RULE.
 
 ## Reference state — 2026-09-03 ~12:15 UTC (facts, not progress)
 
@@ -167,6 +192,27 @@ without confirming it resolves inside the container's own PID namespace.
 
 `docs/SESSION_CRASH_RECOVERY.md` holds the per-role onboarding procedure if a
 session is lost.
+
+**Second live incident today from an unattended test loop in the shared
+fastapi container (2026-09-03 ~22:14-22:31 UTC), same class as the earlier
+`verify_race_fix.sh` one:** a session's own `for i in seq 1 40; do pytest
+...; done` concurrency-verification loop (issue #543 work) drove the shared
+container to 259% CPU and thousands of unreaped zombie processes; the ASGI
+worker child crashed under that contention (no OOM, no traceback — a hard
+kill signature) and uvicorn's `--reload` supervisor never respawned it,
+leaving the listening socket open with nothing behind it (nginx logged
+`upstream timed out reading response header`, not `connection refused` —
+that distinction is what identifies this failure shape). 12 minutes of total
+app silence. Fixed by `ddev restart` once the diagnosis was confirmed (worker
+child zombie, supervisor idle, no self-healing in progress) — recovered
+clean, `data/*.db` untouched (bind-mounted, persists across container
+restart). **Two sessions issuing `ddev restart`/`ddev stop` concurrently
+during recovery caused a second, avoidable collision** (duplicate renamed
+containers) — when a live incident needs a restart, one session drives it and
+says so explicitly before acting, the rest hold. The standing rule this
+reconfirms: never leave a multi-iteration test loop running unattended in the
+fastapi container, and treat it as a real, dated incident, not "it'll finish
+on its own."
 
 ---
 
