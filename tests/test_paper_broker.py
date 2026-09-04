@@ -915,3 +915,81 @@ def test_netting_columns_are_added_to_a_pre_existing_trades_table_without_touchi
     assert row[1:] == (None, None, None)
     old = next(t for t in resumed.trade_log if t.id == "old1")
     assert (old.netting_improvement_usd, old.netting_bar_usd, old.netting_vol_ratio) == (None, None, None)
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    # Patched only after construction: PaperBroker.__init__ opens and closes
+    # its own connection to load persisted state, which would otherwise be
+    # recorded here too and double-count against this test's single-call
+    # assertion below - a real discrepancy in the plan's own transcription
+    # of this test (unlike services/signal_log.py's module-level functions,
+    # PaperBroker's constructor itself connects).
+    broker = pb.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "pb.db")
+    monkeypatch.setattr(pb.db.sqlite3, "connect", _tracking_connect)
+    with broker._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_all_four_tables_thirteen_columns_and_the_index(tmp_path, monkeypatch):
+    broker = pb.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "pb.db")
+    with broker._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert {"broker_meta", "positions", "trades", "pending_orders"} <= tables
+        positions_cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        for expected in ("config_fingerprint", "entry_fee", "hold_to_settlement"):
+            assert expected in positions_cols, expected
+        trades_cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+        for expected in (
+            "config_fingerprint", "fee", "signal_seen_at", "excluded",
+            "netting_improvement_usd", "netting_bar_usd", "netting_vol_ratio",
+            "netting_exit_fee_usd",
+        ):
+            assert expected in trades_cols, expected
+        pending_cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_orders)")}
+        for expected in ("signal_seen_at", "confidence"):
+            assert expected in pending_cols, expected
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+        assert "idx_trades_excluded" in indexes
+
+
+def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch):
+    broker = pb.PaperBroker(starting_bankroll=1000.0, db_path=tmp_path / "pb.db")
+    with broker._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
