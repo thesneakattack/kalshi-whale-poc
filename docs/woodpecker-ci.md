@@ -247,6 +247,37 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   retrying once or twice resolved it live. No `WOODPECKER_TOKEN` needed
   for this path (it's a `gh` GitHub-API call against the webhook, not the
   Woodpecker API).
+  **Update 2026-09-04 (PR #559, Task 12): this is not an isolated
+  occurrence — three separate sessions hit the same underlying symptom
+  (push event never reaches Woodpecker) on three different PRs the same
+  day (#544, #553, #559), with two distinct error bodies (`"failure to
+  parse token from hook"` above; PR #559's was a bare `"Invalid HTTP
+  Response: 400"` with no parseable message via `gh api`) and, unlike the
+  single `pull_request: opened` case above, also hit plain `push` events
+  and `pull_request: closed`/`edited`/`reopened` actions.** A ~25-minute
+  window of this repo's own delivery log (03:35-03:59 UTC) showed roughly
+  2 in 5 deliveries failing this way regardless of event type, correlated
+  with heavy concurrent push/PR volume across ~30 simultaneously active
+  worktree sessions that day — consistent with load-related flakiness on
+  Woodpecker's ingress, not a per-PR defect. **The documented `attempts`
+  redelivery endpoint is not always usable**: it needs the `admin:repo_hook`
+  token scope, which this session's default `gh` auth did not have
+  (`gh api -X POST .../deliveries/<id>/attempts` returned a 404 first,
+  then an explicit scope error on retry) — the "no `WOODPECKER_TOKEN`
+  needed" framing above is correct but incomplete, since a *different*
+  scope is required and isn't guaranteed present. **Working fallback that
+  needs no special scope**: since the failure is intermittent rather than
+  deterministic for a given payload, a *fresh* delivery for the same PR
+  (not a redelivery of the identical failed one) has a good chance of
+  landing — `gh pr close <n>` then `gh pr reopen <n>` generates a new
+  `pull_request` webhook each time; it took two retries to get a
+  successful delivery live on 2026-09-04. For a `push` event with the
+  same symptom (`ci/woodpecker/push/*` contexts entirely absent), the
+  manual pipeline (`scripts/woodpecker-trigger`) does NOT substitute for
+  this — verified live: it posts to `ci/woodpecker/manual/*` contexts
+  only, which do not satisfy branch protection's required `ci/woodpecker/
+  pr/*`/`ci/woodpecker/push/*` contexts, so a green manual run does not by
+  itself make a PR mergeable.
 - The agent log periodically shows `"queue: task not found"` /
   `"failed to extend workflow lease"` (with a matching server-side
   `"stream: not found"` / `"cannot close log stream"`) for a handful of
