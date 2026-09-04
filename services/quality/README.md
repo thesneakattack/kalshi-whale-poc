@@ -97,14 +97,21 @@ loop. Fixed by wrapping each of the seven in `asyncio.to_thread` (see
 measurements, and why `diagnostics.run_offline`/`alerting.alert_findings`/
 `evidence_provenance.findings` were deliberately left as-is). One
 important corrected expectation: direct live measurement (docker exec
-against real production `data/*.db` files, 2026-09-04) found the seven
-newly-dispatched calls cost roughly 1-40ms each — genuinely cheap. The
-route's own multi-second-to-30+s total latency (docs/event-loop-blocking-
-routes-census-2026-09-03.md) is almost entirely `diagnostics.
-run_offline()` (measured ~9.1s against the same live data), which was
-*already* properly awaited via aiosqlite before this fix and is untouched
-by it. This fix stops the route from stalling *other* requests while it
-runs; it does not make the route itself fast, and was never going to.
+against real production `data/*.db` files, 2026-09-04, re-measured after
+adversarial review found the DB files had grown between passes) found the
+seven newly-dispatched calls sum to roughly 100-300ms today — cheap, but
+climbing as `fault_log.db`/`observability.db` grow, not a fixed "under
+100ms" number. The route's own multi-second-to-30+s total latency
+(docs/event-loop-blocking-routes-census-2026-09-03.md) is still
+dominated by `diagnostics.run_offline()` (measured ~9.1s against the same
+live data), which yields control genuinely and frequently (~1,100 real
+awaited aiosqlite yields per call) — but per `_aio_db.py`'s own docstring
+also has its own pre-existing, undisclosed, out-of-scope on-loop CPU
+chunks between those yields (>=280ms measured 2026-09-01, likely more
+now), not addressed by this fix. This fix stops the route from stalling
+*other* requests while it runs; it does not make the route itself fast,
+does not close `run_offline()`'s own separate on-loop-CPU gap, and never
+claimed to do either.
 
 Original (still-true) sub-claims, updated for the above: its own cost is
 bounded by what it composes: `observability.runtime_findings` (pure,

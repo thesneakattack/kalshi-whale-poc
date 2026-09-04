@@ -100,14 +100,35 @@ simulated/isolated data) of each candidate function found:
 | `evidence_provenance.findings()` | 0.0ms (confirms no I/O) |
 | `diagnostics.run_offline(cfg)` | **9,104.8ms** |
 
+**Correction, post-adversarial-review (2026-09-04)**: the independent review
+re-measured against the primary checkout's real `data/*.db` (this table's
+figures were taken from the worktree's own separate, nearly-empty `data/`
+directory — a real measurement trap, not caught the first time) and got a
+higher sum: `fault_log.summary()` 93.8ms, `storage_findings()` 108.6ms,
+`inventory_data_dir()` 21.1ms, `runtime_findings` 11.3ms, `active_alerts`
+1.3ms, `research.latest` 2.6ms, `backup.latest` 0.9ms — **~240ms total**,
+not "well under 100ms" as originally written here. The conclusion is
+unchanged (still ~30-90x below `run_offline()`'s ~9.1s), but the specific
+number below was wrong and should not be repeated. Corrected in `routes.py`
+and `README.md`; left here with the correction rather than silently
+rewritten, per this repo's practice of not erasing a wrong number without
+saying so.
+
 This directly contradicts the brief's framing that the four named calls are
 "the root cause" of the route's 11.59-33.35s measured latency (census doc).
-They sum to well under 100ms. The dominant cost by nearly two orders of
-magnitude is `diagnostics.run_offline()` — which the brief itself, and the
+They sum to roughly 100-300ms (not "well under 100ms" — see correction
+above), and that figure will keep climbing as `fault_log.db`/
+`observability.db` grow. The dominant cost by nearly two orders of
+magnitude is still `diagnostics.run_offline()` — which the brief itself, and the
 census doc, both already correctly excluded from the "undispatched" set
 (it's genuinely `await`ed and yields control via aiosqlite, per prior
 verified research in that file's own comments — "~1,100 real yields per
-run_offline() call").
+run_offline() call"). **Also per adversarial review**: that yielding is real,
+but `run_offline()` still has its own separate, pre-existing, undisclosed
+on-loop CPU chunks between yields (`_aio_db.py`'s own docstring: >=280ms
+measured 2026-09-01) — out of scope for this fix, but this doc's original
+framing ("doesn't block the loop the way the 7 calls did") understated that,
+and is corrected here for the record.
 
 **What this means for the fix's actual impact, stated plainly rather than
 implied**: this fix removes genuine event-loop-blocking time — real,
@@ -115,8 +136,13 @@ previously-undispatched synchronous I/O that could stall *every other*
 concurrent request (the PR #424 precedent: "5 concurrent GET
 /api/quality/summary requests stalling an unrelated GET /api/state for
 minutes") — but the *magnitude* of that removed blocking time is roughly
-40-100ms per call, not the multi-second figures the census doc's own
-priority-ranking table used to estimate "~1.2-3.3 event-loop-blocked hours."
+100-300ms per call (corrected from the original "40-100ms," see above),
+not the multi-second figures the census doc's own priority-ranking table
+used to estimate "~1.2-3.3 event-loop-blocked hours." One more deliberately
+out-of-scope call worth naming for completeness: `config_store.get()` (the
+handler's first line) also does an undispatched `stat()`/conditional YAML
+reparse — an 8th call, identical across nearly every route in the app, so a
+systemic fix belongs in `config_store.py`, not repeated here.
 That table's estimate conflated the route's total client-observed latency
 (dominated by the already-non-blocking `run_offline()`) with actual
 event-loop-blocked time. I did not go back and recompute a corrected

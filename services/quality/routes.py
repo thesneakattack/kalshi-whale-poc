@@ -38,21 +38,30 @@ snapshot()/dropped_count() reads - is in-memory counters, no I/O);
 diagnostics.run_offline is already awaited and runs natively on aiosqlite
 (a separate, already-fixed piece - see its own comment below), so
 wrapping it here would add a redundant thread-hop, not fix anything.
+Also deliberately NOT wrapped: config_store.get() (the first line of this
+handler) does its own synchronous stat()/YAML-reparse-on-change - a real,
+undispatched 8th call, but identical in every other route in this app, so
+a systemic fix belongs in config_store.py, not repeated per-handler here.
 
-Direct live measurement before this fix (docker exec against the running
-app's real data/*.db files, one-shot, read-only): the four calls named in
-issue #530's own census doc cost roughly 1-40ms each today (alerting.
-active_alerts 1.5ms, fault_log.summary 36.7ms, research.latest 1.9ms,
-observability.runtime_findings 0.6ms) - genuinely cheap, not the dominant
-cost the census doc's "11.59-33.35s" route-latency figure implied. That
-figure is almost entirely diagnostics.run_offline() alone, measured at
-~9.1s against the same live data - already awaited/non-blocking, a
-separate concern this fix does not touch. This fix removes real
-event-loop-blocking time (roughly 40-100ms x 358 calls in the census
-doc's 19.6h window, plus whatever storage_findings' N-database indirect
-history() calls and backup.latest() add - not separately measured pre-fix),
-but does not make GET /api/quality/summary itself fast; it was never
-going to, and no fix in this scope claims otherwise.
+Direct live measurement (docker exec against the running app's real
+data/*.db files, one-shot, read-only; re-measured after PR #552's
+adversarial review found the DB files had grown since the first pass):
+the seven calls this fix dispatches sum to roughly 100-300ms today
+(fault_log.summary and storage_findings are the largest individually, at
+~90-110ms each; the rest are single-digit-to-low-double-digit ms) - this
+range will keep climbing as fault_log.db/observability.db grow, so treat
+it as an order of magnitude, not a fixed number. Still ~30-90x smaller
+than diagnostics.run_offline() alone, measured at ~9.1s against the same
+live data. run_offline() yields control genuinely and frequently (~1,100
+real awaited aiosqlite yields per call, corroborated independently by two
+separate reviews) - but per _aio_db.py's own docstring it also has its
+own pre-existing, undisclosed, out-of-scope contiguous on-loop CPU chunks
+between those yields (>=280ms measured 2026-09-01, likely more now) that
+this fix does not touch and were not previously surfaced against the
+route's cost breakdown. This fix removes real event-loop-blocking time
+from the 7 calls it dispatches, but does not make GET /api/quality/summary
+itself fast, and does not close run_offline()'s own separate on-loop-CPU
+gap; neither was ever this fix's scope.
 """
 import asyncio
 import time
