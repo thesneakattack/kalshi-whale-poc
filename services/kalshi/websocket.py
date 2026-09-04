@@ -19,6 +19,7 @@ an unnecessary transport rewrite").
 """
 import asyncio
 import base64
+import contextlib
 import contextvars
 import json
 import logging
@@ -194,6 +195,80 @@ _HANDLER_TIMEOUT_SEC = 10.0
 # consumer's.
 _LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
 
+# Option B (2026-09-03 live-incident fix - docs/superpowers/research/
+# 2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md, issue
+# #542/#541): bounds how many trade items' full handling (on_trade -> ... ->
+# kalshi_trade_tape.py's fetch_signals, which can await a multi-second REST
+# resolve call for an off-watchlist/uncached print) may run concurrently off
+# the market-queue consumer's own dequeue loop. N=4 matches services/
+# whalewatchers/_scoring_pool.py's own precedent exactly - that module's own
+# docstring: "bounded and observable is this design's actual goal" - the
+# same reasoning applied here on the async-I/O side instead of the thread
+# side, not a load-bearing capacity guess of its own.
+_TRADE_DISPATCH_CONCURRENCY = 4
+
+
+def _trade_ticker_key(data: dict) -> str | None:
+    """Routing/locking key for a raw trade item - the same market_ticker/
+    ticker alias fallback _coalesce_ticker already uses below, not a new
+    semantic interpretation of the payload (this module never interprets
+    vendor fields for business logic, only for transport-level routing)."""
+    msg = data.get("msg") or {}
+    return msg.get("market_ticker") or msg.get("ticker")
+
+
+class _TickerDispatchGate:
+    """Bounds concurrent trade dispatch to one in-flight task per ticker
+    (Option B's one real ordering invariant - see the research doc's §3
+    "Ordering"): two off-list prints on the SAME ticker must not race each
+    other's cache write to KalshiTradeTapeProvider._market_cache inside
+    _resolve_unknown_markets. Cross-ticker ordering is deliberately NOT
+    preserved by this gate - it was never guaranteed even before this
+    change for the ticker-coalescing path (_consume_market_from's own
+    docstring: "cross-market order is deliberately unguaranteed"), and
+    Option B's real change is that trade-to-trade ordering across
+    DIFFERENT tickers is no longer guaranteed either. Only same-ticker
+    sequencing is a correctness requirement here.
+
+    Locks are refcounted and evicted the moment nothing holds or is
+    waiting on them, so this dict does not grow unbounded across an
+    exchange-wide ticker universe - at any instant it holds at most as
+    many entries as there are trade-dispatch tasks currently in flight or
+    queued behind the ticker gate, itself already bounded by
+    _TRADE_DISPATCH_CONCURRENCY."""
+
+    def __init__(self):
+        self._locks: dict[str | None, asyncio.Lock] = {}
+        self._refcounts: dict[str | None, int] = {}
+
+    @contextlib.asynccontextmanager
+    async def _hold(self, ticker: str | None):
+        # Underscore-prefixed deliberately (not just style): tools/
+        # quality_audit/kalshi_contract_docs.py's scanner requires every
+        # PUBLIC method of any class in this file to carry a CONTRACT_DOCS
+        # entry mapping it to a docs/kalshi/*.md page - correct for real
+        # wire operations, but this is a pure internal concurrency
+        # primitive with no Kalshi API contract behind it at all (caught
+        # live running tools.quality_audit before considering this done -
+        # see CLAUDE.md's "Start investigations here").
+        # No `await` between the get-or-create and the refcount bump below,
+        # so this is atomic with respect to every other task on the same
+        # event loop (cooperative scheduling only yields at an `await`) -
+        # safe without its own lock.
+        lock = self._locks.get(ticker)
+        if lock is None:
+            lock = self._locks[ticker] = asyncio.Lock()
+            self._refcounts[ticker] = 0
+        self._refcounts[ticker] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._refcounts[ticker] -= 1
+            if self._refcounts[ticker] <= 0:
+                self._locks.pop(ticker, None)
+                self._refcounts.pop(ticker, None)
+
 
 class KalshiStreamGateway:
     def __init__(self, base_url: str, exchange_wide_trades: bool = False,
@@ -322,6 +397,17 @@ class KalshiStreamGateway:
         # ingest_metrics, never silent.
         self._ticker_by_market: dict[str, tuple[float, dict]] = {}
         self._coalesced = 0
+        # Option B (2026-09-03): bounded-concurrency trade dispatch - see
+        # _TRADE_DISPATCH_CONCURRENCY's own comment and
+        # _dispatch_trade_concurrent's docstring. Instance-scoped (one bound
+        # per gateway) but reused across reconnects unchanged, same as
+        # _scoring_pool.py's own module-level persistent pool - no
+        # per-connection reset needed. _pending_trade_tasks is only for
+        # teardown (run()'s finally cancels whatever is still in flight when
+        # a connection ends) and self-cleans via each task's done callback.
+        self._trade_dispatch_semaphore = asyncio.Semaphore(_TRADE_DISPATCH_CONCURRENCY)
+        self._ticker_dispatch_gate = _TickerDispatchGate()
+        self._pending_trade_tasks: set[asyncio.Task] = set()
         self.malformed_messages = 0
         self._received_by_class: dict[str, int] = {}
         self._processed_by_class: dict[str, int] = {}
@@ -711,6 +797,18 @@ class KalshiStreamGateway:
                     finally:
                         for consumer in consumers:
                             consumer.cancel()
+                        # Option B: any trade-dispatch task still in flight
+                        # dies with this connection too, same as the
+                        # consumers themselves - its own queue (about to be
+                        # thrown away by the next _begin_connection call) is
+                        # what it would have called task_done() against.
+                        # Not awaited, same pattern as `consumers` above:
+                        # cancellation is processed on a later event-loop
+                        # turn, and each task's own done callback (see
+                        # _dispatch_trade_concurrent) removes it from
+                        # _pending_trade_tasks once that happens.
+                        for trade_task in list(self._pending_trade_tasks):
+                            trade_task.cancel()
             except Exception as exc:
                 self._record_disconnect(exc)
                 if on_status is not None:
@@ -1128,9 +1226,17 @@ class KalshiStreamGateway:
                                    on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
         """Market-queue consumer (P4 Task 19a): FIFO-drains real queue items
         first, then processes pending coalesced tickers one per iteration
-        when the queue is momentarily empty - trades keep strict arrival
-        order, tickers are level state where cross-market order is
-        deliberately unguaranteed (design spec §3)."""
+        when the queue is momentarily empty - tickers are level state where
+        cross-market order is deliberately unguaranteed (design spec §3).
+
+        Trade items no longer keep strict arrival order across DIFFERENT
+        tickers (Option B, 2026-09-03 - see _consume_one's own docstring):
+        this loop hands a trade item off to bounded concurrent dispatch and
+        is back at the top within one line, rather than awaiting that
+        trade's full handling (which can include a multi-second REST
+        resolve call) before it can reach the next item - that inline await
+        was the head-of-line blocking #541/#542 root-caused. Same-ticker
+        ordering is preserved (_TickerDispatchGate)."""
         while True:
             try:
                 item = queue.get_nowait()
@@ -1144,14 +1250,12 @@ class KalshiStreamGateway:
                     )
                     continue
                 item = await queue.get()
-            try:
-                if item[1] != _TICKER_WAKE:
-                    await self._process_item(
-                        item, on_trade, on_ticker, on_status, on_fill,
-                        on_position, on_index, on_lifecycle,
-                    )
-            finally:
+            if item[1] == _TICKER_WAKE:
                 queue.task_done()
+                continue
+            await self._consume_one(
+                queue, item, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+            )
 
     async def _consume_from(self, queue: asyncio.Queue, on_trade=None, on_ticker=None, on_status=None,
                             on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
@@ -1161,16 +1265,96 @@ class KalshiStreamGateway:
         per class per window, so one mishandled message still can't tear down
         the socket - but it no longer vanishes either (I1: the old bare
         `except: pass` here made a systematically failing handler class
-        indistinguishable from a quiet market)."""
+        indistinguishable from a quiet market). Only exercised for "trade"
+        class today when realtime_data_plane.two_consumer_mode is off (the
+        live config has it on - see _consume_market_from) - shares
+        _consume_one with that consumer so both modes get Option B's
+        bounded-concurrency trade dispatch identically, not just the one
+        that happens to be live right now."""
         while True:
             item = await queue.get()
-            try:
+            await self._consume_one(
+                queue, item, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
+            )
+
+    async def _consume_one(self, queue: asyncio.Queue, item, on_trade, on_ticker, on_status,
+                           on_fill, on_position, on_index, on_lifecycle) -> None:
+        """Single dequeued item's dispatch, shared by _consume_from and
+        _consume_market_from (Option B, 2026-09-03 - docs/superpowers/
+        research/2026-09-03-trade-resolve-consumer-blocking-solution-
+        comparison.md §3). A "trade" item goes through bounded-concurrency
+        dispatch (_dispatch_trade_concurrent) so this call returns as soon
+        as a semaphore slot is claimed and a background task is spawned -
+        well before that trade's own handler (which can await a
+        multi-second REST resolve, kalshi_trade_tape.py's
+        _resolve_unknown_markets) has even started. Every other class is
+        unchanged: awaited inline, exactly as before.
+
+        queue.task_done() ownership moves WITH a trade item into the
+        background task (_run_trade_item calls it once that item's handling
+        actually finishes) - the caller must not call it again for a trade
+        item, which is why this method (not the two while-loops) owns the
+        finally/task_done pairing for the non-trade path."""
+        if item[1] == "trade" and on_trade is not None:
+            await self._dispatch_trade_concurrent(
+                item, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle, queue,
+            )
+            return
+        try:
+            await self._process_item(
+                item, on_trade, on_ticker, on_status, on_fill,
+                on_position, on_index, on_lifecycle,
+            )
+        finally:
+            queue.task_done()
+
+    async def _dispatch_trade_concurrent(self, item, on_trade, on_ticker, on_status, on_fill,
+                                         on_position, on_index, on_lifecycle, queue: asyncio.Queue) -> None:
+        """Option B (2026-09-03 live-incident fix): acquires one of
+        _TRADE_DISPATCH_CONCURRENCY semaphore slots, then spawns the actual
+        handling (_run_trade_item) as its own task and returns immediately -
+        the calling consumer loop is back at queue.get() before this
+        trade's handler has even started.
+
+        Acquiring the semaphore HERE, before create_task, is deliberate:
+        when all 4 slots are already in flight, this await is what makes a
+        5th trade item queue BEHIND the bound rather than an unbounded
+        fan-out of tasks all spawned immediately and then contending -
+        "extra work queues, visibly, rather than spawning unbounded new
+        connections silently" is the same design _scoring_pool.py already
+        established for the thread side; this is that same shape on the
+        async-I/O side. It also means a burst that saturates the bound
+        throttles this consumer's own dequeue rate exactly as much as the
+        bound allows and no more - still strictly better than today's
+        unbounded (concurrency-of-1) inline await, since at least
+        _TRADE_DISPATCH_CONCURRENCY trades can be resolving at once instead
+        of exactly one."""
+        await self._trade_dispatch_semaphore.acquire()
+        ticker = _trade_ticker_key(item[2])
+        task = asyncio.create_task(self._run_trade_item(
+            item, ticker, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle, queue,
+        ))
+        self._pending_trade_tasks.add(task)
+        task.add_done_callback(self._pending_trade_tasks.discard)
+
+    async def _run_trade_item(self, item, ticker, on_trade, on_ticker, on_status, on_fill,
+                              on_position, on_index, on_lifecycle, queue: asyncio.Queue) -> None:
+        """The actual per-trade handling, run as its own task by
+        _dispatch_trade_concurrent - never awaited by the consumer loop
+        directly. Holds the semaphore slot (released in `finally`, not on
+        entry) for this trade's FULL duration including any wait behind an
+        in-flight same-ticker predecessor via _ticker_dispatch_gate - same
+        ordering invariant _TickerDispatchGate's own docstring states
+        (same-ticker resolve+score stays sequential; cross-ticker does
+        not)."""
+        try:
+            async with self._ticker_dispatch_gate._hold(ticker):
                 await self._process_item(
-                    item, on_trade, on_ticker, on_status, on_fill,
-                    on_position, on_index, on_lifecycle,
+                    item, on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle,
                 )
-            finally:
-                queue.task_done()
+        finally:
+            queue.task_done()
+            self._trade_dispatch_semaphore.release()
 
     async def _process_item(self, item, on_trade, on_ticker, on_status, on_fill=None, on_position=None,
                             on_index=None, on_lifecycle=None, now: float | None = None) -> None:
