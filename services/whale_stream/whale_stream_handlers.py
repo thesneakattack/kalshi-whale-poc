@@ -11,7 +11,9 @@ deliberate coupling from the original code, preserved exactly as-is here.
 _process_stream_ticker's own check_exits/check_pending_fills/
 position_netting.review block is rate-limited (2026-09-03 live-incident
 fix, ticker_exit_check_min_interval_sec) - see _last_ticker_exit_check_at's
-own comment below.
+own comment below. _process_stream_trade's own check_exits call is
+separately rate-limited the same way (2026-09-03, trade_exit_check_min_
+interval_sec) - see _last_trade_exit_check_at's own comment below.
 """
 import asyncio
 import time
@@ -40,6 +42,21 @@ from services.ws_manager import ws_manager
 # call regardless of which ticker triggered it, so one shared gate matches
 # its existing all-positions-at-once shape.
 _last_ticker_exit_check_at = 0.0
+
+# 2026-09-03 live-incident fix: parallel throttle for _process_stream_
+# trade's own check_exits call - see trade_exit_check_min_interval_sec's
+# own comment in config/settings.yaml for the mechanism, the evidence
+# (38/43 recent WS reconnects correlate with a 10-76s event-loop stall,
+# consistent with 2+ long-tail check_exits draws - 401ms avg vs 15.6s max
+# observed - stacking within one burst of correlated whale activity), and
+# the safety-net reasoning for why skipping this call is not a missed exit:
+# _process_stream_ticker's own throttled check_exits call above
+# independently re-evaluates the identical broker/signal_feed state at
+# least once every ticker_exit_check_min_interval_sec (2.0s) as long as
+# ticker messages keep flowing, which they do continuously at 10+/sec
+# exchange-wide. Global (not per-ticker), same reasoning as
+# _last_ticker_exit_check_at above.
+_last_trade_exit_check_at = 0.0
 
 
 def build_fill_validator(cfg: dict, now: float):
@@ -182,6 +199,7 @@ def _stream_market_client(cfg: dict) -> KalshiPublicGateway:
 
 
 async def _process_stream_trade(trade: dict) -> None:
+    global _last_trade_exit_check_at
     if not trade.get("trade_id"):
         return
     # See _record_trade_perf's docstring - this handler runs on an
@@ -242,24 +260,32 @@ async def _process_stream_trade(trade: dict) -> None:
         now = time.time()
         for signal in signals:
             await _handle_signal(signal, cfg_now, state.get("market_results") or {}, config_fp, now)
-        # Deliberately NOT throttled like _process_stream_ticker's own
-        # check_exits call (see ticker_exit_check_min_interval_sec in
-        # config/settings.yaml): this call only runs when fetch_signals
-        # actually returned a signal - measured at ~0.2-0.25% of trades
-        # (~99.7% rejected before qualifying; docs/superpowers/research/
-        # 2026-08-25-realtime-replay-baseline.md, services/observability/
-        # README.md) - already self-throttled by construction, and adding
-        # latency here would slow exit-checking exactly when a fresh whale
-        # signal just landed, the moment responsiveness matters most.
-        # tick_cache wired for correctness/consistency only, same as the
-        # ticker path - see that call site's comment on why it costs
-        # nothing today.
-        for close_decision in strategy.check_exits(
-            state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
-            category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
-            tick_cache={}, latest_prices_updated_at=state["latest_prices_updated_at"],
-        ):
-            await _handle_close_decision(close_decision)
+        # 2026-09-03 live-incident fix: was unconditional (this call only
+        # ran when fetch_signals actually returned a signal - measured at
+        # ~0.1-0.5% of trades - reasoned to be "already self-throttled by
+        # construction"). That covered call *frequency* but not per-call
+        # *cost variance*: real measured cost has a long tail (401ms avg,
+        # 15.6s max observed), and a burst of correlated whale activity can
+        # put multiple signal-emitting trade messages, each wanting to run
+        # this non-yielding call, back to back on the single-threaded event
+        # loop - see trade_exit_check_min_interval_sec's comment in
+        # config/settings.yaml for the full mechanism, evidence, and the
+        # safety-net reasoning for why a skipped call here is bounded
+        # staleness (up to ticker_exit_check_min_interval_sec, ~2.0-2.1s),
+        # not a missed exit. .get(...) fallback, not cfg_now["kalshi"][...]
+        # direct indexing - same reasoning as the ticker path's own gate
+        # (several tests monkeypatch config_store.get() with no "kalshi"
+        # key at all; fails open to the documented 2.0 default). tick_cache
+        # wired for correctness/consistency, same as the ticker path.
+        _trade_min_interval = (cfg_now.get("kalshi") or {}).get("trade_exit_check_min_interval_sec", 2.0)
+        if now - _last_trade_exit_check_at >= _trade_min_interval:
+            _last_trade_exit_check_at = now
+            for close_decision in strategy.check_exits(
+                state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
+                category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
+                tick_cache={}, latest_prices_updated_at=state["latest_prices_updated_at"],
+            ):
+                await _handle_close_decision(close_decision)
         signals_emitted = len(signals)
         perf.record_stage("signals", time.monotonic() - _signals_started_at)
         perf.record_count("signals_emitted", signals_emitted)
