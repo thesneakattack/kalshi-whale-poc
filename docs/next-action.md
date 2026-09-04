@@ -147,9 +147,13 @@ for = 7 peers + coordinator. **`9e` is dead.**
 `data/paper_broker.db` is **already repaired**: 294 rows corrected via
 `PaperBroker.correct_erroneous_close`, bankroll $104,100 → −$8,338, backup
 at `data/backups/pre-no-side-exit-repair/paper_broker.db`. Portfolio flat,
-kill switch halted. Corrected rows keep `excluded=1` **and** their original
-`(realized +N)` text precisely so `build_trade_history` cannot parse the
-stale figure — **do not un-exclude them.** Any per-series win rate,
+kill switch halted. Corrected rows keep `excluded=1` **and their original
+realized text** precisely so `build_trade_history` cannot parse the stale
+figure — **do not un-exclude them.** (Precision, verified by `36` against
+live data: the `(realized +N)` shorthand used in #574's body covers 251 of
+the 294; the other 43 are negative, so the true invariant is "original text
+retained", not the `+N` form. Backup intact: 2,174 trades, 0 excluded.
+Live bankroll −8338.35, agreeing across `/api/state` and `broker_meta`.) Any per-series win rate,
 calibration, or advisory output from that window was fabricated. True
 whale-follow calibration is unremarkable: 985 known-outcome entries, mean
 unit cost 0.554, settlement win rate 56.1%.
