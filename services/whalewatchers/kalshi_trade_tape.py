@@ -37,7 +37,7 @@ from services import whale_pipeline_perf
 from services import http_client
 from services.kalshi.contracts import trade as trade_contract
 from services.confidence_scoring import WhaleSignal, composite_confidence_breakdown
-from services.whalewatchers import _scoring_pool
+from services.whalewatchers import _candidate_retry_pool, _scoring_pool
 from services.whalewatchers.base import WhaleWatcherProvider
 
 _DEFAULT_MIN_CONTRACTS = 5000.0
@@ -412,7 +412,13 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # structurally inert for this call site, same as it was pre-fix
         # when it read self._resolve_failed_tickers - see issue #542's
         # Option B research doc §3's Correctness section).
-        return await _scoring_pool.run(
+        # Runs on candidate-retry's OWN 1-worker pool, not _scoring_pool
+        # (issue #563, docs/superpowers/specs/2026-09-03-scoring-pool-
+        # candidate-retry-isolation-design.md): fetch_signals' WS-trade
+        # path keeps _scoring_pool's 4 workers to itself, since PR #555
+        # lets it dispatch up to 4 trades concurrently and it can want all
+        # 4. See _candidate_retry_pool.py's own docstring for the sizing.
+        return await _candidate_retry_pool.run(
             lambda: self._process_trades_sync(
                 [trade], [market], {ticker: market}, cfg, now, resolve_failed_tickers=set(),
             )

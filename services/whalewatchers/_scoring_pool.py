@@ -1,17 +1,31 @@
 """Dedicated worker pool + thread-local connection cache for
-kalshi_trade_tape.py's per-trade scoring work (both the WS-message path,
-_process_stream_trade -> fetch_signals, and the candidate-retry path,
-score_recovered_trade). See docs/superpowers/specs/2026-09-01-whale-scoring-
-connection-reuse-design.md for the full design.
+kalshi_trade_tape.py's per-trade scoring work on the WS-message path
+(_process_stream_trade -> fetch_signals). See docs/superpowers/specs/
+2026-09-01-whale-scoring-connection-reuse-design.md for the original
+design.
+
+The candidate-retry path (score_recovered_trade) used to share this pool
+and no longer does - it has its own services/whalewatchers/
+_candidate_retry_pool.py as of issue #563 (docs/superpowers/specs/
+2026-09-03-scoring-pool-candidate-retry-isolation-design.md). Note that
+cached_read_connection() below is still called by BOTH paths' threads:
+signal_log.py/market_history.py/market_analyst_agent/_db.py call it by
+name, and it keys on threading.local(), so each pool's threads simply get
+their own cache slots. That is deliberate, not leftover coupling.
 
 Deliberately its own pool, not services.tick_executor's shared one (also
 used by candidate_ledger.claim()/record_decision(), which gate every whale
 signal) and not Python's default asyncio.to_thread executor (shared
 process-wide with unrelated work, unbounded up to 20 threads on this
-container). 4 workers: this call path normally needs ~1 concurrently (the
-WS consumer drains one queue item at a time) - headroom for legitimate
-brief overlap plus the candidate-retry path, not a load-bearing capacity
-guess. If issue #145/#150 (a timed-out handler's OS thread isn't actually
+container). 4 workers: since PR #555's bounded-concurrency dispatch, the
+WS consumer can have up to _TRADE_DISPATCH_CONCURRENCY (4, services/
+kalshi/websocket.py) trades in flight at once, each reaching fetch_signals
+-> run() here - so 4 matches that path's own structural ceiling rather
+than being headroom over a single serial caller, which is what it was
+sized against when written (that earlier "~1 concurrently, the WS consumer
+drains one queue item at a time" rationale predated PR #555 and was stale
+by the time issue #563 was filed). If issue #145/#150 (a timed-out
+handler's OS thread isn't actually
 freed - separate, already-tracked, not fixed here) keeps happening, all 4
 workers eventually get stuck and further scoring work queues (a visible
 backlog/latency symptom) rather than spawning unbounded new OS threads and
