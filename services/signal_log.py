@@ -28,7 +28,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import title_cache
+from services import history_push, title_cache
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "signal_log.db"
 
@@ -375,6 +375,12 @@ def mark_resolved(signal_id: int, correct: bool):
             "UPDATE signals SET resolved = 1, correct = ?, resolved_at = ? WHERE id = ?",
             (1 if correct else 0, time.time(), signal_id),
         )
+    # History-push hook (design §4.3/§2 - loadBacktestSweeps/
+    # loadCalibrationReport are signal-resolution-driven, not trade-close-
+    # driven). This module's other resolver (resolve_from_market_results
+    # below) fires its own call, since it does its own UPDATE rather than
+    # calling this function.
+    history_push.mark_history_changed()
 
 
 def resolve_from_market_results(ticker: str, result: str) -> int:
@@ -407,6 +413,10 @@ def resolve_from_market_results(ticker: str, result: str) -> int:
             "UPDATE signals SET resolved = 1, correct = ?, resolved_at = ? WHERE id = ? AND resolved = 0",
             [(1 if result == side else 0, now, row_id) for row_id, side in rows],
         )
+    # History-push hook, only when rows were actually resolved (the `if not
+    # rows: return 0` guard above already makes this branch dead when
+    # nothing changed) - see mark_resolved's own comment above.
+    history_push.mark_history_changed()
     return len(rows)
 
 

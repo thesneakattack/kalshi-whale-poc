@@ -147,6 +147,7 @@ from services.state_view import (  # noqa: E402
     _scoped_event_titles, _scoped_live_game_state, _scoped_market_titles, _series_meta_map,
 )
 from services.ws_manager import ws_manager  # noqa: E402
+from services import history_push  # noqa: E402
 
 
 _last_capture_prune_at = 0.0
@@ -1406,6 +1407,14 @@ async def _index_feed_backfill_loop(gateway, *, interval_sec: float = 10.0) -> N
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Captured once, before anything that could call mark_history_changed()
+    # off this thread starts running (docs/superpowers/specs/2026-09-03-
+    # history-event-driven-design.md §4.3) - candidate_ledger.claim()/
+    # record_decision() run on a tick_executor worker thread and need this
+    # reference to dispatch their history_updated broadcast via
+    # asyncio.run_coroutine_threadsafe rather than asyncio.create_task,
+    # which would raise RuntimeError from that thread.
+    history_push.set_main_loop(asyncio.get_running_loop())
     # restart=True on these three: they're the long-running loops the app
     # depends on for its entire purpose (ticking, whale trades, index
     # data) - if one dies from an unhandled exception it must come back,

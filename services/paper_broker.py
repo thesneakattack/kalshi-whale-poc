@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from services import db, kalshi_fees
+from services import db, history_push, kalshi_fees
 from services.risk_manager import RiskManager
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_broker.db"
@@ -445,6 +445,12 @@ class PaperBroker:
                 (trade.id, trade.ticker, trade.side, trade.size, trade.price, trade.reason, trade.timestamp,
                  config_fingerprint, fee, signal_seen_at),
             )
+        # History-push hook (design §4.3/§2 - loadTradingHistory/
+        # loadAdvisory/loadRegimeSegmentation are all trade close/open-
+        # driven). Placed after the two early `return None` guards above
+        # (halted / exposure-limit rejection), which are no-ops, not real
+        # writes.
+        history_push.mark_history_changed()
         return trade
 
     def place_limit_order(
@@ -665,6 +671,10 @@ class PaperBroker:
                  trade.netting_improvement_usd, trade.netting_bar_usd, trade.netting_vol_ratio,
                  trade.netting_exit_fee_usd),
             )
+        # History-push hook - see open_position's own comment above. Placed
+        # after the `if not pos: return None` no-op guard at the top of
+        # this function.
+        history_push.mark_history_changed()
         return trade
 
     def close_all_positions(self, latest_prices: dict[str, float], reason: str) -> list[Trade]:
