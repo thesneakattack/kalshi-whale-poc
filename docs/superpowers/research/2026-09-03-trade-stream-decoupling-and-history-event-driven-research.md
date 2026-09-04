@@ -10,11 +10,15 @@ the *current* code (not the second-pass audit's snapshot from a day ago), and wh
 Tier 3 framing (items 25/26) gets right or wrong now that today's fixes have changed the
 baseline.
 
-**Everything below is a direct read of current source at this branch's base (`origin/main`,
-`git log -1` confirms `46a0baa` at research start), not a recollection of the cited docs' own
+**Everything below is a direct read of current source, not a recollection of the cited docs' own
 claims — every fact is re-verified against the file it's about, per CLAUDE.md's "never guess"
 HARD RULE and the Kalshi-integration-authority rule's spirit applied to internal architecture
-claims the same way. No code, config, or live-app changes were made.**
+claims the same way. No code, config, or live-app changes were made. Baseline precision, per
+adversarial review: this branch's actual merge-base with `origin/main` is `3d8c401` (PR #553's
+merge); `46a0baa` (this document's own research-start reference point, cited in the Appendix) is
+an ancestor of that, not the branch's true base — see the Appendix footnote on what landed in
+that gap and whether it changes any conclusion here (it doesn't, beyond what's already folded
+into §1.1 as the PR #558 correction).**
 
 ## 0. What this document builds on, and does not re-derive
 
@@ -60,21 +64,36 @@ by it.
 
 **This means the specific harm the second-pass audit's Tier 3 framing attributed to the shared-
 consumer shape — a stalled ticker path delaying `check_exits`/price freshness because a trade
-resolve is blocking the same consumer — is now mitigated without a queue split.** The physical
-sharing (one `market_queue`, one consumer task) is unchanged; what mattered functionally (the
-consumer being unable to *proceed* past a slow trade) is fixed. This is a materially different
-starting point than either predecessor document had: the case for splitting the trade/ticker
-queues specifically *to fix blocking* is now weaker, because the blocking is already gone by a
-cheaper mechanism (bounded concurrent dispatch) that didn't require a queue split at all.
+resolve is blocking the same consumer — is substantially mitigated without a queue split, up to
+the dispatch bound.** The physical sharing (one `market_queue`, one consumer task) is unchanged.
+This is a materially different starting point than either predecessor document had: the case for
+splitting the trade/ticker queues specifically *to fix blocking* is weaker than it was, because
+most of the blocking is now gone by a cheaper mechanism (bounded concurrent dispatch) that didn't
+require a queue split — but see the correction immediately below before reading this as "fixed."
 
-**What is not fixed by this**: same-address-space CPU/scheduling sharing. The trade dispatch
-tasks, the ticker consumer loop, and (per §1.2/§1.3 below) the diagnostics-route pool sharing
-all still run on the same single event loop in the same single process. Removing an `await`
-that blocked *this specific caller* is not the same as removing contention for the loop's own
-scheduling turns — a burst of 4 concurrently-dispatched trade tasks doing real CPU work (JSON
-parsing, scoring) still competes for the same loop's attention as the ticker consumer's own
-iterations, just without the strict serialization that made it a hard block. This is a real,
-if smaller, residual coupling — not eliminated, downgraded from "blocking" to "contention."
+**Correction from adversarial review — the blocking mechanism is raised, not eliminated.**
+`_dispatch_trade_concurrent`'s own docstring (`websocket.py:1319-1331`) states this plainly and
+was under-weighted in the original draft: `await self._trade_dispatch_semaphore.acquire()` runs
+*before* `create_task`, and is "deliberate: when all 4 slots are already in flight, this await
+is what makes a 5th trade item queue BEHIND the bound." That means once 4 trades are
+concurrently mid-resolve, a 5th trade dequeued by `_consume_market_from` blocks the consumer on
+that `acquire()` exactly as inline `await`ing did before PR #555 — the consumer cannot reach the
+next queue item (trade or ticker) until a slot frees. **PR #555 raised the burst size needed to
+reproduce the original blocking from 1 to 4-plus-in-flight; it did not remove the mechanism.**
+Whether a ≥5-deep concurrent-resolve burst happens often enough to matter in practice is
+genuinely unmeasured — neither this document nor the available telemetry establishes a rate —
+and PR #558 (merged the same night, see the Appendix footnote) documents that "a burst of
+correlated whale signals can stack two+ long-tail draws back to back" as a real, already-observed
+pattern in this exact code path, which makes a ≥5-deep burst plausible, not purely theoretical.
+State this as "the mechanism is real and unmeasured," not "definitely frequent" or "negligible."
+
+**What is not fixed by this, independent of the correction above**: same-address-space CPU/
+scheduling sharing. The trade dispatch tasks, the ticker consumer loop, and (per §1.2/§1.3
+below) the diagnostics-route pool sharing all still run on the same single event loop in the
+same single process. Even below the dispatch bound, a burst of concurrently-dispatched trade
+tasks doing real CPU work still competes for the same loop's attention as the ticker consumer's
+own iterations, just without the strict serialization that made it a hard block. This is a real,
+smaller-than-before but not eliminated, residual coupling.
 
 ### 1.2 `_scoring_pool` sharing between WS-trade-scoring and candidate-retry: NOT touched by PR #555, still fully live
 
@@ -103,7 +122,7 @@ disputed fix — flagged here rather than silently closed, since closing an issu
 document's job and doing it as a side effect of research would bury the correction where a
 reader of #546 wouldn't see the reasoning.
 
-### 1.3 `tick_executor` sharing between trading-critical work and diagnostics routes: confirmed still live, unchanged
+### 1.3 `tick_executor` sharing between trading-critical work and diagnostics routes: already tracked, not a fresh finding
 
 The first audit's §4.2 finding (`services/analytics/routes.py` and
 `services/whale_calibration/routes.py` calling `tick_executor.run(...)`, sharing the pool with
@@ -139,6 +158,31 @@ This is a materially different severity picture than the first audit had when it
 48.6s/13.6s/4.5s wall times against an *uncached* route — those specific numbers no longer
 reflect steady-state cost, only worst-case-on-a-miss cost.
 
+**Correction from adversarial review — this is not a new observation; it is a known, already-
+scoped, deliberately-deferred gap, and the original draft missed the record of that decision.**
+`services/quality/routes.py:130-142`'s own header comment (part of the same-night fix that
+deleted `_diagnostics_pool.py`) states the full history directly: PR #409 established "nothing
+non-critical shares `services.tick_executor`'s 2-worker pool with trading-critical work" and
+fixed two confirmed violations — `run_offline()` had, at the time, "permanently occupy[ied] both
+of tick_executor's 2 workers and starve[d] the trading-critical writes (`capture_writer`,
+`candidate_log`) that pool exists to protect - confirmed live 2026-09-01." The same comment names
+these exact two routes as "structurally identical siblings... NOT addressed here... tracked
+separately, **issue #410**, pending their own measurement before any fix (their query cost
+hasn't been confirmed comparable to `run_offline()`'s)." Issue #410 (`gh issue view 410`,
+confirmed `state: OPEN`) states the reasoning explicitly: per CLAUDE.md's data-plane HARD RULE
+("identify the measured bottleneck and its mechanism first"), these two routes' query cost was
+never measured, so fixing the sharing pre-emptively (as `run_offline()`'s fix did, once measured)
+would itself violate the HARD RULE this document's own §5 cites.
+
+**This changes what §1.3 is**: not a fresh discovery for the design stage to act on, but
+confirmation that a already-filed, already-reasoned-about issue (#410) is still open and its
+own stated precondition (query-cost measurement) is still unmet — the design stage's actual
+job here is to do that measurement, not to re-decide whether the sharing is a problem (issue
+#410 already made that case) or re-discover that it exists (this document, and #410 before it,
+both already did). The Task 6b caching change (above) is new since #410 was filed and is
+relevant context for whoever does that measurement — it changes the *frequency* of contention
+windows, not whether the underlying query cost (once one occurs) is a problem.
+
 ### 1.4 The two-process split (item 25/#17): zero progress, confirmed
 
 `main.py:1507`'s `app = FastAPI(..., lifespan=lifespan)` and
@@ -171,22 +215,30 @@ but because the audit's own sequencing rationale for deferring it no longer appl
 `frontend/src/js/trading-gate-and-connectivity.js:87`: `refreshIntervalMs = 5000` — still a
 flat 5-second timer driving every view's core data (markets, latest_prices, account, broker,
 signal/decision feed snapshot, trade tape, portfolio). `services/ws_manager.py`'s
-`WebSocketManager.broadcast()` (unchanged since its 2026-08-21 extraction) is called from
-exactly one place with live traffic: `services/whale_stream/decision_bridge.py:19-24`'s
-`_broadcast_signal_decision`, pushing exactly two message `type`s the frontend handles
-(`frontend/src/js/polling-and-websocket.js:174,186`): `signal_decision` and
-`trade_stream_status`. Everything else the dashboard shows — prices, trade tape, positions,
-account balance, portfolio — is still poll-only. Item 26 (push more state over the WS) is
-untouched; the first audit's own "structurally correct end state" recommendation stands exactly
-as written.
+`WebSocketManager.broadcast()` (unchanged since its 2026-08-21 extraction) pushes exactly two
+message `type`s the frontend handles (`frontend/src/js/polling-and-websocket.js:174,186`):
+`signal_decision` and `trade_stream_status`. Everything else the dashboard shows — prices, trade
+tape, positions, account balance, portfolio — is still poll-only. Item 26 (push more state over
+the WS) is untouched; the first audit's own "structurally correct end state" recommendation
+stands exactly as written.
 
-**One reusable precedent already in production**, worth carrying into the design stage:
-`_broadcast_signal_decision` is called via `asyncio.create_task(...)` at all four of its call
-sites (`decision_bridge.py:143,160,174,191`), never awaited inline on the decision path — a
-slow/stalled dashboard WS client cannot block a trade decision today. Any expansion of what gets
-pushed should keep this shape. It does not, by itself, solve the same-event-loop contention
-named in §1.1's last paragraph — `create_task` avoids blocking the *specific caller*, not
-scheduling contention with everything else on the same loop.
+**Correction from adversarial review**: the original draft attributed both message types to one
+call site, `_broadcast_signal_decision`. There are actually **two** live call sites for
+`ws_manager.broadcast()`: `services/whale_stream/decision_bridge.py:19-24`'s
+`_broadcast_signal_decision` (emits `signal_decision`) and
+`services/whale_stream/whale_stream_handlers.py:664-677`'s `_handle_trade_stream_status` (emits
+`trade_stream_status`) — a second, separate producer the original evidence log never listed as
+read. The "two message types" count was right; "one function, one call site" was not.
+
+**One reusable precedent already in production**, worth carrying into the design stage: both
+producers dispatch via `asyncio.create_task(...)` rather than awaiting the broadcast inline —
+`_broadcast_signal_decision` at all four of its own call sites
+(`decision_bridge.py:143,160,174,191`), `_handle_trade_stream_status` at its one
+(`whale_stream_handlers.py:674`) — so a slow/stalled dashboard WS client cannot block a trade
+decision or a stream-status update today. Any expansion of what gets pushed should keep this
+shape. It does not, by itself, solve the same-event-loop contention named in §1.1's last
+paragraph — `create_task` avoids blocking the *specific caller*, not scheduling contention with
+everything else on the same loop.
 
 ## 2. What "History polls on-demand, not on a timer" would require mechanically
 
@@ -277,21 +329,26 @@ Checked against the first audit's own route list (§4.4: Process B = `/api/quali
 
 **Needs updating:**
 - **The urgency argument tied to trade/ticker queue contention is weaker than either
-  predecessor document assumed**, because PR #555 fixed the actual harm (blocking) without a
-  queue split, landing after both documents were written. The split's remaining justification
-  is narrower and more specific than "decouple trade-critical from history broadly" — it is
-  concretely "stop `/api/candidate-log/summary` and `/api/confidence-calibration/report` from
-  contending with `candidate_ledger.claim()`/`record_decision()` for `tick_executor`'s 2
-  worker threads," which is real and current (§1.3) but a narrower claim than the framing
-  implies.
+  predecessor document assumed, but "fixed" overstates it.** PR #555 raised the burst size
+  needed to reproduce the original blocking from 1 concurrent trade to 4-plus-in-flight (§1.1's
+  correction) — a real, substantial improvement, not a full fix, and landing after both
+  predecessor documents were written either way. The split's remaining justification for the
+  *tick_executor* axis specifically is narrower and more concrete than "decouple trade-critical
+  from history broadly": "stop `/api/candidate-log/summary` and `/api/confidence-calibration/report`
+  from contending with `candidate_ledger.claim()`/`record_decision()` for `tick_executor`'s 2
+  worker threads" — which §1.3's correction shows is not a new claim at all, but a restatement
+  of an already-filed, already-reasoned-about issue (#410) whose own stated precondition (query-
+  cost measurement) is still unmet. The design stage's job on this axis is to do that
+  measurement, not to re-discover or re-argue the coupling.
 - **Item 25 does not cover everything David's priority names.** The priority says "not sharing
   consumers, thread pools, or queues" — the process split addresses the `tick_executor`/
-  diagnostic-route thread-pool sharing (§1.3) but not the `_scoring_pool`/candidate-retry
-  sharing (§1.2), which needs a separate, smaller fix. Treating "do item 25" as satisfying the
-  full priority would leave §1.2 unaddressed and undocumented as still-open.
+  diagnostic-route thread-pool sharing (§1.3, pending #410's measurement) but not the
+  `_scoring_pool`/candidate-retry sharing (§1.2), which needs a separate, smaller fix with no
+  existing tracked issue of its own (unlike §1.3). Treating "do item 25" as satisfying the full
+  priority would leave §1.2 unaddressed and undocumented as still-open.
 - **Items 25 and 26 are more entangled with each other, and with History's polling problem,
-  than the audit's numbering suggests.** §2.4 argues History-on-demand and "push more state"
-  are the same mechanism; neither depends on the process split (§2, last paragraph) — so
+  than the audit's numbering suggests.** §2's point 4 argues History-on-demand and "push more
+  state" are the same mechanism; neither depends on the process split (§2, last paragraph) — so
   there's no forced ordering between 25 and 26/History-on-demand. They can proceed in either
   order or in parallel, which the original Tier 3 list (a flat ordered list, 25 before 26)
   doesn't make explicit.
@@ -316,12 +373,30 @@ Checked against the first audit's own route list (§4.4: Process B = `/api/quali
 
 ## Appendix — evidence log
 
-- `git log -1` at research start (`46a0baa`, this branch's base at `origin/main`) — the baseline
-  every claim below is checked against.
+- `git log -1` at research start (`46a0baa`) — this document's own working reference point, but
+  **not** the branch's true merge-base with `origin/main`, which `git merge-base HEAD origin/main`
+  gives as `3d8c401` (PR #553's merge, ~20 minutes later) — caught on adversarial review. What
+  landed between `46a0baa` and `3d8c401` (PRs #552, #556, #555, #553) was individually checked:
+  only PR #555 is load-bearing here (§1.1/§1.2, already the document's central subject), and PR
+  #558 — merged `2026-09-04T04:02:50Z` (23:02:50 CDT), 22 seconds before this document's own
+  first commit (`ce5c7fd`, `2026-09-03 23:03:12 -0500`) — touches the same file as §1.1
+  (`services/whale_stream/whale_stream_handlers.py`, throttling the trade-path `check_exits`
+  call) but self-scopes in its own commit message as orthogonal to the #541/#542/#555 mechanism
+  this document covers. Its relevance here is narrower: its commit message's "a burst of
+  correlated whale signals can stack two+ long-tail draws back to back" observation is cited in
+  §1.1's correction as evidence the ≥5-deep-burst scenario is plausible, not purely theoretical
+  — that is the one place PR #558 is load-bearing, and it's now cited there explicitly.
 - `gh pr view 555 --json title,state,body,mergedAt` → Option B merged `2026-09-04T03:46:30Z`,
   full body read for scope/review-status claims (§0, §1.1, §1.2).
 - `gh issue view 546 --json title,state,body` → confirmed `state: OPEN` despite PR #555's fix
   (§1.2's tracking-hygiene note).
+- `services/quality/routes.py:130-142` (header comment, part of the same-night fix deleting
+  `_diagnostics_pool.py`) and `gh issue view 410 --json title,state,body` → the PR #409/issue
+  #410 prior art §1.3 was originally missing entirely; caught on adversarial review, not by this
+  document's own (grep-only, and therefore structurally blind to sibling-file context) citation
+  method.
+- `grep -rn "ws_manager\.broadcast"` across `services/` → two call sites, not one
+  (`decision_bridge.py:20`, `whale_stream_handlers.py:674`) — §1.6's corrected attribution.
 - Direct `Read`/`grep -n` of: `services/kalshi/websocket.py` (`_consume_market_from`,
   `_consume_from`, `_consume_one`, `_dispatch_trade_concurrent`, `_run_trade_item`,
   `_TickerDispatchGate`, `_two_consumer_mode`, `_ingest_raw`) — §1.1.
