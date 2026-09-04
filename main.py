@@ -1301,6 +1301,7 @@ async def trading_loop():
                 state["latest_prices"], state["signal_feed"], cfg, market_results, opened_since=tick_now,
                 category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
                 tick_cache=tick_cache, latest_prices_updated_at=state["latest_prices_updated_at"],
+                latest_asks=state["latest_asks"],
             ):
                 await _handle_close_decision(close_decision)
 

@@ -1087,7 +1087,13 @@ def test_check_exits_no_side_position_uses_correct_direction(tmp_path, monkeypat
     close_fee = taker_fee(100, 0.1)
     expected_pnl_pct = (30 - entry_fee - close_fee) / 60
     assert expected_pnl_pct >= 0.4
-    decisions = strategy.check_exits({"TICK-A": 0.1}, [], _cfg(take_profit_pct=0.4))
+    # latest_asks added 2026-09-04: a NO position is sold into the NO bid
+    # (1 - yes_ask), so an exit now needs an ask to price against at all.
+    # Quoted at the same 0.1 the bid is, so this test's own arithmetic above
+    # is untouched - it is still asserting NO-side P&L direction, nothing else.
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.1}, [], _cfg(take_profit_pct=0.4), latest_asks={"TICK-A": 0.1},
+    )
     assert len(decisions) == 1
     assert "TICK-A" not in broker.positions
 
@@ -2014,3 +2020,107 @@ def test_callers_that_pass_no_stamps_get_the_pre_task35_behavior(tmp_path, monke
     decisions = strategy.check_exits({"TICK-A": 0.5}, [], _cfg(stop_loss_pct=0.3, price_staleness_corroborate_sec=120.0))
 
     assert decisions == []  # no stamps supplied: no staleness knowledge, deviation-only, additive guarantee
+
+
+# --- Exit quotes must come from the side of the book the position is
+# actually sold into (2026-09-04). `latest_prices` holds yes_bid; a NO
+# position is sold by hitting the NO bid, which is (1 - yes_ask), NOT
+# (1 - yes_bid) - that is the NO *ask*, the price to BUY no.
+# docs/kalshi/get-market-orderbook.md: "a bid for yes at price X is
+# equivalent to an ask for no at price (100-X)".
+
+def _no_corroboration(monkeypatch):
+    """Isolate these tests from the 2026-08-17 REST corroboration branch."""
+    monkeypatch.setattr(mh_module, "recent_price", lambda *a, **k: None)
+
+
+def test_check_exits_will_not_sell_a_no_position_into_an_empty_yes_book(tmp_path, monkeypatch):
+    # The live bug: yes_bid 0.00 made a NO position worth (1 - 0.00) = $1.00
+    # per contract, as if the market had already settled NO, and that
+    # phantom mark maxed the auto-exit pnl factor so the exit fired.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.0}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 1.0},
+    )
+
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before)
+
+
+def test_check_exits_sells_a_no_position_at_the_no_bid_not_the_no_ask(tmp_path, monkeypatch):
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.20}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 0.30},
+    )
+
+    assert len(decisions) == 1
+    # NO bid = 1 - yes_ask = 0.70/contract. The bug paid 1 - yes_bid = 0.80.
+    expected = bankroll_before + 100 * 0.70 - taker_fee(100, 0.30, ticker="TICK-A")
+    assert broker.bankroll == pytest.approx(expected, abs=0.01)
+
+
+def test_check_exits_still_sells_a_yes_position_at_the_yes_bid(tmp_path, monkeypatch):
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.20}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 0.30},
+    )
+
+    assert len(decisions) == 1
+    # Selling YES hits the YES bid - unchanged behavior, the ask is ignored.
+    expected = bankroll_before + 100 * 0.20 - taker_fee(100, 0.20, ticker="TICK-A")
+    assert broker.bankroll == pytest.approx(expected, abs=0.01)
+
+
+def test_check_exits_will_not_sell_a_no_position_with_no_ask_data_at_all(tmp_path, monkeypatch):
+    # Fail CLOSED, deliberately unlike this module's usual fail-open rule for
+    # missing data: with no ask there is no NO bid to sell into, and guessing
+    # one is exactly how the phantom $1.00 payouts were manufactured. The
+    # position rides to settlement, which is its true outcome.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.20}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+    )
+
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before)
+
+
+def test_check_exits_still_settles_a_no_position_on_an_empty_book(tmp_path, monkeypatch):
+    # The guard above must never block a SETTLEMENT close: once Kalshi has
+    # published market.result the terminal $1/$0 payout is real, not a quote,
+    # and an empty book at that moment is expected rather than suspicious.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.0}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        market_results={"TICK-A": "no"}, latest_asks={"TICK-A": 1.0},
+    )
+
+    assert len(decisions) == 1
+    assert "TICK-A" not in broker.positions
+    # Held side won: $1.00/contract, no fee at a terminal price.
+    assert broker.bankroll == pytest.approx(bankroll_before + 100.0, abs=0.01)
