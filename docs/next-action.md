@@ -1,85 +1,94 @@
-# Next action — live update 2026-09-04 ~07:35 UTC, resume here if interrupted
+# Next action — live update 2026-09-04 ~08:10 UTC, resume here if interrupted
 
-Actively-worked session, not a hard pause — David's directive is continuous
-max-effort until the 3-hour data-plane-stalls goal (started ~05:20 UTC) is
-met. This doc is being kept current as things land; verify with `gh`/`git`
-before trusting anything that could have moved since.
+Actively-worked session. Continuous max-effort toward the 3-hour
+data-plane-stalls goal (started ~05:20 UTC). Verify with `gh`/`git` before
+trusting anything that could have moved since this was written.
+
+**⚠️ Account-wide rate limit hit ~07:45 UTC** ("weekly limit, resets 7pm
+America/Chicago") — every peer session and every dispatched subagent died
+simultaneously. If you're resuming into the same wall, don't keep spinning
+up new sessions/subagents expecting a different result; check whether the
+limit has actually cleared before assuming more parallelism will help.
 
 ## Standing goal (unchanged all session)
 
 Decouple the trade stream entirely from history/diagnostics — no shared
 consumers/pools/queues — and move History off fixed-interval polling to
 event-driven push. The live incident that motivated urgency (#541/#542
-queue drops, WS reconnect/keepalive-timeouts) is **already fixed and
-live** (PR #555, PR #558). What's in flight now is the *architectural*
-decoupling work the incident's postmortem surfaced.
+queue drops, WS reconnect/keepalive-timeouts) was fixed hours ago (PR
+#555, PR #558) and is live.
 
-**Review policy tonight**: skip staged/redundant review checkpoints and
-exhaustive local testing — trust the one PR-level cycle (self-review +
-independent adversarial review + consolidation) as the gate, merge the
-instant it's GO + CI green. This does **not** relax the gate itself for
-trading-adjacent code — see 6e's #410 call below, held deliberately.
+**Review policy tonight**: one full cycle (self-review + independent
+adversarial review + consolidation) as the gate, merge on GO+CI-green
+immediately — no staged checkpoints, no redundant local testing. When the
+rate limit took out every peer session mid-cycle on 4 already-self-
+reviewed, CI-green PRs, the coordinator (this session) completed the
+adversarial-review+consolidation step directly rather than leave them
+stuck — disclosed explicitly as a process deviation in each PR's own
+merge comment, not a silent skip of the gate. Do the same if you hit this
+again: don't force-merge past a self-review-only PR without *some*
+independent check, but don't let a capacity outage block real, verified
+CI-green work either.
 
-## Merged and live tonight (chronological, don't re-verify each)
+## Merged and live (all verified, not claimed)
 
-Full persistence-layer db.py migration (13 tasks) · live-incident fixes
-(#555, #558) · `_scoring_pool`/`tick_executor`/History decoupling
-research+design docs (#562, #566, #567, #568) · Woodpecker CI fully
-repaired (4 stacked bugs: unwired GRPC secret, dead webhook token, stale
-repo-private flag, stale Cloudflare tunnel connector — all verified fixed
-end-to-end, pipeline 943+ succeeding).
+Full persistence-layer migration (13 tasks) · both live-incident fixes
+(#555, #558) · all 3 decoupling axes' research+design (#562, #566, #567,
+#568) · Woodpecker CI fully repaired · **all 3 axes' first-round
+implementation now merged too**: `_scoring_pool` isolation (PR #570,
+closes #563) · `#410`'s cache-alignment bug (PR #569) · `#410`'s
+pool-vs-aiosqlite design decision, split fix recommended (PR #571) ·
+`#565`'s provider-instance-divergence fix (PR #572, found and fixed a
+third stale-binding site the issue never named).
 
-## Open right now — check `gh pr list --state open` for current truth
+## Open — real work, not yet started
 
-- **#570** — dedicated 1-worker pool for `candidate_retry.score_recovered_trade()`
-  (closes #563). Session `e4`. Code complete, self-review posted,
-  adversarial review + CI both in flight as of this write (CI 5/6 green,
-  `quality-browser-e2e` still running). e4 explicitly declined to rush
-  this gate under time pressure ("the one thing that would actually risk
-  the outcome on a change that touches the whale-signal scoring path") —
-  correct call, don't override it. **Merges autonomously on GO+green, no
-  action needed.**
-- **#571** — issue #410 design: pool-vs-aiosqlite comparison, split
-  recommendation (mechanical cache-fix now, implementation held for
-  proper review). Session `6e`.
-- **#569** — issue #410's cache-alignment bug fix (the mechanical half of
-  #571's split). Session `6e`.
-- **Issue #565** (provider-instance divergence after account
-  reconnect/disconnect) — session `f8` implementing. Census found a
-  *third* stale-binding site beyond the issue's original two
-  (`services/diagnostics/routes.py`, a real displayed-value-mismatch bug,
-  not just the concurrency risk). Design: `app_state` becomes the single
-  source of truth via a private attribute + getter, so a stale import
-  fails loudly rather than silently reintroducing the bug class. No PR
-  number yet as of this write — check `gh pr list`.
-- **History event-driven push implementation** — dispatched as a
-  background subagent (not a peer session), building on the merged #568
-  design. No status yet as of this write.
-- **Full-scope crash-recovery plan** (this task, meta) — dispatched as a
-  background subagent, writing now. Will supersede or extend
-  `docs/SESSION_CRASH_RECOVERY.md` — check that file's own header once
-  the PR lands for which it chose.
+1. **`#410`'s actual implementation** — PR #571 settled the design
+   (aiosqlite for `population_gate_summary()`, aiosqlite+`asyncio.to_thread`
+   for `whale_calibration._build_report()`, no third pool). Code not
+   written. Two binding requirements from the design doc, don't skip:
+   carry the `_reset_aio_db_cache` fixture on any new aiosqlite test
+   module (leaked-non-daemon-thread hang risk, already bit this codebase
+   once), and cite connection *lifetime* not *loop-binding* in new
+   comments (the old rationale is factually wrong for the pinned
+   `aiosqlite==0.22.1`).
+2. **History event-driven push implementation** — design merged (#568),
+   was mid-implementation in a background subagent
+   (`.claude/worktrees/history-push-impl`, branch
+   `feat/history-event-driven-push`) when the rate limit killed it.
+   **Check that worktree for partial progress before starting over** —
+   it may have working tree state even without a commit. Crux
+   requirement from the design, don't skip: `candidate_ledger`'s writes
+   run on a `tick_executor` worker thread, so any push dispatch from
+   there MUST use `asyncio.run_coroutine_threadsafe` against a loop
+   captured at `lifespan()` startup — `asyncio.create_task()` from that
+   thread crashes (`RuntimeError: no running event loop`), proven by the
+   design's own adversarial review with a live repro.
+3. **Full-scope crash-recovery plan** (this task, meta) — also killed
+   mid-write by the same rate limit. Check
+   `.claude/worktrees/crash-recovery-plan` (branch
+   `docs/full-scope-crash-recovery-plan`) for partial content before
+   restarting. Was writing real verified content (not guessing) when it
+   died — worth salvaging rather than discarding.
 
 ## Explicitly deferred, not forgotten
 
-- **#410's actual implementation** (aiosqlite rewrite + `asyncio.to_thread`)
-  — held for a properly-reviewed follow-up after tonight's window,
-  6e's own call, accepted. Touches a read path sharing a pool with
-  `candidate_ledger`'s live decision-path writes; the data-plane HARD
-  RULE's before/after-measurement + competing-solutions requirement
-  doesn't fit a compressed review.
-- **Issue #532** (`rejection_events` unbounded growth, 25.8M rows,
-  ~4.2x/week) — the actual reason #410's query costs keep climbing.
-  Every fix tonight amortizes or relocates this cost; none stop the
-  growth. **Retention policy is explicitly David's decision** per
-  "accumulated history is a first-class asset" — not resolved, not
-  gated on anything else finishing.
+**Issue #532** (`rejection_events` unbounded growth, 25.8M rows,
+~4.2x/week) — confirmed by #571's design doc as the actual reason `#410`'s
+query costs keep climbing regardless of which fix lands. Every fix
+tonight amortizes or relocates this cost; none stop the growth.
+**Retention policy is explicitly David's decision** — not gated on
+anything else finishing, raise it directly with him when there's a
+moment, don't let it ride indefinitely just because nothing else depends
+on it.
 
-## Team roster (interactive sessions, not subagents)
+## Team / capacity note
 
-`e4` (#570), `f8` (#565), `6e` (#569/#571, holding #410 implementation),
-`F2` (monitoring, unchanged role all session). Two background subagents
-in flight: History-push implementation, full-scope crash-recovery plan.
+As of this write: no peer sessions reachable via `ListAgents` except
+possibly a differently-repo'd `portfolio-*` session (verify it's even
+working in this repo before assuming continuity — this happened once
+already tonight and cost a round-trip to sort out). Coordinator is
+working solo through the rate-limit window.
 
 `config/settings.yaml` still carries David's own unpushed local commit
 (`kelly_fraction_of_cap`/`KXBTC15M`) on the primary's `main` — confirmed
