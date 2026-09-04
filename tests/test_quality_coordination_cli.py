@@ -69,7 +69,8 @@ def test_main_default_invocation_does_not_call_clean(tmp_path, monkeypatch):
     )
 
     assert exit_code == 0
-    action_count = ce._connect().execute("SELECT COUNT(*) FROM cleanup_actions").fetchone()[0]
+    with ce._connect() as conn:
+        action_count = conn.execute("SELECT COUNT(*) FROM cleanup_actions").fetchone()[0]
     assert action_count == 0
 
 
@@ -85,7 +86,8 @@ def test_main_clean_flag_always_reruns_detection_first(tmp_path, monkeypatch):
     )
 
     assert exit_code == 0
-    run_row = ce._connect().execute("SELECT COUNT(*) FROM coordination_runs").fetchone()[0]
+    with ce._connect() as conn:
+        run_row = conn.execute("SELECT COUNT(*) FROM coordination_runs").fetchone()[0]
     assert run_row == 1  # exactly one fresh detect pass, not a reuse of a prior cached one
 
 

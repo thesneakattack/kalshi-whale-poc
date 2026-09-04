@@ -92,18 +92,18 @@ def test_prune_worktrees_reconciles_bookkeeping_only(tmp_path):
 
 def test_run_cleanup_actions_logs_every_attempt_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    conn = ce._connect()
-    repo = make_synthetic_repo(tmp_path)
-    runner = lambda a: _real_runner(a, repo)
+    with ce._connect() as conn:
+        repo = make_synthetic_repo(tmp_path)
+        runner = lambda a: _real_runner(a, repo)
 
-    run_cleanup_actions(
-        [("branch:feat/x", "worktree_prune")], git_runner=runner, repo_root=repo,
-        sdd_root=tmp_path / "sdd", conn=conn, at=AT, dry_run=True,
-    )
+        run_cleanup_actions(
+            [("branch:feat/x", "worktree_prune")], git_runner=runner, repo_root=repo,
+            sdd_root=tmp_path / "sdd", conn=conn, at=AT, dry_run=True,
+        )
 
-    row = conn.execute("SELECT * FROM cleanup_actions").fetchone()
-    assert row["action_type"] == "worktree_prune"
-    assert bool(row["dry_run"]) is True
+        row = conn.execute("SELECT * FROM cleanup_actions").fetchone()
+        assert row["action_type"] == "worktree_prune"
+        assert bool(row["dry_run"]) is True
 
 
 def test_branch_domain_no_longer_has_an_automated_cleanup_action():
