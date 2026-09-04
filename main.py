@@ -64,7 +64,7 @@ from services.kalshi.account_client import KalshiAccountClient
 from services.kalshi.websocket import KalshiStreamGateway
 from services.confidence_scoring import WhaleSignal
 from services.whale_simulator import WhaleSimulator
-from services.whalewatchers import PROVIDERS, get_active_provider
+from services.whalewatchers import PROVIDERS  # re-instantiation goes through app_state.reload_whale_provider (#565)
 from services.paper_broker import PaperBroker
 from services.risk_manager import RiskManager
 from services.shadow_mode import ShadowTrader
@@ -131,9 +131,9 @@ from services.research import routes as research_routes  # noqa: E402
 from services.storage_health import storage_health  # noqa: E402
 from services.storage_health import routes as storage_health_routes  # noqa: E402
 from services.app_state import (  # noqa: E402
-    account, account_base_url, broker, bump_generation, cfg, index_stream,
-    risk, shadow, state, strategy, trade_stream, whale_provider,
-    whale_sim,
+    account, account_base_url, broker, bump_generation, cfg, get_whale_provider,
+    index_stream, reload_whale_provider, risk, shadow, state, strategy,
+    trade_stream, whale_sim,
 )
 from services.position.account_positions import (  # noqa: E402
     _fetch_account_snapshot, _join_real_position_prices, _real_account_position_tickers,
@@ -803,7 +803,7 @@ async def _candidate_retry_loop() -> None:
         client = KalshiPublicGateway(cfg["kalshi"]["base_url"], cfg["kalshi"]["request_timeout_sec"])
         try:
             await candidate_retry.run_pending(
-                client, whale_provider, _handle_signal, cfg, state.get("market_results") or {},
+                client, get_whale_provider(), _handle_signal, cfg, state.get("market_results") or {},
                 config_performance.fingerprint(cfg), time.time(),
             )
         finally:
@@ -1214,17 +1214,20 @@ async def trading_loop():
                     pass
 
             new_signals = []
+            # Resolved once per tick so this whole block reads one instance
+            # even if a reconnect swaps the provider mid-tick (#565).
+            provider = get_whale_provider()
             if _streaming_trade_tape_enabled():
-                state["whale_source"] = f"{whale_provider.name} (websocket)"
-            elif whale_provider.enabled:
+                state["whale_source"] = f"{provider.name} (websocket)"
+            elif provider.enabled:
                 try:
-                    new_signals = await whale_provider.fetch_signals(
+                    new_signals = await provider.fetch_signals(
                         market_context={
                             "markets": markets, "trade_tape": trade_tape, "cfg": cfg,
                             "client": client,
                         },
                     )
-                    state["whale_source"] = whale_provider.name
+                    state["whale_source"] = provider.name
                 except Exception as e:
                     # Provider hiccuped — fall back to the simulator for this
                     # tick rather than stalling the whole loop.
@@ -1236,7 +1239,7 @@ async def trading_loop():
                         live_status=state["live_status"], live_only=cfg["whale_signal"].get("live_markets_only", False),
                     )
                     new_signals = [sig] if sig else []
-                    state["whale_source"] = f"simulated ({whale_provider.name} fallback)"
+                    state["whale_source"] = f"simulated ({provider.name} fallback)"
             else:
                 whale_sim.size_range = tuple(cfg["whale_signal"]["whale_size_range"])
                 whale_sim.bias = cfg["whale_signal"]["bias"]
@@ -1928,28 +1931,31 @@ async def list_accounts():
         "storage_enabled": accounts_store.enabled(),
         "connected": accounts_store.status(),
         "available_providers": list(PROVIDERS.keys()),
-        "active_provider": whale_provider.name,
+        "active_provider": get_whale_provider().name,
     }
 
 
 @app.post("/api/accounts/connect")
 async def connect_account(body: ConnectAccountBody):
-    global whale_provider
     try:
         accounts_store.save(body.provider, body.credentials)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if body.provider == whale_provider.name:
-        whale_provider = get_active_provider()  # re-instantiate so it picks up the new creds now
+    if body.provider == get_whale_provider().name:
+        # Re-instantiate so it picks up the new creds now. Goes through
+        # app_state so every path sees the swap - a `global whale_provider`
+        # here only ever rebound main's own name, leaving the WS-trade path
+        # and diagnostics on the dead instance with a separate #546 dedupe
+        # ledger (issue #565).
+        reload_whale_provider()
     return {"ok": True}
 
 
 @app.post("/api/accounts/{provider}/disconnect")
 async def disconnect_account(provider: str):
-    global whale_provider
     accounts_store.delete(provider)
-    if provider == whale_provider.name:
-        whale_provider = get_active_provider()
+    if provider == get_whale_provider().name:
+        reload_whale_provider()  # see connect_account - one rebind, every path (#565)
     return {"ok": True}
 
 

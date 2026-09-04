@@ -336,8 +336,20 @@ def test_candidate_retry_runs_from_its_own_supervised_loop_not_the_tick():
     assert "candidate_retry.run_pending(" not in inspect.getsource(main.trading_loop)
     loop_src = inspect.getsource(main._candidate_retry_loop)
     assert "candidate_retry.run_pending(" in loop_src
-    call_args = loop_src[loop_src.index("candidate_retry.run_pending("):]
-    call_args = call_args[:call_args.index(")")]
+    # Balanced-paren scan, not the first ")" - an argument can itself be a call
+    # (get_whale_provider() since #565), which truncated the naive slice and
+    # made this assert on a fragment rather than the real argument list.
+    _open = loop_src.index("(", loop_src.index("candidate_retry.run_pending("))
+    _depth, _end = 0, len(loop_src)
+    for _i in range(_open, len(loop_src)):
+        if loop_src[_i] == "(":
+            _depth += 1
+        elif loop_src[_i] == ")":
+            _depth -= 1
+            if _depth == 0:
+                _end = _i
+                break
+    call_args = loop_src[_open:_end]
     for required_arg in ("client", "whale_provider", "_handle_signal", "cfg"):
         assert required_arg in call_args, f"run_pending call is missing {required_arg!r}: {call_args!r}"
     assert "_streaming_trade_tape_enabled()" in loop_src  # the stream-mode gate moved with the call

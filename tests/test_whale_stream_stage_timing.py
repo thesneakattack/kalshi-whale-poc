@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from services import app_state
 from services import whale_pipeline_perf as wpp
 from services.kalshi import websocket as ws_module
 from services.whale_stream import whale_stream_handlers as wsh
@@ -55,7 +56,9 @@ def _stream_mode(monkeypatch):
     fresh = wpp.WhalePipelinePerf()
     monkeypatch.setattr(wpp, "perf", fresh)
     provider = _StubProvider()
-    monkeypatch.setattr(wsh, "whale_provider", provider)
+    # Patched on app_state, the single source of truth every path resolves
+    # through since #565 - whale_stream_handlers no longer owns a copy.
+    monkeypatch.setattr(app_state, "_whale_provider", provider)
     monkeypatch.setattr(wsh, "_streaming_trade_tape_enabled", lambda: True)
     wsh.state["running"] = True
     wsh.state["trade_tape"] = []
