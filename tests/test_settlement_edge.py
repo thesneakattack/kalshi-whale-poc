@@ -260,3 +260,63 @@ def test_mismatched_observations_are_removable_and_resolved_ones_are_not():
     with sqlite3.connect(se.DB_PATH) as conn:
         remaining = [r[0] for r in conn.execute("SELECT ticker FROM window_observations")]
     assert remaining == ["KXBTC15M-A"]
+
+
+# --- services/db.py migration (Task 11) ------------------------------------
+
+def test_connect_closes_its_connection(monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - mutating it raises AttributeError on this
+    container's Python (sqlite3.Connection.close is read-only), the same
+    defect Task 1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5)."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(se.db.sqlite3, "connect", _tracking_connect)
+    with se._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_both_indexes_with_partial_where_clause(tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "DB_PATH", tmp_path / "se.db")
+    with se._connect() as conn:
+        rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND name IN "
+            "('idx_se_window', 'idx_se_unresolved')"
+        ).fetchall()
+        by_name = {name: sql for name, sql in rows}
+        assert "idx_se_window" in by_name
+        assert "idx_se_unresolved" in by_name
+        assert "WHERE settled_yes IS NULL" in by_name["idx_se_unresolved"]
+
+
+def test_connect_sets_explicit_busy_timeout_pragma():
+    """D3: 5000ms is sqlite3's existing implicit default made explicit,
+    not a new number invented for this module."""
+    with se._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
