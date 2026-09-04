@@ -145,7 +145,9 @@ def test_candidate_retry_loop_runs_run_pending_with_its_own_client_when_work_is_
     assert len(calls) == 2 and len(closed) == 2 and len(constructed) == 2  # one client per run, always closed
     client, provider, handle_signal, cfg, market_results, config_fp, tick_now = calls[0]
     assert isinstance(client, FakeClient)
-    assert provider is main.whale_provider and handle_signal is main._handle_signal  # scored, not claim-and-dropped
+    # main no longer owns a whale_provider name of its own (#565) - it resolves
+    # the one live instance through app_state, same as every other path.
+    assert provider is main.get_whale_provider() and handle_signal is main._handle_signal
     assert market_results == {"K1": "yes"}
     assert config_fp == main.config_performance.fingerprint(cfg)
     assert main.state["candidate_retry_loop"]["last_started_at"] > 0
