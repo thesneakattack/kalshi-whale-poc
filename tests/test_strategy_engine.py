@@ -2124,3 +2124,44 @@ def test_check_exits_still_settles_a_no_position_on_an_empty_book(tmp_path, monk
     assert "TICK-A" not in broker.positions
     # Held side won: $1.00/contract, no fee at a terminal price.
     assert broker.bankroll == pytest.approx(bankroll_before + 100.0, abs=0.01)
+
+
+def test_check_exits_will_not_sell_a_yes_position_with_no_bid(tmp_path, monkeypatch):
+    # Declared behavior CHANGE (2026-09-04 adversarial review, D3): a YES
+    # position at yes_bid 0.00 previously stop-lossed at $0, booking a total
+    # loss on a price nobody was actually bidding. It now holds to
+    # settlement instead, where the real $1/$0 is published.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.0}, [], _cfg(stop_loss_pct=0.1), latest_asks={"TICK-A": 0.02},
+    )
+
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before)
+
+
+def test_check_exits_corroborated_bid_does_not_suppress_a_no_exit_as_crossed(tmp_path, monkeypatch):
+    # 2026-09-04 adversarial review, D2. The corroboration branch may replace
+    # the WS bid with a REST snapshot up to 120s old. Checking a live ask
+    # against that substituted bid reads as "crossed" on a market that has
+    # genuinely rallied, silently disabling every NO-side exit - inverting
+    # the purpose of a branch that exists to ENABLE correct exits.
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "no", size=100, price=0.90, reason="entry")
+    # Raw WS bid 0.20; REST says 0.62, a 0.42 deviation, so it is substituted.
+    monkeypatch.setattr(mh_module, "recent_price", lambda *a, **k: 0.62)
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 0.20}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        latest_asks={"TICK-A": 0.60},
+    )
+
+    # ask 0.60 < corroborated bid 0.62, but >= the raw WS bid it is checked
+    # against, so the sale is priced and goes through at the NO bid (1-0.60).
+    assert len(decisions) == 1
+    assert "TICK-A" not in broker.positions

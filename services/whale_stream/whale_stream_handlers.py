@@ -466,6 +466,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
                 await _handle_fill_decision(fill_decision, now)
             for close_decision in position_netting.review(
                 broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg_now, now=now,
+                latest_asks=state["latest_asks"],
             ):
                 await _handle_close_decision(close_decision)
     bump_generation()

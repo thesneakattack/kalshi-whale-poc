@@ -35,6 +35,7 @@ from services.whale_calibration import confidence_calibration
 from services.market_events import event_lifecycle
 from services.market_events import event_schedule
 from services.config import config_performance
+from services import kalshi_fees
 from services import market_analyst_agent
 from services.market_catalog import market_catalog
 from services import market_history
@@ -1315,6 +1316,7 @@ async def trading_loop():
             # deliberately turned on.
             for close_decision in position_netting.review(
                 broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg,
+                latest_asks=state["latest_asks"],
             ):
                 await _handle_close_decision(close_decision)
             phase_timings["exit_management"] = round(time.time() - _phase_t, 3)
@@ -1863,7 +1865,9 @@ async def flatten_all_positions(body: FlattenAllBody):
             status_code=400,
             detail=f'Confirmation phrase did not match. Type exactly: "{FLATTEN_CONFIRMATION_PHRASE}"',
         )
-    paper_closed = broker.close_all_positions(state["latest_prices"], "manual flatten-all")
+    paper_closed = broker.close_all_positions(
+        state["latest_prices"], "manual flatten-all", latest_asks=state["latest_asks"],
+    )
     real_result = None
     if account.trading_enabled:
         real_result = await execution.flatten_all_real_positions(account)
@@ -1906,7 +1910,19 @@ async def close_positions(body: ClosePositionsBody):
         if ticker not in broker.positions:
             missing.append(ticker)
             continue
-        price = state["latest_prices"].get(ticker, broker.positions[ticker].entry_price)
+        pos = broker.positions[ticker]
+        # Sold into the side of the book this position actually exits on -
+        # yes_bid for YES, yes_ask for NO (the NO bid is 1 - yes_ask). This
+        # endpoint priced both sides off latest_prices (yes_bid) until
+        # 2026-09-04, so a NO close on an empty yes book paid $1.00/contract
+        # as if the market had settled NO. forced_exit_quote, not
+        # sellable_quote: a manual close must not refuse, so an unsellable
+        # book resolves to zero proceeds rather than a fabricated payout.
+        price = kalshi_fees.forced_exit_quote(
+            pos.side,
+            state["latest_prices"].get(ticker, pos.entry_price),
+            state["latest_asks"].get(ticker),
+        )
         trade = broker.close_position(ticker, price, body.reason)
         if trade is not None:
             closed.append(trade)

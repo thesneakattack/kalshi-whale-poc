@@ -365,6 +365,83 @@ def unit_cost(side: str, yes_price: float | None) -> float | None:
     raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
 
 
+def sellable_quote(
+    side: str, yes_bid: float | None, yes_ask: float | None,
+    *, crossed_against: float | None = None,
+) -> float | None:
+    """The price, in YES terms, at which an open `side` position can actually
+    be SOLD right now - or None when it cannot be sold at all.
+
+    Companion to unit_cost() above and deliberately in the same module: that
+    function answers "what does one contract of this side cost at this yes
+    price", this one answers "which yes price is this side's sale actually
+    struck at". Both encode the same one-sided convention, so a caller that
+    gets the first right and the second wrong still books the wrong money.
+
+    Kalshi returns yes bids and no bids only: "a bid for yes at price X is
+    equivalent to an ask for no at price (100-X)" (docs/kalshi/
+    get-market-orderbook.md:7). Reading that in the selling direction, the
+    bid a holder hits is yes_bid for a YES position and (1 - yes_ask) for a
+    NO one. Returning yes_ask for the NO case, rather than the NO bid
+    directly, keeps every caller on this app's one universal convention -
+    every price it carries is a yes price - so unit_cost(side, quote) turns
+    the result into per-contract dollars unchanged.
+
+    The 2026-09-04 incident this exists to prevent: exits priced BOTH sides
+    off state["latest_prices"] (yes_bid), valuing a NO position at
+    (1 - yes_bid) - the NO *ask*, what it costs to BUY no, not what a seller
+    receives. On an empty yes book (yes_bid 0.000) that paid $1.00/contract
+    as if the market had settled NO. 506 auto-exits booked +$174,727 against
+    -$72,361 of real settlements over two days, and the same phantom mark
+    maxed the auto-exit confidence factor so the exit fired.
+
+    Returns None rather than falling back to a guessed quote, in three
+    cases: no ask at all for a NO position, an ask of 1.00 (a NO bid of
+    0.00 - the empty-book shape above), and a book crossed against the bid.
+    A caller that must not refuse (a manual flatten) uses
+    forced_exit_quote() below instead of inventing its own fallback.
+
+    crossed_against: the bid the ask is checked against for a crossed book,
+    when that differs from the `yes_bid` used for pricing. services/exits/
+    exit_engine.py may substitute a REST-corroborated bid (up to 120s old,
+    from market_history) for the WS one before pricing a YES exit; comparing
+    a stale REST bid against a live WS ask is not like-for-like and would
+    refuse legitimate NO exits on a market that has genuinely moved, so that
+    caller passes the raw WS bid here while still pricing off the
+    corroborated one. Defaults to `yes_bid` (same value for both jobs)."""
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
+    if side == "yes":
+        # No bid at all means nobody will buy this YES position.
+        return yes_bid if yes_bid is not None and yes_bid > 0.0 else None
+    if yes_ask is None or yes_ask >= 1.0:
+        return None
+    bid = crossed_against if crossed_against is not None else yes_bid
+    if bid is not None and yes_ask < bid:
+        return None
+    return yes_ask
+
+
+def forced_exit_quote(side: str, yes_bid: float | None, yes_ask: float | None) -> float:
+    """sellable_quote(), but never None - for the manual "get flat now" paths
+    (POST /api/trading/flatten-all, POST /api/trading/close-positions,
+    position netting) where refusing to close is not an option the caller
+    has, unlike an automated exit check that can simply leave the position
+    alone until the next tick.
+
+    An unsellable book resolves to ZERO proceeds - yes_price 0.0 for a YES
+    position, 1.00 for a NO one, both of which unit_cost() turns into $0.00
+    per contract - never to the fabricated $1.00 the old (1 - yes_bid) path
+    produced. "Nobody will buy this" is worth nothing, not everything; the
+    2026-09-04 repair credited exactly $0.00 to the one live position that
+    hit this case (KXETHD-26SEP0418-T2449.99, yes_ask 1.00 with zero resting
+    size, market resolving YES), rather than guess a price."""
+    quote = sellable_quote(side, yes_bid, yes_ask)
+    if quote is not None:
+        return quote
+    return 0.0 if side == "yes" else 1.0
+
+
 def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:
     """The win probability a contract bought at `unit_cost` needs just to
     break even, expressed as a unit cost in dollars per contract (the two

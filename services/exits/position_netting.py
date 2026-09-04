@@ -373,6 +373,7 @@ def describe_groups(
 
 def review(
     broker, market_titles: dict, event_titles: dict, latest_prices: dict, cfg: dict, now: float | None = None,
+    latest_asks: dict | None = None,
 ) -> list[dict]:
     """Runs once per tick, after strategy.check_exits - group-level netting
     analysis on whatever survived per-position exit rules first (clean
@@ -381,7 +382,19 @@ def review(
     (position_netting.enabled, default False) - real automated
     position-closing action needs the same "ships fully built, off by
     default" treatment as auto_exit_enabled/kelly_fraction_of_cap
-    elsewhere in this app."""
+    elsewhere in this app.
+
+    latest_asks (2026-09-04): only the actual SALE below is repriced onto
+    the side of the book the position exits into - yes_bid for a YES
+    position, yes_ask for a NO one, since the NO bid is (1 - yes_ask).
+    Pricing a NO close off latest_prices (yes_bid) paid the NO *ask*, and on
+    an empty yes book that fabricated $1.00/contract. Deliberately NOT
+    threaded into the EV/scenario math in describe_groups above: those use a
+    market's price as its implied probability, where the bid is the app's
+    existing convention everywhere else, and changing that would silently
+    move every netting recommendation rather than just its execution price.
+    forced_exit_quote, not sellable_quote, because a netting decision that
+    has already been made must not half-execute."""
     net_cfg = cfg.get("position_netting") or {}
     if not net_cfg.get("enabled", False):
         return []
@@ -396,6 +409,8 @@ def review(
             if pos is None:
                 continue
             price = latest_prices.get(ticker, pos.entry_price)
+            if latest_asks is not None:
+                price = kalshi_fees.forced_exit_quote(pos.side, price, latest_asks.get(ticker))
             reason = f"position netting ({group['status']}, event {group['event_ticker']}): {rec['reason']}"
             # Four structured values ride onto the trades row as columns:
             # the first three from issue #213 (the sentence's own numbers,

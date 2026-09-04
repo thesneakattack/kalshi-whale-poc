@@ -1058,3 +1058,31 @@ def test_close_position_on_a_missing_ticker_does_not_notify(tmp_path, monkeypatc
 
     assert trade is None
     assert calls == []
+
+
+# --- close_all_positions: side-aware exit pricing (2026-09-04) --------------
+
+def test_close_all_positions_sells_a_no_position_at_the_no_bid(tmp_path, monkeypatch):
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=10000.0)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    broker.close_all_positions({"TICK-A": 0.20}, "flatten", latest_asks={"TICK-A": 0.30})
+
+    # NO bid = 1 - yes_ask = 0.70/contract. Pricing off the yes_bid paid 0.80.
+    expected = bankroll_before + 100 * 0.70 - pb.kalshi_fees.taker_fee(100, 0.30, ticker="TICK-A")
+    assert broker.bankroll == pytest.approx(expected, abs=0.01)
+    assert broker.positions == {}
+
+
+def test_close_all_positions_pays_zero_not_one_on_an_unsellable_book(tmp_path, monkeypatch):
+    # A manual flatten must not refuse, but it must not fabricate either: the
+    # old path paid (1 - yes_bid) = $1.00/contract on an empty yes book.
+    broker = _broker(tmp_path, monkeypatch, starting_bankroll=10000.0)
+    broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    broker.close_all_positions({"TICK-A": 0.0}, "flatten", latest_asks={"TICK-A": 1.0})
+
+    assert broker.bankroll == pytest.approx(bankroll_before, abs=0.01)
+    assert broker.positions == {}

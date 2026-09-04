@@ -337,3 +337,70 @@ same `_add_column_if_missing`/`close_position`/`INSERT` idiom.
 - The tradeoff this makes measurable - closing now for bankroll/position
   headroom versus this fee cost - is itself still open:
   `docs/open-decisions.md`.
+
+## Exits are priced off the side of the book they sell into (confirmed live, fixed 2026-09-04)
+
+Every exit in this module priced **both** sides off `state["latest_prices"]`,
+which holds the ticker channel's `yes_bid_dollars`. A NO position was
+therefore valued at `1 - yes_bid` — the NO **ask**, what it costs to *buy*
+no, not what a seller receives. `docs/kalshi/get-market-orderbook.md:7` is
+explicit: *"a bid for yes at price X is equivalent to an ask for no at price
+(100-X)"*, so a NO holder sells into `1 - yes_ask`.
+
+On an empty yes book (`yes_bid` 0.000) that paid a NO holder **$1.00 per
+contract, fee-free, as if the market had settled NO** — and the same phantom
+mark drove `_exit_confidence`'s `pnl` factor to 100%, so the auto-exit fired
+on it. Mostly in the window after a 15-minute/hourly crypto or metals market
+closes and before settlement arrives.
+
+- **Measured, 2026-09-02..04 paper history:** 506 auto-exits booked
+  **+$174,727** against **−$72,361** of real settlements. On the 419 with a
+  known outcome: +$152,870 booked vs +$32,357 if held. 66 closed at ≥0.95
+  implied value and then *lost* at settlement. Re-priced against raw ticker
+  messages in `series_watcher.db`, gross exit proceeds were 35% overstated
+  overall and 53% on the NO side.
+- **Worked example, verified two independent ways:**
+  `KXETHD-26SEP0409-T2429.99` NO ×6019, entered at yes 0.72 ($1,685 basis),
+  closed at `yes_price` 0.00 → booked **+$4,248.74**. Raw book 6s earlier:
+  bid 0.0 / ask 1.0, both resting sizes 0, last trade 0.96. Kalshi
+  `result: "yes"` — a total loss.
+- **The REST corroboration below could not catch it.** `market_history`
+  snapshots store the same `yes_bid` (`main.py:494`), so the independent
+  read agreed with the fabricated value. Exit price matched the snapshot
+  100% of the time.
+- **Fix:** `kalshi_fees.sellable_quote()` is now the single definition of
+  "which yes-terms price does this side's sale strike at", living beside
+  `unit_cost()` because a caller that gets one right and the other wrong
+  still books the wrong money. `check_exits` takes `latest_asks` and
+  **refuses** the exit when that side has no bid — absent ask, ask ≥ 1.00,
+  or a crossed book. Fail-closed here is deliberate and the opposite of this
+  module's usual fail-open rule for missing data: that rule is right when
+  the risk is failing to *cut a loser*, but here the failure mode is
+  fabricating proceeds out of a book nobody can sell into, and a refused
+  exit rides to settlement — its true outcome, at a price Kalshi publishes.
+- The settlement branch stays **ahead** of the guard: a terminal $1/$0
+  payout is real, not a quote, and is never gated on a book.
+- The crossed-book check compares the ask against the **raw WS bid**, not
+  the possibly-REST-corroborated one (`crossed_against=`). Comparing a
+  120s-old REST bid to a live ask reads as "crossed" on a market that has
+  genuinely rallied and would silently disable every NO-side exit.
+- **Manual "get flat now" paths** (`close_all_positions`,
+  `POST /api/trading/close-positions`, `position_netting.review`) use
+  `kalshi_fees.forced_exit_quote()` instead: same side-awareness, but an
+  unsellable book resolves to **zero** proceeds rather than refusing, since
+  those callers have no option to leave the position open.
+- **Behavior change, declared:** a YES position at `yes_bid` 0.00 previously
+  stop-lossed at $0; it now holds to settlement.
+- **Known gap:** `yes_ask` carries no freshness check of its own.
+  `state["latest_asks_updated_at"]` exists, but the staleness machinery
+  below is bid-shaped. The guards catch an absent, terminal, or crossed
+  ask — not a merely stale one.
+- Historical remediation: 294 fabricated closes were corrected in place via
+  `PaperBroker.correct_erroneous_close`, repricing at the true ask or at the
+  recorded settlement outcome. Corrected rows keep `excluded=1` **and their
+  original `(realized +N)` text**, so `trade_analytics.build_trade_history`
+  must keep skipping them — that exclusion is what stops the stale figure
+  being parsed back out.
+- Tests: `tests/test_kalshi_fees.py` (`sellable_quote`/`forced_exit_quote`),
+  `tests/test_strategy_engine.py::test_check_exits_will_not_sell_a_no_position_into_an_empty_yes_book`
+  and siblings, `tests/test_paper_broker.py::test_close_all_positions_pays_zero_not_one_on_an_unsellable_book`.

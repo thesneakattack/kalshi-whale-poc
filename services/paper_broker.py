@@ -677,7 +677,10 @@ class PaperBroker:
         history_push.mark_history_changed()
         return trade
 
-    def close_all_positions(self, latest_prices: dict[str, float], reason: str) -> list[Trade]:
+    def close_all_positions(
+        self, latest_prices: dict[str, float], reason: str,
+        latest_asks: dict[str, float] | None = None,
+    ) -> list[Trade]:
         """Flattens every currently-open position at once - the paper-mode
         half of POST /api/trading/flatten-all (2026-08-23 gap-check
         finding: no "get flat immediately" path existed at all). Loops a
@@ -689,11 +692,24 @@ class PaperBroker:
         elsewhere, except a manual flatten-everything action should never
         silently skip a position just because a quote is momentarily
         missing. Direct precedent for the loop shape:
-        services/exits/position_netting.py's own review()."""
+        services/exits/position_netting.py's own review().
+
+        latest_asks (2026-09-04): a sale is struck on the side of the book
+        the position is sold INTO - yes_bid for a YES position, yes_ask for a
+        NO one, since the NO bid is (1 - yes_ask). Pricing both sides off
+        latest_prices (yes_bid) valued a NO position at the NO *ask* and, on
+        an empty yes book, paid $1.00/contract as if the market had settled
+        NO. kalshi_fees.forced_exit_quote, not sellable_quote, because this
+        path must never refuse to flatten: an unsellable book resolves to
+        zero proceeds rather than a fabricated payout. Omitting it keeps the
+        old both-sides-off-the-bid behavior only for a caller that genuinely
+        has no ask dict, which no production caller does."""
         closed = []
         for ticker in list(self.positions):
             pos = self.positions[ticker]
             price = latest_prices.get(ticker, pos.entry_price)
+            if latest_asks is not None:
+                price = kalshi_fees.forced_exit_quote(pos.side, price, latest_asks.get(ticker))
             trade = self.close_position(ticker, price, reason)
             if trade is not None:
                 closed.append(trade)

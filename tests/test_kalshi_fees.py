@@ -1,7 +1,10 @@
 import pytest
 
 from services import title_cache
-from services.kalshi_fees import breakeven_unit_cost, maker_fee, taker_fee, taker_fee_per_contract, unit_cost
+from services.kalshi_fees import (
+    breakeven_unit_cost, forced_exit_quote, maker_fee, sellable_quote, taker_fee, taker_fee_per_contract,
+    unit_cost,
+)
 
 
 def _seed_fee_override(tmp_path, monkeypatch, ticker, event_ticker, fee_type_override=None, fee_multiplier_override=None):
@@ -353,3 +356,60 @@ def test_unit_cost_rejects_any_side_that_is_not_exactly_yes_or_no(bad_side):
         unit_cost(bad_side, 0.3)
     with pytest.raises(ValueError):
         unit_cost(bad_side, None)
+
+
+# --- sellable_quote / forced_exit_quote (2026-09-04) ------------------------
+# docs/kalshi/get-market-orderbook.md:7 - "a bid for yes at price X is
+# equivalent to an ask for no at price (100-X)". Read in the selling
+# direction: a YES holder hits yes_bid, a NO holder hits (1 - yes_ask).
+
+def test_sellable_quote_yes_sells_into_the_yes_bid():
+    assert sellable_quote("yes", 0.20, 0.30) == 0.20
+
+
+def test_sellable_quote_no_sells_into_the_no_bid_which_is_the_yes_ask():
+    # The bug: this used to return the yes_bid for both sides, so a NO
+    # position was valued at (1 - yes_bid) = the NO ASK.
+    assert sellable_quote("no", 0.20, 0.30) == 0.30
+    assert unit_cost("no", sellable_quote("no", 0.20, 0.30)) == pytest.approx(0.70)
+
+
+def test_sellable_quote_refuses_an_empty_yes_book_for_a_no_position():
+    # yes_ask 1.00 is a NO bid of 0.00 - the shape that paid $1.00/contract.
+    assert sellable_quote("no", 0.0, 1.0) is None
+
+
+def test_sellable_quote_refuses_a_yes_position_with_no_bid():
+    assert sellable_quote("yes", 0.0, 0.02) is None
+
+
+def test_sellable_quote_refuses_a_missing_ask_rather_than_guessing():
+    assert sellable_quote("no", 0.20, None) is None
+
+
+def test_sellable_quote_refuses_a_crossed_book():
+    assert sellable_quote("no", 0.62, 0.60) is None
+
+
+def test_sellable_quote_crossed_check_uses_the_bid_the_caller_nominates():
+    # exit_engine prices off a REST-corroborated bid but must check crossing
+    # against the raw WS bid - comparing a stale REST bid to a live ask
+    # otherwise reads as "crossed" and disables every NO exit on a rally.
+    assert sellable_quote("no", 0.62, 0.60, crossed_against=0.20) == 0.60
+
+
+def test_sellable_quote_rejects_an_unknown_side():
+    with pytest.raises(ValueError):
+        sellable_quote("maybe", 0.2, 0.3)
+
+
+def test_forced_exit_quote_matches_sellable_quote_when_the_book_is_real():
+    assert forced_exit_quote("no", 0.20, 0.30) == 0.30
+    assert forced_exit_quote("yes", 0.20, 0.30) == 0.20
+
+
+def test_forced_exit_quote_pays_zero_not_one_on_an_unsellable_book():
+    # "Nobody will buy this" is worth nothing, not everything. The old path
+    # returned (1 - yes_bid) = $1.00/contract here.
+    assert unit_cost("no", forced_exit_quote("no", 0.0, 1.0)) == pytest.approx(0.0)
+    assert unit_cost("yes", forced_exit_quote("yes", 0.0, None)) == pytest.approx(0.0)

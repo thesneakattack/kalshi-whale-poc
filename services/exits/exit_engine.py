@@ -63,56 +63,6 @@ _stale_uncorroborated_logged: set[str] = set()
 _unsellable_book_logged: set[str] = set()
 
 
-def _sellable_quote(side: str, yes_bid: float, yes_ask: float | None) -> float | None:
-    """The price, in YES terms, at which an open `side` position can actually
-    be SOLD right now - or None when it cannot be sold at all.
-
-    Kalshi quotes both sides in yes terms and returns yes bids and no bids
-    only: "a bid for yes at price X is equivalent to an ask for no at price
-    (100-X)" (docs/kalshi/get-market-orderbook.md). So the bid a seller hits
-    is yes_bid for a YES position and (1 - yes_ask) for a NO one. Returning
-    yes_ask for the NO case (rather than the NO bid directly) keeps every
-    caller on this app's one universal convention - every price it carries is
-    a yes price - so kalshi_fees.unit_cost(side, quote) turns it into
-    per-contract dollars unchanged, exactly as it already does at entry.
-
-    The 2026-09-04 incident this exists to stop: exits priced BOTH sides off
-    latest_prices (yes_bid), so a NO position was valued at (1 - yes_bid) -
-    the NO *ask*, what it costs to BUY no, not what a seller receives. On an
-    empty yes book (yes_bid 0.000) that paid $1.00/contract as if the market
-    had settled NO, and the same phantom mark maxed the auto-exit pnl factor
-    so the exit fired. 506 auto-exits booked +$174,727 against -$72,361 of
-    real settlements over two days.
-
-    Returns None - refusing the exit - rather than falling back to a guessed
-    quote. That is deliberately the opposite of this module's usual fail-open
-    rule for missing data (see the stale-price branch in check_exits): that
-    rule is right when the risk is failing to CUT a loser, but here the
-    failure mode is fabricating proceeds out of a book nobody can sell into,
-    and a refused exit simply rides to settlement - the position's true
-    outcome, at a price Kalshi publishes rather than one this app invents.
-
-    Known gap, deliberately not closed here: yes_ask carries no freshness
-    check of its own. state["latest_asks_updated_at"] exists, but the
-    staleness machinery in check_exits is built around the bid and reworking
-    it for both sides is its own change. The guards below catch an absent,
-    terminal, or crossed ask, not a merely stale one."""
-    if side == "yes":
-        # No bid at all means nobody will buy this YES position.
-        return yes_bid if yes_bid > 0.0 else None
-    if yes_ask is None:
-        return None
-    # A yes_ask of 1.00 is a NO bid of 0.00 - the exact empty-book shape that
-    # manufactured the phantom payouts.
-    if yes_ask >= 1.0:
-        return None
-    # Crossed against the bid: the two sides disagree about what this market
-    # is, so neither is trustworthy enough to price a sale.
-    if yes_ask < yes_bid:
-        return None
-    return yes_ask
-
-
 def reset_window() -> None:
     _stale_uncorroborated_logged.clear()
     _unsellable_book_logged.clear()
@@ -301,6 +251,9 @@ def check_exits(
         exit_min_seconds_to_close = strat_cfg.get("exit_min_seconds_to_close")
 
         yes_bid = latest_prices.get(ticker, pos.entry_price)
+        # Kept unsubstituted for the crossed-book check below - see the
+        # crossed_against argument at the sellable_quote call site.
+        raw_yes_bid = yes_bid
         # Corroborate against market_history's independently
         # REST-polled price before trusting a single websocket tick for
         # a stop-loss/take-profit decision (2026-08-17, direct
@@ -361,19 +314,32 @@ def check_exits(
             )
         # Price this position off the side of the book it would actually be
         # SOLD into - yes_bid for a YES position, yes_ask for a NO one (the
-        # NO bid is 1 - yes_ask). See _sellable_quote for the incident this
-        # closes. None means the position cannot be sold at any real price
-        # right now, so there is nothing to decide: it rides to settlement.
-        # Deliberately AFTER the settlement branch above - a settled market's
-        # terminal $1/$0 payout is real and must never be gated on a book.
-        current_price = _sellable_quote(pos.side, yes_bid, (latest_asks or {}).get(ticker))
+        # NO bid is 1 - yes_ask). See kalshi_fees.sellable_quote for the
+        # incident this closes. None means the position cannot be sold at any
+        # real price right now, so there is nothing to decide: it rides to
+        # settlement. Deliberately AFTER the settlement branch above - a
+        # settled market's terminal $1/$0 payout is real, not a quote, and
+        # must never be gated on a book.
+        #
+        # crossed_against=raw_yes_bid, not the possibly-corroborated yes_bid
+        # above: the crossed-book check must compare two values from the SAME
+        # source. The corroboration branch can substitute a REST snapshot up
+        # to _PRICE_CORROBORATION_MAX_AGE_SEC old, and checking a live WS ask
+        # against a stale REST bid on a market that has genuinely rallied
+        # reads as "crossed" and silently disables every NO-side exit - the
+        # corroboration branch exists to ENABLE correct exits, so letting it
+        # suppress them would invert its purpose.
+        yes_ask = (latest_asks or {}).get(ticker)
+        current_price = kalshi_fees.sellable_quote(
+            pos.side, yes_bid, yes_ask, crossed_against=raw_yes_bid,
+        )
         if current_price is None:
             if ticker not in _unsellable_book_logged:
                 _unsellable_book_logged.add(ticker)
                 fault_log.record_fault(
                     "exit_engine", "unsellable_book",
                     f"{ticker}: no {pos.side}-side bid to sell into (yes_bid={yes_bid}, "
-                    f"yes_ask={(latest_asks or {}).get(ticker)}) - holding to settlement",
+                    f"yes_ask={yes_ask}) - holding to settlement",
                     severity="warn",
                 )
             continue
