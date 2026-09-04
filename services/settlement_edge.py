@@ -30,12 +30,13 @@ outcome is filled in later against the same row.
 
 This module never trades. It records and scores.
 """
+import contextlib
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
-from services import fault_log
+from services import db, fault_log
 from services import index_feed
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "settlement_edge.db"
@@ -46,10 +47,7 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "settlement_edge.db"
 _MIN_SAMPLES_FOR_VERDICT = 200
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_window_observations(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS window_observations (
@@ -76,11 +74,30 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_se_window ON window_observations (ticker, window_end_ts)"
     )
+    # idx_se_unresolved is a partial index - the WHERE clause is part of the
+    # index definition itself, not a filter applied after the fact. Dropping
+    # it would silently stop this index from matching the query planner's
+    # WHERE settled_yes IS NULL scans the way it does today, without SQLite
+    # raising anything to signal the loss.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_se_unresolved ON window_observations (window_end_ts) "
         "WHERE settled_yes IS NULL"
     )
-    return conn
+
+
+db.register_schema("window_observations", _init_window_observations)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with _connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). WAL mode
+    and the busy_timeout pragma are set by db.connect() itself, same as
+    every other migrated module. conn.row_factory = sqlite3.Row is set at
+    the edge_report() call site, not here - unaffected by this migration,
+    same conn object either way."""
+    with db.connect(DB_PATH, tables=("window_observations",)) as conn:
+        yield conn
 
 
 _buffer: list[tuple] = []
