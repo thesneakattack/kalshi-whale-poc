@@ -16,6 +16,7 @@ data directory.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -23,18 +24,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from services import db
+
 DB_PATH = Path(__file__).resolve().parent / "quality_coordination_data" / "quality_coordination.db"
 
 
-def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    # WAL mode: lets a concurrent reader (a human/Claude session inspecting the DB directly -
-    # there is no API route, per the standing workflow/app-overlap rule) proceed alongside a
-    # run's writer, same hardening tools/quality_ratchet.py and services/paper_broker.py both
-    # apply. Idempotent - safe on every connect.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _init_signal_state(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS signal_state (
         identity TEXT PRIMARY KEY,
         domain TEXT NOT NULL,
@@ -45,6 +40,9 @@ def _connect() -> sqlite3.Connection:
         observation_count INTEGER NOT NULL DEFAULT 1,
         explanation TEXT
     )""")
+
+
+def _init_coordination_runs(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS coordination_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ran_at TEXT NOT NULL,
@@ -52,6 +50,9 @@ def _connect() -> sqlite3.Connection:
         signals_escalated INTEGER NOT NULL,
         error TEXT
     )""")
+
+
+def _init_cleanup_actions(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS cleanup_actions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identity TEXT NOT NULL,
@@ -60,7 +61,32 @@ def _connect() -> sqlite3.Connection:
         dry_run INTEGER NOT NULL,
         outcome TEXT NOT NULL
     )""")
-    return conn
+
+
+db.register_schema("signal_state", _init_signal_state)
+db.register_schema("coordination_runs", _init_coordination_runs)
+db.register_schema("cleanup_actions", _init_cleanup_actions)
+
+
+@contextlib.contextmanager
+def _connect():
+    """Every existing `with ce._connect() as conn:` call site keeps working
+    unchanged - now backed by services/db.py's closing connect(). WAL mode
+    and the busy_timeout pragma are set by db.connect() itself, same as
+    every other migrated module.
+
+    conn.row_factory = sqlite3.Row is caller-side state on the connection
+    object, not schema, so it's set here on the yielded connection before
+    yield - same reasoning as services/settlement_edge.py's Task 11, but
+    there it stayed at the one call site that needed it; here every one of
+    this module's 24 callers relies on Row access (dict-style ["col"]
+    lookups), so it moves into the wrapper itself, unchanged from where the
+    pre-migration _connect() used to set it."""
+    with db.connect(
+        DB_PATH, tables=("signal_state", "coordination_runs", "cleanup_actions")
+    ) as conn:
+        conn.row_factory = sqlite3.Row
+        yield conn
 
 
 @dataclass(frozen=True)

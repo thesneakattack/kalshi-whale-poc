@@ -581,56 +581,55 @@ def run_detect_cycle(
 ) -> dict:
     at = at or datetime.now(timezone.utc)
     git_runner = git_runner or _make_real_runner(repo_root)
-    conn = ce._connect()
+    with ce._connect() as conn:
+        branch_list = git_runner(["git", "branch", "--format=%(refname:short)"]).stdout.splitlines()
+        branch_names = [b.strip() for b in branch_list if b.strip() and b.strip() != "main"]
 
-    branch_list = git_runner(["git", "branch", "--format=%(refname:short)"]).stdout.splitlines()
-    branch_names = [b.strip() for b in branch_list if b.strip() and b.strip() != "main"]
+        branch_signals, suppressed, immediate = collect_branch_signals(
+            branch_names, git_runner=git_runner, gh_runner=git_runner,
+            woodpecker_runner=git_runner, conn=conn,
+            worktrees_root=repo_root / ".claude" / "worktrees", at=at,
+        )
 
-    branch_signals, suppressed, immediate = collect_branch_signals(
-        branch_names, git_runner=git_runner, gh_runner=git_runner,
-        woodpecker_runner=git_runner, conn=conn,
-        worktrees_root=repo_root / ".claude" / "worktrees", at=at,
-    )
+        ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
+            if (repo_root / ".superpowers" / "sdd").exists() else []
+        ledger_signals = collect_ledger_signals(ledger_paths, at=at)
+        plans_dir = repo_root / "docs" / "superpowers" / "plans"
+        plan_paths = sorted(plans_dir.glob("*.md")) if plans_dir.exists() else []
+        ledger_signals += collect_plan_doc_signals(
+            plan_paths, repo_root=repo_root, git_runner=git_runner, at=at,
+        )
 
-    ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
-        if (repo_root / ".superpowers" / "sdd").exists() else []
-    ledger_signals = collect_ledger_signals(ledger_paths, at=at)
-    plans_dir = repo_root / "docs" / "superpowers" / "plans"
-    plan_paths = sorted(plans_dir.glob("*.md")) if plans_dir.exists() else []
-    ledger_signals += collect_plan_doc_signals(
-        plan_paths, repo_root=repo_root, git_runner=git_runner, at=at,
-    )
+        baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
+        process_hygiene_signals = (
+            collect_process_hygiene_signals(baseline_path, baseline_path.read_text())
+            if baseline_path.exists() else []
+        )
 
-    baseline_path = repo_root / "tools" / "quality_audit" / "baseline.json"
-    process_hygiene_signals = (
-        collect_process_hygiene_signals(baseline_path, baseline_path.read_text())
-        if baseline_path.exists() else []
-    )
+        all_signals = branch_signals + ledger_signals + process_hygiene_signals
+        states = ce.apply_observation(
+            conn, all_signals, at, _FLOOR_HOURS, suppressed_keys=suppressed, immediate_keys=immediate,
+        )
 
-    all_signals = branch_signals + ledger_signals + process_hygiene_signals
-    states = ce.apply_observation(
-        conn, all_signals, at, _FLOOR_HOURS, suppressed_keys=suppressed, immediate_keys=immediate,
-    )
+        roadmap_path = repo_root / "ROADMAP.md"
+        docs_feed = (
+            collect_docs_roadmap_feed(roadmap_path.read_text(), [])
+            if roadmap_path.exists() else []
+        )
 
-    roadmap_path = repo_root / "ROADMAP.md"
-    docs_feed = (
-        collect_docs_roadmap_feed(roadmap_path.read_text(), [])
-        if roadmap_path.exists() else []
-    )
+        app_report = fetch_app_report("http://fastapi:8000", getter=http_getter)
 
-    app_report = fetch_app_report("http://fastapi:8000", getter=http_getter)
+        escalated = sum(1 for s in states.values() if s == "escalation_eligible")
+        ce.record_run(conn, at, signals_observed=len(all_signals), signals_escalated=escalated)
+        conn.commit()
 
-    escalated = sum(1 for s in states.values() if s == "escalation_eligible")
-    ce.record_run(conn, at, signals_observed=len(all_signals), signals_escalated=escalated)
-    conn.commit()
-
-    return {
-        "branch": {k: v for k, v in states.items() if k.startswith("branch:")},
-        "ledger": {k: v for k, v in states.items() if k.startswith("ledger:")},
-        "process_hygiene": {k: v for k, v in states.items() if k.startswith("process_hygiene:")},
-        "docs_roadmap_feed": docs_feed,
-        "app_report": app_report,
-    }
+        return {
+            "branch": {k: v for k, v in states.items() if k.startswith("branch:")},
+            "ledger": {k: v for k, v in states.items() if k.startswith("ledger:")},
+            "process_hygiene": {k: v for k, v in states.items() if k.startswith("process_hygiene:")},
+            "docs_roadmap_feed": docs_feed,
+            "app_report": app_report,
+        }
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -654,12 +653,12 @@ def main(
             for identity, state in report["branch"].items()
             if state == "escalation_eligible" and identity.split(":", 1)[0] in _CLEANUP_ACTION_FOR_DOMAIN
         ]
-        conn = ce._connect()
-        run_cleanup_actions(
-            eligible, git_runner=git_runner, repo_root=args.repo_root,
-            sdd_root=args.repo_root / ".superpowers" / "sdd", conn=conn,
-            at=datetime.now(timezone.utc), dry_run=False,
-        )
+        with ce._connect() as conn:
+            run_cleanup_actions(
+                eligible, git_runner=git_runner, repo_root=args.repo_root,
+                sdd_root=args.repo_root / ".superpowers" / "sdd", conn=conn,
+                at=datetime.now(timezone.utc), dry_run=False,
+            )
 
     print(json.dumps(report, indent=2, default=str))
     return 0

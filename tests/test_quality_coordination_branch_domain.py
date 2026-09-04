@@ -77,106 +77,106 @@ def test_cluster_siblings_empty_when_all_branches_far_apart():
 
 def test_collect_branch_signals_suppresses_a_coordinated_dispatch_cluster(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    conn = ce._connect()
-    git_runner = _StubRunner()
-    # Three branches, each with one commit ~2 minutes apart from the others - a cluster.
-    git_runner.queue("2026-08-27T12:00:00-05:00\n")
-    git_runner.queue("2026-08-27T12:02:00-05:00\n")
-    git_runner.queue("2026-08-27T12:04:00-05:00\n")
-    gh_runner = _StubRunner()
-    gh_runner.queue("[]")  # no PR for docs/a
-    gh_runner.queue("[]")  # no PR for docs/b
-    gh_runner.queue("[]")  # no PR for docs/c
-    woodpecker_runner = _StubRunner()  # no CI runs yet for any of the three - queue nothing
+    with ce._connect() as conn:
+        git_runner = _StubRunner()
+        # Three branches, each with one commit ~2 minutes apart from the others - a cluster.
+        git_runner.queue("2026-08-27T12:00:00-05:00\n")
+        git_runner.queue("2026-08-27T12:02:00-05:00\n")
+        git_runner.queue("2026-08-27T12:04:00-05:00\n")
+        gh_runner = _StubRunner()
+        gh_runner.queue("[]")  # no PR for docs/a
+        gh_runner.queue("[]")  # no PR for docs/b
+        gh_runner.queue("[]")  # no PR for docs/c
+        woodpecker_runner = _StubRunner()  # no CI runs yet for any of the three - queue nothing
 
-    signals, suppressed, immediate = collect_branch_signals(
-        ["docs/a", "docs/b", "docs/c"],
-        git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
-        conn=conn, worktrees_root=tmp_path / "worktrees",
-        at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
-    )
+        signals, suppressed, immediate = collect_branch_signals(
+            ["docs/a", "docs/b", "docs/c"],
+            git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
+            conn=conn, worktrees_root=tmp_path / "worktrees",
+            at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
+        )
 
-    assert {"branch:docs/a", "branch:docs/b", "branch:docs/c"} == suppressed
-    assert immediate == frozenset()
-    assert len(signals) == 3
+        assert {"branch:docs/a", "branch:docs/b", "branch:docs/c"} == suppressed
+        assert immediate == frozenset()
+        assert len(signals) == 3
 
 
 def test_collect_branch_signals_does_not_suppress_a_lone_stale_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    conn = ce._connect()
-    git_runner = _StubRunner()
-    git_runner.queue("2026-08-01T12:00:00-05:00\n")  # weeks old, no siblings nearby
-    gh_runner = _StubRunner()
-    gh_runner.queue("[]")
-    woodpecker_runner = _StubRunner()
+    with ce._connect() as conn:
+        git_runner = _StubRunner()
+        git_runner.queue("2026-08-01T12:00:00-05:00\n")  # weeks old, no siblings nearby
+        gh_runner = _StubRunner()
+        gh_runner.queue("[]")
+        woodpecker_runner = _StubRunner()
 
-    signals, suppressed, immediate = collect_branch_signals(
-        ["feat/abandoned"],
-        git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
-        conn=conn, worktrees_root=tmp_path / "worktrees",
-        at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
-    )
+        signals, suppressed, immediate = collect_branch_signals(
+            ["feat/abandoned"],
+            git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
+            conn=conn, worktrees_root=tmp_path / "worktrees",
+            at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
+        )
 
-    assert suppressed == frozenset()
-    assert signals[0].identity == "branch:feat/abandoned"
+        assert suppressed == frozenset()
+        assert signals[0].identity == "branch:feat/abandoned"
 
 
 def test_collect_branch_signals_marks_a_real_ci_failure_immediate(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    conn = ce._connect()
-    git_runner = _StubRunner()
-    git_runner.queue("2026-08-27T12:00:00-05:00\n")
-    gh_runner = _StubRunner()
-    gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: a JSON array, json.loads'd
-    gh_runner.queue("failure\n")  # commit-status-shaped: `gh api ... --jq ".state"` raw-
-    # unquotes a scalar jq result, so this is the literal stdout _commit_status reads
-    # directly - not a JSON blob to parse (unlike the pr-list response above, which uses
-    # `gh ... --json` and is real JSON).
-    woodpecker_runner = _StubRunner()
+    with ce._connect() as conn:
+        git_runner = _StubRunner()
+        git_runner.queue("2026-08-27T12:00:00-05:00\n")
+        gh_runner = _StubRunner()
+        gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: a JSON array, json.loads'd
+        gh_runner.queue("failure\n")  # commit-status-shaped: `gh api ... --jq ".state"` raw-
+        # unquotes a scalar jq result, so this is the literal stdout _commit_status reads
+        # directly - not a JSON blob to parse (unlike the pr-list response above, which uses
+        # `gh ... --json` and is real JSON).
+        woodpecker_runner = _StubRunner()
 
-    signals, suppressed, immediate = collect_branch_signals(
-        ["feat/broken"],
-        git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
-        conn=conn, worktrees_root=tmp_path / "worktrees",
-        at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
-    )
+        signals, suppressed, immediate = collect_branch_signals(
+            ["feat/broken"],
+            git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
+            conn=conn, worktrees_root=tmp_path / "worktrees",
+            at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),
+        )
 
-    assert immediate == frozenset({"branch:feat/broken"})
+        assert immediate == frozenset({"branch:feat/broken"})
 
 
 def test_collect_branch_signals_flags_possibly_stuck_when_step_unchanged_two_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "DB_PATH", tmp_path / "q.db")
-    conn = ce._connect()
-    # Prime signal_state with a prior run's payload for this identity, same shape a real
-    # first apply_observation call would have written.
-    from tools.coordination_engine import Signal, apply_observation
-    prior_payload = {"pr_state": "OPEN", "ci_status": "pending", "furthest_step": "browser-e2e",
-                      "furthest_step_started_at": "2026-08-27T16:00:00+00:00"}
-    apply_observation(
-        conn, [Signal("branch:feat/slow", "branch", prior_payload, True)],
-        datetime(2026, 8, 27, 16, 5, 0, tzinfo=timezone.utc), floor_hours={"branch": 6.0},
-    )
+    with ce._connect() as conn:
+        # Prime signal_state with a prior run's payload for this identity, same shape a real
+        # first apply_observation call would have written.
+        from tools.coordination_engine import Signal, apply_observation
+        prior_payload = {"pr_state": "OPEN", "ci_status": "pending", "furthest_step": "browser-e2e",
+                          "furthest_step_started_at": "2026-08-27T16:00:00+00:00"}
+        apply_observation(
+            conn, [Signal("branch:feat/slow", "branch", prior_payload, True)],
+            datetime(2026, 8, 27, 16, 5, 0, tzinfo=timezone.utc), floor_hours={"branch": 6.0},
+        )
 
-    git_runner = _StubRunner()
-    git_runner.queue("2026-08-27T15:00:00-05:00\n")
-    gh_runner = _StubRunner()
-    gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: real JSON, json.loads'd
-    gh_runner.queue("pending\n")  # commit-status-shaped: raw --jq output, see the sibling
-    # test above for why this isn't JSON-wrapped.
-    woodpecker_runner = _StubRunner()
-    # 1787846400 == 2026-08-27T16:00:00+00:00 (verified against datetime.fromtimestamp) -
-    # matching prior_payload's furthest_step_started_at above. An earlier literal here
-    # (1756310400) resolved to 2025-08-27T16:00:00+00:00 instead - a one-year-off fixture
-    # bug found while running this test, not an implementation defect.
-    woodpecker_runner.queue(
-        '{"steps": [{"name": "browser-e2e", "started": 1787846400, "stopped": 0}]}'
-    )
+        git_runner = _StubRunner()
+        git_runner.queue("2026-08-27T15:00:00-05:00\n")
+        gh_runner = _StubRunner()
+        gh_runner.queue('[{"state": "OPEN"}]')  # find_pr_state-shaped: real JSON, json.loads'd
+        gh_runner.queue("pending\n")  # commit-status-shaped: raw --jq output, see the sibling
+        # test above for why this isn't JSON-wrapped.
+        woodpecker_runner = _StubRunner()
+        # 1787846400 == 2026-08-27T16:00:00+00:00 (verified against datetime.fromtimestamp) -
+        # matching prior_payload's furthest_step_started_at above. An earlier literal here
+        # (1756310400) resolved to 2025-08-27T16:00:00+00:00 instead - a one-year-off fixture
+        # bug found while running this test, not an implementation defect.
+        woodpecker_runner.queue(
+            '{"steps": [{"name": "browser-e2e", "started": 1787846400, "stopped": 0}]}'
+        )
 
-    signals, suppressed, immediate = collect_branch_signals(
-        ["feat/slow"],
-        git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
-        conn=conn, worktrees_root=tmp_path / "worktrees",
-        at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),  # same run 1h later, same step
-    )
+        signals, suppressed, immediate = collect_branch_signals(
+            ["feat/slow"],
+            git_runner=git_runner, gh_runner=gh_runner, woodpecker_runner=woodpecker_runner,
+            conn=conn, worktrees_root=tmp_path / "worktrees",
+            at=datetime(2026, 8, 27, 17, 5, 0, tzinfo=timezone.utc),  # same run 1h later, same step
+        )
 
-    assert signals[0].payload["possibly_stuck"] is True
+        assert signals[0].payload["possibly_stuck"] is True
