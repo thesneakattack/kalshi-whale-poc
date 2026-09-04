@@ -14,7 +14,56 @@ the explicit deep scan/integrity check. No source here does any network
 I/O; tests/test_quality_routes.py proves that by monkeypatching
 KalshiClient construction to raise and confirming the route still
 succeeds.
+
+Event-loop dispatch (issue #530, 2026-09-04): seven of this route's own
+calls were synchronous DB/file reads made directly in the async body with
+no dispatch - observability.runtime_findings (via history()),
+storage_health.inventory_data_dir, backup.latest, storage_health.
+storage_findings (which itself calls observability.history() once per
+data/*.db entry via storage_growth_finding - a second level of
+indirection, same shape as runtime_findings'), alerting.active_alerts,
+research.latest, and fault_log.summary. Each is now wrapped in
+asyncio.to_thread, the same mechanism services/storage_health/routes.py's
+own integrity-check/deep-scan routes already use successfully for this
+exact class of problem (a diagnostic read that must stay off the event
+loop but must NOT share services/tick_executor.py's dedicated 2-worker
+pool - issue #510's research rejected sharing that pool for a slow
+diagnostic call once already, PR #409, because it starved trading-critical
+writes for 5+ hours). asyncio.to_thread uses the asyncio default loop
+executor, a pool tick_executor never touches, so this carries none of that
+risk. Deliberately NOT wrapped, each confirmed by direct read: alerting.
+alert_findings (pure computation over the already-fetched active_alerts
+list) and evidence_provenance.findings (its whole call graph - three
+snapshot()/dropped_count() reads - is in-memory counters, no I/O);
+diagnostics.run_offline is already awaited and runs natively on aiosqlite
+(a separate, already-fixed piece - see its own comment below), so
+wrapping it here would add a redundant thread-hop, not fix anything.
+Also deliberately NOT wrapped: config_store.get() (the first line of this
+handler) does its own synchronous stat()/YAML-reparse-on-change - a real,
+undispatched 8th call, but identical in every other route in this app, so
+a systemic fix belongs in config_store.py, not repeated per-handler here.
+
+Direct live measurement (docker exec against the running app's real
+data/*.db files, one-shot, read-only; re-measured after PR #552's
+adversarial review found the DB files had grown since the first pass):
+the seven calls this fix dispatches sum to roughly 100-300ms today
+(fault_log.summary and storage_findings are the largest individually, at
+~90-110ms each; the rest are single-digit-to-low-double-digit ms) - this
+range will keep climbing as fault_log.db/observability.db grow, so treat
+it as an order of magnitude, not a fixed number. Still ~30-90x smaller
+than diagnostics.run_offline() alone, measured at ~9.1s against the same
+live data. run_offline() yields control genuinely and frequently (~1,100
+real awaited aiosqlite yields per call, corroborated independently by two
+separate reviews) - but per _aio_db.py's own docstring it also has its
+own pre-existing, undisclosed, out-of-scope contiguous on-loop CPU chunks
+between those yields (>=280ms measured 2026-09-01, likely more now) that
+this fix does not touch and were not previously surfaced against the
+route's cost breakdown. This fix removes real event-loop-blocking time
+from the 7 calls it dispatches, but does not make GET /api/quality/summary
+itself fast, and does not close run_offline()'s own separate on-loop-CPU
+gap; neither was ever this fix's scope.
 """
+import asyncio
 import time
 
 from fastapi import APIRouter
@@ -37,17 +86,21 @@ router = APIRouter()
 @router.get("/api/quality/summary")
 async def get_quality_summary():
     cfg = config_store.get()
-    findings = observability.runtime_findings(cfg, state, trade_stream, index_stream)
-    storage_entries = storage_health.inventory_data_dir(storage_health.DATA_DIR)
+    findings = await asyncio.to_thread(
+        observability.runtime_findings, cfg, state, trade_stream, index_stream
+    )
+    storage_entries = await asyncio.to_thread(storage_health.inventory_data_dir, storage_health.DATA_DIR)
     backup_cfg = cfg.get("backup") or {}
-    findings += storage_health.storage_findings(
+    last_backup_run = await asyncio.to_thread(backup.latest)
+    findings += await asyncio.to_thread(
+        storage_health.storage_findings,
         storage_entries,
-        last_backup_run=backup.latest(),
+        last_backup_run=last_backup_run,
         backup_interval_sec=backup_cfg.get("interval_sec", backup._DEFAULT_INTERVAL_SEC),
     )
     # One DB read serves both the raw `alerts` field below and the
     # alert-derived findings that let a critical alert drive `status` (#71).
-    active_alerts = alerting.active_alerts()
+    active_alerts = await asyncio.to_thread(alerting.active_alerts)
     findings += alerting.alert_findings(active_alerts)
     findings += evidence_provenance.findings()
     report = QualityReport(findings=findings)
@@ -59,7 +112,7 @@ async def get_quality_summary():
     # everywhere else). GET /api/research/latest is the place for the real
     # report.
     research_state = state.setdefault("research", {"running": False, "task": None, "checkpoints": None})
-    last_research = research.latest()
+    last_research = await asyncio.to_thread(research.latest)
     return {
         "generated_at": time.time(),
         "status": report.overall_status(),
@@ -91,7 +144,7 @@ async def get_quality_summary():
         # run_offline()'s).
         "diagnostics": await diagnostics.run_offline(cfg),
         "alerts": {"active": active_alerts},
-        "faults": fault_log.summary(),
+        "faults": await asyncio.to_thread(fault_log.summary),
         "storage": {"databases": storage_entries},
         "research": {
             "running": research_state["running"],
