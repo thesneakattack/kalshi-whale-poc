@@ -219,6 +219,34 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   agent still reconnected successfully in the case observed here, but
   persisting this secret in `portfolio/ci-cd/.env` would make that
   reconnection deterministic instead of relying on a fresh handshake.
+- **A GitHub webhook delivery can fail with `"failure to parse token from
+  hook"` (HTTP 400 from Woodpecker), silently leaving a commit with zero
+  PR-event pipeline** — confirmed 2026-09-04 via `gh api
+  repos/<owner>/<repo>/hooks/<id>/deliveries` (per-delivery detail needs
+  the `admin:repo_hook` token scope this repo's default `gh` auth lacks
+  for the listing view, but works for individual delivery lookups by ID):
+  PR #553's own `pull_request: opened` delivery got exactly this 400,
+  0.33s round-trip (too fast to be a payload-size/timeout issue — a
+  same-window successful delivery for a different PR's `opened` event took
+  5.91s for a similarly-sized ~30KB payload), while sibling PRs opened
+  within the same few minutes succeeded. A same-delivery-ID redelivery
+  (`POST .../deliveries/<id>/attempts`) failed identically once, then
+  succeeded on a second attempt seconds later — consistent with transient
+  token-validation flakiness on Woodpecker's side, not anything specific to
+  the PR's content or size. **This is not the same incident as the
+  "Cancel previous pipelines" mutual-cancellation race documented above**
+  (that one leaves a stale `pending` status from a real, accepted
+  delivery; this one is the delivery itself being rejected before a
+  pipeline is ever created, so the commit shows no PR-event status at all,
+  pending or otherwise). Recourse when `gh pr view <n> --json
+  mergeStateStatus` shows `BLOCKED` with the required `ci/woodpecker/pr/*`
+  contexts entirely absent (not merely pending/red): check
+  `gh api repos/<owner>/<repo>/hooks` for the repo's webhook, list its
+  recent `.../deliveries`, find the `pull_request` delivery matching the
+  PR's `createdAt`, and redeliver it via the `attempts` endpoint —
+  retrying once or twice resolved it live. No `WOODPECKER_TOKEN` needed
+  for this path (it's a `gh` GitHub-API call against the webhook, not the
+  Woodpecker API).
 - The agent log periodically shows `"queue: task not found"` /
   `"failed to extend workflow lease"` (with a matching server-side
   `"stream: not found"` / `"cannot close log stream"`) for a handful of
