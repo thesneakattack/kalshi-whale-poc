@@ -259,3 +259,74 @@ def test_check_total_exposure_exactly_at_the_cap_is_true(tmp_path, monkeypatch):
         starting_bankroll=1000.0, max_daily_loss_pct=0.1, kill_switch_enabled=True, max_total_exposure_pct=0.5,
     )
     assert risk.check_total_exposure(current_exposure=400.0, prospective_cost=100.0, bankroll=1000.0) is True
+
+
+def test_connect_closes_its_connection(tmp_path, monkeypatch):
+    """_RecordingConnection wraps the real connection instead of mutating
+    conn.close directly - that raises AttributeError on this container's
+    Python (sqlite3.Connection.close is read-only), the same defect Task
+    1's own implementation (PR #518) found and fixed against
+    tests/test_signal_log.py's proven pattern (Tier 0's own Task 5),
+    applied here for this module's test file."""
+    import sqlite3
+
+    closed = []
+    real_connect = sqlite3.connect
+
+    class _RecordingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def close(self):
+            closed.append(True)
+            self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _tracking_connect(*args, **kwargs):
+        return _RecordingConnection(real_connect(*args, **kwargs))
+
+    # Construct before patching: RiskManager.__init__ opens (and, post-fix,
+    # correctly closes) its own connection to load risk_meta - patching
+    # sqlite3.connect first would record that connection too, since
+    # db.connect() patches at the module level, not per call site.
+    tracker = rm.RiskManager(1000.0, 0.1, True, db_path=tmp_path / "rm.db")
+    monkeypatch.setattr(rm.db.sqlite3, "connect", _tracking_connect)
+    with tracker._connect() as conn:
+        conn.execute("SELECT 1")
+    assert closed == [True]
+
+
+def test_connect_still_creates_table_with_day_start_date_column(tmp_path, monkeypatch):
+    tracker = rm.RiskManager(1000.0, 0.1, True, db_path=tmp_path / "rm.db")
+    with tracker._connect() as conn:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "risk_meta" in tables
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(risk_meta)")}
+        assert "day_start_date" in cols
+
+
+def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch):
+    tracker = rm.RiskManager(1000.0, 0.1, True, db_path=tmp_path / "rm.db")
+    with tracker._connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_monkeypatched_db_path_still_works(tmp_path, monkeypatch):
+    """This module's own DB_PATH-resolved-at-construction-time mechanism
+    (:83-88's own comment) - confirm it still works after migration."""
+    monkeypatch.setattr(rm, "DB_PATH", tmp_path / "monkeypatched_rm.db")
+    tracker = rm.RiskManager(1000.0, 0.1, True)
+    with tracker._connect() as conn:
+        conn.execute("SELECT 1")
+    assert (tmp_path / "monkeypatched_rm.db").exists()
