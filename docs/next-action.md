@@ -35,10 +35,34 @@ Keep these habits anyway, because they are correct regardless:
 ## Live sessions (verified by socket→PID, not by ListAgents alone)
 
 `ListAgents` can be **stale**: `d2` saw the dead coordinator `9e` listed as
-live and nearly took orders from a ghost. The reliable check is
-`ls /run/user/1000/cc-socks/*.sock` and testing each basename PID against
-`/proc/<pid>`. Eight live sockets, all mapping to live PIDs, all accounted
-for = 7 peers + coordinator. **`9e` is dead.**
+live and nearly took orders from a ghost.
+
+**The reliable zero-cost check** (found by `d2` while reviewing #575, which
+falsified my first attempt at this — see below):
+
+```sh
+for s in /run/user/1000/cc-socks/*.sock; do p=$(basename "$s" .sock)
+  [ -d /proc/$p ] && printf '%s %s\n' "$p" "$(readlink /proc/$p/cwd)"; done
+```
+
+It resolves every live session and its working directory without sending a
+single message, and yields **worktree occupancy for free** — that is how
+`8f`'s work on #410 was confirmed by effect (cwd
+`.claude/worktrees/issue-410-impl`) rather than by its say-so, and how
+`portfolio-87` is confirmed to be in `/home/davidf/code/portfolio`, a
+different repo.
+
+Two limits, both real, so do not overstate it:
+- **Socket count alone proves nothing.** My first version of this argued
+  "8 sockets = 7 peers + me, so `9e` is dead". `d2`'s *stale* roster also
+  totalled 8 (7 peers + itself). The membership differed, not the number.
+  What actually discriminates is mapping sockets to names — via the `from=`
+  address of a received message, or cwd — not counting them.
+- **Names appear nowhere in `/proc/<pid>/cmdline`**, so sockets prove a
+  roster is stale without naming the corpse. `ListAgents` carries no cwd
+  field, so the two sources are complementary, not redundant.
+
+**`9e` is dead** — established by socket→name mapping, not by the count.
 
 | Session | Role right now |
 |---|---|
