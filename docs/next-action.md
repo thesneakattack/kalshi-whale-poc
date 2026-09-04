@@ -1,122 +1,87 @@
-# Next action — PAUSED 2026-09-04 ~05:20 UTC, resume here
+# Next action — live update 2026-09-04 ~07:35 UTC, resume here if interrupted
 
-Session paused for usage limits mid-workflow. Everything below is exact
-state, not narrative — verify with `gh`/`git` before trusting anything
-that could have changed since.
+Actively-worked session, not a hard pause — David's directive is continuous
+max-effort until the 3-hour data-plane-stalls goal (started ~05:20 UTC) is
+met. This doc is being kept current as things land; verify with `gh`/`git`
+before trusting anything that could have moved since.
 
-## Immediate next action
+## Standing goal (unchanged all session)
 
-1. **Check `gh pr list --state open`.** As of pause: only **#567**
-   (`docs/tick-executor-query-cost-measurement`) is open. Its CI shows
-   `fail` on all 6 contexts from pipeline 763 — but that's a **stale
-   status from before tonight's CI fix landed** (see below), not a real
-   failure. Re-push a trivial commit or use `scripts/woodpecker-trigger`
-   to get a fresh run, then merge if green — full review cycle already
-   complete on this one (self-review + adversarial review + fix-list
-   applied), don't redo it.
-2. **Everything else that was open tonight is already merged**: #553,
-   #555, #556, #557, #558, #559, #560, #561, #562, #564, #566, #568.
-3. Pull any of the above into the primary if `git log origin/main..HEAD`
-   isn't empty — check `git status`/`git log` first, this doc may already
-   be stale by the time you read it.
+Decouple the trade stream entirely from history/diagnostics — no shared
+consumers/pools/queues — and move History off fixed-interval polling to
+event-driven push. The live incident that motivated urgency (#541/#542
+queue drops, WS reconnect/keepalive-timeouts) is **already fixed and
+live** (PR #555, PR #558). What's in flight now is the *architectural*
+decoupling work the incident's postmortem surfaced.
 
-## What was accomplished this session (verified merged, not claimed)
+**Review policy tonight**: skip staged/redundant review checkpoints and
+exhaustive local testing — trust the one PR-level cycle (self-review +
+independent adversarial review + consolidation) as the gate, merge the
+instant it's GO + CI green. This does **not** relax the gate itself for
+trading-adjacent code — see 6e's #410 call below, held deliberately.
 
-- **Full persistence-layer db.py migration: all 13 tasks done** (Gate 0
-  through Task 13), plus Task 15's final Gate 2 validation (PR #564).
-- **The live data-plane incident: fixed and deployed.** Queue-drop/
-  staleness (#541/#542) fixed by PR #555 (bounded-concurrency trade
-  dispatch). WS reconnect/keepalive-timeout fixed by PR #558
-  (trade-path `check_exits` throttle, relates to but doesn't close #412).
-- **Decoupling initiative (David's standing priority) — all 3 coupling
-  axes have merged design/measurement docs**, no implementation started
-  yet:
-  - `_scoring_pool` isolation: PR #566 merged. Recommendation: dedicated
-    1-worker pool for `candidate_retry.score_recovered_trade()`. Issue
-    **#563** tracks it; **implementation-plan stage not started.**
-  - `tick_executor`/issue #410: PR #567 (see "immediate next action"
-    above, blocked only on stale CI status). Confirmed via deterministic
-    reproduction that a trading-critical `candidate_ledger` call CAN
-    queue behind diagnostics for the full 15-22s cost. Recommends
-    aiosqlite rewrite (`population_gate_summary`) + `asyncio.to_thread`
-    for the compute-bound part (`whale_calibration`). **Not implemented.**
-  - History event-driven design: PR #568 merged. Recommends reusing the
-    existing `ws_manager`/`/api/ws` connection, not a new one. Found and
-    solved a real thread-safety bug before implementation could hit it
-    (`candidate_ledger` writes run on a worker thread; naive
-    `asyncio.create_task` from there would crash — use
-    `asyncio.run_coroutine_threadsafe`). **Not implemented.**
-  - **Issue #565** (found during #566's review, real and live): after an
-    account reconnect/disconnect, the WS-trade and candidate-retry paths
-    can end up on two different provider instances with two different
-    #546 dedupe ledgers — silently defeats that fix's guarantee. Filed,
-    **not fixed.**
+## Merged and live tonight (chronological, don't re-verify each)
 
-## CI infrastructure — fixed tonight, verify it's still fixed
+Full persistence-layer db.py migration (13 tasks) · live-incident fixes
+(#555, #558) · `_scoring_pool`/`tick_executor`/History decoupling
+research+design docs (#562, #566, #567, #568) · Woodpecker CI fully
+repaired (4 stacked bugs: unwired GRPC secret, dead webhook token, stale
+repo-private flag, stale Cloudflare tunnel connector — all verified fixed
+end-to-end, pipeline 943+ succeeding).
 
-`~/code/portfolio/ci-cd/` (Woodpecker server, NOT part of the autotrade
-repo — see `docs/woodpecker-ci.md`'s "Known limitations" section for the
-full trail). Three real, stacked bugs, all fixed and verified end-to-end
-(pipeline 943 succeeded, all 6 required contexts green):
+## Open right now — check `gh pr list --state open` for current truth
 
-1. `WOODPECKER_GRPC_SECRET` was never wired into `docker-compose.yml`
-   (was in `.env` but not referenced) — fixed, now pinned.
-2. The GitHub webhook's token was signed with a since-lost ephemeral
-   secret — repaired via Woodpecker's own webhook-recreate API.
-3. `repos.private` was stale (`0`) after the repo was intentionally made
-   private at 04:36 UTC — every other supported API route failed to fix
-   it; required a direct SQLite write (`UPDATE repos SET private=1`),
-   done with the server stopped, approved directly by David.
+- **#570** — dedicated 1-worker pool for `candidate_retry.score_recovered_trade()`
+  (closes #563). Session `e4`. Code complete, self-review posted,
+  adversarial review + CI both in flight as of this write (CI 5/6 green,
+  `quality-browser-e2e` still running). e4 explicitly declined to rush
+  this gate under time pressure ("the one thing that would actually risk
+  the outcome on a change that touches the whale-signal scoring path") —
+  correct call, don't override it. **Merges autonomously on GO+green, no
+  action needed.**
+- **#571** — issue #410 design: pool-vs-aiosqlite comparison, split
+  recommendation (mechanical cache-fix now, implementation held for
+  proper review). Session `6e`.
+- **#569** — issue #410's cache-alignment bug fix (the mechanical half of
+  #571's split). Session `6e`.
+- **Issue #565** (provider-instance divergence after account
+  reconnect/disconnect) — session `f8` implementing. Census found a
+  *third* stale-binding site beyond the issue's original two
+  (`services/diagnostics/routes.py`, a real displayed-value-mismatch bug,
+  not just the concurrency risk). Design: `app_state` becomes the single
+  source of truth via a private attribute + getter, so a stale import
+  fails loudly rather than silently reintroducing the bug class. No PR
+  number yet as of this write — check `gh pr list`.
+- **History event-driven push implementation** — dispatched as a
+  background subagent (not a peer session), building on the merged #568
+  design. No status yet as of this write.
+- **Full-scope crash-recovery plan** (this task, meta) — dispatched as a
+  background subagent, writing now. Will supersede or extend
+  `docs/SESSION_CRASH_RECOVERY.md` — check that file's own header once
+  the PR lands for which it chose.
 
-**Open, not confirmed fixed**: a second, stale Cloudflare tunnel
-connector for `webfoundry-devbox` may still be intermittently serving ~half
-of inbound traffic (version endpoint alternates 3.17.0/3.18.0 at the
-public edge, stable 3.17.0 direct). Documented recurring bug + fix in
-`~/code/portfolio/traefik/wsl2-port-forward-staleness.md`. Dispatched to
-session `portfolio-37` (`docker compose down/up -d cloudflared-devbox` in
-`~/code/portfolio/cloudflare-tunnel/`) — **check whether that landed.**
+## Explicitly deferred, not forgotten
 
-**⚠️ Possible credential exposure, unresolved at pause**: a session
-reported leaving scratch files with a live Woodpecker admin token, a JWT
-signing secret, and a 256MB SQLite dump (containing the live GitHub OAuth
-token) under
-`/tmp/claude-1000/.../63a51636-99b7-4a66-a92b-4e49af81410b/scratchpad/`.
-I searched for these files at pause time and found **nothing** at that
-path or anywhere matching those filenames under `/tmp` — so either the
-cleanup already succeeded, or they're elsewhere. **Do a fresh search
-(`find / -iname "woodpecker.sqlite.bak" 2>/dev/null`, etc.) and confirm
-one way or the other before treating this as closed.**
+- **#410's actual implementation** (aiosqlite rewrite + `asyncio.to_thread`)
+  — held for a properly-reviewed follow-up after tonight's window,
+  6e's own call, accepted. Touches a read path sharing a pool with
+  `candidate_ledger`'s live decision-path writes; the data-plane HARD
+  RULE's before/after-measurement + competing-solutions requirement
+  doesn't fit a compressed review.
+- **Issue #532** (`rejection_events` unbounded growth, 25.8M rows,
+  ~4.2x/week) — the actual reason #410's query costs keep climbing.
+  Every fix tonight amortizes or relocates this cost; none stop the
+  growth. **Retention policy is explicitly David's decision** per
+  "accumulated history is a first-class asset" — not resolved, not
+  gated on anything else finishing.
 
-**Also flagged, not fixed**: both Woodpecker images pinned to floating
-`:v3`, not an exact version — real latent risk on the next
-`docker compose pull`.
+## Team roster (interactive sessions, not subagents)
 
-## Not started
+`e4` (#570), `f8` (#565), `6e` (#569/#571, holding #410 implementation),
+`F2` (monitoring, unchanged role all session). Two background subagents
+in flight: History-push implementation, full-scope crash-recovery plan.
 
-- Implementation-plan stage for any of the 3 decoupling designs (research/
-  design done, code not started, per "nothing advances on one pass").
-- Issue #565's fix.
-- Issue #539: mechanism fix confirmed working (240x improvement), fault
-  *count* not yet statistically distinguished from baseline — a 3-hour
-  decisive measurement window was started by session `f8`, baseline
-  persisted to the issue itself:
-  https://github.com/thesneakattack/kalshi-whale-poc/issues/539#issuecomment-5536293627
-  (count=364 @ epoch 1788498602.10, robust to worker reloads — resume any
-  time, the comment has the exact command).
-
-## Team roster at pause (all told to push + stop, verify still true)
-
-F2 (monitoring, no code to push), e4 (clean, all pushed), f8 (clean, all
-pushed, 3 PRs merged), 6e (clean, ci-cd fix complete and verified — no
-autotrade-repo changes), portfolio-37 (dispatched on the Cloudflare
-connector fix, status unknown at pause — check in first).
-
-## Config note, unchanged all session
-
-`config/settings.yaml` has one deliberate, human-made local change
-(`kelly_fraction_of_cap`, `KXBTC15M` threshold) still sitting as an
-unpushed local commit on the primary's `main` (`ef662c0`). Confirmed
-intentional by David. Still not pushed — his call when/whether to.
-
-`docs/SESSION_CRASH_RECOVERY.md` has the general per-role reconstruction
-procedure if this doc is itself stale or missing context.
+`config/settings.yaml` still carries David's own unpushed local commit
+(`kelly_fraction_of_cap`/`KXBTC15M`) on the primary's `main` — confirmed
+intentional, still his call when/whether to push it. Untouched all
+session.
