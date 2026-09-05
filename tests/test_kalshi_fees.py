@@ -484,10 +484,12 @@ def test_neither_quote_helper_ever_returns_a_dollar_per_contract_on_either_side(
                 assert unit_cost(side, f) < 1.0, (
                     f"forced_exit_quote paid $1.00 at side={side} bid={bid} ask={ask} -> {f}"
                 )
-    # A zero ask routes to the fallback, not to a total loss: a genuinely
-    # empty book announces itself as ask 1.0000, so 0.0 is garbage, and
-    # booking a wipeout on ambiguous data was round 3's lesson. The mirror
-    # case (yes_bid 1.0, a NO ask of 0.0) routes to the fallback the same way.
+    # A zero ask routes to the fallback, not to a total loss: whether 0.0 is
+    # a genuine empty book or missing/garbage data is unconfirmed against
+    # docs/kalshi/ (docs/open-decisions.md, 2026-09-01; see kalshi_fees.py's
+    # own comment on this), and booking a wipeout on ambiguous data was
+    # round 3's lesson either way. The mirror case (yes_bid 1.0, a NO ask of
+    # 0.0) routes to the fallback the same way.
     assert forced_exit_quote("no", 0.0, 0.0, unknown_fallback=0.60) == 0.60
     assert forced_exit_quote("yes", 1.0, 1.0, unknown_fallback=0.60) == 0.60
     # The real empty book still books zero, unchanged, on both sides.
