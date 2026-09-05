@@ -18,8 +18,10 @@ doesn't). **Verify identity by direct reply before trusting a name** —
   benchmark showed it structurally can't help under the mechanistically
   plausible trigger — semaphore/resolve contention suspends the consumer
   before A's counter check ever runs; B, as a genuinely separate task, gets
-  scheduled regardless). Dispatched implementation with real TDD tests +
-  full lean review cycle; not merged yet.
+  scheduled regardless). PR #597 open, adversarial-reviewed GO-with-
+  followups (raw benchmark numbers need committing somewhere durable or
+  explicit "reasoned default, not measured" relabeling — see standing
+  lessons); consolidation in progress, not merged yet.
 - `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
   reconfirmed clean 2026-09-05 (`dropped_after_max_attempts: 0`,
   `handler_timeouts_total: 0`, `queue.depth: 1`, `settlement_resolver.pending:
@@ -195,6 +197,17 @@ question — do not create another one.**
   verified: `mode: stream` (not degraded to polling), `exchange_wide:
   false`, trade tape watchlist-only. Caused the `ddev-router` incident
   above as a side effect of the required restart, not of the change itself.
+- **Connectivity-badge fix** — DONE, merged (PR #598). Root-caused a David
+  report of "the whole dashboard looks stale" while using the
+  `autotrade.webfoundry.dev` tunnel workaround above: loading the page as
+  `https://user:pass@host/...` (credentials embedded in the URL) makes the
+  Fetch spec throw on every same-origin `fetch()` from then on, forever —
+  not a backend defect, the backend was fully live the whole time. Fix
+  distinguishes this permanent failure from an ordinary transient
+  connection drop and tells the viewer to reload with the bare URL instead
+  of showing a countdown that will never resolve on its own. Live-verified
+  both branches via chrome-devtools before and after merge, adversarial
+  review GO.
 
 ## Decisions waiting on David
 
@@ -211,6 +224,13 @@ but unanswered.
 
 ## Standing lessons (apply, don't re-litigate)
 
+- **Commit hot-path benchmark scripts/raw output somewhere durable, not just
+  the PR/issue prose** (`07`, 2026-09-05, from `#576`'s A-vs-B review) — a
+  benchmark run in a throwaway subagent worktree produces numbers that
+  become unfalsifiable to a future reader the moment the worktree's gone.
+  Paste the raw output as a code block in the PR/issue, or land the script
+  in a scratch-but-tracked location — don't let a cited number's only home
+  be a sentence describing it.
 - **Dispatch subagents in parallel for independent pieces of a task list**
   (David, 2026-09-05) — applies to every session including the coordinator.
   Independent sub-tasks run on their own tracks and converge on
