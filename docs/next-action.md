@@ -43,7 +43,15 @@ every time, don't assume either outcome.
   none urgent. **#599 filed**: `/api/health/faults`'s `hours=` window leaks
   one legacy fault signature's all-time count into any query — cross-check
   individual `faults[].last_seen`, don't trust `summary.total_occurrences`
-  for that one signature (id 24009).
+  for that one signature (id 24009). `ea` independently re-verified all 4
+  endpoints (not taking the coordinator's summary at face value) and added
+  one clarification worth keeping: `/api/quality/summary`'s
+  `diagnostics.overall: "fail"` is NOT a new incident — it's `series_funnel`
+  flagging the already-documented pricing/edge gap (CLAUDE.md's own
+  "Standing goal": KXBTC15M/KXETHD underwater after fees at entry,
+  0.60-0.95 unit-cost band negative-EV, designed not implemented) plus
+  sparse-series `unknown`s (zero closed positions in 24h). Don't mistake
+  this `overall: fail` for a data-plane regression.
 - `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **on the
   YES-side auto-exit profit analysis** (gate condition 4 below): split-half
   robustness check DONE (see below). The pnl+sentiment+staleness ablation
