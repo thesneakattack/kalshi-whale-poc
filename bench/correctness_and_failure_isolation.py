@@ -6,6 +6,20 @@ Uses the REAL DDL constants from services/capture_writer.py (never
 hand-retyped) so the fixture schema cannot drift from the real one. Runs
 entirely against throwaway temp files - never data/candidate_log.db, never
 the bench_dbs copies used by the timing benchmark.
+
+SCOPE NOTE on Section 6 (added per PR #603's adversarial review): the
+_Unbindable fault-injection models a per-row DATA-poisoning failure
+(deterministic, isolated to one parameter's bind step) - a fair stand-in
+for settlement_resolver.py's own docstring example ("a locked store DB"),
+since a lock-timeout OperationalError also fails atomically per-statement
+and clears on retry, same shape as this injection. It does NOT model a
+resource-exhaustion failure (disk full, or a long-held lock spanning
+several consecutive tickers' worth of wall-clock time) that could fail
+MULTIPLE consecutive tickers at once even under the per-ticker-commit
+variant - that failure mode isn't isolated by ANY of the families compared
+here, including today's shipped code, and is out of this benchmark's scope.
+Read the isolation numbers below as "isolated against single-row data
+faults," not "isolated against every real production failure mode."
 """
 import json
 import os
