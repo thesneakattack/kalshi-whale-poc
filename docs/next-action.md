@@ -122,18 +122,11 @@ question — do not create another one.**
 
 ## Decisions waiting on David
 
-- **`ef662c0`** (`kelly_fraction_of_cap` + `KXBTC15M`, unpushed on the
-  primary's local `main`) needs a home — his commit, his call when/whether
-  to push.
-- **Rebuild plan**: scrap derived datasets, rebuild on `signal_log`.
-  Premise verified on corruption (signal_log preserves NULLs, 1.25% at 0.5
-  vs market_history's 29%) but was holed on completeness (`#579`) —
-  largely addressed now that `#577`/`#581` are live; worth a fresh look
-  before committing to the rebuild.
-- **`#532`** retention policy (see Open issues above) — needs a go-ahead
-  on the sampling design, or a different call.
-- **`#578`** purge timing — needs the pre-purge checkpoint confirmation
-  when `62`/whoever is ready to execute it.
+**Tracked in `docs/open-decisions.md`, per CLAUDE.md — the single list of
+parked decisions, not duplicated here.** Four items added there tonight:
+`ef662c0`'s home, whether the rebuild-on-`signal_log` plan still applies
+now that `#577`/`#581` are fixed, `#532`'s retention design, and `#578`'s
+purge go-ahead.
 
 ## Standing lessons (apply, don't re-litigate)
 
