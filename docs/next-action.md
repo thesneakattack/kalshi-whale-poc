@@ -1,3 +1,27 @@
+# BANKROLL-RESET / RE-ENABLE-TRADING GATE — status as of #574's merge
+
+David asked to be alerted when safe to reset the bankroll and re-enable
+`auto_exit_enabled`. Conditions (established through tonight's work), current
+status:
+
+1. **PR #574 merges** — [DONE] `244372b`.
+2. **Deployed live** (pulled into primary, confirmed reload) — [ ] not yet.
+3. **Observed live for a real stretch afterward, no new exit-pricing
+   anomalies** — [ ] not started (depends on #2).
+4. **Unexplained YES-side auto-exit profit addressed** (explained, or David
+   explicitly accepts the risk) — [ ] still open. Ruled out: the newly-found
+   YES-side mirror bug (checked directly against `trades.price`, the exact
+   value fed into `unit_cost()` — zero of 279 rows hit `price>=1.0`).
+   Untested: the selection-bias alternative (auto-exit fires on the `pnl`
+   factor, so the bucket is by-construction already-favorable positions).
+5. **No active data-completeness incident** — trending positive but not
+   resolved: `#579`/`#580` showed a clean 16-minute drain with zero drops
+   post-`#581`, but both stay open pending more evidence; root cause for
+   `#579` specifically was never conclusively pinned.
+
+**0 of 5 fully met. #574's merge is real, necessary progress, not a
+green light.**
+
 # STANDING PRIORITY — David, 2026-09-05 ~09:0x UTC (container-local)
 
 **"Right now the priorities are the data plane overall integrity and accuracy
@@ -286,6 +310,19 @@ review was running, it did not finish. Do not assume a GO.
   container itself healthy) without touching shared `ci-cd`/`traefik` infra;
   documented remedy (`gh pr close`/`reopen` to regenerate the webhook) worked
   on the second attempt, exactly as the doc predicted.
+- **#574 — MERGED** (`244372b`, 2026-09-05T09:41:47Z, CI 12/12 success at
+  `1f654a2`). **Six review rounds total, five real defects found and fixed,
+  every one the identical shape** — an invariant enforced in one of two
+  symmetric places (YES vs NO side, `sellable_quote` vs `forced_exit_quote`,
+  module vs test comment). The exit-valuation bug behind the fake
+  $10k→$106k paper run is fixed on `main`. **Not deployed yet** — the live
+  app only picks this up once someone pulls into the primary and it
+  reloads; `auto_exit_enabled` stays paused (uncommitted, deliberate) until
+  David decides to re-enable it. Merging does not do that automatically,
+  and per the PR's own body the fix alone still doesn't justify it — the
+  YES-side auto-exit profit (279 exits, +$68,589) remains unexplained
+  (`07`'s investigation ruled out the newly-found YES-side mirror bug as
+  the cause; the selection-bias alternative is untested).
 
 ## 4. Open issues, current as of shutdown
 
