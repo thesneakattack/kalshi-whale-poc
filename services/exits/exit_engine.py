@@ -57,9 +57,15 @@ _PRICE_CORROBORATION_MAX_DEVIATION = 0.30
 # owner that rolls every other module's window.
 _stale_uncorroborated_logged: set[str] = set()
 
+# Positions whose side of the book was empty/unsellable this observability
+# window - one fault_log row per ticker per window, same rolling contract as
+# _stale_uncorroborated_logged above.
+_unsellable_book_logged: set[str] = set()
+
 
 def reset_window() -> None:
     _stale_uncorroborated_logged.clear()
+    _unsellable_book_logged.clear()
 
 
 def _cached(tick_cache: dict | None, key: tuple, fn, *args, **kwargs):
@@ -109,7 +115,7 @@ def check_exits(
     broker: PaperBroker, latest_prices: dict, signal_feed: list, cfg: dict, market_results: dict | None = None,
     opened_since: float | None = None, category_by_ticker: dict | None = None,
     close_times: dict | None = None, tick_cache: dict | None = None,
-    latest_prices_updated_at: dict | None = None,
+    latest_prices_updated_at: dict | None = None, latest_asks: dict | None = None,
 ) -> list[dict]:
     """Actively manages already-open positions instead of leaving them
     untouched until settlement - direct request: this app had zero exit
@@ -244,7 +250,14 @@ def check_exits(
         auto_exit_threshold = strat_cfg.get("auto_exit_threshold", 0.6)
         exit_min_seconds_to_close = strat_cfg.get("exit_min_seconds_to_close")
 
-        current_price = latest_prices.get(ticker, pos.entry_price)
+        yes_bid = latest_prices.get(ticker, pos.entry_price)
+        # Kept unsubstituted for the crossed-book check below - see the
+        # crossed_against argument at the sellable_quote call site. None
+        # (not the entry-price fallback yes_bid carries) when this ticker has
+        # no live quote at all, so the crossed check is skipped entirely
+        # rather than comparing a live ask against a historical entry price
+        # and false-refusing (2026-09-04 adversarial review, D8).
+        raw_yes_bid = latest_prices.get(ticker)
         # Corroborate against market_history's independently
         # REST-polled price before trusting a single websocket tick for
         # a stop-loss/take-profit decision (2026-08-17, direct
@@ -287,8 +300,8 @@ def check_exits(
         if staleness_sec > 0.0 and latest_prices_updated_at is not None:
             stamped_at = latest_prices_updated_at.get(ticker)
             stale = stamped_at is None or (exit_now - stamped_at) > staleness_sec
-        if corroborated is not None and (stale or abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION):
-            current_price = corroborated
+        if corroborated is not None and (stale or abs(yes_bid - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION):
+            yes_bid = corroborated
         elif stale and ticker not in _stale_uncorroborated_logged:
             # Fail open - the codebase's uniform rule for missing data, and
             # the research's conclusion for this exact case: refusing to act
@@ -303,6 +316,55 @@ def check_exits(
                 f"{ticker}: exit check acting on a price that is {age_desc}, with no REST corroboration available",
                 severity="warn",
             )
+        # Price this position off the side of the book it would actually be
+        # SOLD into - yes_bid for a YES position, yes_ask for a NO one (the
+        # NO bid is 1 - yes_ask). See kalshi_fees.sellable_quote for the
+        # incident this closes. None means the position cannot be sold at any
+        # real price right now, so there is nothing to decide: it rides to
+        # settlement. Deliberately AFTER the settlement branch above - a
+        # settled market's terminal $1/$0 payout is real, not a quote, and
+        # must never be gated on a book.
+        #
+        # crossed_against=raw_yes_bid, not the possibly-corroborated yes_bid
+        # above: the crossed-book check must compare two values from the SAME
+        # source. The corroboration branch can substitute a REST snapshot up
+        # to _PRICE_CORROBORATION_MAX_AGE_SEC old, and checking a live WS ask
+        # against a stale REST bid on a market that has genuinely rallied
+        # reads as "crossed" and silently disables every NO-side exit - the
+        # corroboration branch exists to ENABLE correct exits, so letting it
+        # suppress them would invert its purpose.
+        yes_ask = (latest_asks or {}).get(ticker)
+        current_price = kalshi_fees.sellable_quote(
+            pos.side, yes_bid, yes_ask, crossed_against=raw_yes_bid,
+        )
+        # The ask gets the SAME independent corroboration the bid already has
+        # (2026-09-04 adversarial review, D7). Checking crossing against the
+        # raw WS bid fixed a false-refusal on rallying markets, but it also
+        # removed the NO side's only defense against a garbage-LOW ask: a
+        # single bad tick quoting bid 0.00 / ask 0.05 while market_history's
+        # independent REST read sits at 0.99 passes the crossed test (0.05 >=
+        # 0.00) and would sell a near-worthless NO position for $0.95/contract
+        # - the 2026-08-17 WTA incident exactly, relocated to the other side.
+        # Requiring the ask to agree with the REST read within the same
+        # deviation band catches that while still allowing D2's real rally
+        # (a 0.60 ask against a 0.62 corroborated bid is well inside it).
+        if (
+            current_price is not None
+            and pos.side == "no"
+            and corroborated is not None
+            and abs(current_price - corroborated) > _PRICE_CORROBORATION_MAX_DEVIATION
+        ):
+            current_price = None
+        if current_price is None:
+            if ticker not in _unsellable_book_logged:
+                _unsellable_book_logged.add(ticker)
+                fault_log.record_fault(
+                    "exit_engine", "unsellable_book",
+                    f"{ticker}: no {pos.side}-side bid to sell into (yes_bid={yes_bid}, "
+                    f"yes_ask={yes_ask}) - holding to settlement",
+                    severity="warn",
+                )
+            continue
         # broker.cost_basis(), not pos.size * pos.entry_price directly -
         # that formula is only correct for the yes side; see
         # PaperBroker.cost_basis's docstring and open_position's unit_cost.

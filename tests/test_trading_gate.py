@@ -4343,3 +4343,42 @@ def test_pipeline_health_exposes_the_me_pairing_gate_counter(monkeypatch):
     assert body["me_pairing_gate"] == {"me_pairing_unknown_total": 7}
     # Still its own key, never folded into the other gate's counter.
     assert "me_pairing_unknown_total" not in body["strategy_gates"]
+
+
+def test_close_positions_sells_a_no_position_at_the_no_bid(monkeypatch):
+    # 2026-09-04 adversarial review D1: this endpoint priced BOTH sides off
+    # state["latest_prices"] (yes_bid), so a NO close was paid (1 - yes_bid)
+    # - the NO ask - and on an empty yes book that fabricated $1.00/contract.
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = main.broker.bankroll
+    monkeypatch.setitem(main.state, "latest_prices", {"TICK-A": 0.20})
+    monkeypatch.setitem(main.state, "latest_asks", {"TICK-A": 0.30})
+
+    resp = client.post(
+        "/api/trading/close-positions",
+        json={"tickers": ["TICK-A"], "confirmation_phrase": "CLOSE SELECTED POSITIONS"},
+    )
+
+    assert resp.status_code == 200
+    expected = bankroll_before + 100 * 0.70 - main.kalshi_fees.taker_fee(100, 0.30, ticker="TICK-A")
+    assert main.broker.bankroll == pytest.approx(expected, abs=0.01)
+    main.broker.reset(starting_bankroll=10000.0)
+
+
+def test_close_positions_pays_zero_not_one_on_an_unsellable_book(monkeypatch):
+    main.broker.reset(starting_bankroll=10000.0)
+    main.broker.open_position("TICK-A", "no", size=100, price=0.40, reason="entry")
+    bankroll_before = main.broker.bankroll
+    monkeypatch.setitem(main.state, "latest_prices", {"TICK-A": 0.0})
+    monkeypatch.setitem(main.state, "latest_asks", {"TICK-A": 1.0})
+
+    resp = client.post(
+        "/api/trading/close-positions",
+        json={"tickers": ["TICK-A"], "confirmation_phrase": "CLOSE SELECTED POSITIONS"},
+    )
+
+    assert resp.status_code == 200
+    assert main.broker.bankroll == pytest.approx(bankroll_before, abs=0.01)
+    assert main.broker.positions == {}
+    main.broker.reset(starting_bankroll=10000.0)

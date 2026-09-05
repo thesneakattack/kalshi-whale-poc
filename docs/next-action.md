@@ -1,222 +1,411 @@
-# Next action
+# BANKROLL-RESET / RE-ENABLE-TRADING GATE — status as of #574's merge
 
-**Single next action: execute
-`docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`**
-(merged, PR #516 — 15 tasks, full review cycle at both artifact and PR stage).
-Its planning pipeline is complete: research, design/spec, and implementation
-plan are all merged, and the API-shape decision is signed off.
+David asked to be alerted when safe to reset the bankroll and re-enable
+`auto_exit_enabled`. Conditions (established through tonight's work), current
+status:
 
-**Do not read a task list out of this file.** The plan is the task list, and
-`gh pr list` plus `git log origin/main` are the only current record of what has
-shipped. This section names the stage; it does not track progress inside it,
-because a status snapshot in a file every session reads goes stale within the
-hour and then actively misleads — that has now happened twice in one day.
+1. **PR #574 merges** — [DONE] `244372b`.
+2. **Deployed live** (pulled into primary, confirmed reload) — [DONE]
+   confirmed at 2026-09-05T09:44Z: `WatchFiles` reload log explicitly named
+   the changed files (`kalshi_fees.py`, `position_netting.py`,
+   `paper_broker.py`, `main.py`, etc.), fresh `Started server process
+   [1464]`, `merge-base --is-ancestor 244372b HEAD` true. Real deploy, not
+   a claim. **Observation window (#3) starts now.**
+3. **Observed live for a real stretch afterward, no new exit-pricing
+   anomalies** — [ ] not started (depends on #2).
+4. **Unexplained YES-side auto-exit profit addressed** (explained, or David
+   explicitly accepts the risk) — [ ] still open. Ruled out: the newly-found
+   YES-side mirror bug (checked directly against `trades.price`, the exact
+   value fed into `unit_cost()` — zero of 279 rows hit `price>=1.0`).
+   Untested: the selection-bias alternative (auto-exit fires on the `pnl`
+   factor, so the bucket is by-construction already-favorable positions).
+5. **No active data-completeness incident** — trending positive but not
+   resolved: `#579`/`#580` showed a clean 16-minute drain with zero drops
+   post-`#581`, but both stay open pending more evidence; root cause for
+   `#579` specifically was never conclusively pinned.
 
-**Gates that hold regardless of where execution has got to:**
+**0 of 5 fully met. #574's merge is real, necessary progress, not a
+green light.**
 
-- **Task 1 (`services/db.py`) blocks every other task.** It is Gate 0: the
-  module plus its 16 tests must land before any module migrates onto it.
-- **Tasks 6, 7 and 8 — `risk_manager.py`, `paper_broker.py`,
-  `candidate_ledger.py`** — David gave the go-ahead to start these
-  2026-09-03 ~22:35 UTC. The human-authorization gate is satisfied; the
-  scrutiny gate is not relaxed by that: each still gets its own dedicated PR,
-  a full diff review, and the same "not mechanical, same as the others" care
-  named below, because they touch the daily-loss kill switch and the broker.
-- **Author and reviewer stay separate**, for code as for documents: whoever
-  implements a task does not review it, and the adversarial pass is a fresh
-  agent with no memory of writing it.
-- `autotrade-73`'s `fix/db-foundation-must-fix-tests` (`e74096a`) is **input to
-  Task 1, not Task 1** — Task 1 adopts its tests (including the lock-contention
-  one) but not its path-keyed registry, which the design rejected.
+# STANDING PRIORITY — David, 2026-09-05 ~09:0x UTC (container-local)
 
-## Standing priority (David, 2026-09-03 ~22:20-22:35 UTC): data-plane stability first
+**"Right now the priorities are the data plane overall integrity and accuracy
+and near-zero latency, and also fixing the errors downstream of that so we can
+confidently turn trading back on... resetting whole tables and pruning table
+rows etc is totally allowed... as long as the math is right, I am okay
+starting from 0 for everything."**
 
-Two direct instructions, both still in force: **merge what's ready ASAP**, and
-**refocus all work on data-plane stability and low latency** — ahead of
-frontend/Preact/DRY-sweep/config-store items on the architecture audit's Tier
-2/3 list, which wait. Concretely, David wants:
+This re-orders active work and relaxes one standing constraint. Read before
+picking anything up.
 
-- **The critical trade stream decoupled entirely from history and diagnostics**
-  — not sharing consumers, thread pools, or queues. `#542`'s solution-comparison
-  doc (merged, see below) already found the shared-consumer shape
-  (`realtime_data_plane.two_consumer_mode: true` means trade and ticker share
-  one queue/consumer today) and the shared `_scoring_pool` between the WS
-  consumer and `_candidate_retry_loop` (also load-bearing in `#546`). This maps
-  to the architecture audit's Tier 3 items 25/26 (two-process split;
-  read-only process for soak/history checks; push more state over the
-  dashboard WebSocket).
-- **History's modules stop polling on a fixed interval** and become on-demand/
-  event-driven — update only when there's something new to give, not on a
-  timer regardless of state.
-- **`autotrade-b4` is assigned to lead the research stage for this**, once
-  their current task (`#546`, the trade_id dedupe race) lands — they hold the
-  deepest live context on the exact consumer/queue architecture involved. Not
-  started yet as of this writing; do not start the design stage before a
-  research artifact clears its own review cycle, per the standing HARD RULE.
+**Ordering, explicit:**
+1. Data-plane integrity/accuracy/near-zero-latency — **#577** (fabricated
+   `or 0.5` bid values, the largest data-plane *accuracy* defect found
+   tonight) and **#579/#580** (whale-print drops / `tick_executor`
+   contention, *completeness* and *latency*). Both now top priority,
+   in parallel — **#577 is unblocked from waiting on #574. Precision: this
+   specific unblock is the coordinator's own scheduling call applying
+   David's stated priority, not a sentence David said verbatim** — he named
+   the data-plane category as top priority; the coordinator concluded #577
+   qualifies and has no technical dependency on #574 (different files
+   entirely), and reordered on that basis. Correct if this reasoning is
+   wrong, not because it's misattributed.
+2. Downstream-error fixes so trading can confidently resume — **#574**
+   (NO/YES-side exit-pricing fabrication). Continues exactly as before,
+   just now explicitly framed as tier 2, not tier 1.
+3. **#575** (crash-recovery documentation) is **not** in either category —
+   it is process documentation, unrelated to the data plane or trading.
+   Let it finish merging (nearly done, self-contained), then its owner
+   moves to tier-1 work rather than starting anything else outside this
+   priority list.
 
-## Reference state — 2026-09-03 ~12:15 UTC (facts, not progress)
+**Relaxation, bounded:** resetting/pruning `data/*.db` tables broadly is
+explicitly authorized once the underlying write path is verified correct —
+this **simplifies #578** (the ~1.43M-row contaminated `market_history`
+snapshots) from "measure re-derivation coverage, recover what's
+recoverable" to "fix #577's write path, verify it, then purge" — the
+careful recovery work `a2`/`62` already did (48.8% recoverable, 93.2% of
+recovered rows a real 0.0 not 0.5) is not wasted, just no longer required
+before acting. Same logic applies to **#532**'s `rejection_events` growth:
+a blunt prune becomes acceptable once the write path stops logging one row
+per sub-threshold print.
 
-**Merged today, on `main`:** Tier0 live-incident remediation (PR #501, fd-leak
-fixes in five modules, verified live), Tier1 backend-hygiene/de-polling
-(PR #500), the strategy-edge gate (PR #502, 10 tasks), and the four
-persistence-layer research inputs — #504 (research), #507 (db foundation
-audit), #509 (baseline measurement), #506 + #508 (Gate 1 pre-audits covering
-all 26 in-scope modules).
+**The relaxation is NOT a blank check — order matters and now has one more
+step:** verify the write-path fix first, then a **pre-purge checkpoint**
+(David, 2026-09-05: "if things can be done before tables get emptied out,
+work around it") — confirm nothing still needs the current pre-purge data
+for analysis or evidence, take a full backup, then purge. Purging before
+the fix is confirmed correct just lets fresh data get contaminated again
+immediately; purging before the checkpoint destroys evidence that can never
+be recovered once the tables are empty (backup aside). The checkpoint is
+explicit, not implied by "the fix passed review" — confirm with whoever
+knows the data best (currently `62`/formerly `a2` for #578) and with the
+coordinator before the actual destructive step runs.
+"As long as the math is right" is the gate on using this authorization, not
+a suspension of it.
 
-**The API-shape decision is made and signed off** (coordinator review, PR #505
-comments): a hybrid — callback schema registration keyed by **table name**
-(`register_schema(table_name, init_fn)`, raising on a genuine conflict), plus
-explicit `tables=` selection and a `busy_timeout_ms` override at
-`connect()`. Neither pre-existing design was adopted wholesale: the prototype's
-`db_path`-keyed registry was demonstrated (by running it) to break the
-`monkeypatch.setattr(mod, "DB_PATH", tmp_path/...)` convention 64 test files
-use, and PR #484's string-DDL registry needed a manual escape hatch in 3 of its
-own first 3 migrated modules. Three conditions ride with the sign-off, for the
-plan to carry: a Gate 0 global-table-name-uniqueness test; a Gate 1 call-site
-shape check spanning **every importing module plus `tests/`**; and the
-e74096a-is-input-not-Task-1 note above.
-
-**Scope: 26 modules.** Verified counts, with falsifiers: 42 `CREATE TABLE`
-names across those modules, 0 cross-file duplicates (41 by one reviewer's count
-— `series_watcher` declares `book_snapshots` twice, sync and async, not a real
-duplicate; 0 duplicates holds either way). All 26 `_connect()`s are bare-return
-`-> sqlite3.Connection`, and all 112 production call sites are
-`with _connect() as conn:` — sqlite3's `with conn:` is a *transaction* context
-manager, never a closing one, which is the leak in one sentence and makes the
-migration uniform. `services/diagnostics/store_stats.py` is **not** in scope
-(already fixed, issue #210); migrating it would be a regression.
-`tools/coordination_engine.py` is in scope at lowest priority, and is the one
-module whose callers are bare-assignment: 24 of them, 2 production
-(`tools/quality_coordination.py:584,:657`, zero `.close()` in that file) and 22
-across four test files.
-
-## Open, filed, not yet worked
-
-- **Issue #510** — `services/reset/routes.py` contains no `await`, no
-  `run_in_executor`, no `tick_executor` anywhere, so `POST /api/reset` and
-  `GET /api/reset/preview` run nine in-scope modules' DB calls synchronously on
-  the event loop, including `count_range` against `candidate_log.db` (3.6 GB)
-  from a plain GET. Pre-existing, operator-triggered, independent of this
-  migration, and explicitly **not** the cause of the standing stall pattern
-  below. `autotrade-73` is writing its research doc; fix shape is PR #414's
-  `tick_executor.run(...)` pattern.
-- **RESOLVED — the standing CPU/stall condition was diagnosed and fixed.**
-  Root cause (research: PR #519): `_process_stream_ticker` in
-  `services/whale_stream/whale_stream_handlers.py` called `strategy.check_exits`,
-  `broker.check_pending_fills` and `position_netting.review` **synchronously per
-  WS ticker message** across 700+ markets, with no `await` between the
-  running-check and `bump_generation()` — no cooperative yield point, so the
-  backlog starved every other coroutine including the tick loop's own
-  continuation. Fixed in PR #526 by a global min-interval throttle
-  (`kalshi.ticker_exit_check_min_interval_sec`, default 2.0) around that block;
-  **at least an order-of-magnitude reduction in aggregate blocking cost**,
-  confirmed by two independent benchmarks (500-call synthetic loop) that agree
-  exactly on the call-count mechanism — 500/500 invocations reach the block
-  before the fix, 1/500 after, in both runs — but whose after-fix wall-clock
-  times diverge 8.3× (1.25 s vs 0.150 s for the same loop), attributed to
-  container-load variance between runs rather than a methodology difference.
-  Don't quote a specific multiplier (24×/230×) as fact. Worst-case exit
-  latency is **unchanged** — `main.py`'s `safety_net_interval_sec` (30 s) already
-  bounded it and shares no state with the throttle. Historical peak symptoms, for
-  recognising a recurrence: a **1,251 s tick**, positions stale 23 min, ingest
-  `queue_depth` 19,656 against a 20,000 cap, `queue_wait` averaging 912 s.
-- **Issue #530 — at least 63 of 88 async route handlers block the event loop**
-  (corrected from an earlier 58/89: the adversarial review found undercounts in
-  3 of 7 spot-checked files; "at least" because the detection method is pattern
-  matching and cannot see indirect calls — `services/quality/routes.py:40` reaches
-  a blocking read through `observability.runtime_findings()`, one level removed
-  from what the grep matched). A census of all 17 `routes.py` files plus `main.py`
-  found blocking is the *dominant* pattern in the route layer, not an exception.
-  Worst confirmed: **`/api/quality/summary` — 358 calls (18.3/hr) at 11.59–33.35 s
-  across 3 independent measurements, no caching found, ~1.2–3.3 event-loop-blocked
-  hours (6–17 % of the 19.6 h observation window) — a range built on variable
-  per-call cost, not a fixed constant** (undispatched `alerting.active_alerts()`,
-  `fault_log.summary()`, `research.latest()`, and the indirect `runtime_findings()`
-  path above; note `diagnostics.run_offline()` is **not** implicated — PR #424
-  already made it async). **Severity is not uniform and the count is a poor
-  guide:** `/api/state` is the most-polled endpoint yet costs 0.06–0.52 s.
-  Prioritise by cost × call-frequency, using the nginx access log for frequency,
-  not intuition. **Fixing all 63 is explicitly not the recommendation** — see
-  `tick_executor.connection_for()`'s deliberate non-wiring and PR #424's
-  built-then-reverted pool. Full census: PR #537 (open).
-- **Issue #532 — `rejection_events` (22.6 M rows) is one table outgrowing three
-  access patterns**, not three independent findings: the 34 s `count_range`
-  (#510/#512), a `population_gate_summary()` scan that went ~4.8 s → 24–31 s as
-  the table grew 6.2 M → 22.6 M since 2026-08-26 (#410 — **already dispatched and
-  cached, so this is capacity, not a missing `tick_executor.run`**), and the
-  3.6 GB store that held Task 3's leaked handles. No fix proposed: retention
-  discards accumulated history, which is a first-class asset and a human
-  decision.
-- **`market_history.db` watch:** it was genuinely corrupt on 2026-09-02
-  (recovered via SQLite `.recover`; original quarantined). A **new, single,
-  unexplained** `disk I/O error` hit `market_history.py:234` at 12:07 UTC.
-  Checked: `PRAGMA quick_check` returns `ok`, ownership is clean
-  (`davidf:davidf`, PR #387's container-user fix holding), disk 23% used. The
-  older `readonly database` / `unable to open` faults on this file are
-  pre-PR-#387 history, not current. **Escalation threshold: a second
-  `disk I/O error`, or any `malformed`, escalates immediately.**
-
-## Process note for whoever resumes
-
-Peer sessions work in `.claude/worktrees/`; the primary checkout is the
-coordinator's and is parked on `main`. **A branch switch in the primary reloads
-the live app** — one on 2026-09-03 at 11:56 UTC rewrote every `.py` that `main`
-had gained since the switched-from branch forked, firing uvicorn `--reload`
-twice and replacing the worker. Diagnose any unexplained reload with
-`git reflog --date=iso` in the primary first.
-
-**Merging is not deploying.** `gh pr merge` is remote-side; the live app runs
-from the primary's working tree, which only changes when someone pulls — and
-that pull *is* the deploy, since it rewrites the bind mount and fires the
-reload. A merged PR can sit un-deployed indefinitely. **This already happened**:
-after PR #522 merged, a coordinator-directed fd-leak check on `candidate_log.db`
-was run and read against a worker process that had already exited — the check's
-own PID-liveness method (inode ctime, which drifts and can misreport a running
-process's age) misidentified which process was current. The mistake was caught
-by cross-checking `/proc/<pid>/stat` field 22 (real start time) against
-`/proc/stat`'s `btime`, which identified the actual deployed worker; the check
-was then redone against that PID and passed cleanly. **This exchange lived only
-in cross-session chat, never a PR comment or doc**; an adversarial reviewer of
-a later doc citing this could not corroborate it from the repo alone, which is
-itself evidence for why it needs saying here with this much specificity.
-Verify a deploy with **both**
-`git merge-base --is-ancestor <merge sha> HEAD` **and** a `WatchFiles detected
-changes in … <file>` line in `ddev logs -s fastapi` — only the log line proves
-the running process picked it up. Wait for the merge commit's own CI (it is a
-new, untested combination, not the already-green PR head), and never measure a
-worker in its first few minutes: `last_tick_duration_sec` reads `None` and
-`open_fds` is artificially low during warm-up. When identifying *which* process
-is the current worker, use `/proc/<pid>/stat` field 22 + `/proc/stat`'s `btime`
-for real start time — not inode ctime, and not a `docker top`-reported PID
-without confirming it resolves inside the container's own PID namespace.
-
-`docs/SESSION_CRASH_RECOVERY.md` holds the per-role onboarding procedure if a
-session is lost.
-
-**Second live incident today from an unattended test loop in the shared
-fastapi container (2026-09-03 ~22:14-22:31 UTC), same class as the earlier
-`verify_race_fix.sh` one:** a session's own `for i in seq 1 40; do pytest
-...; done` concurrency-verification loop (issue #543 work) drove the shared
-container to 259% CPU and thousands of unreaped zombie processes; the ASGI
-worker child crashed under that contention (no OOM, no traceback — a hard
-kill signature) and uvicorn's `--reload` supervisor never respawned it,
-leaving the listening socket open with nothing behind it (nginx logged
-`upstream timed out reading response header`, not `connection refused` —
-that distinction is what identifies this failure shape). 12 minutes of total
-app silence. Fixed by `ddev restart` once the diagnosis was confirmed (worker
-child zombie, supervisor idle, no self-healing in progress) — recovered
-clean, `data/*.db` untouched (bind-mounted, persists across container
-restart). **Two sessions issuing `ddev restart`/`ddev stop` concurrently
-during recovery caused a second, avoidable collision** (duplicate renamed
-containers) — when a live incident needs a restart, one session drives it and
-says so explicitly before acting, the rest hold. The standing rule this
-reconfirms: never leave a multi-iteration test loop running unattended in the
-fastapi container, and treat it as a real, dated incident, not "it'll finish
-on its own."
+**Consequence for the bankroll-reset/re-enable-trading question David asked
+to be alerted on:** unchanged in substance, but #578/#532 move from "design
+questions" to "mechanical cleanup once #577 lands" — meaning the actual
+gating conditions are now #574 (fully fixed, including the newly-found
+YES-side mirror gap below) and #577, not the data-recovery question that
+was previously a separate open design thread.
 
 ---
 
-Superseded status snapshots are deliberately not kept in this file, because
-`orient.sh` prints the whole thing into every session banner. Previous versions
-are in git (`git log -p --follow docs/next-action.md`); parked decisions live in
-`docs/open-decisions.md`, which the same banner prints separately.
+
+**Policy confirmed explicitly (David, 2026-09-05): the lean-execution amendment
+(#587) applies to the full "nothing advances on one pass" research → design/spec
+→ implementation-plan pipeline, not only PR review cycles.** Tonight's #577/
+#578/#579/#580 work has run this pipeline informally (GitHub issue comments
+for investigation and design, not formal `docs/superpowers/` staged
+documents) — that's fine, don't retroactively formalize what's already done.
+Going forward, any stage of this pipeline that produces its own artifact
+still needs self-review + independent adversarial review + consolidation
+genuinely present, but sized to the content: no restated context, no
+ceremony, no artifact inflated beyond what the work actually calls for.
+Shrink artifacts, never skip one — same rule as before, now stated as
+covering the whole pipeline explicitly.
+
+# SESSION RECONCILIATION — reduced fleet, 2026-09-05 ~08:5x UTC (container-local)
+
+David closed several terminals ("removed a few sessions") and kept 4. Coordinator
+is now `autotrade-05` (chain: `1f` -> `48` -> `01` -> `05`, all one continuous
+session, no memory loss — only the SendMessage name keeps changing on reconnect).
+
+**New lesson, learned the hard way this round:** `ListAgents`' "started Xm ago"
+is **not evidence of a fresh, memory-less session**. The coordinator assumed all
+4 remaining peers were brand-new workers based solely on that field and briefed
+them as such — wrong for at least one of them (`autotrade-32` turned out to be
+`autotrade-8d`/`df`, PR #574's author, mid-hold, with full memory). "Started Xm
+ago" reflects when the *terminal/process* attached, not whether conversation
+memory survived. Verify identity by direct reply, every time, same discipline
+as the WSL-restart roster problem — this is the same failure shape one layer up.
+
+**Confirmed identity mapping for the current 4-session fleet (by direct reply,
+not inferred):**
+
+| current | actually is | role |
+|---|---|---|
+| `autotrade-32` | `autotrade-8d` (was `df`) | PR #574 author, holding |
+| `autotrade-07` | former `autotrade-7e` lineage (perf/I/O specialist from the earlier incident) | PR #574 independent reviewer — genuinely fresh to #574, dispatched its own fresh subagent |
+| `autotrade-bd` | `autotrade-24` (was `d2`) | PR #575 owner, mid-revision (8/16 fix-list items done as of this write) |
+| `autotrade-62` | `autotrade-a2` (was `64`) | was #577/#578 owner; **now also covers app-health watch** (see below) |
+
+**Confirmed genuinely gone** (three independent testimonies, not one absence):
+`autotrade-71` (was #574's prior independent reviewer — its work is superseded
+by `07`'s fresh pass, not resumed) and `autotrade-ef` (was app-health watch
+owner, #576/#579/#580). Nobody currently holds `ef`'s identity; `62`/`a2` has
+taken the watch role in addition to #577/#578 since #577/#578 are both blocked
+(pending #574, pending David) and have spare bandwidth.
+
+**Two documentation-drift findings from `62`/`a2`'s status sweep, being posted
+to GitHub now (do not treat this doc as the durable record for either):**
+- **#582** was auto-closed by PR #583's title keyword (04:08:19Z) *before*
+  #583's own stated condition — #581 merging and its figures being confirmed
+  — was actually met (#581 merged 04:20:47Z, 12 minutes later). Zero comments
+  on #582 ever. Needs reopening + the confirmation #583 promised, or an honest
+  note about what's still unconfirmed.
+- **#532**'s current figures (29.6M rows, 45.3 rows/sec measured over a 62s
+  bracket -> 3.91M/day, 99.0% from one gate, the 4.2x/week-decaying-to-1.9x/week
+  analysis) exist **only in this doc** — #532 itself has exactly one comment,
+  from 07:31Z, citing the older 25.8M/4.2x figures. Exactly the failure this
+  file's own closing rule warns about: state that should be durable on an
+  issue, sitting instead in a file this file itself calls liable to rot.
+
+Also: an unplanned `ddev` container rebuild happened during this session's own
+pipeline-health check (~08:44Z container-local time) — recovered cleanly,
+fastapi healthy, `0 oldest dropped` in the capture_writer retry warnings.
+Cause not chased; noted in case it recurs.
+
+---
+
+# POST-RESTART STATUS — two-way comms re-established, 2026-09-05 ~03:3x UTC
+
+**Coordinator identity update (~04:3x UTC):** was `autotrade-48`, now
+`autotrade-01` after the coordinator's own terminal was accidentally closed
+and reopened — same session, same full context, nothing lost, just a new
+name. `48` is gone and will not respond; route to `autotrade-01`. If this
+happens again, verify via a direct reply before assuming continuity, same as
+every other identity claim tonight.
+
+Coordinator was `autotrade-1f` before the WSL restart, then `48`, now `01`. All 8 pre-restart peers accounted
+for and confirmed via direct reply, not `ListAgents` alone — a transient
+duplicate session (`autotrade-a7`) appeared for ~2s during startup and vanished
+on its own; harmless, but a reminder that a fresh `ListAgents` snapshot right
+after a mass restart can show a ghost.
+
+**Identity mapping (old name -> new name), confirmed by each session's own
+reply, not assumed:**
+
+| old | new | inherited memory? | owns |
+|---|---|---|---|
+| `d2` | `autotrade-24` | yes | PR #575 |
+| `df` | `autotrade-8d` | yes | PR #574 (author) |
+| `36` | `autotrade-71` | yes | PR #574 (independent review) |
+| `21` | `autotrade-ef` | yes | app-health watch, #576/#579/#580 |
+| `64` | `autotrade-a2` | yes | #577/#578 |
+| `8f` | `autotrade-bf` | **NO — came back with zero memory** | PR #581 (#410) |
+
+**The one loss from the restart: `8f`'s successor session lost all memory of
+the #410/#581 work.** Nothing was lost from the repo's side — PR #581, its
+branch, and all 3 comments (self-review, production-scale equivalence check,
+full adversarial NO-GO with 10 findings) survived on GitHub untouched. The
+session has been re-briefed to re-orient from the PR directly rather than from
+memory. Two portfolio-named sessions (`portfolio-96`, `portfolio-cd`) both
+confirmed they are on a **different, unrelated repo** (`~/code/portfolio`
+infra/traefik work) and were never autotrade workers.
+
+**Do not assume names above stay stable.** They are current as of this
+banner's timestamp; verify via a reply if it matters later.
+
+---
+
+# CRASH RECOVERY — planned WSL restart, 2026-09-05 ~03:1x UTC
+
+Written by coordinator `autotrade-1f` immediately before a **deliberate** WSL
+restart. All 8 sessions, the ddev containers, and the live app went down at
+once. This is the resume point. Read it fully before doing anything.
+
+## 0. What survives, what does not
+
+**Survives:** the filesystem — so all git commits (including unpushed ones on
+local `main`), all working-tree changes, and every `data/*.db` are intact.
+`config/settings.yaml`'s uncommitted `auto_exit_enabled: false` is **on disk**
+and therefore still in force after restart. Good.
+
+**Does NOT survive:** every session's conversation memory; any in-flight
+subagent (unrecoverable, and none had returned); background tasks and CI
+waiters; `/tmp` scratchpads (see §5); the app's in-memory queues.
+
+**⚠️ The single most likely post-restart mistake:** the app's queues start
+empty, so `ingest.dropped_messages` resets to **0** and
+`settlement_resolver.pending` drains. **#579's 14,172 is a historical figure,
+not a live counter.** A post-restart reading of 0 does **not** mean the defect
+is fixed — it means the counter was reset. Do not close #579 or #580 on it.
+
+The restart also **destroyed a natural experiment**: we were waiting to see
+whether drops resumed as the settlement backlog drained, which would have
+tested #580's hypothesis for free. That evidence is gone; #580's falsifier now
+has to be met deliberately (per-task `tick_executor` timing, or inbound trade
+rate flat while drain falls).
+
+## 1. First five minutes
+
+1. `ddev describe` — expect it down. `ddev start`. Then `ddev logs -s fastapi`
+   and watch the **cold start**: a 33 GB `series_watcher.db` and a 4.8 GB
+   `candidate_log.db` with empty page cache is exactly when a cold-start
+   pathology shows. **#549** (fault_log WAL cold-start race) is a known one.
+2. `GET /api/state` — confirm `running: true`, both WS streams connected.
+3. **🚨 THE DAILY-LOSS KILL SWITCH IS NON-FUNCTIONAL — see #584.** The UTC
+   rollover re-based `day_start_bankroll` to the *negative repaired* value
+   (-8338.35) and cleared `halted` -> 0 **automatically, not by a human**.
+   Nothing is trading, so nothing is at risk this instant — but there is **no
+   working loss guard** if anything resumes before David resets the bankroll.
+   Check this before anything is allowed to trade. Do not "fix" it by editing
+   risk state; the bankroll reset is David's own action.
+4. **Verify the safety state:**
+   `grep -n auto_exit_enabled config/settings.yaml` must read **`false`**, and
+   `git status --short config/settings.yaml` must still show ` M`. If either
+   changed, something reset it — say so loudly, do not "fix" it silently.
+5. `git status --short` and `git log origin/main..HEAD --oneline` in the
+   primary. Expect ~20 unpushed commits on `main` (see §5).
+6. `ls /run/user/1000/cc-socks/*.sock` + `/proc/<pid>` to see who is actually
+   back. **Do not trust `ListAgents` alone** — it showed a dead coordinator as
+   live earlier tonight. `readlink /proc/<pid>/cwd` names each session's
+   checkout and gives worktree occupancy for free.
+
+## 2. Session roster and where each was
+
+Names change on restart. Re-derive ownership from **branches, PRs and issue
+comments**, never from a remembered name. This table is who was doing what,
+so the work can be reclaimed — not an assignment to a name that no longer exists.
+
+| was | work | state at shutdown |
+|---|---|---|
+| `1f` | coordinator | this doc; PR **#583** open, revised, awaiting CI |
+| `df` | PR **#574** (author) | CI green at `219a350`; **merge held** |
+| `36` | independent review of #574 | pass in flight at `219a350` — **killed** |
+| `8f` | PR **#581** (#410) | `37687b9` pushed (WIP); adversarial **NO-GO**, 10 findings |
+| `d2` | PR **#575** | self-review posted, NO-GO; adversarial in flight — **killed** |
+| `64` (now `autotrade-a2`) | **#577** design, filed **#578** | **posted** (comment 5549041032, labeled INCOMPLETE) — confirmed by the session itself post-restart; only this row was stale, the #578 coverage numbers below were already correct |
+| `21` | app-health watch | filed **#576/#579/#580**; final readings posted |
+
+Also filed at shutdown: **#584** (kill switch non-functional). All six workers
+confirmed clean shutdown: nothing uncommitted, nothing unpushed, and every
+piece of chat-only state posted to a PR or issue first.
+
+**Both adversarial passes died to API rate limits, not to findings** - `d2`'s
+confirmed exactly one item (S4) before dying; `36`'s finished primary-source
+gathering and never wrote a review. Both posted INCOMPLETE comments. **Silence
+on the unchecked items is not "found nothing".** A fresh pass must run from
+scratch for #574 and #575.
+
+**Anything marked "killed" returned no verdict.** If a PR comment claims a
+review was running, it did not finish. Do not assume a GO.
+
+## 3. Merge gates — nothing merges without these
+
+- **#574** (`fix/no-side-exit-valuation`) — NO exits priced at `1 - yes_bid`
+  instead of `1 - yes_ask`, paying $1.00/contract on an empty book. CI green at
+  `219a350`. **Needs a fresh independent adversarial review + consolidation at
+  the current head, posted as PR comments.** Five defects found across four
+  rounds and *each fix introduced the next*; the fifth (`sellable_quote`'s
+  zero-ask twin in the automated path) was found after round 4 said GO. Its
+  standing consolidation comment says "four adversarial rounds → **GO**" but
+  covers `c09b730`, **not** the current head — do not merge on it.
+- **#575** (recovered crash-recovery draft) — `d2`'s NO-GO stands; ≥3 HIGH
+  findings unaddressed.
+- **#581** (#410 aiosqlite split) — **adversarial review returned NO-GO as
+  submitted, 10 findings, posted in full** (comment 5549045515). F2 fixed and
+  F5 partially fixed in `37687b9` (WIP, 43/43 affected tests passing); **F3,
+  F4, F6, F7, F9 remain open** and **no consolidation is written**. Re-read CI
+  from `gh api .../commits/37687b9/status`, never from memory — it was
+  resolving normally at shutdown, which contradicts F1's "webhook silently
+  broken" finding, so F1 may be stale or the breakage transient.
+- **#583** — **MERGED** (`78d1a9c`).
+- **#581** — **MERGED** (`0840adc`), #410's aiosqlite split, closes the
+  tick_executor-contention mechanism behind #579/#580.
+- **#575** — **MERGED** (`3d8e642`, 2026-09-05T09:29:54Z). Full cycle
+  completed by `bd` (formerly `24`/`d2`): self-review, genuinely independent
+  adversarial review, consolidation, revision against a 16-item fix list,
+  item-by-item recheck (plus one self-caught extra defect — `git log`'s
+  repeated `-S` flag is last-wins, silently drops earlier terms). Also
+  diagnosed a real Woodpecker tunnel outage mid-merge (public endpoint 502,
+  container itself healthy) without touching shared `ci-cd`/`traefik` infra;
+  documented remedy (`gh pr close`/`reopen` to regenerate the webhook) worked
+  on the second attempt, exactly as the doc predicted.
+- **#574 — MERGED** (`244372b`, 2026-09-05T09:41:47Z, CI 12/12 success at
+  `1f654a2`). **Six review rounds total, five real defects found and fixed,
+  every one the identical shape** — an invariant enforced in one of two
+  symmetric places (YES vs NO side, `sellable_quote` vs `forced_exit_quote`,
+  module vs test comment). The exit-valuation bug behind the fake
+  $10k→$106k paper run is fixed on `main`. **Not deployed yet** — the live
+  app only picks this up once someone pulls into the primary and it
+  reloads; `auto_exit_enabled` stays paused (uncommitted, deliberate) until
+  David decides to re-enable it. Merging does not do that automatically,
+  and per the PR's own body the fix alone still doesn't justify it — the
+  YES-side auto-exit profit (279 exits, +$68,589) remains unexplained
+  (`07`'s investigation ruled out the newly-found YES-side mirror bug as
+  the cause; the selection-bias alternative is untested).
+
+## 4. Open issues, current as of shutdown
+
+**#579** trade-class whale-print loss — 14,172 (0.518%), gate-survivors,
+permanently unarchived, `QueueFull` in `_ingest_raw()` before the consumer.
+Root cause **open**. The diagnostic-route hypothesis is **falsified** for that
+burst (routes unhit for 78 min before it). · **#580** settlement backlog
+104→2322, shares a 2-worker `tick_executor` pool with the whale-print critical
+path; leading **by elimination**, falsifier unmet. · **#577** `or 0.5`
+fabricated bids, 5 sites; root fix must be deeper than `or → is None`
+(a real `0.0` bid is mishandled, and wire types are mixed: 146 float / 38 str /
+25 None in one payload). · **#578** up to 1.43M contaminated snapshots;
+**6,504 provably** fabricated is the only hard bound. **Re-derivation coverage
+IS measured** (comment 5547552268): 14,246 of 1,433,666 sampled against
+`series_watcher.book_snapshots` -> **48.8% recoverable** (4.0% within +/-5s,
+13.4% +/-30s, 31.5% +/-300s); 51.2% have no raw coverage. Of recovered rows
+**93.2% were a real `0.0` bid, not a real 0.5** - so purge collateral damage
+drops from "up to 1.4M genuine values" to roughly **0.5% (~7k)**, which makes
+a purge far less costly than this doc's earlier framing implied. · **#576**
+ticker-coalescing starvation. · **#582** #571's cost mis-attribution (PR #583).
+· **#532** `rejection_events` — see §6.
+
+## 5. Traps specific to this restart
+
+- **`/tmp` scratchpads may be gone.** A git worktree for PR #583 lived at
+  `/tmp/claude-1000/.../scratchpad/wt-571`. Its branch
+  `docs/571-cost-attribution-correction` **is pushed**, so no content is lost,
+  but git may hold a stale registration: run `git worktree prune`.
+- **~20 unpushed commits sit on the primary's local `main`**, including
+  David's `ef662c0` (`kelly_fraction_of_cap` + `KXBTC15M`) and four
+  coordinator docs commits (this file's history). They survive the restart.
+  **Do not push them as a batch** — `ef662c0` is David's to push, and the docs
+  commits belong on a branch. `origin/main`'s copy of this file is stale and
+  still describes a messaging outage that ended hours ago.
+- **~40 worktrees under `.claude/worktrees/`.** Under WSL2 `watchfiles` has no
+  inotify and polls, so each one costs the live app real CPU on every reload
+  cycle. If the app is slow after restart, check the reload watcher before
+  blaming the app.
+- Do not `rm`/`mv` any `data/*.db`. Prefer `POST /api/reset` over deleting
+  `paper_broker.db`.
+
+## 6. Decisions waiting on David — unchanged by the restart
+
+1. **`auto_exit_enabled`** stays paused; re-enabling is his call after #574
+   merges *and* is observed live. Merging does not re-enable it, and merging
+   does not deploy it — the live app only updates when someone pulls.
+2. **`ef662c0`** needs a home.
+3. **Rebuild plan** — his stated intent: scrap the derived datasets, rebuild on
+   `signal_log`. Premise **verified on corruption** (`signal_log` preserves
+   NULLs — 32,915 of 316,258; 1.25% at 0.5 vs `market_history`'s 29%; `correct`
+   comes from Kalshi settlement) but **holed on completeness** (#579).
+   Coordinator recommendation: scrap `market_history.snapshots`, the
+   calibration cache and `paper_broker` history; **keep `signal_log` and
+   `series_watcher` raw payloads** (33 GB, the only re-derivation source);
+   **fix #579 before starting the clean dataset**, or it inherits the same
+   burst-biased hole.
+4. **#532** — 29.6M rows, **99.0% from one gate** (`min_contracts`, which has
+   ~23.8M resolved samples against a `min_samples=30` threshold). Coordinator
+   recommendation: **sample `min_contracts` at write time, keep every other
+   gate whole** — a retention window is backwards, since the fragile gates
+   (`market_unresolved` at 21 resolved, `min_whale_winrate_pct` at 384) are 1%
+   of volume. Measured growth **45.3 rows/sec → 3.91 M/day**; the "4.2x/week"
+   multiplier **decays as the base grows while the absolute rate does not** —
+   at ~3.9 M/day it is ~1.9x/week now, so a future reader will wrongly think it
+   is easing.
+5. **Unexplained YES-side profit** (279 exits, +$68,589) that #574 does not
+   account for.
+
+## 7. Standing rules that outlived tonight
+
+- **Post to a PR or issue, not to chat.** Every serious loss tonight was state
+  that lived only in a session that then died.
+- **Never leave an assignment in this file that was not confirmed received by
+  the session named.** The previous revision invented three, and three sessions
+  nearly collided on #574 as a result.
+- **Check the artifact against live state, from the right vantage point.** Five
+  times tonight a claim was true when written and had quietly stopped being
+  true — twice the claim was the coordinator's own, including a `grep` of a
+  local working tree asserted as a fact about `origin/main`.
+- **No knob changes** to queue capacity, worker counts, subscription scope or
+  rates without a measured bottleneck and its mechanism.
