@@ -116,6 +116,26 @@ Two limits, both real, so do not overstate it:
   per-task timing on `tick_executor`, or inbound trade-rate flat while drain
   falls. Not clean same-instant correlation yet — the queue drained while the
   backlog was still climbing.
+- **FALSIFIED as this burst's cause — do not re-chase it:** a second
+  hypothesis held that the diagnostic routes were the occupancy source
+  (`GET /api/candidate-log/summary` runs `population_gate_summary()` via
+  `tick_executor` for **18-22s**, holding one of the two workers, on a route
+  the dashboard polls ~every 30s; `/api/confidence-calibration/report` adds
+  ~7s). The structural fact is **true** and independently verified against
+  source by two sessions — but `docker logs --timestamps` on the container
+  shows the **last hit on either route was 01:10:17Z**, while the burst ran
+  **~02:28-02:35Z**: a 78-minute gap before it began and **zero hits during
+  it**. The precondition was absent, so it did not cause this incident. It
+  remains a genuine latent hazard that fires whenever a dashboard is open,
+  and #410 removes it — but #410 must **not** be described as a fix or
+  mitigation for #579. So #580's line is leading **by elimination**, which
+  is not the same as demonstrated: its own falsifier is still unmet.
+- A dense polling cluster on those routes ~20:25-21:53 UTC *does* overlap the
+  earlier #576 ticker-coalescing episode (21:28-21:35). Different message
+  class, different mechanism — logged as a timing fact and a lead for #576,
+  **not** asserted as causation.
+- `dropped_messages` flat at **14,172** since filing (checked 02:42Z) — no
+  step change. That number is the input to the rebuild-timing decision.
 - **No knob changes.** Raising queue capacity converts a counted drop into an
   invisible latency backlog — already a timeliness failure — and destroys the
   evidence. Any mitigation comes to the coordinator with a mechanism first.
