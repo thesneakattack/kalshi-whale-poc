@@ -7,12 +7,13 @@ confidence_calibration.py/calibration_history.py have zero cross-imports
 with any other analytics sibling (checked directly before this split), the
 cleanest of the modules pulled out this pass.
 """
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services import signal_log, tick_executor
+from services import signal_log
 from services.config import config_performance
 from services.app_state import bump_generation
 from services.config.config_store import config_store
@@ -38,6 +39,48 @@ CALIBRATION_AUTO_APPLY_CONFIRMATION_PHRASE = "ENABLE CALIBRATION AUTO APPLY"
 
 class EnableAutoApplyBody(BaseModel):
     confirmation_phrase: str
+
+
+async def _build_report_async(cc_cfg: dict, current_weights) -> dict:
+    """Builds the calibration report without occupying a tick_executor
+    worker. Issue #410, implementing docs/superpowers/specs/2026-09-04-
+    issue-410-pool-vs-aiosqlite-design.md.
+
+    ONE helper for what were two byte-identical `def _build_report()`
+    closures - the polled GET /api/confidence-calibration/report and the
+    human-initiated POST /api/confidence-calibration/apply. The design names
+    "_build_report()" in the singular; there were in fact two, both on
+    tick_executor, and converting only the polled one would have left a
+    second ~7s blocking occupant on a 2-worker pool shared with
+    candidate_ledger.claim()/record_decision() on the live per-signal
+    decision path. A deliberate, stated extension of that design's scope,
+    not a silent one.
+
+    The work splits in two, and BOTH halves must stay off the event loop:
+
+      SQL fetch ....................... 0.884s  -> aiosqlite (yields natively)
+      json.loads + dict build ......... 2.691s  -> asyncio.to_thread
+      _bucket_win_rates x 9 factors ... 4.383s  -> asyncio.to_thread
+
+    (measured at implementation time against the live 295,807-row table;
+    the design's Sec 6 asks for exactly this re-confirmation. Its Sec 1
+    put the compute pass at ~3.4s - the real figure is 4.383s, stated here
+    rather than quietly rounded to the design's number.)
+
+    The middle line is the one the design's Sec 1 table hides: it folds
+    json.loads into the word "fetch", so implementing that table literally
+    would move 0.9s off-thread and drop 2.7s of GIL-holding work ONTO the
+    event loop - a regression, and precisely the trap
+    services/diagnostics/_aio_db.py's docstring already records for
+    run_offline(). signal_log.resolved_signals_with_factors_async() is what
+    keeps both halves off the loop; see its docstring for why the default
+    executor is safe here (20 workers, no *sustained* trading hot-path
+    contention - verified, not assumed)."""
+    rows = await signal_log.resolved_signals_with_factors_async()
+    return await asyncio.to_thread(
+        confidence_calibration.generate_calibration_report,
+        rows, cc_cfg["min_resolved_signals"], current_weights,
+    )
 
 
 @router.post("/api/confidence-calibration/auto-apply/enable")
@@ -110,36 +153,36 @@ async def get_confidence_calibration_report():
             "evidence_provenance": evidence_provenance.current_completeness_state(),
         }
 
-    # Offloaded via tick_executor (2026-08-26 fix, ROADMAP.md's event-loop-
-    # stall entry) - proven live via a py-spy stack trace to run the fetch
-    # (signal_log.resolved_signals_with_factors, one JSON-parse per row)
-    # and the per-factor bucket analysis (confidence_calibration._bucket_
-    # win_rates, one sort+filter pass per factor) directly on the event
-    # loop, on every dashboard poll of this route.
+    # Was offloaded via tick_executor (2026-08-26 fix, ROADMAP.md's event-
+    # loop-stall entry) - proven live via a py-spy stack trace to run the
+    # fetch (signal_log.resolved_signals_with_factors, one JSON-parse per
+    # row) and the per-factor bucket analysis (confidence_calibration.
+    # _bucket_win_rates, one sort+filter pass per factor) directly on the
+    # event loop, on every dashboard poll of this route.
+    #
+    # Now split between aiosqlite and the default executor instead, and off
+    # tick_executor entirely - issue #410, see _build_report_async below.
     current_weights = config_store.get().get("whale_confidence_weights")
-
-    def _build_report():
-        rows = signal_log.resolved_signals_with_factors()
-        return confidence_calibration.generate_calibration_report(
-            rows, cc_cfg["min_resolved_signals"], current_weights
-        )
 
     now = time.time()
     if _report_cache["cached_at"] is not None and (now - _report_cache["cached_at"]) < _REPORT_CACHE_TTL_SEC:
         result = dict(_report_cache["value"])
     else:
-        result = await tick_executor.run(_build_report)
+        result = await _build_report_async(cc_cfg, current_weights)
         # Stamped at COMPLETION, not the `now` captured on request receipt
         # above - same issue #410 cache-alignment bug as services/analytics/
         # routes.py's _population_gates_cache (docs/superpowers/research/
         # 2026-09-04-issue-410-tick-executor-measurement.md Sec 3.4).
-        # _build_report()'s real cost is ~5.5s (a ~2s fetch plus a ~3.4s
-        # pure-Python _bucket_win_rates/_factor_report pass), so it burned a
-        # smaller but still material share of its own 30s TTL before the
-        # entry was written. This route is polled in the same batch as
-        # candidate-log/summary by refreshHistoryInsightsIfActive(), so both
-        # missing together is what can occupy both tick_executor workers at
-        # once.
+        # _build_report_async()'s real cost is ~8.0s, re-measured 2026-09-04
+        # against the live 295,807-row table (0.884s SQL + 2.691s json.loads
+        # + 4.383s bucket/factor pass), so it burned a smaller but still
+        # material share of its own 30s TTL before the entry was written.
+        # This route is polled in the same batch as candidate-log/summary by
+        # refreshHistoryInsightsIfActive(); before issue #410 both missing
+        # together could occupy both tick_executor workers at once, which is
+        # what made the alignment urgent. Neither route touches that pool any
+        # more, so the alignment now just halves the miss rate rather than
+        # protecting the trade path.
         _report_cache["cached_at"] = time.time()
         _report_cache["value"] = result
     result["evidence_provenance"] = evidence_provenance.current_completeness_state()
@@ -170,13 +213,14 @@ async def apply_confidence_calibration_suggestion():
     current_fp = config_performance.fingerprint(cfg)
     current_weights = cfg.get("whale_confidence_weights") or {}
 
-    def _build_report():
-        rows = signal_log.resolved_signals_with_factors()
-        return confidence_calibration.generate_calibration_report(
-            rows, cc_cfg["min_resolved_signals"], current_weights
-        )
-
-    result = await tick_executor.run(_build_report)
+    # Same _build_report_async as the polled report route above (issue
+    # #410). This route is human-initiated rather than polled, so it is the
+    # less frequent of the two - but a click still cost ~7s of one
+    # tick_executor worker, on a 2-worker pool shared with
+    # candidate_ledger.claim()/record_decision(). The design named
+    # "_build_report()" singular; there were two identical copies, and
+    # converting only one would have left this occupancy in place.
+    result = await _build_report_async(cc_cfg, current_weights)
     if result["report"] is None:
         raise HTTPException(status_code=400, detail=result["gated_reason"])
 

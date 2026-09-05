@@ -15,6 +15,7 @@ import asyncio
 
 import pytest
 
+from services import tick_executor
 from services.analytics import routes as analytics_routes
 
 
@@ -31,22 +32,52 @@ def _reset_population_gates_cache():
     analytics_routes._population_gates_cache = {"cached_at": None, "value": None}
 
 
-def test_candidate_log_summary_runs_population_gate_summary_via_tick_executor(monkeypatch):
-    calls = []
+def test_candidate_log_summary_never_routes_population_gates_through_tick_executor(monkeypatch):
+    """Deliberately the INVERSE of the assertion this test made until issue
+    #410 (it was named ..._runs_population_gate_summary_via_tick_executor).
 
-    async def _spy_run(fn):
-        calls.append(fn)
-        return fn()
+    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+    Sec 5 asks for exactly this inversion as its permanent
+    detection-for-recurrence: the route must reach candidate_log's native
+    aiosqlite path, never tick_executor's 2-worker pool, which is shared
+    with candidate_ledger.claim()/record_decision() on the live per-signal
+    decision path. A future refactor that silently routes this 15-22s query
+    back onto that pool fails here instead of quietly costing trade
+    latency.
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
+    Guards at the mechanism level rather than the function name (adversarial
+    review of this PR, finding F5): patching `tick_executor.run` misses a
+    call reached via `from services.tick_executor import run as _te_run`
+    (the name is bound before the patch applies) and misses a call made
+    from INSIDE a function this same test stubs out (population_gate_
+    summary_async here is fully replaced, so a tick_executor call moved
+    inside it would never execute). Both were reproduced live against the
+    pre-fix version of this test. `tick_executor.run()`'s own body
+    (services/tick_executor.py) is `loop.run_in_executor(_executor, fn)`,
+    which CPython's asyncio implements as `_executor.submit(fn)` - patching
+    `_executor.submit` directly is therefore the actual choke point: any
+    call that reaches this pool, by any name, any import alias, from any
+    call depth, submits work to this one ThreadPoolExecutor instance."""
+    submitted = []
+    async_calls = []
+    original_submit = tick_executor._executor.submit
+
+    def _spy_submit(fn, *args, **kwargs):
+        submitted.append(fn)
+        return original_submit(fn, *args, **kwargs)
+
+    async def _stub_async(min_samples):
+        async_calls.append(min_samples)
+        return [{"stub": "pop"}]
+
+    monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_async)
 
     result = asyncio.run(analytics_routes.get_candidate_log_summary())
 
-    assert len(calls) == 1
+    assert submitted == [], "population_gates must not submit any work to tick_executor's pool any more"
+    assert async_calls == [30], "the async aiosqlite path should have been called once, with min_samples"
     assert result == {"gates": [{"stub": "gates"}], "population_gates": [{"stub": "pop"}]}
 
 
@@ -59,15 +90,12 @@ def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch
     existing comment documents the pre-2026-08-26-fix 17-38s figure)."""
     calls = []
 
-    async def _spy_run(fn):
+    async def _spy_async(min_samples):
         calls.append(1)
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     asyncio.run(analytics_routes.get_candidate_log_summary())
     asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -81,15 +109,12 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
     _POPULATION_GATES_CACHE_TTL_SEC between the two calls."""
     calls = []
 
-    async def _spy_run(fn):
+    async def _spy_async(min_samples):
         calls.append(1)
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _spy_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     fake_now = [1_000_000.0]
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
@@ -122,16 +147,13 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
     fake_now = [1_000_000.0]
     query_duration_sec = 20.0
 
-    async def _slow_run(fn):
+    async def _slow_async(min_samples):
         calls.append(1)
         fake_now[0] += query_duration_sec  # the query itself takes 20s
-        return fn()
+        return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.tick_executor, "run", _slow_run)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
-    monkeypatch.setattr(
-        analytics_routes.candidate_log, "population_gate_summary", lambda min_samples: [{"stub": "pop"}]
-    )
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _slow_async)
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
 
     # Poll 1 fires at t=0, completes at t=20.

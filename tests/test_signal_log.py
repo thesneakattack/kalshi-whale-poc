@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -775,3 +776,195 @@ def test_connect_closes_on_setup_failure(tmp_path, monkeypatch):
 
     assert raised is not None and "schema init failed" in str(raised)
     assert closed == [True], "connection must be closed even when setup (PRAGMA/_init_schema) raises before the try block"
+
+
+# --- resolved_signals_with_factors_async / _ensure_schema_aio /
+# materialize_signals_with_factors (issue #410) -----------------------------
+#
+# Adversarial review of this PR, finding F4: before this, only monkeypatch
+# stubs of the async name existed, in tests/test_whale_calibration_routes.py.
+# The reviewer wrote and ran an ad hoc probe confirming correctness on
+# fresh-DB self-heal, since_ts filtering, ORDER BY seen_at, and malformed/
+# excluded-row handling against production data - code was correct, but
+# shipped on that equivalence claim rather than a repo test. These codify
+# what the probe checked so it survives as a permanent guard, not one
+# reviewer's transcript.
+
+
+@pytest.fixture(autouse=True)
+def _reset_aio_db_cache():
+    """Same BINDING requirement as tests/test_candidate_log.py's fixture of
+    this name (design Sec 3 / adversarial review finding C1): aiosqlite gives
+    every cached connection a non-daemon OS thread, and CPython's shutdown
+    joins those - a module that opens one and never resets it can print
+    "N passed" and then hang forever. Also stops one test's tmp_path-scoped
+    connection (deleted at teardown) from being handed to the next test."""
+    yield
+    from services.diagnostics import _aio_db
+    asyncio.run(_aio_db.reset())
+
+
+def test_resolved_signals_with_factors_async_matches_the_sync_version_exactly(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("A", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.log_signal("B", "yes", 100, 0.6, "real-provider", seen_at=200, factors={"depth_factor": 0.7})
+    # Excluded and no-factors rows must be filtered out identically by both
+    # paths - they share _resolved_with_factors_query precisely so this can
+    # be asserted rather than trusted.
+    log.log_signal("C-excl", "yes", 100, 0.6, "real-provider", seen_at=300, factors={"depth_factor": 0.9})
+    log.log_signal("D-nofactors", "yes", 100, 0.6, "simulated", seen_at=400)
+    for row_id in (1, 2, 3, 4):
+        log.mark_resolved(row_id, correct=True)
+    log.mark_excluded_range(after=250, before=350)  # covers only C-excl's seen_at=300
+
+    sync_result = log.resolved_signals_with_factors()
+    async_result = asyncio.run(log.resolved_signals_with_factors_async())
+
+    assert async_result == sync_result
+    assert [r["series"] for r in async_result] == ["A", "B"]
+
+
+def test_resolved_signals_with_factors_async_self_heals_a_missing_schema(tmp_path, monkeypatch):
+    """_connect() re-runs _init_schema on every sync call, so the sync read
+    path has always repaired a missing table rather than raising. The async
+    path must keep that via _ensure_schema_aio - without it, "no data yet"
+    becomes a hard sqlite3.OperationalError instead of an empty list. Not
+    theoretical: this surfaced immediately at implementation time against a
+    fresh DB (see resolved_signals_with_factors_async's own docstring).
+
+    The parent directory is created explicitly here rather than left to the
+    async path: unlike services/db.py's connect() (candidate_log.py's sync
+    path, which mkdirs `parents=True`), the raw `aiosqlite.connect()` this
+    module's _ensure_schema_aio runs through does not create a missing
+    parent directory (corrected 2026-09-05 docstring finding, F9) - this
+    test covers a missing signal_log.db FILE within an existing directory,
+    not a genuinely fresh checkout with no data/ dir at all."""
+    fresh = tmp_path / "signal_log.db"
+    monkeypatch.setattr(sl, "DB_PATH", fresh)
+
+    assert asyncio.run(sl.resolved_signals_with_factors_async()) == []
+
+
+def test_resolved_signals_with_factors_async_creates_every_index(tmp_path, monkeypatch):
+    """If _ensure_schema_aio's delegation to the one real _init_schema ever
+    stops covering the full schema, a query silently gets a worse plan
+    rather than failing - assert the indexes directly rather than trusting
+    the delegation."""
+    log = _log(tmp_path, monkeypatch)
+    asyncio.run(log.resolved_signals_with_factors_async())
+    with log._connect() as conn:
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {
+        "idx_signals_resolved", "idx_signals_series", "idx_signals_ticker_seen", "idx_signals_excluded",
+    } <= indexes
+
+
+def test_resolved_signals_with_factors_async_orders_by_seen_at_ascending(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("B", "yes", 100, 0.6, "real-provider", seen_at=200, factors={"depth_factor": 0.5})
+    log.log_signal("A", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.log_signal("C", "yes", 100, 0.6, "real-provider", seen_at=300, factors={"depth_factor": 0.5})
+    for row_id in (1, 2, 3):
+        log.mark_resolved(row_id, correct=True)
+
+    rows = asyncio.run(log.resolved_signals_with_factors_async())
+
+    assert [r["series"] for r in rows] == ["A", "B", "C"]
+
+
+def test_resolved_signals_with_factors_async_since_ts_scopes_the_window(tmp_path, monkeypatch):
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("OLD", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.log_signal("NEW", "yes", 100, 0.6, "real-provider", seen_at=500, factors={"depth_factor": 0.5})
+    for row_id in (1, 2):
+        log.mark_resolved(row_id, correct=True)
+
+    assert len(asyncio.run(log.resolved_signals_with_factors_async())) == 2  # unscoped, unchanged
+    assert len(asyncio.run(log.resolved_signals_with_factors_async(since_ts=300))) == 1  # only NEW
+
+
+def test_materialize_signals_with_factors_skips_a_malformed_row_rather_than_raising(tmp_path, monkeypatch):
+    """factors_json is written by json.dumps() at every real call site, so a
+    malformed value here means a row from before a schema change, a
+    hand-edited DB, or a genuinely corrupt write (data-plane HARD RULE's
+    fidelity requirement) - never log_signal() itself, which is why this
+    inserts directly rather than through it. materialize_signals_with_factors
+    must skip it (`except (TypeError, ValueError): continue`), not crash the
+    whole report over one bad row, and both the sync and async paths funnel
+    through the same function so this exercises both."""
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("GOOD", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.mark_resolved(1, correct=True)
+    with log._connect() as conn:
+        conn.execute(
+            "INSERT INTO signals (ticker, series, side, size, confidence, source, seen_at, "
+            "factors_json, resolved, correct, excluded) VALUES "
+            "('BAD', 'BAD', 'yes', 100, 0.6, 'real-provider', 200, 'not valid json', 1, 1, 0)"
+        )
+
+    sync_rows = log.resolved_signals_with_factors()
+    async_rows = asyncio.run(log.resolved_signals_with_factors_async())
+
+    assert [r["series"] for r in sync_rows] == ["GOOD"]
+    assert [r["series"] for r in async_rows] == ["GOOD"]
+
+
+def test_resolved_signals_with_factors_async_yields_to_the_event_loop(tmp_path, monkeypatch):
+    """Design Sec 5's "assert the aiosqlite read path yields" detection
+    requirement, for this module's own consumer - test_candidate_log.py's
+    version of this test covers population_gate_summary_async, a separate
+    read path against a separate DB file, so it does not exercise this one.
+
+    Same F2-corrected shape as that sibling test (adversarial review of
+    this PR): the ticker's progress is snapshotted at the instant the read
+    call RETURNS, before the ticker task is awaited - awaiting it
+    afterward would let it finish regardless of whether the read itself
+    ever yielded, which is exactly the bug F2 found and fixed in the
+    sibling test."""
+    log = _log(tmp_path, monkeypatch)
+    log.log_signal("A", "yes", 100, 0.6, "real-provider", seen_at=100, factors={"depth_factor": 0.5})
+    log.mark_resolved(1, correct=True)
+
+    import threading
+    from services.diagnostics import _aio_db as aio_db_module
+
+    progressed = []
+    progress_at_read_return = []
+    read_thread_ids = []
+    original_connection_for = aio_db_module.connection_for
+
+    async def _spy_connection_for(db_path, schema_init=None):
+        conn = await original_connection_for(db_path, schema_init=schema_init)
+        original_sync_fetchall = conn._execute_fetchall
+
+        def _spy_sync_fetchall(sql, parameters):
+            read_thread_ids.append(threading.get_ident())
+            return original_sync_fetchall(sql, parameters)
+
+        conn._execute_fetchall = _spy_sync_fetchall
+        return conn
+
+    async def _exercise():
+        async def _ticker():
+            for _ in range(50):
+                await asyncio.sleep(0)
+                progressed.append(1)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(aio_db_module, "connection_for", _spy_connection_for)
+            ticker = asyncio.create_task(_ticker())
+            result = await log.resolved_signals_with_factors_async()
+        progress_at_read_return.append(len(progressed))
+        await ticker
+        return result
+
+    result = asyncio.run(_exercise())
+    assert result != []
+    assert progress_at_read_return[0] > 0, (
+        "the ticker made zero progress before the read returned - "
+        "the async read never actually yielded control to the loop"
+    )
+    assert read_thread_ids, "execute_fetchall spy never recorded a call - test is broken"
+    assert threading.get_ident() not in read_thread_ids, (
+        "the SQL ran on the test's own (main) thread, not aiosqlite's worker thread"
+    )
