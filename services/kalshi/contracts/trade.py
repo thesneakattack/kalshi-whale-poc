@@ -63,6 +63,11 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
         "docs/kalshi/order_direction.md",
         "docs/kalshi/fixed_point_migration.md",
     ),
+    "parse_fixed_point_dollars": (
+        "docs/kalshi/market-ticker.md",
+        "docs/kalshi/get-market.md",
+        "docs/kalshi/fixed_point_migration.md",
+    ),
 }
 
 # Closed vocabularies + narrowing maps live in contracts/types.py (C2) -
