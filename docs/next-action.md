@@ -118,7 +118,17 @@ question — do not create another one.**
 - **`#589`/`#590`** — linked follow-ups from `#577`'s review (schema
   provenance column deferred; CI guard misses ternary/indirection shapes).
   Non-blocking, open.
-- **`#576`** ticker-coalescing starvation — open, not yet actioned.
+- **`#576`** ticker-coalescing starvation — `07` confirmed a real, recurring,
+  load-dependent bug (mechanism: `_consume_market_from` only services the
+  ticker map when the trade queue happens to empty, unbounded under
+  sustained load; recurrence proven confound-independent via the
+  `reconnects` counter staying flat). Going straight to a PR with the lean
+  cycle rather than a formal docs/superpowers pipeline — precedent set by
+  `#577`/`#581` tonight — but the A-vs-B comparison (bounded fairness cap
+  vs. independent scheduled flush) must include real benchmarks, not just
+  mechanism, before it satisfies the data-plane HARD RULE's bar. The
+  observability-persistence fix (`pending_tickers`/`coalesced_tickers` not
+  in the durable time series) splits into its own PR.
 
 ## Decisions waiting on David
 
