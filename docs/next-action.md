@@ -20,9 +20,18 @@ Merged `origin/main` mid-flight (picking up #574) with no conflicts; found
 `latest_prices.get(ticker)` returning `None` — dead code before this PR,
 now live. The two PRs are complementary.
 
-CI confirmed green, 12/12. Self-review posted; independent adversarial
-review dispatched (fresh Agent, no memory of this conversation). **Not
-merging until that lands**, regardless of how clean it looks.
+**MERGED** (`6b0af25`, 2026-09-05T10:19:39Z). Issue #577 closed. Full
+cycle: self-review, independent adversarial review (GO-CONDITIONAL, real
+findings), fix list addressed (2 fixed directly, 2 filed as linked
+follow-ups #589/#590 — not dropped), consolidation with GO. CI 12/12.
+
+**Confirmed genuinely deployed and live, not just merged** — pulled into
+primary, `WatchFiles` reload clean, and verified against real traffic
+seconds after reload: the new completeness counter
+(`skipped_rows: 392, counter_scope: "process lifetime"`) is already
+counting real skips, and a live spot check found 392/392 current markets
+with a real price, zero at exactly 0.5. `config/settings.yaml`'s
+`auto_exit_enabled` pause confirmed to survive the pull untouched.
 
 # BANKROLL-RESET / RE-ENABLE-TRADING GATE — status as of #574's merge
 
@@ -44,7 +53,7 @@ status:
    YES-side mirror bug (checked directly against `trades.price`, the exact
    value fed into `unit_cost()` — zero of 279 rows hit `price>=1.0`).
    Untested: the selection-bias alternative (auto-exit fires on the `pnl`
-   factor, so the bucket is by-construction already-favorable positions).
+   factor, so the bucket is by-construction already-favorable positions). **Assigned to `62` now** — the natural next step now that #574/#577 are both live.
 5. **No active data-completeness incident** — trending positive but not
    resolved: `#579`/`#580` showed a clean 16-minute drain with zero drops
    post-`#581`, but both stay open pending more evidence; root cause for
