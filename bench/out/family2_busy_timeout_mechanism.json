@@ -1,0 +1,59 @@
+{
+  "generated_at": 1788651205.1597557,
+  "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "section1_default_timeout_releases_in_time": {
+    "holder_held_for_sec": 3.0,
+    "contender_raised_after_sec": null,
+    "contender_succeeded_after_sec": 3.0489188600004127,
+    "error_text": null,
+    "expectation": "succeed shortly after holder releases (~3.0s), not raise"
+  },
+  "section1b_default_timeout_ceiling": {
+    "raised": true,
+    "elapsed_sec": 5.0046293570012494,
+    "error_text": "database is locked"
+  },
+  "section2_explicit_pragma_matches_default": {
+    "raised": true,
+    "elapsed_sec": 5.0049712030013325,
+    "error_text": "database is locked"
+  },
+  "section3_wal_reader_vs_writer": {
+    "reader_blocked_sec": 0.0001291129992750939,
+    "writer_held_for_sec": 4.0,
+    "value_seen": 0,
+    "expectation": "reader returns almost immediately (<<4s) - WAL readers are not blocked by an in-flight writer"
+  },
+  "section4a_two_short_holds_sum_under_ceiling": {
+    "hold_a_sec": 2.0,
+    "hold_b_sec": 2.0,
+    "sum_of_holds_sec": 4.0,
+    "contender_busy_timeout_sec": 5.0,
+    "contender_elapsed_sec": 4.046682418000273,
+    "holder_errors": [],
+    "raised": false,
+    "note": "contender's busy_timeout is measured from ITS OWN first BEGIN IMMEDIATE attempt at t=0, not refreshed per new holder that takes the lock; if hold_a + (any time B holds before contender's ceiling) exceeds 5s, the contender can still raise even though neither individual holder came close to 5s alone."
+  },
+  "section4b_two_short_holds_sum_over_ceiling": {
+    "hold_a_sec": 3.0,
+    "hold_b_sec": 3.0,
+    "sum_of_holds_sec": 6.0,
+    "contender_busy_timeout_sec": 5.0,
+    "contender_elapsed_sec": 5.004683453000325,
+    "holder_errors": [],
+    "raised": true,
+    "error_text": "database is locked",
+    "note": "contender's busy_timeout is measured from ITS OWN first BEGIN IMMEDIATE attempt at t=0, not refreshed per new holder that takes the lock; if hold_a + (any time B holds before contender's ceiling) exceeds 5s, the contender can still raise even though neither individual holder came close to 5s alone."
+  },
+  "section4c_single_long_hold_sanity_check": {
+    "hold_a_sec": 8.0,
+    "hold_b_sec": 0.1,
+    "sum_of_holds_sec": 8.1,
+    "contender_busy_timeout_sec": 5.0,
+    "contender_elapsed_sec": 5.0046376190002775,
+    "holder_errors": [],
+    "raised": true,
+    "error_text": "database is locked",
+    "note": "contender's busy_timeout is measured from ITS OWN first BEGIN IMMEDIATE attempt at t=0, not refreshed per new holder that takes the lock; if hold_a + (any time B holds before contender's ceiling) exceeds 5s, the contender can still raise even though neither individual holder came close to 5s alone."
+  }
+}

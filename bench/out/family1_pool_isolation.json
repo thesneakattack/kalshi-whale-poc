@@ -1,0 +1,86 @@
+{
+  "generated_at": 1788651238.6885924,
+  "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "section1_starvation": {
+    "shared_pool_partial_saturation_5_of_20": {
+      "pool_size": 20,
+      "n_stuck_tasks": 5,
+      "handler_timeout_sec": 1.0,
+      "quick_task_result": "quick task done",
+      "quick_task_wait_sec": 0.0005,
+      "pool_fully_saturated": false
+    },
+    "shared_pool_fully_saturated_20_of_20": {
+      "pool_size": 20,
+      "n_stuck_tasks": 20,
+      "unrelated_quick_task_starved_after_3s_wait": true,
+      "quick_task_result": null
+    },
+    "dedicated_pool_fully_saturated_unrelated_work_on_separate_pool": {
+      "dedicated_pool_size": 4,
+      "n_stuck_tasks_on_dedicated_pool": 4,
+      "unrelated_pool_size": 4,
+      "quick_task_result": "quick task done, on a DIFFERENT pool",
+      "quick_task_wait_sec": 0.0004,
+      "starved": false
+    }
+  },
+  "section2_exhaustion_budget": {
+    "observed_handler_timeouts_in_one_window": 30,
+    "shared_default_pool_size": 20,
+    "dedicated_pool_size": 4,
+    "shared_pool_fully_exhausted_by_observed_window": true,
+    "dedicated_pool_fully_exhausted_by_observed_window": true,
+    "note": "issue #150's own follow-up comment (2026-08-30) already falsified the 'permanent leak' framing empirically on the shared 20-worker pool: 30 observed timeouts > 20 workers, yet the app kept processing trades continuously, so timed-out threads DO eventually complete (most plausibly when whatever they were blocked on resolves) and release their slot - the real cost is TRANSIENT occupancy, not a permanent leak, on either pool size. A dedicated 4-worker pool has a much smaller aggregate 'shock absorber' before all its slots are transiently occupied at once (4 concurrent stuck tasks vs 20) - this is the real, non-eliminated tradeoff the shipped design's own docstring names: 'all 4 workers eventually get stuck ... a visible backlog/latency symptom' rather than a silent, unbounded, cross-subsystem starvation."
+  },
+  "section3_thread_startup_cost_dedicated_4": {
+    "pool_size": 4,
+    "all_workers_started_sec": 0.0009,
+    "active_thread_count_while_running": 5
+  },
+  "section3_thread_startup_cost_shared_20": {
+    "pool_size": 20,
+    "all_workers_started_sec": 0.00424,
+    "active_thread_count_while_running": 21
+  },
+  "section3_overhead_documented_rate_27.3_per_sec_dedicated_4": {
+    "pool_size": 4,
+    "target_rate_per_sec": 27.3,
+    "n_submissions": 54,
+    "total_elapsed_sec": 1.9426,
+    "mean_latency_ms": 0.3245,
+    "p50_latency_ms": 0.3074,
+    "p95_latency_ms": 0.4586,
+    "max_latency_ms": 0.4854
+  },
+  "section3_overhead_documented_rate_27.3_per_sec_shared_20": {
+    "pool_size": 20,
+    "target_rate_per_sec": 27.3,
+    "n_submissions": 54,
+    "total_elapsed_sec": 1.9428,
+    "mean_latency_ms": 0.3207,
+    "p50_latency_ms": 0.3099,
+    "p95_latency_ms": 0.3958,
+    "max_latency_ms": 0.5335
+  },
+  "section3_overhead_ASSUMED_stress_rate_200_per_sec_dedicated_4": {
+    "pool_size": 4,
+    "target_rate_per_sec": 200.0,
+    "n_submissions": 400,
+    "total_elapsed_sec": 1.996,
+    "mean_latency_ms": 0.2319,
+    "p50_latency_ms": 0.221,
+    "p95_latency_ms": 0.3244,
+    "max_latency_ms": 0.4066
+  },
+  "section3_overhead_ASSUMED_stress_rate_200_per_sec_shared_20": {
+    "pool_size": 20,
+    "target_rate_per_sec": 200.0,
+    "n_submissions": 400,
+    "total_elapsed_sec": 1.9962,
+    "mean_latency_ms": 0.2234,
+    "p50_latency_ms": 0.2148,
+    "p95_latency_ms": 0.3041,
+    "max_latency_ms": 0.3884
+  }
+}
