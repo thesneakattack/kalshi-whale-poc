@@ -251,6 +251,17 @@ but unanswered.
 
 ## Standing lessons (apply, don't re-litigate)
 
+- **Never put a closing-shaped verb next to a bare issue/PR number in a
+  commit message pushed straight to `main`** (self-inflicted, 2026-09-05) —
+  a docs commit describing "`49` also resolved `#597`'s benchmark-
+  falsifiability followup" auto-closed PR #597 via GitHub's issue-linking
+  regex (`resolved #597` — it doesn't care what comes after the number,
+  "'s followup" included), even though the commit never touched that PR's
+  branch and nobody intended to close it. `49` root-caused and reopened it
+  cleanly, nothing lost. Write "issue #N"/"PR #N" or otherwise separate a
+  closing-shaped word (close/closes/closed/fix/fixes/fixed/resolve/
+  resolves/resolved) from a bare `#N` reference — this applies to every
+  commit message and PR body in this repo, not just this file's own.
 - **Commit hot-path benchmark scripts/raw output somewhere durable, not just
   the PR/issue prose** (`07`, 2026-09-05, from `#576`'s A-vs-B review) — a
   benchmark run in a throwaway subagent worktree produces numbers that
