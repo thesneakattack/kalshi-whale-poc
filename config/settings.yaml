@@ -260,7 +260,7 @@ whale_watcher_kalshi:
     KXSILVERH: 33
     KXGOLD15M: 82
     KXSILVER15M: 75
-    KXBTC15M: 2500
+    KXBTC15M: 2000
 whale_confidence_weights:
   depth_factor: 0.0404
   unusualness_factor: 0.0404
