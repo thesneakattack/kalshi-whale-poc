@@ -17,20 +17,24 @@ every time, don't assume either outcome.
   and verified. Still holding the actual purge — gated on `0d`'s ablation
   finishing cleanly + coordinator go.
 - `49` (was `07`, kept memory AND name through the restart, separate
-  lineage, independent reviewer) — **on `#576`**: A-vs-B decided — **Family
-  B (independent scheduled flush), not A** (A's own benchmark showed it
-  structurally can't help under the mechanistically plausible trigger —
+  lineage, independent reviewer) — **`#576` DONE, merged and deployed live**
+  (PR #597, merge commit `70fc147`, pulled onto the primary and confirmed
+  live via `WatchFiles` + `merge-base --is-ancestor 2546f5c HEAD`). Family
+  B (independent scheduled flush) shipped over A (A's own benchmark showed
+  it structurally can't help under the mechanistically plausible trigger —
   semaphore/resolve contention suspends the consumer before A's counter
-  check ever runs; B, as a genuinely separate task, gets scheduled
-  regardless). PR #597 open (`ceace0e7`, `fix/576-ticker-flush-independent-
-  drain`, mergeable), adversarial-reviewed GO-with-followups. **Followup
-  resolved** (`49`, since its recovering subagent didn't survive the
-  restart): recovered the benchmark script from disk (survived the WSL
-  restart, `/tmp` did not), re-verified it against the PR's actual shipped
-  code, fixed a real `quality_audit` boundary finding (raw Kalshi host
-  string relocated to `tests/`, matching existing precedent), added a smoke
-  test, pushed `33a83e2`. CI running on that commit; consolidation withheld
-  until confirmed green, not posted yet.
+  check ever runs). The adversarial review's benchmark-falsifiability
+  followup was self-resolved after its recovering subagent didn't survive
+  the WSL restart: `49` recovered the script from disk, re-verified it
+  against the PR's actual shipped code, fixed a real `quality_audit`
+  boundary finding along the way, added a smoke test, committed the raw
+  benchmark output as a durable artifact (`33a83e2`). PR was briefly
+  auto-closed by an unrelated coordinator docs commit's phrasing (see
+  standing lessons), reopened cleanly, no state lost. Now **on
+  `#579`/`#580`**: neither was ever formally closed, just "mitigated, not
+  disproven" — assigned to drive a real conclusion (prove the shared-
+  2-worker-pool mechanism with instrumentation, or falsify it), same rigor
+  as `#576`. In progress.
 - `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
   watch, broadened 2026-09-05 from `#579`/`#580`-only to general app
   health** (David: nobody was covering this) — now also runs the full
@@ -220,14 +224,12 @@ artifact), not a side investigation — keep it framed that way.
   resolution closes both the ternary and intermediate-variable fabrication
   shapes; real remaining limits (reassignment, branch-scoped, cross-function)
   documented, not claimed as full coverage.
-- **`#576`** ticker-coalescing starvation — `07` confirmed a real, recurring,
-  load-dependent bug (mechanism: `_consume_market_from` only services the
-  ticker map when the trade queue happens to empty, unbounded under
-  sustained load; recurrence proven confound-independent via the
-  `reconnects` counter staying flat, two clean instances found).
-  **Observability-persistence half already merged** (PR #594, `a2e9757`).
-  A-vs-B benchmarked with real numbers, **Family B chosen** (see peer
-  roster above) — implementation in progress, not yet a PR.
+- **`#576`** ticker-coalescing starvation — **DONE, merged and deployed
+  live** (PR #597, `70fc147`; observability-persistence half PR #594,
+  `a2e9757`). Mechanism: `_consume_market_from` only services the ticker
+  map when the trade queue happens to empty, unbounded under sustained
+  load. Family B (independent scheduled flush) shipped over A per real
+  benchmark numbers — see peer roster above for detail.
 - **`#595`/`#596`** — DONE, merged (`9870b76`). Whale Watch Terminal's trade
   tape was exchange-wide (Sports >95%) despite being labeled
   "watchlist-only" — `state["trade_tape"]`'s streaming-path insert had no
