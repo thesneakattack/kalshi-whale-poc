@@ -23,16 +23,27 @@ every time, don't assume either outcome.
   semaphore/resolve contention suspends the consumer before A's counter
   check ever runs; B, as a genuinely separate task, gets scheduled
   regardless). PR #597 open (`ceace0e7`, `fix/576-ticker-flush-independent-
-  drain`, mergeable), adversarial-reviewed GO-with-followups (raw benchmark
-  numbers need committing somewhere durable or explicit "reasoned default,
-  not measured" relabeling — see standing lessons); rechecking current
-  CI/consolidation state post-restart before merging.
+  drain`, mergeable), adversarial-reviewed GO-with-followups. **Followup
+  resolved** (`49`, since its recovering subagent didn't survive the
+  restart): recovered the benchmark script from disk (survived the WSL
+  restart, `/tmp` did not), re-verified it against the PR's actual shipped
+  code, fixed a real `quality_audit` boundary finding (raw Kalshi host
+  string relocated to `tests/`, matching existing precedent), added a smoke
+  test, pushed `33a83e2`. CI running on that commit; consolidation withheld
+  until confirmed green, not posted yet.
 - `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
-  watch on `#579`/`#580`**, resumed post-restart; last clean reading
-  pre-pause: `dropped_after_max_attempts: 0`, `handler_timeouts_total: 0`,
-  `queue.depth: 0`, `settlement_resolver.pending: 8` — no regression
-  through the pause, independently re-verified `ddev-router` healthy itself
-  before resuming rather than trusting the coordinator's word.
+  watch, broadened 2026-09-05 from `#579`/`#580`-only to general app
+  health** (David: nobody was covering this) — now also runs the full
+  CLAUDE.md check order (`/api/quality/summary`, `/api/health/faults`,
+  `/api/observability/summary`, `/api/health/storage`) on the same cadence.
+  Coordinator's own pass found: normal-range event-loop stalls (few/min,
+  mostly <200ms, one 3s spike), a brief SQLite lock episode ~20min prior
+  (2 occurrences, nothing since), 2 observability warnings (`kalshi_client`
+  rate-limit hits 6/23 samples, `settlement_edge.db` grew 2.7x/23.6h) —
+  none urgent. **#599 filed**: `/api/health/faults`'s `hours=` window leaks
+  one legacy fault signature's all-time count into any query — cross-check
+  individual `faults[].last_seen`, don't trust `summary.total_occurrences`
+  for that one signature (id 24009).
 - `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **on the
   YES-side auto-exit profit analysis** (gate condition 4 below): split-half
   robustness check DONE (see below). The pnl+sentiment+staleness ablation
@@ -49,19 +60,16 @@ every time, don't assume either outcome.
 uncommitted and unchanged. `kalshi_account.trading_enabled` stays `false`.
 Never touch either without David.
 
-**Infra: `ddev-router` down → traced to Windows port exclusion, WSL restart
-in progress (2026-09-05).** Root cause found, not just deferred: Windows'
-`winnat` service dynamically excludes port ranges that collide with Docker
-Desktop's WSL2 port-forwarder, producing `/forwards/expose returned
-unexpected status: 500` on a different port each retry (7900→7910→8143 —
-not a real port conflict). This also explains 3 separate unexplained
-full-stack container restarts tonight (all 4 peers independently confirmed,
-checked their own command history, zero `ddev restart`/`stop`/`start`
-issued by any of them — see `windows-port-exclusion-breaks-ddev-router`
-memory for the full signature and the Windows-host-side fix
-(`net stop/start winnat`, unreachable from inside WSL2). David is
-restarting WSL now to apply it. `https://autotrade.webfoundry.dev` (the
-separate `traefik` container) was the working access point during the
+**Infra: `ddev-router` outage RESOLVED (2026-09-05)** — traced to Windows
+port exclusion (`winnat` dynamically excluding port ranges that collide
+with Docker Desktop's WSL2 port-forwarder), fixed by David restarting WSL.
+Confirmed post-restart: `ddev-router` `Up ... (healthy)`, `paper_broker.db`/
+`market_history.db` both `PRAGMA quick_check: ok`, app live. Also explained
+3 unexplained full-stack container restarts that night (all 4 peers
+independently confirmed zero `ddev restart`/`stop`/`start` from their own
+history) — see `windows-port-exclusion-breaks-ddev-router` memory for the
+full signature and remedy if this recurs. `https://autotrade.webfoundry.dev`
+(the separate `traefik` container) was the working access point during the
 outage but goes down with everything else during the WSL restart itself.
 
 ---
