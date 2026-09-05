@@ -7,23 +7,28 @@ doesn't). **Verify identity by direct reply before trusting a name** —
 
 **Peers and current task, as of this write:**
 - `32` (chain: `df`→`8d`, PR #574 author) — **on `#578` pre-purge prep**
-  (non-destructive): re-verify #577's fix still holds live, full backup,
-  re-confirm contamination scope, write the pre-purge checkpoint artifact.
-  Explicitly told NOT to execute the purge — gated on `62` confirming their
-  ablation doesn't touch `market_history.snapshots`, then coordinator go.
-- `07` (separate lineage, independent reviewer) — **on `#576`**: solution B
-  (independent scheduled flush) landed real benchmark numbers (see Open
-  issues below); solution A (bounded fairness) still running, ~40min+.
-  Observability-persistence half already merged (#594). Converging A-vs-B
-  once A lands.
+  (non-destructive), checkpoint artifact posted (issue #578 comment): fix
+  re-verified live and holding (contamination flat at 6,260, zero new
+  fabricated rows since the fix), fresh full backup taken and verified.
+  Confirmed unaffected by the `ddev-router`/restart incident below (own
+  work already checkpointed before it hit). Still holding the actual purge
+  — gated on `62`'s ablation finishing cleanly + coordinator go.
+- `07` (separate lineage, independent reviewer) — **on `#576`**: A-vs-B
+  decided — **Family B (independent scheduled flush), not A** (A's own
+  benchmark showed it structurally can't help under the mechanistically
+  plausible trigger — semaphore/resolve contention suspends the consumer
+  before A's counter check ever runs; B, as a genuinely separate task, gets
+  scheduled regardless). Dispatched implementation with real TDD tests +
+  full lean review cycle; not merged yet.
 - `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
   reconfirmed clean 2026-09-05 (`dropped_after_max_attempts: 0`,
   `handler_timeouts_total: 0`, `queue.depth: 1`, `settlement_resolver.pending:
   38`) — no regression.
 - `62` (chain: `64`→`a2`, `#577`/`#578` owner) — **on the YES-side auto-exit
   profit analysis** (gate condition 4 below): split-half robustness check
-  DONE (see below); pnl+sentiment+staleness ablation still running (long
-  pole — full per-snapshot signal_log walk across 664 entries).
+  DONE (see below). Ablation job was killed mid-run by the `ddev-router`
+  restart incident (container disappeared entirely, exit 137, zero partial
+  progress survived) — re-running from scratch now.
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
@@ -31,6 +36,20 @@ doesn't). **Verify identity by direct reply before trusting a name** —
 `config/settings.yaml`, uncommitted (David's own edit) — must stay
 uncommitted and unchanged. `kalshi_account.trading_enabled` stays `false`.
 Never touch either without David.
+
+**Infra: `ddev-router` is down (2026-09-05, deferred by David).** A
+`ddev restart` (applying PR #596 below) triggered a Docker Desktop/WSL2
+port-forward subsystem failure (`/forwards/expose returned unexpected
+status: 500`, a different port each retry — not a real port conflict, the
+forwarder itself is wedged). `docker start ddev-router` cannot fix this;
+needs a full Docker Desktop restart, which would kill every running
+container machine-wide mid-peer-work. **David chose to defer it** and use
+`https://autotrade.webfoundry.dev` (the separate, unaffected `traefik`
+container/public tunnel) instead of the primary
+`kalshi-whale-poc.ddev.site:8443` URL in the meantime. The app itself
+(fastapi/web/db) is unaffected and confirmed running correctly — this is
+an access-routing problem only, not a data-plane defect. Revisit next
+natural restart point.
 
 ---
 
@@ -160,15 +179,22 @@ question — do not create another one.**
   load-dependent bug (mechanism: `_consume_market_from` only services the
   ticker map when the trade queue happens to empty, unbounded under
   sustained load; recurrence proven confound-independent via the
-  `reconnects` counter staying flat, two clean instances found). Going
-  straight to a PR with the lean cycle rather than a formal
-  docs/superpowers pipeline — precedent set by `#577`/`#581` tonight — but
-  the A-vs-B comparison (bounded fairness cap vs. independent scheduled
-  flush) must include real benchmarks, not just mechanism, before it
-  satisfies the data-plane HARD RULE's bar. **Observability-persistence
-  half already merged** (PR #594, `a2e9757`) — split out since it's
-  independent of which fairness approach wins. Main fix: benchmarking in
-  progress, not yet a PR.
+  `reconnects` counter staying flat, two clean instances found).
+  **Observability-persistence half already merged** (PR #594, `a2e9757`).
+  A-vs-B benchmarked with real numbers, **Family B chosen** (see peer
+  roster above) — implementation in progress, not yet a PR.
+- **`#595`/`#596`** — DONE, merged (`9870b76`). Whale Watch Terminal's trade
+  tape was exchange-wide (Sports >95%) despite being labeled
+  "watchlist-only" — `state["trade_tape"]`'s streaming-path insert had no
+  watchlist filter. **David's decision: go watchlist-only, not fix the
+  filter** — off-watchlist whale discovery is out of scope right now
+  (signal log noise, "focus on a few markets and then expand" later).
+  Flipped the existing `trade_stream_exchange_wide` config flag to `false`
+  (already the purpose-built knob, no new code) — reversible by flipping it
+  back + a real restart whenever exchange-wide is back in scope. Live-
+  verified: `mode: stream` (not degraded to polling), `exchange_wide:
+  false`, trade tape watchlist-only. Caused the `ddev-router` incident
+  above as a side effect of the required restart, not of the change itself.
 
 ## Decisions waiting on David
 
