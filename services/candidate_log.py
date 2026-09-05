@@ -54,9 +54,37 @@ analysis an open research target). Batching preserves every row, only
 delaying when it lands on disk - population_gate_summary()/clear_all()/
 count_range()/clear_range() each flush the buffer first so no caller ever
 sees a stale undercount or an incomplete wipe.
+
+SAMPLING (min_contracts only, added 2026-09-05, issue #532)
+
+"No dedup key at all" above stopped being literally true for one gate:
+min_contracts alone was 98.98% of 29.8M rows (23.8M of them resolved,
+against a min_samples=30 statistical-precision gate - roughly 794,000x
+oversampled for that purpose) and unbounded, so record_rejection() now
+writes a Bernoulli sample of min_contracts rejections to rejection_events
+instead of every one - see _MIN_CONTRACTS_SAMPLE_RATE below. Every other
+gate is untouched: still one row per call, weight always 1.0. rejected_
+candidates (the deduped table) is never sampled either, for any gate - it
+was never the growth problem (one row per (ticker, strategy, gate_name),
+not per rejection) and every existing consumer of gate_summary() depends
+on seeing every distinct candidate.
+
+A sampled row's sample_weight column (1/sample_rate) makes _POPULATION_
+GATE_SQL's rejected_count/resolved_count unbiased population-size
+ESTIMATES again (SUM(sample_weight) instead of COUNT(*) - a uniform
+random sample's constant weight is exactly what Horvitz-Thompson
+weighting cancels back out to the true total). sided_total/sided_wins/
+unit_cost_total/unit_cost_n stay plain unweighted counts/sums on purpose:
+a ratio or mean over a uniform sample is unbiased without any weighting
+(the constant weight cancels in both numerator and denominator), and the
+min_samples gate specifically must reflect the real number of observed
+samples, not a scaled-up estimate - weighting it would make the gate LESS
+protective for the one gate that most needs it. See _summarize_population_
+rows()'s own docstring for where this split is implemented.
 """
 import asyncio
 import contextlib
+import random
 import sqlite3
 import time
 from pathlib import Path
@@ -68,6 +96,20 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
 
 db.register_schema("rejected_candidates", capture_writer.init_rejected_candidates)
 db.register_schema("rejection_events", capture_writer.init_rejection_events)
+
+# Issue #532: min_contracts alone was 98.98% of rejection_events (29.5M of
+# 29.8M rows measured 2026-09-05) and unbounded - every other gate combined
+# was under 300k rows over the same ~13-day window. 1/100 brings a future
+# day's min_contracts contribution down near that same order of magnitude
+# (measured ~2.27M rows/day -> ~22.7k/day) while leaving its resolved
+# sample count (which gates hypothetical_win_rate's min_samples=30 check,
+# see _summarize_population_rows) in the tens of thousands per day - see
+# this module's own "SAMPLING" docstring section above for why min_samples
+# itself is never scaled by this rate. A round number, not derived from a
+# formula: no single "right" rate exists, this one just moves the gate from
+# wildly-oversampled-and-growing to roughly in line with the rest of the
+# table's growth rate.
+_MIN_CONTRACTS_SAMPLE_RATE = 0.01
 
 
 # Shared by _connect() and _ensure_schema_aio() below (issue #410) rather
@@ -98,6 +140,9 @@ def _connect():
         conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
         db.add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
         db.add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
+        db.add_column_if_missing(
+            conn, "rejection_events", "sample_weight", "REAL NOT NULL DEFAULT 1.0",
+        )
         yield conn
 
 
@@ -105,10 +150,19 @@ def _connect():
 # sibling - issue #410. Kept as a module constant rather than inlined twice
 # so the two paths cannot drift into answering the same question with
 # different SQL.
+#
+# rejected_count/resolved_count sum sample_weight rather than COUNT(*)
+# (issue #532) so a sampled gate's row still reports an unbiased estimate
+# of its true population size - every unsampled row's weight is 1.0, so
+# this is identical to COUNT(*)/a plain conditional count for every gate
+# except min_contracts. sided_total/sided_wins/unit_cost_total/unit_cost_n
+# deliberately stay plain unweighted counts/sums - see this module's own
+# "SAMPLING" docstring section and _summarize_population_rows()'s
+# docstring for why weighting those would be a bug, not a refinement.
 _POPULATION_GATE_SQL = """
     SELECT strategy, gate_name,
-           COUNT(*) AS rejected_count,
-           SUM(CASE WHEN resolved THEN 1 ELSE 0 END) AS resolved_count,
+           SUM(sample_weight) AS rejected_count,
+           SUM(CASE WHEN resolved THEN sample_weight ELSE 0 END) AS resolved_count,
            SUM(CASE WHEN resolved AND side IN ('yes', 'no') THEN 1 ELSE 0 END) AS sided_total,
            SUM(CASE WHEN resolved AND side IN ('yes', 'no') AND result = side
                THEN 1 ELSE 0 END) AS sided_wins,
@@ -158,6 +212,9 @@ async def _ensure_schema_aio(conn) -> None:
     await conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
     await _add_column_if_missing_aio(conn, "rejected_candidates", "unit_cost", "REAL")
     await _add_column_if_missing_aio(conn, "rejection_events", "unit_cost", "REAL")
+    await _add_column_if_missing_aio(
+        conn, "rejection_events", "sample_weight", "REAL NOT NULL DEFAULT 1.0",
+    )
     await conn.commit()
 
 
@@ -207,15 +264,30 @@ def record_rejection(
     population_gate_summary, clear_all, count_range, clear_range,
     resolve_from_market_results) flushes both stores before it
     reads/deletes, so no caller has to know either table's writes are
-    asynchronous now."""
+    asynchronous now.
+
+    min_contracts rejections are Bernoulli-sampled into rejection_events at
+    _MIN_CONTRACTS_SAMPLE_RATE (issue #532) rather than written whole - see
+    this module's own "SAMPLING" docstring section for why. Every other
+    gate, and rejected_candidates for every gate including min_contracts,
+    is unaffected: this function's caller still gets exactly the same
+    dedup-table behavior it always has, on every gate."""
     now = now if now is not None else time.time()
     capture_writer.submit(
         "rejected_candidates",
         (ticker, strategy, gate_name, observed_value, threshold_value, side, now, unit_cost),
     )
+    sample_weight = 1.0
+    if gate_name == "min_contracts":
+        if random.random() >= _MIN_CONTRACTS_SAMPLE_RATE:
+            return
+        sample_weight = 1.0 / _MIN_CONTRACTS_SAMPLE_RATE
     capture_writer.submit(
         "rejection_events",
-        (None, ticker, strategy, gate_name, observed_value, threshold_value, side, now, 0, None, None, unit_cost),
+        (
+            None, ticker, strategy, gate_name, observed_value, threshold_value, side, now,
+            0, None, None, unit_cost, sample_weight,
+        ),
     )
 
 
@@ -464,13 +536,22 @@ def _summarize_population_rows(rows, min_samples: int) -> list[dict]:
     Takes plain sqlite3 tuples OR aiosqlite.Row objects - both are
     sequences, so the unpacking below is identical for either. Costs
     0.000s in practice (measured, implementation-time): the SQL already
-    reduced 28.7M rows to 11 groups before anything reaches here."""
+    reduced 28.7M rows to 11 groups before anything reaches here.
+
+    rejected_count/resolved_count arrive as SUM(sample_weight) (issue
+    #532), a float even when every row is unsampled (weight 1.0) - rounded
+    back to int here since both are still logically population COUNTS
+    (a "count" that silently became a float is exactly the kind of
+    quiet dimension-shift CLAUDE.md's dimensional-analysis rule flags).
+    sided_total/sided_wins/unit_cost_total/unit_cost_n are untouched: they
+    were never weighted (see _POPULATION_GATE_SQL's own comment) and stay
+    whatever type SQLite's COUNT/SUM already gives them."""
     out = []
     for strategy, gate_name, rejected_count, resolved_count, sided_total, sided_wins, \
             unit_cost_total, unit_cost_n in rows:
         g = {
             "strategy": strategy, "gate_name": gate_name,
-            "rejected_count": rejected_count, "resolved_count": resolved_count,
+            "rejected_count": round(rejected_count), "resolved_count": round(resolved_count),
         }
         if sided_total == 0 or sided_total < min_samples:
             g["status"] = "insufficient"

@@ -171,9 +171,21 @@ REJECTION_EVENTS_DDL_SQL = """
         resolved INTEGER NOT NULL DEFAULT 0,
         result TEXT,
         resolved_at REAL,
-        unit_cost REAL
+        unit_cost REAL,
+        sample_weight REAL NOT NULL DEFAULT 1.0
     )
 """
+# sample_weight (2026-09-05, issue #532): candidate_log.py's record_rejection()
+# Bernoulli-samples min_contracts rejections at write time rather than
+# recording every one (29.5M of 29.8M total rows, unbounded growth - see
+# that issue for the measurement). A sampled row's weight is 1/sample_rate,
+# so summing sample_weight instead of COUNT(*) recovers an unbiased
+# estimate of the true population size; every other gate is never sampled
+# and keeps weight 1.0, so its sum is identical to a plain COUNT(*).
+# Default 1.0 matters for the ALTER TABLE ADD COLUMN migration path
+# (candidate_log.py's _connect()/_ensure_schema_aio(), same pattern
+# unit_cost used) - every pre-existing row predates sampling and must be
+# counted as a real, unsampled observation, not silently zero-weighted.
 # Shared with services/candidate_log.py's _connect() (same reasoning as
 # RAW_TRADES_DDL_SQL above). Matches candidate_log.py's real schema
 # exactly, unit_cost baked in from the start here (candidate_log.py's own
