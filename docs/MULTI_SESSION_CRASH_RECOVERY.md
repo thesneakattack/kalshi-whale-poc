@@ -11,21 +11,27 @@ several sessions/subagents at once that are not "what landed on `main`" —
 subagent provenance, telling a live peer from an irrelevant one, telling a
 renamed session from a dead one, the fact that `docs/next-action.md` is a
 full-overwrite snapshot with no prompt to check its own history, work outside
-this repo with no git-backed record at all, and credentials that end up on
-disk mid-diagnosis. These six gaps were each hit for real in one session
-(2026-09-03/04); the write-up below generalizes each into a standing
-procedure, not a record of that night. Where a concrete example from that
-night is used, it is marked as an example — the procedure is meant to
-outlive it.
+this repo with no git-backed record at all, credentials that end up on disk
+mid-diagnosis, an inherited artifact confidently asserting something false
+about you, an in-session subagent dying with no isolation to leave a trace
+in, and a mass simultaneous restart rather than one session's death. The
+first six were hit for real in one session (2026-09-03/04); the last three
+were added after this document's own review cycle turned up real, undated
+instances of each the very same night, including during a real restart that
+happened while this document was still under review. The write-up below
+generalizes each into a standing procedure, not a record of any one night.
+Where a concrete example is used, it is marked as an example — the
+procedure is meant to outlive it.
 
 **Why a separate document instead of folding this into
 `SESSION_CRASH_RECOVERY.md`:** that file's whole design philosophy is "derive
 current state from sources that cannot go stale: git, the GitHub API, and the
 live app" — a roster was tried once, went stale in an hour, and was removed
-by name. Four of the six gaps below (1, 2, 3, 6) do not have a git/`gh`
-source of truth to derive from at all today; the proposals here are about
-*creating* one (marker commits, an explicit disclosure convention, a probe
-protocol) without reintroducing a roster file that goes stale the same way.
+by name. Several of the gaps below (notably §§1-3 and §9) do not have a
+git/`gh` source of truth to derive from at all today; the proposals here are
+about *creating* one (marker commits/comments, an explicit disclosure
+convention, a probe protocol, a live socket/cwd check) without
+reintroducing a roster file that goes stale the same way.
 Bolting "and also, here's a convention for inventing new stateless-derivable
 signals" onto a file whose stated design is "we deliberately store nothing"
 would blur what is a proven, load-bearing design decision and what is a
@@ -38,7 +44,11 @@ resume it). Come to this document when that isn't enough: a subagent (not a
 peer session) is unaccounted for, a listed `ListAgents` session's relevance
 is unclear, a session's identity across a resume is in doubt, `next-action.md`
 looks like it might be missing something a prior version had, out-of-repo
-infrastructure was being touched, or credentials may be sitting on disk.
+infrastructure was being touched, credentials may be sitting on disk, an
+inherited artifact claims something about you that doesn't match your own
+state, an in-session (non-worktree) subagent went quiet mid-task, or
+everything — every session, every container — went down at once rather than
+one session dying among survivors.
 
 ---
 
@@ -52,8 +62,10 @@ partial findings, and anything it hadn't yet written to a committed file are
 gone. `git worktree list` shows every worktree that exists, but not which
 ones are subagent-owned, which are a peer session's own workspace, and which
 are simply abandoned from hours or days earlier — a real listing checked
-while writing this document had **38 worktree entries**, most stale from
-earlier work, with no annotation distinguishing any of the three.
+while writing this document had **38 worktree entries** (a stale count even
+one day later — 46, then 47 — so treat the number itself as a dated
+snapshot, not a current fact), most stale from earlier work, with no
+annotation distinguishing any of the three.
 
 **A real, checkable distinguishing signal that already exists.** Verified
 live against this repo's own worktrees while writing this document (not
@@ -67,38 +79,48 @@ observed case: `agent-a1762732e0d9f6faf` shows
 the dispatched agent had by then committed to that branch and it was checked
 out). So:
 
-- `.claude/worktrees/agent-a*` naming **and/or** a detached-HEAD state is
-  today's signal for "this was an `Agent`-tool worktree dispatch," distinct
-  from a human-chosen worktree name (`fix/...`, `docs/...`,
-  `crash-recovery-plan`, etc.) that a coordinator or peer session created by
-  hand for their own work.
+- `.claude/worktrees/agent-a*` naming is today's signal for "this was an
+  `Agent`-tool worktree dispatch," distinct from a human-chosen worktree name
+  (`fix/...`, `docs/...`, `crash-recovery-plan`, etc.) that a coordinator or
+  peer session created by hand for their own work. Detached HEAD alone is
+  **not** a reliable second signal: human-made worktrees can be detached too
+  (`main-tools`, `rev569-scratch` both are, verified live) — go by the name.
 - This is a naming *convention*, not an enforced invariant — nothing stops a
   differently-configured dispatch or a manually created worktree from not
   following it. Treat it as a strong prior, verify with the branch/commit
   content before relying on it for anything destructive (e.g. before
   deciding a worktree is safe to remove).
 
-**The proposal: a first-action marker commit.** The naming convention answers
-"was this an agent-tool worktree" but not "what was it told to do" or
-"did it finish." Fix that at the source: **the first action inside any
-dispatched subagent's own worktree, before any real work, is a commit** —
+**The proposal: a first-action marker commit — but not a bare detached one.**
+The naming convention answers "was this an agent-tool worktree" but not
+"what was it told to do" or "did it finish." A marker commit on the
+worktree's own detached HEAD does not actually fix this, though: once that
+worktree is removed, the commit is unreachable from any ref and gone for
+good — and `scripts/cleanup-worktrees.sh` explicitly refuses to auto-remove
+a detached-HEAD worktree in the first place ("keeping: … detached HEAD - no
+branch, so no PR state to check; remove it by hand once you know it is
+finished"), so the marker's only real audience is a worktree nobody has a
+prescribed reason to keep, and a stale one that just gets removed by hand
+takes the marker with it. Put the marker somewhere that survives worktree
+removal instead:
 
-```
-git commit --allow-empty -m "subagent: started — scope: <one-line task>, dispatched by: <coordinating session name/branch>, at: <ISO8601 UTC>"
-```
+- **If the dispatch creates a branch at all** (most do, once real work
+  starts): a first commit on that branch — `git commit --allow-empty -m
+  "subagent: started — scope: <one-line task>, dispatched by: <coordinating
+  session name/branch>, at: <ISO8601 UTC>"` — survives independently of the
+  worktree via the branch ref.
+- **If it's expected to stay detached throughout** (a short, read-only
+  probe): post the same one-line "started" note as a comment on the PR or
+  issue the dispatch is in service of, instead of a commit. A PR/issue
+  comment survives worktree removal by construction and needs no ref at
+  all.
 
-(`--allow-empty` because the very first action, by definition, precedes any
-file change.) This survives even if the subagent is killed one tool-call
-later: `git -C <worktree> log --oneline` on a `agent-a*` worktree with only
-that one marker commit and no branch checked out tells a resuming session,
-with certainty, "a subagent was here, this is what it was told to do, and it
-got no further" — the exact "did it finish" question the current setup
-cannot answer today. A subagent that completes normally does not need a
-matching "done" marker commit — its real commits and, for anything with a
-review-cycle obligation, its own written artifact (self-review, findings
-doc) already say that with more detail than a marker could. The marker's job
-is only to cover the gap between "worktree exists" and "first real commit
-exists," which is exactly the window a mid-task kill leaves empty today.
+A subagent that completes normally does not need a matching "done" marker —
+its real commits and, for anything with a review-cycle obligation, its own
+written artifact (self-review, findings doc) already say that with more
+detail than a marker could. The marker's job is only to cover the gap
+between "worktree exists" and "first real commit/comment exists," which is
+exactly the window a mid-task kill leaves empty today.
 
 This is a convention, not a hook-enforced rule — there is no clean place to
 enforce "first commit in a fresh worktree must match this shape" without
@@ -108,19 +130,28 @@ prove-value-before-automating for new tooling. Adopt it by habit in the
 it needs enforcement only if it turns out to be skipped often enough to be
 useless in practice.
 
-**Recovery procedure for a resuming session:**
+**Recovery procedure for a resuming session.** Derive paths from `git
+worktree list --porcelain` rather than a relative glob — `.claude/worktrees/
+agent-a*` does not exist at all from inside a linked worktree (only the
+primary checkout holds them), and a bare `for w in .claude/worktrees/
+agent-a*` hard-errors under this user's zsh when nothing matches, silently
+finding zero worktrees instead of the real count:
 
 ```bash
-git worktree list                                   # every worktree, as today
-# For each entry whose path matches .claude/worktrees/agent-a* (or that
-# shows "(detached HEAD)"): read its own log to find the marker + any real
-# work, without guessing from the directory name alone.
-for w in .claude/worktrees/agent-a*; do
-  echo "=== $w ==="
-  git -C "$w" log --oneline -10
-  git -C "$w" log -1 --format='%H %cI' 2>/dev/null   # last-commit timestamp: how stale
+git worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r w; do
+  case "$(basename "$w")" in
+    agent-a*)
+      echo "=== $w ==="
+      git -C "$w" log --oneline -10
+      git -C "$w" log -1 --format='%H %cI' 2>/dev/null   # last-commit timestamp: how stale
+      ;;
+  esac
 done
 ```
+
+(`git worktree list --porcelain` always prints absolute paths regardless of
+which directory it's run from, so this works whether the resuming session
+is in the primary or in some other linked worktree.)
 
 A worktree with only a marker commit (or no marker and no commits at all,
 predating this convention) and nothing pushed anywhere is dead weight —
@@ -128,8 +159,12 @@ recover nothing, remove it per `SESSION_CRASH_RECOVERY.md` §3's worktree-
 cleanup note (issue #513: every worktree costs the reload watcher a stat
 call per file, every poll cycle). A worktree with a marker plus real commits
 not yet on any pushed branch is exactly `SESSION_CRASH_RECOVERY.md` §2 case
-2/3 (committed-but-unpushed, or uncommitted) — push or commit it before
-touching anything else, same as a died peer session's work.
+2/3 (committed-but-unpushed, or uncommitted) — before pushing, check it
+isn't a stale duplicate of work already integrated under a different SHA
+(`git cherry <upstream> <local>` or `git log --all --grep '<the same
+message>'`; a real case existed where a subagent's only commit duplicated
+one already merged days earlier) — then push or commit it, same as a died
+peer session's work.
 
 ---
 
@@ -144,36 +179,51 @@ At coordination scale (several peers, each potentially checking several
 others), a full round-trip per listed session that turns out to be
 unrelated is real, avoidable overhead.
 
-**Honest answer: there is no confirmed zero-cost filter today.** This
-document was written from inside a dispatched subagent, which does not have
-`ListAgents` in its own tool set (only an interactive/main-loop session
-holds peer visibility) — so the exact fields `ListAgents` returns for a main
-session could not be directly re-verified while writing this. Do not assume
-it carries a `cwd` or repo identifier field without checking live; if it
-does, that becomes the free filter this section wants and this document
-should be corrected to say so plainly, with an example, the next time
-someone confirms it. Until confirmed:
+**Corrected: a zero-cost filter already exists in this repo, confirmed live.**
+This section originally said no such filter existed, written from inside a
+dispatched subagent that lacks `ListAgents`. That conclusion doesn't hold:
+`ListAgents` itself still carries no `cwd`/repo field (confirmed live from a
+main session — name, `[ref]`, mode, and start-time only), but the repo
+already has an independent tool that answers the same question without a
+round-trip: `.claude/hooks/guard_workflow.py --sessions` (wired into
+`orient.sh`'s own banner since 2026-08-28) walks `/proc/<pid>/cwd` for every
+live Claude session's socket in `/run/user/1000/cc-socks/` and prints each
+one's working directory:
 
-- **The round-trip check stays the only reliable method** — this is a
-  documented limitation, not a solved problem. Ask directly: "are you
-  working in `<this repo>`? one line is enough." A session with nothing to
-  do with `autotrade` can and should answer that in a single short message,
-  which keeps the actual cost of the check low even without a zero-message
-  filter.
-- **Make the first message double as the filter for next time.** If a
-  session's name or its first reply already states its repo/branch (many
-  peer sessions in this repo announce their branch when they introduce
-  themselves), record that pairing for the rest of *this* recovery episode
-  only — not as a new persistent roster file (that is the exact failure
-  mode `SESSION_CRASH_RECOVERY.md` was rewritten to remove), just as
-  in-conversation memory for the current resume, since a second round-trip
-  to the same peer in the same episode is pure waste.
-- **A cheap pre-filter that does exist today:** a session name that matches
-  this repo's convention (`autotrade-XX`, two hex/alnum chars) is a weak
-  prior for relevance — not proof (a stale or coincidentally-named session
-  could still exist), but worth checking before a same-named-but-differently-
-  prefixed session (`portfolio-NN`) that is very likely a different repo's
-  session entirely, going by the one confirmed real case above.
+```
+$ python3 .claude/hooks/guard_workflow.py --sessions
+5800    other   /home/davidf/code/portfolio
+6140    other   /home/davidf/code/portfolio
+17771   other   /home/davidf/code/portfolio/showcase-projects/autotrade
+19936   other   /home/davidf/code/portfolio/showcase-projects/autotrade/.claude/worktrees/issue-410-impl
+```
+
+Zero messages sent, and it gives worktree occupancy for free (useful for §3
+below too). **What it doesn't give you:** a `pid` isn't a session *name* —
+nothing in `/proc/<pid>/cmdline` carries the `autotrade-XX` label a session
+introduces itself with — so this tool answers "how many sessions are in
+this repo right now, and how many are foreign" without a round-trip, but
+identifying *which listed name* maps to *which pid* still needs a probe (§3).
+The two sources are complementary: `ListAgents` names sessions but not their
+cwd, `guard_workflow.py --sessions` gives cwd but not names.
+
+- **Use the socket/cwd check first**, before any round-trip, to rule out
+  foreign-repo sessions in bulk. Only probe (per §3) the ones that land in
+  this repo and whose name↔session mapping is actually in question.
+- **A cheap secondary pre-filter:** a session name matching this repo's
+  convention (`autotrade-XX`) is a weak prior for relevance even before
+  running the tool above — not proof, but worth noting before a
+  differently-prefixed session (`portfolio-NN`) that the socket check will
+  likely confirm as a different repo's session entirely.
+- **This does not reintroduce a persistent roster file.** The failure mode
+  `SESSION_CRASH_RECOVERY.md` was rewritten to remove was a *stored,
+  unverified* list that goes stale silently. `guard_workflow.py --sessions`
+  is derived fresh from `/proc` on every call — it cannot go stale, because
+  it isn't stored at all. (Worth noting: `docs/next-action.md` itself
+  currently carries a time-boxed, explicitly-caveated session/assignment
+  table for the current recovery episode — that's a legitimate, bounded use
+  of "roster," not the stale-forever kind this document argues against;
+  read this section as endorsing that shape, not contradicting it.)
 
 ---
 
@@ -202,10 +252,13 @@ knowable, not against what the session itself claims to be:
   either can't answer specifically or answers with something that doesn't
   match anything in the repo's actual recent history.
 - Is it currently occupying the same worktree/branch the old name was last
-  known to hold? Two genuinely distinct sessions independently ending up in
-  the identical worktree at the identical branch is very unlikely — shared
-  worktree+branch occupancy across the name change is strong (not certain)
-  corroboration of continuity, on top of the content match above.
+  known to hold? **This rules out a stranger; it does not establish memory
+  continuity** — a real restart falsified the stronger claim this section
+  used to make. A relaunched session inherits its predecessor's cwd
+  regardless of whether any conversational memory survived (`docs/
+  next-action.md` records exactly this: a session came back in the same
+  worktree it left, with zero memory of the work already done there). Use
+  occupancy to narrow the field, not to conclude continuity by itself.
 - Does its account of "what I'm doing right now" match a task that was
   actually in flight (from `docs/next-action.md`, an open PR with its
   branch, or a peer's own prior report)? A stranger session doing unrelated
@@ -218,6 +271,20 @@ unknown session and apply `SESSION_CRASH_RECOVERY.md` from scratch." When
 genuinely unresolved after one probe, don't guess either way — say so to the
 user rather than silently picking an assumption, same as any other
 unresolved claim under the repo's "never guess" HARD RULE.
+
+**A distinct failure this probe does not catch: a stale roster, not a
+renamed session.** Everything above assumes a *known name disappeared* and
+a *new name appeared* — the trigger to probe. A real case had the opposite
+shape: a dead coordinator was still shown live in one session's `ListAgents`
+snapshot, while the coordinator's actual live replacement was missing from
+that same snapshot entirely — no name vanished from that vantage point, so
+nothing above ever fires. The tell wasn't a name change; it was `ListAgents`
+itself being a stale snapshot relative to a session that started after it
+was taken. Detect this by comparing `ListAgents`'s count *and membership*
+against the socket/cwd check in §2 (`guard_workflow.py --sessions`, or
+`ls /run/user/1000/cc-socks/*.sock` mapped to live PIDs) — **matching counts
+prove nothing** (a stale 8-session snapshot and a live 8-session roster can
+both say "8" while disagreeing on who); only membership agreement does.
 
 ---
 
@@ -235,11 +302,18 @@ default is to read the current file and trust it as complete, because that
 
 **This document does not propose changing that design.** Making
 `next-action.md` an append-only log or a task tracker was already
-considered and rejected in the file's own history (see its footer and
-`CLAUDE.md`'s "Do not read a task list out of this file" language) — a
-growing status log is exactly the staleness failure mode the rest of this
-repo's crash-recovery design avoids elsewhere. The fix here is procedural,
-on the *reading* side, not the writing side.
+considered and rejected in the file's own history (see "Do not read a task
+list out of this file" — that language lives in `docs/next-action.md`
+itself, not `CLAUDE.md`; verify the quote by grepping the file it's actually
+in, since a citation to the wrong document is exactly the kind of thing that
+looks fine until someone checks) — a growing status log is exactly the
+staleness failure mode the rest of this repo's crash-recovery design avoids
+elsewhere. The fix here is procedural, on the *reading* side, not the
+writing side. **Do not lean on a specific footer sentence still being
+there, either** — `next-action.md`'s own footer language has already
+changed shape at least once across rewrites; cite the *behavior* (full
+overwrite, no retained history in-file) and confirm it against whatever the
+current file actually says, not against a remembered exact sentence.
 
 **When to diff against history, and when not to.** A clean end-of-session
 rewrite (the normal case: a session finished its work, wrote a fresh,
@@ -292,16 +366,24 @@ state with **no document anywhere** describing how to detect that or how to
 recover.
 
 **A concrete illustration, found while writing this document, not
-manufactured:** `~/code/portfolio/ci-cd/` is a git repository, tracking
-`docker-compose.yml` and `.env` (no database files under version control, as
-expected — they hold live/derived state). At the moment this was checked,
-`git -C ~/code/portfolio/ci-cd status` showed **uncommitted changes to both
-`.env` and `docker-compose.yml`** — this is exactly the ambiguous shape the
-gap describes: on its own, this diff does not say whether it's someone's
+manufactured — but with one identity correction:** `~/code/portfolio/ci-cd/`
+is **not its own git repository** — verified: `git -C ~/code/portfolio/ci-cd
+rev-parse --show-toplevel` returns `/home/davidf/code/portfolio`, the parent
+*portfolio* repo. `ci-cd/` is a tracked subdirectory of that repo (`docker-
+compose.yml` and `.env` both show up as `ci-cd/docker-compose.yml`,
+`ci-cd/.env` in `git ls-files`), not a repo of its own — and `ci-cd/.env` is
+itself a **tracked, version-controlled credentials file**, which matters for
+§6 below. At the moment this was checked, `git -C ~/code/portfolio/ci-cd
+status` showed **uncommitted changes to both `.env` and `docker-
+compose.yml`** (and, because the repo root is one level up, that same
+status output also reports unrelated sibling-project changes —
+`../traefik/*.md`, an untracked `../NEXT-SESSION.md` — that have nothing to
+do with `ci-cd` itself) — this is exactly the ambiguous shape the gap
+describes: on its own, this diff does not say whether it's someone's
 completed-but-not-yet-committed change, a change mid-edit, or a leftover
-from an interrupted session; nothing in that repo distinguishes those cases
-today. This observation is not a claim about *whose* change it is or why —
-only that the ambiguity is real and present right now, not hypothetical.
+from an interrupted session; nothing distinguishes those cases today. This
+observation is not a claim about *whose* change it is or why — only that
+the ambiguity is real and present right now, not hypothetical.
 
 **Proposal — before starting a risky step outside this repo** (stopping or
 restarting a live shared service, or mutating its database directly):
@@ -313,22 +395,34 @@ restarting a live shared service, or mutating its database directly):
    if the "did it finish" half is missing.
 2. **If mutating a database file directly, copy it first**, timestamped,
    before writing — the same shape this repo already uses for its own
-   `data/quarantine/` convention (`cp live.db live.db.pre-mutation-<ISO8601>`
-   before touching the original). This makes "what did it look like right
-   before" recoverable regardless of what happens next, without needing any
-   new tooling.
+   backup convention: `data/quarantine/<ISO8601>-<name>-<reason>/` (a real
+   example: `data/quarantine/20260903T034119Z-market_history-corrupt/`).
+   Follow that naming exactly rather than inventing a new one — this makes
+   "what did it look like right before" recoverable regardless of what
+   happens next, without needing any new tooling.
 3. **Write a plain-text marker before starting**, in the target repo if it
-   is one (confirmed true for `ci-cd/` — a small tracked or even untracked
-   file works, since its mere presence/absence and mtime are the signal,
-   not its git history) or in this repo's own scratch space otherwise. One
-   line: what's about to change, since when, expected to finish by roughly
-   when. Update or remove it on completion. An abandoned marker with a
-   stale timestamp is precisely the "in flight" signal that's missing today.
-4. **If the target has its own git repo (true for `ci-cd/`), commit the
-   fix there too**, ordinary commit, once done — mirroring this repo's own
-   "git is truth" default rather than leaving the change to sit
-   uncommitted indefinitely the way the observed `.env`/`docker-compose.yml`
-   diff currently does.
+   is one, or in a tracked subdirectory of a repo otherwise (`ci-cd/` is the
+   latter, not its own repo — see the correction above) — a small tracked
+   or even untracked file works, since its mere presence/absence and mtime
+   are the signal, not its git history — or in this repo's own scratch
+   space if there's no repo at all nearby. One line: what's about to
+   change, since when, expected to finish by roughly when. Update or remove
+   it on completion. An abandoned marker with a stale timestamp is
+   precisely the "in flight" signal that's missing today.
+4. **If mutating a repo tracking the target's config (true for `ci-cd/`,
+   whose files live inside the parent portfolio repo, not a repo of their
+   own), commit the fix there too, deliberately and narrowly — never a
+   broad `add -A`.** Committing "the fix" in a subdirectory-of-a-repo case
+   means staging exactly the paths that changed for the actual fix
+   (`git add ci-cd/docker-compose.yml`, not a sweep), because the parent
+   repo's working tree can hold unrelated sibling-project changes at the
+   same time — confirmed live: modified `traefik/` docs and an untracked
+   `NEXT-SESSION.md` sat alongside the `ci-cd/` diff during the exact check
+   this section describes. A broad add here doesn't just bundle unrelated
+   docs — `ci-cd/.env` is a tracked credentials file, so a careless
+   `git add -A` in that repo can commit a secret alongside the intended
+   fix. Mirror this repo's own "git is truth" default, but only for the
+   paths the fix actually touched.
 5. **Restart/verify the service and confirm it's actually back**, the same
    "verify a deploy, don't assume a merge/restart landed" discipline
    `docs/next-action.md` already applies to *this* repo's own ddev restarts
@@ -349,8 +443,11 @@ git -C ~/code/portfolio/ci-cd status --short
 # 3. Is the service actually running as expected right now?
 docker compose -f ~/code/portfolio/ci-cd/docker-compose.yml ps
 
-# 4. Any recent restore/backup file that implies a stopped-for-write window:
-find ~/code/portfolio/ci-cd -maxdepth 2 -newermt '-6 hours' -type f
+# 4. Any recent restore/backup file that implies a stopped-for-write window
+#    (verified live: this shell's `find` resolves to `bfs`, which rejects
+#    the relative `-newermt` syntax GNU find accepts — `-mmin` is portable
+#    to both):
+find ~/code/portfolio/ci-cd -maxdepth 2 -mmin -360 -type f
 ```
 
 Until the marker convention is actually adopted, step 1 will find nothing —
@@ -402,19 +499,143 @@ grep -rlIE '(api[_-]?key|token|secret|password|Authorization: ?Bearer)[[:space:]
   /tmp/claude-*/-home-davidf-code-portfolio-showcase-projects-autotrade \
   .claude/worktrees 2>/dev/null
 
-# Anything committed by accident (git catches this better than grep for
-# tracked files — check staged/tracked content specifically, not just the
-# working tree):
+# Anything committed by accident, by CONTENT not just filename — a real
+# tracked credentials file can have a generic name (verified live: this
+# repo's own portfolio superproject tracks `ci-cd/.env` under an ordinary
+# name that a filename-only check like `git ls-files -- '*.env' '*token*'
+# '*secret*'` misses if it isn't literally named that). Search commit
+# content across all history and all repos actually in play, not just
+# filenames in the current tree — one `-G` with an alternation, NOT repeated
+# `-S` flags: `git log`'s `-S` is last-wins when given more than once
+# (verified live — an earlier term is silently dropped, no error), so
+# `-S'token' -S'secret'` only ever searches for `secret`:
 git -C ~/code/portfolio/showcase-projects/autotrade log --all -p \
-  -- '*.env' '*token*' '*secret*' 2>/dev/null | head -100
+  -G'(api[_-]?key|token|secret|password)' 2>/dev/null | head -100
+git -C ~/code/portfolio grep -nE '(api[_-]?key|token|secret|password)[[:space:]]*[:=]' \
+  $(git -C ~/code/portfolio rev-list --all -- ci-cd 2>/dev/null | head -20) \
+  -- ci-cd 2>/dev/null | head -50
 ```
 
-A hit is not automatically a live incident — most will be legitimate
-scratch use already covered by CLAUDE.local.md's normal handling. Treat a
-hit as: confirm what it is, confirm whether it's still live (a token that's
-already expired or been rotated is lower urgency than one that isn't),
-and if it's a real live secret sitting in a readable file, revoke/rotate it
-and remove the file — don't leave "found it" as the end state.
+A hit is not automatically a live incident — most will be legitimate scratch
+use. (One appeal this document originally made doesn't hold: `CLAUDE.local.md`
+does not currently say anything about scratch/secret-file handling —
+grepped, zero hits — so don't cite it as existing standing guidance; if that
+guidance should exist, it needs to be written, not assumed already present.)
+Treat a hit as: confirm what it is, confirm whether it's still live (a token
+that's already expired or been rotated is lower urgency than one that
+isn't), and if it's a real live secret sitting in a readable **or tracked**
+file, revoke/rotate it and remove the file (or, if already committed,
+purge it from history and rotate regardless of whether the local copy is
+also gone) — don't leave "found it" as the end state.
+
+---
+
+## 7. An inherited coordination artifact confidently asserting a false fact about you
+
+**The gap.** Everything above assumes the danger is *missing* information —
+a subagent's output gone, a session's identity unclear. This one is the
+opposite: an artifact you inherit (a handoff doc, `docs/next-action.md`, a
+coordinator's message) can state something about *you specifically* —
+"assigned to session X," "X is working on Y" — confidently and in good
+faith, and be wrong, because it was written from a stale or incorrect
+vantage point. A real case: a coordinator's handoff recorded that two named
+sessions each owned a specific piece of work; neither session had actually
+received that assignment, and three sessions nearly collided on the same PR
+as a direct result before it was caught.
+
+**The proposal: an assertion about you is a claim to verify, not a fact to
+act on.** Before treating "you are assigned X" / "you already own Y" /
+"session Z confirmed W" as true:
+
+- If it names *you*, check it against your own actual state (do you recall
+  this? does your own git branch, worktree, or open PR reflect it?) before
+  proceeding as if it's settled — the artifact's confidence is not evidence,
+  only your own verifiable state or the other party's live confirmation is.
+- If it names *another* session's status ("X already reviewed this," "Y is
+  handling Z"), verify against that artifact's actual trail — a PR comment,
+  a commit, a direct reply — before building on it. A claim that was true
+  when written and has since gone stale reads identically to one that was
+  never true; the sentence doesn't carry its own age.
+- When a written assignment cannot be confirmed as received by the session
+  it names, that assignment doesn't exist yet from that session's side —
+  treat it as unconfirmed and reachable-out-for, not as already delegated.
+
+This generalizes §3's identity-probe discipline from "is this session who it
+claims to be" to "is this *claim about* a session accurate" — the same
+verify-don't-infer posture, aimed at a different kind of stale artifact.
+
+---
+
+## 8. In-session subagents (no worktree isolation) dying mid-review with nothing prescribed
+
+**The gap.** §1 covers subagents dispatched with `isolation: "worktree"` —
+they get their own directory and (per §1's revised proposal) a marker
+commit or PR comment. A subagent dispatched **without** worktree isolation —
+an in-session background `Agent` call doing a review or analysis task with
+no filesystem footprint of its own — has no such trace at all. If it's
+killed mid-task (a rate limit is a real, observed cause, not hypothetical:
+it happened to two independent adversarial-review passes in one night), its
+reasoning and partial findings vanish completely — no worktree, no branch,
+no commit, nothing for a resuming session to find.
+
+**What actually saved the work, both times it happened:** not any mechanism
+this document prescribed, but the *parent* session noticing the death and
+posting an "INCOMPLETE — terminated mid-pass" comment to the relevant PR
+before doing anything else, explicitly stating that silence on the
+un-reviewed items must not be read as "found nothing." That happened by
+habit, not by procedure.
+
+**The proposal: make it procedure.** Before dispatching an in-session
+subagent for any task with a review-cycle obligation (an adversarial review,
+a findings pass, anything whose absence would otherwise look like "clean"):
+post a one-line "review started, dispatched at `<ISO8601>`" comment to the
+relevant PR/issue *before* dispatching. If the subagent completes normally,
+its own findings comment supersedes the placeholder and no further action is
+needed. If it dies without reporting, the placeholder is already there to
+be turned into an explicit "INCOMPLETE, terminated mid-pass — do not read
+silence as a clean result" note — the parent doesn't have to remember to do
+this from scratch under pressure, it just has to update a comment that
+already exists.
+
+---
+
+## 9. Mass simultaneous restart, not a single session's death
+
+**The gap.** Every recovery procedure above — in this document and in
+`SESSION_CRASH_RECOVERY.md` — is framed around *one* session dying while
+others keep running: find its work, resume it, verify against the survivors.
+A real, deliberate event doesn't fit that shape at all: a full WSL restart
+took down every session, every ddev container, and the live app
+simultaneously, all at once. There was no survivor to ask, no "the other
+sessions are still up" baseline to check the dead one's claims against —
+every single vantage point was gone in the same instant, and every session
+that came back afterward was equally new.
+
+**Two things this scenario does that the single-death case doesn't:**
+
+- **The coordinator role itself can churn identity multiple times in one
+  evening for reasons that have nothing to do with a crash** — an
+  accidental terminal close, a fresh resume — cycling through several
+  `autotrade-XX` names in a few hours while remaining, in substance, the
+  same continuing coordination thread. Don't treat a fast succession of
+  coordinator identity changes as several different authorities to
+  reconcile; verify continuity per §3 (now updated: occupancy narrows,
+  doesn't prove; agreement across signals is the bar) and treat a confirmed
+  continuation as the same authority under a new name, same as any other
+  renamed session.
+- **The coordinator's own authoritative working state can live only on the
+  primary's local `main`, unpushed**, accumulating across a whole session
+  (dated docs commits, in-flight corrections) with `origin/main` sitting
+  materially behind it. A resuming session that reads `origin/main` alone
+  gets a real answer, but a stale one — check `git log origin/main..HEAD`
+  in the primary before trusting any "current state" document, the same way
+  §4 already asks for `next-action.md` specifically.
+
+**The check that actually resolves both, cheaply:** run the socket/cwd tool
+from §2 (`guard_workflow.py --sessions`) fresh, right now — it can't be
+carrying forward a stale assumption because it isn't stored anywhere.
+Reconcile whatever a handoff document claims against that live output before
+acting on the document, not after.
 
 ---
 
