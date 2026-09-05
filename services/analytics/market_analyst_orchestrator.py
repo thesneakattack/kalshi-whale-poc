@@ -20,6 +20,7 @@ from services.advisory import advisory_engine
 from services.app_state import broker, bump_generation, state
 from services.config.config_paths import _types_compatible
 from services.kalshi.public import KalshiPublicGateway
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 
 _analyzing_tickers: set[str] = set()
 
@@ -114,13 +115,24 @@ async def _analyze_market_uncached(
     )
     if result is None:
         return {"ok": False, "reason": "The model call failed or declined to answer — see server logs."}
-    market_price = float(market_detail.get("yes_bid_dollars") or market_detail.get("yes_ask_dollars") or 0.5)
-    market_analyst_agent.record_analysis(
-        ticker=ticker, series=signal_log.series_of(ticker), market_price=market_price,
-        estimated_probability=result["estimated_probability"], llm_confidence=result["confidence"],
-        reasoning=result["reasoning"], model=ma_cfg.get("model", "claude-sonnet-5"), analyzed_at=now,
-    )
-    bump_generation()
+    # Issue #577 (2026-09-05): was `float(... or ... or 0.5)`, fabricating a
+    # market price when neither bid nor ask is real (falsy-not-missing bug,
+    # same class as trading_loop's latest_prices). Bid-then-ask fallback
+    # preserved; a real 0.0 on either is kept, not coalesced away.
+    market_price = parse_fixed_point_dollars(market_detail.get("yes_bid_dollars"))
+    if market_price is None:
+        market_price = parse_fixed_point_dollars(market_detail.get("yes_ask_dollars"))
+    if market_price is not None:
+        # analyses.market_price is REAL NOT NULL - skip persistence rather
+        # than write a fabricated value; the LLM analysis itself is still
+        # returned below regardless, just not graded against a price this
+        # market genuinely doesn't have right now.
+        market_analyst_agent.record_analysis(
+            ticker=ticker, series=signal_log.series_of(ticker), market_price=market_price,
+            estimated_probability=result["estimated_probability"], llm_confidence=result["confidence"],
+            reasoning=result["reasoning"], model=ma_cfg.get("model", "claude-sonnet-5"), analyzed_at=now,
+        )
+        bump_generation()
     return {"ok": True, **result, "market_price": market_price}
 
 

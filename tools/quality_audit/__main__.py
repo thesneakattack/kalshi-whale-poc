@@ -27,6 +27,7 @@ from tools.quality_audit.frontend_contract import scan_frontend_contract
 from tools.quality_audit.kalshi_boundary import scan_kalshi_boundary
 from tools.quality_audit.kalshi_contract_docs import scan_kalshi_contract_docs
 from tools.quality_audit.persistence import scan_persistence_isolation
+from tools.quality_audit.price_fabrication import scan_price_fabrication
 from tools.quality_audit.resources import scan_resource_lifecycle
 from tools.quality_audit.routers import scan_router_registration
 from tools.quality_audit.unit_cost import scan_unit_cost_derivations
@@ -44,6 +45,7 @@ _SCANNERS: list[Scanner] = [
     scan_kalshi_contract_docs,
     scan_kalshi_boundary,
     scan_unit_cost_derivations,
+    scan_price_fabrication,
 ]
 
 _DEFAULT_BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"

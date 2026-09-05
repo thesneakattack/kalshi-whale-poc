@@ -114,6 +114,76 @@ def test_analyze_market_uncached_passes_declined_ids(monkeypatch):
     assert calls[0].get("declined_ids") == {"decl-x"}
 
 
+class _FakeClientNoPrice:
+    """market_detail with neither a real bid nor a real ask - #577's
+    both-fallbacks-exhausted case."""
+
+    async def get_market(self, ticker):
+        return {"event_ticker": None, "yes_bid_dollars": None, "yes_ask_dollars": None}
+
+
+class _FakeClientZeroBid:
+    """A genuine 0.0 bid - the exact regression #577 is about (0.0 is
+    falsy, so the old `or ... or 0.5` fabricated 0.5 for this case too)."""
+
+    async def get_market(self, ticker):
+        return {"event_ticker": None, "yes_bid_dollars": 0.0}
+
+
+_FAKE_LLM_RESULT = {"estimated_probability": 0.6, "confidence": "higher", "reasoning": "test"}
+
+
+def test_analyze_market_uncached_skips_persistence_when_no_real_price(monkeypatch):
+    # Issue #577 (2026-09-05): market_price used to be
+    # float(market_detail.get("yes_bid_dollars") or market_detail.get(
+    # "yes_ask_dollars") or 0.5) - fabricating a price when neither side is
+    # real. analyses.market_price is REAL NOT NULL, so this must skip
+    # persistence (not write a fabricated value) while still returning the
+    # LLM's own analysis to the caller.
+    _wire_analyze_market_uncached_collaborators(monkeypatch, set())
+    recorded = []
+    monkeypatch.setattr(orch.market_analyst_agent, "record_analysis",
+                         lambda **kw: recorded.append(kw) or "analysis-id")
+    bumped = []
+    monkeypatch.setattr(orch, "bump_generation", lambda: bumped.append(1))
+
+    async def _fake_analyze_market(*a, **k):
+        return dict(_FAKE_LLM_RESULT)
+
+    monkeypatch.setattr(orch.market_analyst_agent, "analyze_market", _fake_analyze_market)
+
+    result = asyncio.run(orch._analyze_market_uncached(
+        _FakeClientNoPrice(), {}, _ANALYZE_CFG, "TEST-TICKER", 0.0, "fake-key",
+    ))
+
+    assert result["ok"] is True
+    assert result["market_price"] is None  # honest, not a fabricated 0.5
+    assert recorded == []  # never persisted a fabricated value
+    assert bumped == []  # no real state change to announce
+
+
+def test_analyze_market_uncached_persists_and_returns_a_real_zero_bid(monkeypatch):
+    _wire_analyze_market_uncached_collaborators(monkeypatch, set())
+    recorded = []
+    monkeypatch.setattr(orch.market_analyst_agent, "record_analysis",
+                         lambda **kw: recorded.append(kw) or "analysis-id")
+    monkeypatch.setattr(orch, "bump_generation", lambda: None)
+
+    async def _fake_analyze_market(*a, **k):
+        return dict(_FAKE_LLM_RESULT)
+
+    monkeypatch.setattr(orch.market_analyst_agent, "analyze_market", _fake_analyze_market)
+
+    result = asyncio.run(orch._analyze_market_uncached(
+        _FakeClientZeroBid(), {}, _ANALYZE_CFG, "TEST-TICKER", 0.0, "fake-key",
+    ))
+
+    assert result["ok"] is True
+    assert result["market_price"] == 0.0  # a real 0.0, not fabricated to 0.5
+    assert len(recorded) == 1
+    assert recorded[0]["market_price"] == 0.0
+
+
 def test_build_full_spectrum_context_passes_declined_ids(tmp_path, monkeypatch):
     """Same fix, same reasoning, the full-spectrum (all-series) LLM
     context builder's own generate_recommendations call

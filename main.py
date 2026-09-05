@@ -63,6 +63,7 @@ from services.http_client import classify, close_client, get_and_reset_rate_limi
 from services.kalshi.public import KalshiPublicGateway
 from services.kalshi.account_client import KalshiAccountClient
 from services.kalshi.websocket import KalshiStreamGateway
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 from services.confidence_scoring import WhaleSignal
 from services.whale_simulator import WhaleSimulator
 from services.whalewatchers import PROVIDERS  # re-instantiation goes through app_state.reload_whale_provider (#565)
@@ -488,11 +489,16 @@ def _resolve_and_record_settlements(markets: list, market_results: dict, tick_no
     # independent of whale signals, independent of whether either strategy
     # ever trades a given market. Same real fields already fetched by the
     # caller, zero extra API cost.
+    # yes_price: None (no real bid this tick) is filtered out by
+    # record_snapshots itself, never written as a fabricated 0.5 - issue
+    # #577's root fix (2026-09-05). Was `float(m.get("yes_bid_dollars") or
+    # 0.5)`, the same falsy-not-missing bug as trading_loop's latest_prices
+    # (Task 2): fabricated on a genuinely absent bid AND on a real 0.0 one.
     market_history.record_snapshots(
         [
             {
                 "ticker": m["ticker"],
-                "yes_price": float(m.get("yes_bid_dollars") or 0.5),
+                "yes_price": parse_fixed_point_dollars(m.get("yes_bid_dollars")),
                 "spread": max(
                     float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
                 ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
@@ -753,6 +759,31 @@ _SCHEDULER_TRIGGERS = (
     ("milestone_scan", _maybe_scan_milestone_batch),
     ("auto_apply", _maybe_run_auto_apply),
 )
+
+
+def _sparse_price_dict(markets: list[dict], field: str) -> dict[str, float]:
+    """ticker -> price for every market with a real, parseable value at
+    `field`; a market with no real value there is simply absent from the
+    result, never defaulted. Shared by trading_loop's latest_prices
+    (yes_bid_dollars) and latest_asks (yes_ask_dollars) rebuild so the two
+    can never drift on how "no real price" gets represented - before issue
+    #577's fix, latest_prices alone defaulted a missing/falsy bid to a
+    fabricated 0.5 (indistinguishable from a real 0.5, and wrongly firing
+    on a real 0.0 bid too, since `or` is a falsy check not a missing
+    check) while latest_asks next to it already did this correctly.
+    parse_fixed_point_dollars preserves a genuine 0.0 and returns None for
+    absent/malformed - this function's whole job is "keep only the real
+    ones," pulled out once so both dicts are built by the same one
+    tested rule instead of two independently-maintained comprehensions."""
+    result: dict[str, float] = {}
+    for m in markets:
+        ticker = m.get("ticker")
+        if not ticker:
+            continue
+        price = parse_fixed_point_dollars(m.get(field))
+        if price is not None:
+            result[ticker] = price
+    return result
 
 
 def _tick_interval_sec(cfg: dict) -> float:
@@ -1102,21 +1133,21 @@ async def trading_loop():
             await _flush_secondary_capture_stores_async(cfg, tick_now)
             await _resolve_settlement_windows(client)
             state["live_status"] = live_status  # replaced wholesale, not accumulated - a stale "live" would be wrong, not just incomplete
-            # yes_bid_dollars is Kalshi's real field (already a 0-1 probability) —
-            # "yes_bid" (cents) doesn't exist on the live API and silently
-            # defaulted every price to 0.5.
-            state["latest_prices"] = {
-                m["ticker"]: float(m.get("yes_bid_dollars") or 0.5) for m in markets if m.get("ticker")
-            }
+            # yes_bid_dollars is Kalshi's real field (already a 0-1
+            # probability) — "yes_bid" (cents) doesn't exist on the live
+            # API. Issue #577 (2026-09-05): this used to default every
+            # missing bid to a fabricated 0.5, indistinguishable from a
+            # real 0.5 bid and, worse, ALSO fabricated on a real 0.0 bid
+            # (`or` is a falsy check, not a missing check). Sparse now via
+            # _sparse_price_dict, exactly like latest_asks: a ticker with
+            # no real bid is simply absent from the dict, never invented.
+            state["latest_prices"] = _sparse_price_dict(markets, "yes_bid_dollars")
             # Maker/limit-order path (2026-08-15) - genuinely missing, not
             # defaulted like latest_prices above: check_pending_fills needs
             # to tell "no fresh ask this tick" apart from "a real 0.5 ask,"
             # since guessing an ask would mean guessing whether a resting
             # order should fill - the one thing this mechanism must never do.
-            state["latest_asks"] = {
-                m["ticker"]: float(m["yes_ask_dollars"]) for m in markets
-                if m.get("ticker") and m.get("yes_ask_dollars") not in (None, "")
-            }
+            state["latest_asks"] = _sparse_price_dict(markets, "yes_ask_dollars")
             # P7 Task 29 (redesigned): the rebuilds above bound both dicts to
             # this tick's fetched markets (open positions always included via
             # extra_tickers); keep their per-ticker write stamps bounded the

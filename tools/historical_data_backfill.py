@@ -138,7 +138,7 @@ from typing import Any
 
 from services import signal_log
 from services.kalshi.contracts.trade import (
-    _dollars,
+    parse_fixed_point_dollars,
     resolve_taker_outcome_side,
     taker_notional_usd,
     trade_exchange_ts,
@@ -231,9 +231,9 @@ def build_raw_trade_row(trade: dict, observed_at: float) -> tuple:
         None,  # taker_book_side - deliberately not read here, see module docstring
         None,  # taker_side_legacy - deliberately not read here, see module docstring
         side,
-        _dollars(trade.get("count_fp")),
-        _dollars(trade.get("yes_price_dollars")),
-        _dollars(trade.get("no_price_dollars")),
+        parse_fixed_point_dollars(trade.get("count_fp")),
+        parse_fixed_point_dollars(trade.get("yes_price_dollars")),
+        parse_fixed_point_dollars(trade.get("no_price_dollars")),
         notional,
         1 if trade.get("is_block_trade") else 0,
         0,  # excluded - never repurposed as a provenance flag; see module docstring

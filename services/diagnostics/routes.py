@@ -28,8 +28,8 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 
 from services import (
-    capture_writer, index_feed, mutual_exclusivity, series_watcher, settlement_edge, settlement_resolver,
-    strategy_engine,
+    capture_writer, index_feed, market_history, mutual_exclusivity, series_watcher, settlement_edge,
+    settlement_resolver, strategy_engine,
 )
 from services.index_feed import backfill as index_feed_backfill
 from services.reset import trade_archive
@@ -562,6 +562,13 @@ async def get_pipeline_health(exact_rows: bool = False):
         # only these count missing history. tools/soak_analyzer.py gates on
         # them.
         "capture_writer": capture_writer.loss_snapshot(),
+        # Rows market_history.record_snapshots() skipped writing because
+        # yes_price was None (no real bid/price that tick) - a completeness
+        # cost issue #577's fabrication fix introduces (previously every
+        # row was written, just sometimes with a fabricated price), made
+        # visible per the data-plane HARD RULE instead of left silent
+        # (PR #588's adversarial review).
+        "market_history": market_history.skipped_no_price_count(),
     }
 
 

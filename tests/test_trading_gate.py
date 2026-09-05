@@ -4194,6 +4194,72 @@ def test_process_stream_ticker_never_fabricates_an_ask_when_the_message_has_none
     assert "TICK-A" not in main.state["latest_asks"]  # check_pending_fills must see absent, not 0.5
 
 
+# --- issue #577 root fix (2026-09-05): no more fabricated 0.5 bid -------------
+
+def test_process_stream_ticker_never_fabricates_a_bid_when_the_message_has_neither_bid_nor_price(monkeypatch):
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_ask_dollars": "0.45"}))
+
+    assert "TICK-A" not in main.state["latest_prices"]  # never a fabricated 0.5
+    assert "TICK-A" not in main.state["latest_prices_updated_at"]
+
+
+def test_process_stream_ticker_preserves_a_real_zero_bid_not_fabricated_to_0_5(monkeypatch):
+    # The exact regression this issue is about: 0.0 is falsy, so the old
+    # `float(... or ... or 0.5)` silently turned a real 0.0 bid into a
+    # fabricated 0.5.
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_bid_dollars": "0.0000"}))
+
+    assert main.state["latest_prices"]["TICK-A"] == 0.0
+
+
+def test_process_stream_ticker_falls_back_to_price_dollars_when_bid_is_absent(monkeypatch):
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "price_dollars": "0.33"}))
+
+    assert main.state["latest_prices"]["TICK-A"] == 0.33
+
+
+def test_process_stream_ticker_no_real_bid_still_writes_a_real_ask(monkeypatch):
+    # A message with no usable price no longer aborts the rest of the
+    # handler the way a caught parse exception used to (previously this
+    # was an exceptional path that returned early; a missing/falsy bid is
+    # now an ordinary, expected condition).
+    main.state["running"] = False
+    main.state["markets"] = []
+    main.state["latest_prices"] = {}
+    main.state["latest_asks"] = {}
+    main.state["latest_prices_updated_at"] = {}
+    main.state["latest_asks_updated_at"] = {}
+    main.state["open_position_tickers"] = set()
+
+    _run_stream_ticker(({"market_ticker": "TICK-A", "yes_ask_dollars": "0.45"}))
+
+    assert main.state["latest_asks"]["TICK-A"] == 0.45
+
+
 def test_pipeline_health_reports_open_position_price_staleness():
     """P7 Task 29 (redesigned) / R4: /api/health/pipeline derives per-open-
     position price staleness from the write stamps - visibility only."""

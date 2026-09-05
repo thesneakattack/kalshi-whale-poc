@@ -1110,7 +1110,7 @@ class KalshiStreamGateway:
         if count is None:
             candidate_log.record_rejection(ticker, "whale_watcher", "unparseable_count", 0.0, 0.0, side=side)
             return True
-        price = trade_contract._dollars(trade_msg.get("yes_price_dollars"))
+        price = trade_contract.parse_fixed_point_dollars(trade_msg.get("yes_price_dollars"))
         unit_cost = kalshi_fees.unit_cost(side, price)
         candidate_log.record_rejection(
             ticker, "whale_watcher", "min_contracts", count, min_contracts, side=side, unit_cost=unit_cost,

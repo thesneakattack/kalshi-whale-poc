@@ -884,3 +884,113 @@ def test_unit_cost_scanner_is_clean_on_this_repo():
     for why they are not this repo's state); CI has none."""
     ids = [i for i in _unit_cost_ids(REPO_ROOT) if not i.startswith("unit-cost-inline:.claude/")]
     assert ids == []
+
+
+# --- price_fabrication.py: fabricated price-fallback scanner (issue #577) ---
+
+
+def _price_fabrication_ids(repo_root: Path) -> list[str]:
+    from tools.quality_audit import price_fabrication as scanner
+    return sorted(f.finding_id for f in scanner.scan_price_fabrication(repo_root))
+
+
+def test_price_fabrication_scanner_flags_get_or_nonzero_on_a_price_field(tmp_path):
+    from tools.quality_audit import price_fabrication as scanner
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def f(m):\n    return float(m.get("yes_bid_dollars") or 0.5)\n',
+    )
+    findings = scanner.scan_price_fabrication(tmp_path)
+    assert [f.finding_id for f in findings] == ["fabricated-price-fallback:services/rogue.py:2"]
+    assert findings[0].severity == "error"
+    assert findings[0].confidence == "high"
+    assert findings[0].check == "fabricated-price-fallback"
+    assert "parse_fixed_point_dollars" in (findings[0].remediation or "")
+
+
+@pytest.mark.parametrize("snippet, field", [
+    # Every real shape issue #577 actually had, read fresh from the fixed
+    # sites before writing this - a scanner that only matched the tidiest
+    # form would let the next copy back in.
+    ('float(m.get("yes_bid_dollars") or 0.5)', "bid"),
+    ('float(m["yes_bid_dollars"] or 0.5)', "bid subscript form"),
+    ('float(msg.get("yes_bid_dollars") or msg.get("price_dollars") or 0.5)', "3-way or chain"),
+    ('float(d.get("yes_bid_dollars") or d.get("yes_ask_dollars") or 0.5)', "bid-then-ask chain"),
+    ('x = m.get("yes_ask_dollars") or 1.0', "non-0.5 nonzero literal"),
+    ('x = m.get("notional_dollars") or 100', "int literal, dollars-named field"),
+])
+def test_price_fabrication_scanner_catches_every_spelling_the_codebase_had(tmp_path, snippet, field):
+    _write(tmp_path / "services" / "rogue.py", "def f(m, msg, d):\n    " + snippet + "\n")
+    assert _price_fabrication_ids(tmp_path), field
+
+
+def test_price_fabrication_scanner_does_not_flag_a_zero_fallback():
+    # Finding B of issue #577's own investigation: `or 0.0` on a price
+    # field is REQUIRED (a real Kalshi wire zero must be preserved), not
+    # a mistake - only a non-zero substitute is ever the violation.
+    from tools.quality_audit import price_fabrication as scanner
+    tree_path = "services/fine.py"
+    import ast as ast_mod
+    tree = ast_mod.parse('def f(m):\n    return float(m.get("yes_bid_dollars") or 0.0)\n')
+    node = tree.body[0].body[0].value.args[0]
+    assert scanner._fabricated_fallback(node) is None
+
+
+def test_price_fabrication_scanner_ignores_fields_that_are_not_price_shaped(tmp_path):
+    _write(
+        tmp_path / "services" / "fine.py",
+        "def f(m):\n"
+        '    a = m.get("volume_24h_fp") or 0.0\n'          # count field, zero fallback: fine regardless
+        '    b = m.get("min_samples") or 30\n'              # not price-shaped at all
+        '    c = m.get("count_fp") or 1\n'                  # not price-shaped at all
+        "    return a, b, c\n",
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_ignores_a_non_get_or_expression(tmp_path):
+    _write(
+        tmp_path / "services" / "fine.py",
+        "def f(a, b):\n"
+        "    x = a or 0.5\n"                                 # not a .get()/subscript at all
+        "    y = a or b or 0.5\n"                             # neither operand is a .get()/subscript
+        "    return x, y\n",
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_ignores_a_non_string_or_dynamic_key(tmp_path):
+    _write(
+        tmp_path / "services" / "fine.py",
+        "def f(m, key):\n"
+        "    x = m.get(key) or 0.5\n"                         # key is a variable, not a string literal
+        "    return x\n",
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_does_not_read_tests(tmp_path):
+    _write(
+        tmp_path / "tests" / "test_x.py",
+        'def f(m):\n    return float(m.get("yes_bid_dollars") or 0.5)\n',
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_is_registered_with_the_audit_cli():
+    from tools.quality_audit import price_fabrication as scanner
+    assert scanner.scan_price_fabrication in audit_cli._SCANNERS
+
+
+@pytest.mark.slow
+def test_price_fabrication_scanner_is_clean_on_this_repo_except_the_baselined_simulator():
+    """Issue #577's fix removed every real fabricated-price-fallback site
+    it found except services/whale_simulator.py:110 - a synthetic,
+    nothing-persisted side-selection for a simulated whale order,
+    deliberately out of #577's scope and baselined with a dated note
+    (tools/quality_audit/baseline.json). Sibling worktrees under .claude/
+    are other branches' code (see
+    test_real_repo_audit_has_no_new_high_confidence_errors for why they
+    are not this repo's state); CI has none."""
+    ids = [i for i in _price_fabrication_ids(REPO_ROOT) if not i.startswith("fabricated-price-fallback:.claude/")]
+    assert ids == ["fabricated-price-fallback:services/whale_simulator.py:110"]

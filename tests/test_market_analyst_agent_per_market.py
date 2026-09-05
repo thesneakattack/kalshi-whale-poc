@@ -145,6 +145,34 @@ def test_build_prompt_includes_market_title_and_rules():
     assert "0.42" in prompt
 
 
+# --- issue #577 root fix (2026-09-05): no more fabricated 0.5 in the prompt ---
+
+def test_prompt_market_price_a_real_bid_is_formatted():
+    assert maa.per_market._prompt_market_price({"yes_bid_dollars": "0.42"}) == "0.42"
+
+
+def test_prompt_market_price_a_real_zero_bid_is_kept_not_fabricated_to_0_5():
+    # The exact regression this issue is about: 0.0 is falsy, so the old
+    # `... or ... or 0.5` silently turned a real 0.0 bid into a fabricated
+    # "0.50" in the analyst's own prompt.
+    assert maa.per_market._prompt_market_price({"yes_bid_dollars": "0.0000"}) == "0.00"
+
+
+def test_prompt_market_price_falls_back_to_ask_when_bid_is_absent():
+    assert maa.per_market._prompt_market_price({"yes_ask_dollars": "0.66"}) == "0.66"
+
+
+def test_prompt_market_price_is_honestly_unknown_when_neither_side_is_real():
+    assert maa.per_market._prompt_market_price({}) == "unknown"
+
+
+def test_build_prompt_says_unknown_market_price_rather_than_fabricating_one():
+    market_detail = {"title": "T"}  # no yes_bid_dollars, no yes_ask_dollars
+    prompt = maa.build_prompt(market_detail, {})
+    assert "Current market price: unknown" in prompt
+    assert "Current market price: 0.50" not in prompt
+
+
 def test_build_prompt_includes_liquidity_open_interest_and_last_price():
     # Audit finding (2026-08-09): these three were already fetched into
     # market_detail by main.py's own client.get_market() call - the same
