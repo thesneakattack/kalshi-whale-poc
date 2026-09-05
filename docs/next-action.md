@@ -41,9 +41,17 @@ before acting. Same logic applies to **#532**'s `rejection_events` growth:
 a blunt prune becomes acceptable once the write path stops logging one row
 per sub-threshold print.
 
-**The relaxation is NOT a blank check — order matters and is unchanged:**
-verify the write-path fix first, purge second. Purging before the fix is
-confirmed correct just lets fresh data get contaminated again immediately.
+**The relaxation is NOT a blank check — order matters and now has one more
+step:** verify the write-path fix first, then a **pre-purge checkpoint**
+(David, 2026-09-05: "if things can be done before tables get emptied out,
+work around it") — confirm nothing still needs the current pre-purge data
+for analysis or evidence, take a full backup, then purge. Purging before
+the fix is confirmed correct just lets fresh data get contaminated again
+immediately; purging before the checkpoint destroys evidence that can never
+be recovered once the tables are empty (backup aside). The checkpoint is
+explicit, not implied by "the fix passed review" — confirm with whoever
+knows the data best (currently `62`/formerly `a2` for #578) and with the
+coordinator before the actual destructive step runs.
 "As long as the math is right" is the gate on using this authorization, not
 a suspension of it.
 
