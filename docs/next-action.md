@@ -2,12 +2,23 @@
 
 **Coordinator:** `autotrade-05` (chain tonight: `1f` → `48` → `01` → `05`, one
 continuous session — the SendMessage name changes on reconnect, memory
-doesn't). Peers: `32` (was `df`/`8d`, PR #574 author), `07` (separate
-lineage, independent reviewer), `bd` (was `d2`/`24`, PR #575 owner), `62`
-(was `64`/`a2`, #577/#578, now also the YES-side-profit analysis and
-app-health watch — `ef`, the original watch owner, is confirmed gone).
-**Verify identity by direct reply before trusting a name** — `ListAgents`'
-"started Xm ago" is not evidence of a fresh session; ask.
+doesn't). **Verify identity by direct reply before trusting a name** —
+`ListAgents`'s "started Xm ago" is not evidence of a fresh session; ask.
+
+**Peers and current task, as of this write:**
+- `32` (chain: `df`→`8d`, PR #574 author) — **idle**, finished `#589`/`#590`
+  (both merged, PR #592/#593). Awaiting next assignment.
+- `07` (separate lineage, independent reviewer) — **on `#576`**: 3 parallel
+  tracks — benchmark solution A (bounded consumer fairness) vs. B
+  (independent scheduled flush), plus the observability-persistence PR
+  (#594, already merged). Converging A-vs-B into a stated choice next.
+- `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
+  periodic `/api/health/pipeline` checks, no regression found so far.
+- `62` (chain: `64`→`a2`, `#577`/`#578` owner) — **on the YES-side auto-exit
+  profit analysis** (gate condition 4 below): factor-isolation ablation in
+  progress.
+
+`ef` (original app-health watch owner) is confirmed gone, not renamed.
 
 **Safety, check every session start:** `auto_exit_enabled: false` in
 `config/settings.yaml`, uncommitted (David's own edit) — must stay
@@ -115,28 +126,38 @@ question — do not create another one.**
   absolute rate doesn't — don't read a smaller multiplier later as
   improvement. Coordinator recommendation: sample `min_contracts` at write
   time, keep every other gate whole.
-- **`#589`/`#590`** — linked follow-ups from `#577`'s review (schema
-  provenance column deferred; CI guard misses ternary/indirection shapes).
-  Non-blocking, open.
+- **`#589`** — DONE via PR #592 (recorded in `open-decisions.md`, still
+  genuinely open there pending `#578`'s purge decision). **`#590`** — DONE,
+  PR #593 merged (`4c0e11b`): bounded single-assignment reaching-definition
+  resolution closes both the ternary and intermediate-variable fabrication
+  shapes; real remaining limits (reassignment, branch-scoped, cross-function)
+  documented, not claimed as full coverage.
 - **`#576`** ticker-coalescing starvation — `07` confirmed a real, recurring,
   load-dependent bug (mechanism: `_consume_market_from` only services the
   ticker map when the trade queue happens to empty, unbounded under
   sustained load; recurrence proven confound-independent via the
-  `reconnects` counter staying flat). Going straight to a PR with the lean
-  cycle rather than a formal docs/superpowers pipeline — precedent set by
-  `#577`/`#581` tonight — but the A-vs-B comparison (bounded fairness cap
-  vs. independent scheduled flush) must include real benchmarks, not just
-  mechanism, before it satisfies the data-plane HARD RULE's bar. The
-  observability-persistence fix (`pending_tickers`/`coalesced_tickers` not
-  in the durable time series) splits into its own PR.
+  `reconnects` counter staying flat, two clean instances found). Going
+  straight to a PR with the lean cycle rather than a formal
+  docs/superpowers pipeline — precedent set by `#577`/`#581` tonight — but
+  the A-vs-B comparison (bounded fairness cap vs. independent scheduled
+  flush) must include real benchmarks, not just mechanism, before it
+  satisfies the data-plane HARD RULE's bar. **Observability-persistence
+  half already merged** (PR #594, `a2e9757`) — split out since it's
+  independent of which fairness approach wins. Main fix: benchmarking in
+  progress, not yet a PR.
 
 ## Decisions waiting on David
 
 **Tracked in `docs/open-decisions.md`, per CLAUDE.md — the single list of
-parked decisions, not duplicated here.** Four items added there tonight:
-`ef662c0`'s home, whether the rebuild-on-`signal_log` plan still applies
-now that `#577`/`#581` are fixed, `#532`'s retention design, and `#578`'s
-purge go-ahead.
+parked decisions, not duplicated here.** Cleaned up 2026-09-05 (~63 lines
+→ 51): removed everything marked `RESOLVED` per the file's own convention,
+trimmed 3 entries that mixed a resolved narrative with a still-open
+decision down to just the open part. Six items from tonight specifically:
+`ef662c0`'s home, whether the rebuild-on-`signal_log` plan still applies,
+`#532`'s retention design, `#578`'s purge go-ahead, `#589`'s
+schema-column timing, and the branch-protection-API 403 gap. The other
+~45 lines are a genuine backlog dating back to 2026-08-22 — not urgent,
+but unanswered.
 
 ## Standing lessons (apply, don't re-litigate)
 
