@@ -23,6 +23,12 @@ async def get_position_netting_groups():
     # surfaces). Lets the user see exactly how any currently-open
     # mutually-exclusive-event group (a real hedge/concentration pattern
     # or not) is classified before ever turning automated action on.
+    # latest_asks (2026-09-04 round-3 review): without it this read-only
+    # view priced NO legs' "close now" value at (1 - yes_bid) while
+    # review() executes at the real bid, so the panel could show a
+    # different recommendation than the loop acts on - the exact
+    # decision/execution split the D6 fix exists to close.
     return {"groups": position_netting.describe_groups(
         broker, state["market_titles"], state["event_titles"], state["latest_prices"], config_store.get(),
+        latest_asks=state["latest_asks"],
     )}
