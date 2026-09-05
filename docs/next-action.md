@@ -27,15 +27,22 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
 
 ## Peers — current task and next goal
 
-- **`49`** (was `07`) — mid-review on **PR #617** (`#601`'s fix: ticker-scoped
-  UPDATE replacing an unindexed full-table scan in `candidate_log.py`'s
-  settlement path, ~14.7x, plus a bounded per-ticker-commit batching
-  complement, ~38.4x total — both call sites, including a previously-unknown
-  continuous 6s-tick tax on the shared whale-decision pool). Self-review
-  posted, adversarial review + CI in progress.
-  **Next goal once #617 merges:** issue **#616** (edge-gate enablement
-  prerequisites) — spec D1's banded cost-aware gate diagnostic specifically,
-  sequenced "after #601's index fix," so `49` is the natural owner.
+- **`49`** (was `07`) — **`#601` DONE, merged and deployed live** (PR #617,
+  `aedd8ad`, confirmed via `WatchFiles` + `merge-base --is-ancestor 6b32ac3
+  HEAD`). Full arc: measured → 3 fix families benchmarked (PR #603) →
+  Family 2 (ticker-scoped UPDATE, no new index needed — the table's
+  existing composite primary key already covers it) implemented with TDD +
+  self-administered mutation testing → adversarial review ran a 4000-trial
+  independent differential test against verbatim pre/post SQL, zero
+  mismatches, plus live `EXPLAIN QUERY PLAN` confirmation (232.4ms scan →
+  0.0075ms index search) on the real 5.1GB file → 2 real gaps found and
+  fixed before merge (a test that didn't actually assert `resolved_at`,
+  caught via a mutant that passed with a wrong value; a structurally
+  identical bug in `market_analyst_agent/per_market.py` filed as its own
+  follow-up, **`#619`**, not fixed blind). Both call sites (settlement
+  loop + the every-6s tick call) now fast. **Now on `#616`** (edge-gate
+  enablement prerequisites): reading the full decision comment before
+  starting spec D1's banded cost-aware gate diagnostic.
 - **`0d`** (was `62`) — mid-review on **PR #614** (`#599`'s fix: `fault_log.
   summary()` no longer leaks a fault row's lifetime count into narrow
   `hours=` windows; also fixed `soak_analyzer.check_event_loop_stalls`,
