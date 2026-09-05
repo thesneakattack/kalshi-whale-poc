@@ -68,21 +68,30 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
   every other gate `1.0`, zero exceptions across the table's history).
   Once #620 lands: full pre-purge checkpoint, then the coordinator's
   explicit go before executing, same pattern as `#578`.
-- **`c4`** (was `32`) — free, two goals just assigned:
-  1. Review **PR #618** — a 2-day-old completed branch (`fix/tier0-live-
-     incident-remediation`, 7 commits: `_connect()` leak fixes across 5
-     modules + a health-probe timeout bound) recovered from disk and pushed
-     tonight. Explicitly unreviewed — needs the full self-review/adversarial/
-     consolidation cycle before it's mergeable.
-  2. Drive **issue `#150`** to an actual decision. What was chased tonight as
-     a "new" stall emergency (`#605`) turned out to be a duplicate of this
-     already-known, already-deferred issue: `asyncio.wait_for`'s timeout
-     can't actually kill the underlying OS thread once running, so every
-     handler timeout leaks a worker slot from the shared pool — confirmed
-     live, magnitude matches exactly (~9.3-9.6s stalls against a 10s
-     timeout). `#150` names two competing fixes (dedicated smaller thread
-     pool, or root-cause the SQLite hang) — benchmark and compare them with
-     the same rigor `49` gave `#601`, don't pick one blind.
+- **`c4`** (was `32`) — **`#150` DONE** (PR #622, docs-only research findings,
+  `bca3905`): Family 1 (dedicated smaller thread pool) turns out already
+  shipped for both the WS-trade and candidate-retry paths, predating this
+  investigation; Family 2's literal proposal (missing `busy_timeout`) does
+  not exist — every connection already has one, and `#150`'s own telemetry
+  (timeouts with zero exceptions) actually rules out ordinary SQLite lock
+  contention as the mechanism. **No code fix recommended — the real hang
+  mechanism stays genuinely unexplained** without live stack-capture
+  instrumentation, stated plainly rather than forced into a fix. Caught and
+  corrected a real near-miss: both the self-review and independent
+  adversarial review missed an easy, one-grep-away false claim in the PR
+  body before `c4` caught it on a final pass. Separately filed **#621**
+  (unrelated dead code). Still holding **PR #618** open (tier-0 recovery,
+  likely redundant with already-shipped work per `c4`'s own self-review) —
+  adversarial review hasn't posted yet, no merge/close until it does.
+  **Not yet assigned, awaiting David's confirmation:** `#585` (two callers
+  running `signal_log.resolved_signals_with_factors` synchronously ON the
+  event loop for 5.4s/13.8s — more severe than `#150` since it blocks
+  everything on the loop, not just a thread-pool worker; possibly the real
+  explanation for tonight's stall pattern — worth cross-referencing exact
+  stall timestamps against these two call sites before writing `#150` off
+  as unsolved). Recommended sequencing if approved: `#585` (concrete, known
+  locations) → `#530` (broader ongoing sweep) → `#586` (shutdown-only hang,
+  lower frequency).
 - **`ea`** (was `bd`) — standing watch, broadened to general app health
   (`/api/quality/summary`, `/api/health/faults`, `/api/observability/
   summary`, `/api/health/storage`) plus `#579`/`#580`. Currently clean;
