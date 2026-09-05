@@ -10,12 +10,19 @@ all 4 fleet peers' MEMORY, but only 1 of 4 kept its SendMessage name — ask
 every time, don't assume either outcome.
 
 **Peers and current task, as of this write, all reconfirmed post-WSL-restart:**
-- `c4` (was `32`, chain `df`→`8d`→`32`→`c4`, PR #574 author) — **on `#578`
-  pre-purge prep** (non-destructive), checkpoint artifact posted (issue
-  #578 comment): fix re-verified live and holding (contamination flat at
-  6,260, zero new fabricated rows since the fix), fresh full backup taken
-  and verified. Still holding the actual purge — gated on `0d`'s ablation
-  finishing cleanly + coordinator go.
+- `c4` (was `32`, chain `df`→`8d`→`32`→`c4`, PR #574 author) — **`#578` DONE.**
+  Looped David in directly before executing (not just the coordinator's
+  relayed go — right call for something this destructive). Purged via the
+  real, production-tested `prune()` function (retention_hours=0, cutoff
+  pinned exactly to the fix commit `da4b93a`'s timestamp): 5,049,063
+  pre-fix rows deleted, 102 batches, 36.9s, 0 errors. Post-purge: 494,197
+  rows remain, ALL confirmed post-fix (oldest row timestamp exactly at the
+  cutoff), 0 hard-lower-bound fabricated rows, `integrity_check: ok`, app
+  stayed up throughout. Deliberately skipped `VACUUM` (a separate,
+  unapproved exclusive-lock operation) — file stays ~800MB with 84% of
+  pages on the freelist, reusable but not reclaimed; pre-purge backup
+  (`20260905T174550Z`) still available if ever needed. Free for next
+  assignment.
 - `49` (was `07`, kept memory AND name through the restart, separate
   lineage, independent reviewer) — **`#576` DONE, merged and deployed live**
   (PR #597, merge commit `70fc147`, pulled onto the primary and confirmed
@@ -279,17 +286,14 @@ artifact), not a side investigation — keep it framed that way.
   hypothesis falsified for that burst. **`#580`** settlement backlog
   sharing `tick_executor`'s 2-worker pool — leading by elimination,
   falsifier unmet. Both mitigated by `#581`, neither formally closed.
-- **`#578`** up to 1.43M contaminated `market_history` snapshots — 6,504
-  provably fabricated (hard lower bound); 48.8% recoverable via
-  `series_watcher`, 93.2% of those a real `0.0` not `0.5`. **Purge BLOCKED,
-  confirmed active dependency, not hypothetical** (2026-09-05): `62`'s
-  YES-side ablation issues live per-entry queries against
-  `market_history.snapshots` (+ `outcomes`) right now, mid-run, across 664
-  entries — a purge during the run would silently produce an
-  internally-inconsistent result, not an error. `32` assigned non-destructive
-  prep only (backup, re-verify #577 holds live, contamination recount,
-  checkpoint writeup); actual purge withheld until `62` confirms the run
-  finished cleanly + coordinator go-ahead.
+- **`#578`** — **DONE, purged.** 5,049,063 pre-fix `market_history.snapshots`
+  rows deleted via `prune()` cut exactly to the `#577` fix commit's
+  timestamp (`da4b93a`), 102 batches, 36.9s, 0 errors. 494,197 rows remain,
+  all confirmed post-fix, 0 fabricated, `integrity_check: ok`. `VACUUM`
+  deliberately skipped (unapproved); backup preserved
+  (`20260905T174550Z`). Was blocked earlier on `0d`'s YES-side ablation
+  actively querying this same table live — resolved by waiting for that
+  work to finish rather than racing it.
 - **`#532`** `rejection_events` unbounded growth — 29.8M rows, 98.98% from
   one gate (`min_contracts`, ~23.8M resolved samples against a
   `min_samples=30` threshold — wildly oversampled). Measured rate spans
