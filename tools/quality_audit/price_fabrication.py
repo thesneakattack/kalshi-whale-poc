@@ -72,7 +72,15 @@ NOT flag rather than guess - a false negative on a name this scanner can't
 confidently trace, over a false positive that erodes trust in a
 confidence-high check. The reassigned-name and branch-scoped-assignment
 cases above are accepted, documented gaps for exactly that reason, not
-oversights: closing them requires real control-flow-sensitive dataflow
+oversights - as is `_single_assignment_value` only ever matching a plain
+`ast.Assign`: an augmented assignment (`bid += 1`), an annotated one
+(`bid: float = m.get(...)`), a tuple/multiple target (`bid, ask = ...`), or
+a chained one (`a = b = m.get(...)`) all correctly fail to resolve rather
+than crash or, worse, resolve to the wrong target - a real-repo instance
+of any of these would silently stay unflagged (2026-09-05 independent
+review, confirmed by direct execution against all four shapes; no false
+positive or crash in any case, only the same accepted false-negative bias
+already documented above). Closing them requires real control-flow-sensitive dataflow
 analysis, which issue #590 itself weighed against `services/config/
 config_usage.py`'s own precedent (that scanner documents an analogous
 intermediate-variable limitation as an accepted gap rather than building
