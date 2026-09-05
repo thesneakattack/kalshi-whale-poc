@@ -1418,12 +1418,18 @@ async def _ticker_flush_loop(gateway, *, interval_sec: float = 0.25) -> None:
     module's flush_pending_tickers()/_TICKER_FLUSH_BATCH_MAX for the
     mechanism and batch-cap justification.
 
-    interval_sec=0.25 (not the also-benchmarked 1.0s): a sustained-backlog
-    simulation (2026-09-05, 1800 ticker updates) delivered only 350/1800 at
-    1.0s vs. 1475/1800 at 0.25s - monotonic improvement with a shorter
-    interval - while idle-tick overhead at 0.25s measured 0.58-4.3ms,
-    negligible against the 250ms period itself. No real cost to biasing
-    toward the tighter, better-performing interval.
+    interval_sec=0.25 (not the also-benchmarked 1.0s): reported delivery
+    numbers from a separate benchmarking pass (350/1800 at 1.0s vs.
+    1475/1800 at 0.25s, idle-tick overhead 0.58-4.3ms) show a monotonic
+    improvement with a shorter interval at negligible extra cost - relayed
+    figures, not reproduced by this module's own tests, and not yet backed
+    by a committed benchmark artifact in this repo (see PR #597's body for
+    the caveat and a search for one). The *direction* (shorter interval
+    wins, cheaply) is independently corroborated by a separate peer status
+    commit describing the same benchmarking effort with different exact
+    figures (git commit 1ce4811, docs/next-action.md as of that commit);
+    the qualitative case for biasing toward the tighter interval holds
+    regardless of exactly which digits are right.
 
     Wired only for trade_stream (see lifespan()): index_stream never calls
     set_market_tickers, so its own _ticker_by_market map is provably
