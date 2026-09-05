@@ -28,6 +28,16 @@ let liveStatus = {};  // event_ticker -> "live" | "finished" | "none" | undefine
 let wsReconnectDelayMs = 1000;
 let lastSuccessfulRefresh = Date.now();
 let consecutiveRefreshFailures = 0;
+// The actual Error object from refresh()'s most recent failure - lets
+// renderConnectivity() (trading-gate-and-connectivity.js) tell a permanent,
+// same-every-time failure (e.g. the page itself was loaded as
+// https://user:pass@host/..., which makes the Fetch spec throw on every
+// same-origin fetch() from then on - "Request cannot be constructed from a
+// URL that includes credentials") apart from an ordinary transient network
+// blip, which consecutiveRefreshFailures/lastSuccessfulRefresh alone can't
+// distinguish. Never cleared to a stale error - reset to null the moment a
+// refresh succeeds, same lifecycle as consecutiveRefreshFailures.
+let lastRefreshError = null;
 let lastWhaleSource = null;  // set from each poll's state.whale_source - see loadConfig()'s real-provider status note
 
 // De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
@@ -56,6 +66,7 @@ async function refresh() {
     if (res.status === 304) {
       lastSuccessfulRefresh = Date.now();
       consecutiveRefreshFailures = 0;
+      lastRefreshError = null;
       renderConnectivity();
       return;
     }
@@ -63,6 +74,7 @@ async function refresh() {
     const state = await res.json();
 
     lastSuccessfulRefresh = Date.now();
+    lastRefreshError = null;
     consecutiveRefreshFailures = 0;
     renderConnectivity();
     renderTickHealth(state);
@@ -152,6 +164,7 @@ async function refresh() {
   } catch (e) {
     console.error('refresh failed', e);
     consecutiveRefreshFailures++;
+    lastRefreshError = e;
     renderConnectivity();
   }
 }
@@ -261,7 +274,7 @@ function updateWhaleProviderStatus(src) {
   }
 }
 
-export { _rerenderTerminalFeed, categoryMetadata, connectWebSocket, consecutiveRefreshFailures, lastSuccessfulRefresh, lastWhaleSource, liveStatus, refresh, seriesMeta, setSectionInputsDisabled, terminalDecisionFeed, terminalLatestPrices, terminalSignalFeed, updateWhaleProviderStatus, wsReconnectDelayMs };
+export { _rerenderTerminalFeed, categoryMetadata, connectWebSocket, consecutiveRefreshFailures, lastRefreshError, lastSuccessfulRefresh, lastWhaleSource, liveStatus, refresh, seriesMeta, setSectionInputsDisabled, terminalDecisionFeed, terminalLatestPrices, terminalSignalFeed, updateWhaleProviderStatus, wsReconnectDelayMs };
 
 // Exposed for inline HTML event handlers (onclick=/onchange=/oninput=,
 // including ones built indirectly via a caller-supplied onclick-string
