@@ -141,13 +141,29 @@ question — do not create another one.**
 
 ---
 
-## Standing priority (David, 2026-09-05)
+## Standing priority (David, 2026-09-05 — reinforced later the same night)
 
 > "Right now the priorities are the data plane overall integrity and
 > accuracy and near-zero latency, and also fixing the errors downstream of
 > that so we can confidently turn trading back on... resetting whole
 > tables and pruning table rows etc is totally allowed... as long as the
 > math is right, I am okay starting from 0 for everything."
+
+> "Remember to stay on track with the 2 priorities I gave at the start: the
+> data-plane and the logged data integrity - no corruptions due to software
+> problems, no contaminations due to mishandled logic (like what caused the
+> trade log issues, losses being counted as wins, etc)."
+
+**Two named priorities, not one blended one — read every open thread against
+both:** (1) the data plane itself (completeness/accuracy/flow-rate/
+timeliness/fidelity/speed, per CLAUDE.md's HARD RULE), and (2) logged data
+integrity specifically — no software-caused corruption, no mishandled-logic
+contamination. The named failure pattern ("losses being counted as wins")
+is exactly the NO-side exit-valuation bug (PR #574) and the #591
+double-counting bug — both already-caught instances of priority 2, not
+hypothetical. `0d`'s YES-side ablation is priority-2 work by this
+definition (distinguishing genuine profit from a logic-contamination
+artifact), not a side investigation — keep it framed that way.
 
 - **Tier 1 (data-plane):** `#577` (fabricated `or 0.5` prices) — **done,
   merged, deployed, verified live** (392/392 current markets have a real
