@@ -227,6 +227,18 @@ def test_prune_returns_the_deleted_row_count():
     assert fl.prune(retention_hours=336, now=now) == 2
 
 
+def test_connect_creates_an_index_on_first_seen():
+    """Issue #599 follow-up: summary()'s since_ts-scoped queries filter on
+    first_seen now (see its own docstring) - adversarial review of that fix
+    measured a real full-table-scan regression for most_frequent's query
+    without a covering index (SEARCH...USING INDEX idx_faults_last ->
+    SCAN faults, ~2x slower against live data). Locks in the index exists,
+    not just that queries happen to still return correct results."""
+    with fl._connect() as conn:
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_faults_first" in indexes
+
+
 def test_connect_closes_its_connection(monkeypatch):
     """Same fd-leak class as Tasks 2-5 - fault_log.py's own _connect() had
     the identical non-closing shape, and this module is the one CLAUDE.md

@@ -108,6 +108,19 @@ def _connect():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
+        # Issue #599 fix (2026-09-05): summary()'s since_ts-scoped queries
+        # filter on first_seen now (see summary()'s own docstring), which
+        # had no covering index - adversarial review of that fix measured
+        # a real degradation from `SEARCH ... USING INDEX idx_faults_last`
+        # to `SCAN faults` for most_frequent's query against live data
+        # (36,858 rows: ~2x slower, 78.8ms->151.9ms/20 calls). This table's
+        # own module docstring assumes dedup keeps it small, but other
+        # dedup'd stores already sit at 8k-25k rows - not yet a genuine
+        # problem at today's size, but this endpoint (/api/health/pipeline)
+        # already caused a real 191s/504 incident once (issue #210), so a
+        # free, mechanical index addition is worth taking now rather than
+        # waiting for it to become one.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_first ON faults (first_seen)")
         _ensure_null_exc_type_dedup_index(conn)
         with conn:
             yield conn
