@@ -55,8 +55,10 @@ router = APIRouter()
 # sqlite3 default busy-timeout is 5.0s, so an ordinary SQLITE_BUSY wait
 # resolves (success or OperationalError) well inside 10s; a probe that
 # still hasn't returned past that is not ordinary lock contention and
-# this task's own live-validation step (Task 1 Step 4) is where that
-# number gets checked against real behavior, not assumed correct.
+# this plan's Task 10 (live validation, which checks the live
+# stores_probe_ms response field against STORE_PROBE_TIMEOUT_SEC * 1000)
+# is where that number gets checked against real behavior, not assumed
+# correct.
 STORE_PROBE_TIMEOUT_SEC = 10.0
 
 
