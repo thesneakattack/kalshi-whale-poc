@@ -30,11 +30,23 @@ every time, don't assume either outcome.
   boundary finding along the way, added a smoke test, committed the raw
   benchmark output as a durable artifact (`33a83e2`). PR was briefly
   auto-closed by an unrelated coordinator docs commit's phrasing (see
-  standing lessons), reopened cleanly, no state lost. Now **on
-  `#579`/`#580`**: neither was ever formally closed, just "mitigated, not
-  disproven" — assigned to drive a real conclusion (prove the shared-
-  2-worker-pool mechanism with instrumentation, or falsify it), same rigor
-  as `#576`. In progress.
+  standing lessons), reopened cleanly, no state lost. **`#579`/`#580`
+  shared-2-worker-pool hypothesis: FALSIFIED**, real numbers (PR #600,
+  benchmark harness + raw output committed) — sub-second p95 under every
+  current-state scenario including a synthetic reproduction of #580's own
+  reported surge (p95 307ms vs. the 10s timeout); a positive control
+  (re-adding the pre-#581 diagnostic routes) reproduces the original
+  failure exactly, proving the harness genuinely detects the mechanism
+  when present. **Real, previously-unknown root cause found for #580**:
+  an unindexed full-table scan in `candidate_log.py`'s settlement path
+  (`rejected_candidates WHERE resolved = 0`, no index, 258k+ rows) — caps
+  throughput at ~2-3 tickers/sec vs. the 9.16/sec surge rate. Independently
+  re-verified by both `49` and the coordinator (`EXPLAIN QUERY PLAN` shows
+  `SCAN rejected_candidates`). Filed as **#601** with 3 competing fix
+  families tabled, none implemented yet per the data-plane HARD RULE.
+  `#579`'s original trigger stays genuinely unidentified; `#580` re-scopes
+  to #601's real mechanism. Both issues stay open — only the shared-pool
+  hypothesis is closed.
 - `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
   watch, broadened 2026-09-05 from `#579`/`#580`-only to general app
   health** (David: nobody was covering this) — now also runs the full
@@ -56,14 +68,19 @@ every time, don't assume either outcome.
   0.60-0.95 unit-cost band negative-EV, designed not implemented) plus
   sparse-series `unknown`s (zero closed positions in 24h). Don't mistake
   this `overall: fail` for a data-plane regression.
-- `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **on the
-  YES-side auto-exit profit analysis** (gate condition 4 below): split-half
-  robustness check DONE (see below). The pnl+sentiment+staleness ablation
-  was killed
-  mid-run **three times** by unexplained full-stack restarts before the
-  Windows root cause was found — paused before a 4th attempt; resume by
-  relaunching once the fleet is confirmed stable post-WSL-restart, not
-  before.
+- `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **YES-side
+  auto-exit profit analysis (gate condition 4) — ablation run, result
+  INCONCLUSIVE** (see condition 4 detail above, do not read as resolved).
+  Found and fixed a real O(n²) bug in its own analysis script first (full
+  rescan + per-snapshot DB query inside an O(n) loop — 8.75hr honest ETA
+  collapsed to ~100s after a sliding-window + one-time in-memory load,
+  verified identical output before trusting it). Survived a live bankroll
+  reset mid-run cleanly: switched to `trade_archive`'s pre-reset epoch,
+  disclosed a real limitation (archive lacks the `excluded` flag) rather
+  than risk a new discrepancy, used the already-triple-verified 202/
+  $60,276.44 baseline as a fixed constant instead. Standing by for next
+  step on condition 4 (fix one of the two identified confounds, or
+  explicitly accept the approach can't answer this with available data).
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
@@ -71,6 +88,22 @@ every time, don't assume either outcome.
 `config/settings.yaml`, uncommitted (David's own edit) — must stay
 uncommitted and unchanged. `kalshi_account.trading_enabled` stays `false`.
 Never touch either without David.
+
+**Bankroll reset + risk lockdown (David, 2026-09-05 ~20:42Z):** paper
+bankroll reset to a clean $10,000 (pre-reset trade history archived,
+`trade_archive` `epoch_id=9`, "pre-reset 2026-09-05 20:42", 2,184 trades —
+not destroyed). `risk.max_daily_loss_pct` set to `0` (also uncommitted,
+same pattern as `auto_exit_enabled`) — reactive, not preemptive: trips the
+kill switch on the first position showing any loss, does not block a new
+position from opening in the meantime. `running` was briefly toggled
+`false` then back to `true` at David's explicit request, specifically
+because `state["running"]` gates whale-signal detection/logging itself
+(`whale_stream_handlers.py:233`, verified in source) — pausing the loop
+was found to ALSO stop signal logging, not just position-opening, which
+David did not want. **No existing flag decouples "block new entries" from
+"keep signal detection running"** — `running: true` + `max_daily_loss_pct:
+0` is the current compromise; a real decoupling fix is a named, not-yet-
+requested follow-up if David wants a true preemptive block later.
 
 **Infra: `ddev-router` outage RESOLVED (2026-09-05)** — traced to Windows
 port exclusion (`winnat` dynamically excluding port ranges that collide
@@ -132,16 +165,32 @@ question — do not create another one.**
   (2026-09-05T10:19:40Z), #578 still open today — verified directly via
   `gh` by the coordinator, not just relayed.
 - **David's decision: commission the larger analysis, both avenues.**
-  Assigned to `62`. Feasibility checked first, verified independently:
-  **avenue 1 (out-of-sample window) is genuinely impossible** — the entire
-  trade history is one ~2-day window, zero trades in 18.87h+ and still
-  climbing; substitute is a labeled split-half *robustness, not
-  validation* check. **Avenue 2 (factor isolation) is feasible and
-  narrower than expected** — `analyst_divergence` and
-  `series_track_record` proven zero-contributors from source (empty
+  Assigned to `62`/`0d` (same continuous session). Feasibility checked
+  first, verified independently: **avenue 1 (out-of-sample window) is
+  genuinely impossible** — the entire trade history is one ~2-day window,
+  zero trades in 18.87h+ and still climbing; substitute is a labeled
+  split-half *robustness, not validation* check. **Avenue 2 (factor
+  isolation) is feasible and narrower than expected** — `analyst_divergence`
+  and `series_track_record` proven zero-contributors from source (empty
   table; zero config weight), leaving `pnl` (done) + `sentiment` +
-  `staleness` as the real ablation. **In progress** — full review cycle
-  before this reaches a decision.
+  `staleness` as the real ablation.
+- **Factor-isolation ablation completed 2026-09-05, but result is
+  INCONCLUSIVE, not a resolution of condition 4** — `0d` explicitly flagged
+  this itself rather than let a dramatic number stand unqualified. Full
+  composite replay (pnl+sentiment+staleness): **-$4,342.79**, sharply
+  diverging from the real +$60,276.44 (pnl alone +$7,665; sentiment alone
+  -$40,007; staleness alone -$44,510 — both net-negative in isolation).
+  **Two real, unresolved confounds identified, not yet separated:**
+  (1) 7.6% of the 198,962 snapshot-points walked are exactly `0.5` —
+  measured contamination from the pre-#577-fix fabricated-price era, a
+  real fraction of which are fake, not real, bids; (2) the replay only
+  evaluates at `market_history.snapshots` cadence (~5-6s/ticker), far
+  sparser than the live system's actual per-tick evaluation — could
+  systematically under-fire relative to what really happened. **Do not
+  treat -$4,342.79 as evidence the composite lacks edge** until one of
+  these is fixed or the approach is explicitly acknowledged as unable to
+  answer the question with available data. Full results + caveats posted
+  to #591. Condition 4 stays open.
 
 ---
 
