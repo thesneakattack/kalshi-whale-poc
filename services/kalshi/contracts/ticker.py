@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from services.kalshi.provenance import ContractDocs
-from services.kalshi.contracts.trade import _dollars
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_ticker": ("docs/kalshi/market-ticker.md",),
@@ -51,9 +51,9 @@ def ticker_update_from_ws(msg: dict) -> TickerUpdate:
     ts_ms = msg.get("ts_ms")
     return TickerUpdate(
         ticker=msg.get("market_ticker") or msg.get("ticker"),
-        yes_bid=_dollars(msg.get("yes_bid_dollars")),
-        yes_ask=_dollars(msg.get("yes_ask_dollars")),
-        price=_dollars(msg.get("price_dollars")),
+        yes_bid=parse_fixed_point_dollars(msg.get("yes_bid_dollars")),
+        yes_ask=parse_fixed_point_dollars(msg.get("yes_ask_dollars")),
+        price=parse_fixed_point_dollars(msg.get("price_dollars")),
         ts_ms=ts_ms if isinstance(ts_ms, int) else None,
         raw_payload=msg,
     )

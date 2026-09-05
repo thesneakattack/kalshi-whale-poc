@@ -119,11 +119,24 @@ def resolve_taker_outcome_side(msg: dict) -> OutcomeSide | None:
     return AS_OUTCOME_SIDE.get(str(msg.get("taker_side") or "").lower())
 
 
-def _dollars(value: str | float | int | None) -> float | None:
-    """Cheap float parse of a fixed-point dollars/count string; None stays
-    None and garbage stays None rather than raising on a hot-adjacent
-    path (spec numeric policy: cheap parsing, raw strings preserved in
-    raw_payload)."""
+def parse_fixed_point_dollars(value: str | float | int | None) -> float | None:
+    """Cheap float parse of a fixed-point dollars/count string (wire type
+    confirmed `string`/`required: true` for yes_bid_dollars/yes_ask_dollars/
+    price_dollars in docs/kalshi/market-ticker.md); None/empty stays None
+    and garbage stays None rather than raising on a hot-adjacent path (spec
+    numeric policy: cheap parsing, raw strings preserved in raw_payload). A
+    real 0.0 is preserved, never coalesced away - the caller decides what
+    "no value" means, this function never invents a substitute.
+
+    Promoted from a private `_dollars` (2026-09-05, issue #577's root fix):
+    `fill.py`/`position.py`/`ticker.py` already imported the private name
+    across module boundaries, and #577's fix needs this exact "None/empty
+    stays None, a real 0.0 stays 0.0, nothing ever fabricated" parsing at
+    several application-layer sites outside this package (main.py,
+    whale_stream_handlers.py, market_analyst_orchestrator.py) - vendor-
+    specific semantic interpretation belongs in services/kalshi/ (CLAUDE.md's
+    Kalshi-integration-authority rule), so those sites import it from here
+    instead of reimplementing it a fourth/fifth/sixth time."""
     if value is None:
         return None
     try:
@@ -162,9 +175,9 @@ def public_trade_from_ws(msg: dict) -> PublicTrade:
         trade_id=msg.get("trade_id"),
         ticker=msg.get("market_ticker") or msg.get("ticker"),
         outcome_side=resolve_taker_outcome_side(msg),
-        count=_dollars(msg.get("count_fp")),
-        yes_price=_dollars(msg.get("yes_price_dollars")),
-        no_price=_dollars(msg.get("no_price_dollars")),
+        count=parse_fixed_point_dollars(msg.get("count_fp")),
+        yes_price=parse_fixed_point_dollars(msg.get("yes_price_dollars")),
+        no_price=parse_fixed_point_dollars(msg.get("no_price_dollars")),
         occurred_at=occurred_at,
         ts_ms=ts_ms if isinstance(ts_ms, int) else None,
         raw_payload=msg,
@@ -174,14 +187,14 @@ def public_trade_from_ws(msg: dict) -> PublicTrade:
 def trade_contract_count(msg: dict) -> float | None:
     """Raw contract count (count_fp) from a trade print, or None when
     absent/unparseable - never a fabricated 0 (same never-invent-a-number
-    rule as _dollars/taker_notional_usd; a fabricated 0 would silently read
+    rule as parse_fixed_point_dollars/taker_notional_usd; a fabricated 0 would silently read
     as "below any threshold" instead of "unusable"). Deliberately the
     cheapest possible accessor (one dict get + one float parse, no side
     resolution, no timestamp derivation) so a reader-side size gate that
     runs on every trade message can stay at microsecond cost - see
     services/whale_gate.py, the realtime data-plane remediation plan's P0
     Task 3."""
-    return _dollars(msg.get("count_fp"))
+    return parse_fixed_point_dollars(msg.get("count_fp"))
 
 
 def taker_notional_usd(msg: dict, side: str) -> float | None:
@@ -197,8 +210,8 @@ def taker_notional_usd(msg: dict, side: str) -> float | None:
     Returns None when either the count or the side's price is missing - a
     notional derived from an invented zero silently reads as "tiny trade"
     and gets filtered for the wrong reason rather than flagged unusable."""
-    count = _dollars(msg.get("count_fp"))
-    price = _dollars(msg.get("yes_price_dollars") if side == "yes" else msg.get("no_price_dollars"))
+    count = parse_fixed_point_dollars(msg.get("count_fp"))
+    price = parse_fixed_point_dollars(msg.get("yes_price_dollars") if side == "yes" else msg.get("no_price_dollars"))
     if count is None or price is None:
         return None
     return count * price

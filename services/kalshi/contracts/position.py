@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from services.kalshi.provenance import ContractDocs
-from services.kalshi.contracts.trade import _dollars
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_position": ("docs/kalshi/market-positions.md",),
@@ -63,9 +63,9 @@ class MarketPosition:
 def market_position_from_ws(msg: dict) -> MarketPosition:
     return MarketPosition(
         ticker=msg.get("market_ticker") or msg.get("ticker"),
-        position=_dollars(msg.get("position_fp")),
-        position_cost=_dollars(msg.get("position_cost_dollars")),
-        realized_pnl=_dollars(msg.get("realized_pnl_dollars")),
-        fees_paid=_dollars(msg.get("fees_paid_dollars")),
+        position=parse_fixed_point_dollars(msg.get("position_fp")),
+        position_cost=parse_fixed_point_dollars(msg.get("position_cost_dollars")),
+        realized_pnl=parse_fixed_point_dollars(msg.get("realized_pnl_dollars")),
+        fees_paid=parse_fixed_point_dollars(msg.get("fees_paid_dollars")),
         raw_payload=msg,
     )

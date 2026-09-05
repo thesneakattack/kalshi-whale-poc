@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from services.kalshi.contracts.types import AS_OUTCOME_SIDE, BOOK_SIDE_TO_OUTCOME, OutcomeSide
 from services.kalshi.provenance import ContractDocs
-from services.kalshi.contracts.trade import _dollars
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 
 CONTRACT_DOCS: dict[str, ContractDocs] = {
     "normalize_fill": (
@@ -87,8 +87,8 @@ def user_fill_from_ws(msg: dict) -> UserFill:
         ticker=msg.get("market_ticker") or msg.get("ticker"),
         outcome_side=_fill_outcome_side(msg),
         action=msg.get("action"),
-        count=_dollars(msg.get("count_fp")),
-        yes_price=_dollars(msg.get("yes_price_dollars")),
+        count=parse_fixed_point_dollars(msg.get("count_fp")),
+        yes_price=parse_fixed_point_dollars(msg.get("yes_price_dollars")),
         ts_ms=ts_ms if isinstance(ts_ms, int) else None,
         raw_payload=msg,
     )
