@@ -1,5 +1,5 @@
 import { computeWhaleLean, renderEquityChart } from './equity-and-cards.js';
-import { consecutiveRefreshFailures, lastSuccessfulRefresh, refresh } from './polling-and-websocket.js';
+import { consecutiveRefreshFailures, lastRefreshError, lastSuccessfulRefresh, refresh } from './polling-and-websocket.js';
 import { $, _setAccountMode, accountMode, contextLineHTML, esc, fetchJSON, fmt, marketLabel, sideAdjustedPrice } from './shared-utils.js';
 import { renderPositions } from './signals-feed.js';
 import { loadRealOrders, realOrdersLoaded, renderRealFills, renderRealPositions, renderTrades } from './trade-log-and-real.js';
@@ -92,6 +92,18 @@ function scheduleRefreshTimer(ms) {
   refreshTimer = setInterval(refresh, refreshIntervalMs);
 }
 
+// The Fetch spec throws this exact TypeError on every same-origin fetch()
+// call, forever, when the PAGE ITSELF was loaded as https://user:pass@host/
+// - e.g. a bookmarked or manually-typed Basic-Auth URL with embedded
+// credentials. Confirmed live 2026-09-05: the backend was fully healthy and
+// streaming the whole time; every /api/state poll failed identically and
+// permanently, which read exactly like a dead connection with no way to
+// tell the two apart from consecutiveRefreshFailures/lastSuccessfulRefresh
+// alone. Matched by message text (browsers don't expose a distinct error
+// name/code for this), not by a fragile substring of "user:pass@host" that
+// would miss real-world hosts/paths.
+const _CREDENTIALED_URL_ERROR_RE = /URL that includes credentials/i;
+
 function renderConnectivity() {
   const el = $('connectivity-badge');
   if (!el) return;
@@ -99,6 +111,16 @@ function renderConnectivity() {
     el.textContent = '';
     el.className = '';
     el.title = '';
+    return;
+  }
+  if (lastRefreshError instanceof TypeError && _CREDENTIALED_URL_ERROR_RE.test(lastRefreshError.message)) {
+    el.textContent = '⚠ RELOAD WITHOUT LOGIN IN THE URL';
+    el.className = 'stale';
+    el.title = 'This page was opened as https://user:pass@host/... (credentials embedded in '
+      + 'the address) - browsers refuse every request a page like that tries to make after '
+      + 'load, so nothing here will ever update no matter how long you wait. Not a dead '
+      + 'server: reload using the bare address (no user:pass@) and let the browser\'s own '
+      + 'login prompt (or its saved credentials) handle sign-in instead.';
     return;
   }
   const secsAgo = Math.max(0, Math.round((Date.now() - lastSuccessfulRefresh) / 1000));
