@@ -6,17 +6,24 @@ doesn't). **Verify identity by direct reply before trusting a name** —
 `ListAgents`'s "started Xm ago" is not evidence of a fresh session; ask.
 
 **Peers and current task, as of this write:**
-- `32` (chain: `df`→`8d`, PR #574 author) — **idle**, finished `#589`/`#590`
-  (both merged, PR #592/#593). Awaiting next assignment.
-- `07` (separate lineage, independent reviewer) — **on `#576`**: 3 parallel
-  tracks — benchmark solution A (bounded consumer fairness) vs. B
-  (independent scheduled flush), plus the observability-persistence PR
-  (#594, already merged). Converging A-vs-B into a stated choice next.
+- `32` (chain: `df`→`8d`, PR #574 author) — **on `#578` pre-purge prep**
+  (non-destructive): re-verify #577's fix still holds live, full backup,
+  re-confirm contamination scope, write the pre-purge checkpoint artifact.
+  Explicitly told NOT to execute the purge — gated on `62` confirming their
+  ablation doesn't touch `market_history.snapshots`, then coordinator go.
+- `07` (separate lineage, independent reviewer) — **on `#576`**: solution B
+  (independent scheduled flush) landed real benchmark numbers (see Open
+  issues below); solution A (bounded fairness) still running, ~40min+.
+  Observability-persistence half already merged (#594). Converging A-vs-B
+  once A lands.
 - `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
-  periodic `/api/health/pipeline` checks, no regression found so far.
+  reconfirmed clean 2026-09-05 (`dropped_after_max_attempts: 0`,
+  `handler_timeouts_total: 0`, `queue.depth: 1`, `settlement_resolver.pending:
+  38`) — no regression.
 - `62` (chain: `64`→`a2`, `#577`/`#578` owner) — **on the YES-side auto-exit
-  profit analysis** (gate condition 4 below): factor-isolation ablation in
-  progress.
+  profit analysis** (gate condition 4 below): split-half robustness check
+  DONE (see below); pnl+sentiment+staleness ablation still running (long
+  pole — full per-snapshot signal_log walk across 664 entries).
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
@@ -62,6 +69,16 @@ question — do not create another one.**
 - Selection-bias falsifier (naive "sell after +X%" across all 664 YES
   entries): finds real but far smaller money ($12–19k vs $60,276.44) — not
   pure artifact, not proof of genuine composite edge either.
+- **Split-half robustness check DONE** (`62`, dispatched as a parallel
+  subagent, 2026-09-05): cross-validated against #591's own figures —
+  99+103=202 auto-exits, $19,204.93+$41,071.51=$60,276.44, verified
+  independently to the cent by the coordinator. Naive-rule gap appears in
+  BOTH halves (41.0%/20.0% of real) — not a single-period artifact.
+  Independently pinned the underlying-bug timeline sharper than the
+  original framing: #574 merged the day AFTER the window ended
+  (2026-09-05T09:41:47Z), #577 closed entirely after
+  (2026-09-05T10:19:40Z), #578 still open today — verified directly via
+  `gh` by the coordinator, not just relayed.
 - **David's decision: commission the larger analysis, both avenues.**
   Assigned to `62`. Feasibility checked first, verified independently:
   **avenue 1 (out-of-sample window) is genuinely impossible** — the entire
@@ -116,8 +133,15 @@ question — do not create another one.**
   falsifier unmet. Both mitigated by `#581`, neither formally closed.
 - **`#578`** up to 1.43M contaminated `market_history` snapshots — 6,504
   provably fabricated (hard lower bound); 48.8% recoverable via
-  `series_watcher`, 93.2% of those a real `0.0` not `0.5`. Purge path now
-  open per the priority section above; needs the pre-purge checkpoint.
+  `series_watcher`, 93.2% of those a real `0.0` not `0.5`. **Purge BLOCKED,
+  confirmed active dependency, not hypothetical** (2026-09-05): `62`'s
+  YES-side ablation issues live per-entry queries against
+  `market_history.snapshots` (+ `outcomes`) right now, mid-run, across 664
+  entries — a purge during the run would silently produce an
+  internally-inconsistent result, not an error. `32` assigned non-destructive
+  prep only (backup, re-verify #577 holds live, contamination recount,
+  checkpoint writeup); actual purge withheld until `62` confirms the run
+  finished cleanly + coordinator go-ahead.
 - **`#532`** `rejection_events` unbounded growth — 29.8M rows, 98.98% from
   one gate (`min_contracts`, ~23.8M resolved samples against a
   `min_samples=30` threshold — wildly oversampled). Measured rate spans
