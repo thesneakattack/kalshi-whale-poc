@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 from services.market_analyst_agent._db import _connect, _scoring_read_connection
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,23 @@ _TOOL_SCHEMA = {
         "required": ["estimated_probability", "confidence", "reasoning"],
     },
 }
+
+
+def _prompt_market_price(market_detail: dict) -> str:
+    """The "Current market price" line's value, for the analyst's own
+    prompt. Issue #577 (2026-09-05): this used to be
+    `float(market_detail.get("yes_bid_dollars") or market_detail.get(
+    "yes_ask_dollars") or 0.5):.2f` - telling the LLM the market "currently
+    thinks this is 50% likely" even when there is no real price at all, an
+    unlabeled fabrication feeding directly into the analyst's own estimate
+    (worse than a persisted metadata bug: it corrupts the reasoning
+    itself). Same bid-then-ask fallback, but "unknown" on genuine absence -
+    matching this same prompt's existing idiom two lines below for
+    last_price_dollars/volume_24h_fp/etc, rather than inventing a number."""
+    price = parse_fixed_point_dollars(market_detail.get("yes_bid_dollars"))
+    if price is None:
+        price = parse_fixed_point_dollars(market_detail.get("yes_ask_dollars"))
+    return f"{price:.2f}" if price is not None else "unknown"
 
 
 def build_prompt(market_detail: dict, context_snapshot: dict, own_track_record: dict | None = None) -> str:
@@ -94,7 +112,7 @@ Category: {market_detail.get("category") or "unknown"}
 Rules: {market_detail.get("rules_primary") or "(none provided)"}
 {market_detail.get("rules_secondary") or ""}
 
-Current market price: {float(market_detail.get("yes_bid_dollars") or market_detail.get("yes_ask_dollars") or 0.5):.2f} (implies the market currently thinks this is that likely)
+Current market price: {_prompt_market_price(market_detail)} (implies the market currently thinks this is that likely)
 Last trade price: {market_detail.get("last_price_dollars") or "unknown"}
 24h volume: {market_detail.get("volume_24h_fp") or "unknown"}
 Open interest: {market_detail.get("open_interest_fp") or "unknown"}
