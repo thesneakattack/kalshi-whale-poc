@@ -249,17 +249,40 @@ def test_resolve_from_market_results_handles_every_edge_case_correctly():
     - the returned count is exactly the number of rejected_candidates rows
       actually flipped to resolved=1 this call (cursor.rowcount contract -
       independently verified in this PR that sqlite3's executemany() sums
-      rowcount across every per-tuple UPDATE, not assumed from the docs)."""
+      rowcount across every per-tuple UPDATE, not assumed from the docs)
+    - resolved_at is genuinely set on the rows this call resolves, and
+      genuinely UNTOUCHED (not merely "still equal by coincidence") on a
+      row an earlier call already resolved - adversarial review (PR #617)
+      found the first cut of this test asserted resolved/result only and
+      never read resolved_at at all, so a resolved_at=0.0 mutant passed it
+      unchanged; this compares the actual timestamp values, not just their
+      presence, to close that claim-vs-coverage gap."""
     import sqlite3
+    import time
 
     cl.record_rejection("MULTI", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
     cl.record_rejection("MULTI", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
     cl.record_rejection("ALREADY", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
     cl.record_rejection("SCALAR", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
 
+    before_second_call = time.time()
     first = cl.resolve_from_market_results({"ALREADY": "yes"})
     assert first == 1
 
+    def _rows():
+        with sqlite3.connect(cl.DB_PATH) as conn:
+            return {
+                (r[0], r[1]): (r[2], r[3], r[4])
+                for r in conn.execute(
+                    "SELECT ticker, gate_name, resolved, result, resolved_at FROM rejected_candidates"
+                ).fetchall()
+            }
+
+    already_resolved_at_first = _rows()[("ALREADY", "entry_threshold")][2]
+    assert already_resolved_at_first is not None
+    assert already_resolved_at_first >= before_second_call  # a real wall-clock write, not a stub
+
+    before_third_call = time.time()
     resolved = cl.resolve_from_market_results({
         "MULTI": "no",
         "ALREADY": "no",   # deliberately different from the first call's "yes" - a
@@ -270,17 +293,15 @@ def test_resolve_from_market_results_handles_every_edge_case_correctly():
 
     assert resolved == 2  # only MULTI's two rows flip on this call
 
-    with sqlite3.connect(cl.DB_PATH) as conn:
-        rows = {
-            (r[0], r[1]): (r[2], r[3])
-            for r in conn.execute(
-                "SELECT ticker, gate_name, resolved, result FROM rejected_candidates"
-            ).fetchall()
-        }
-    assert rows[("MULTI", "entry_threshold")] == (1, "no")
-    assert rows[("MULTI", "max_spread")] == (1, "no")
-    assert rows[("ALREADY", "entry_threshold")] == (1, "yes")  # untouched by the 2nd call's "no"
-    assert rows[("SCALAR", "entry_threshold")] == (0, None)  # never resolved (non-binary result)
+    rows = _rows()
+    assert rows[("MULTI", "entry_threshold")][:2] == (1, "no")
+    assert rows[("MULTI", "max_spread")][:2] == (1, "no")
+    assert rows[("MULTI", "entry_threshold")][2] >= before_third_call  # real resolved_at, this call
+    assert rows[("MULTI", "max_spread")][2] >= before_third_call
+    # untouched by the 2nd call's "no" - both result AND resolved_at stay exactly
+    # what the first call wrote, not merely "still truthy"
+    assert rows[("ALREADY", "entry_threshold")] == (1, "yes", already_resolved_at_first)
+    assert rows[("SCALAR", "entry_threshold")] == (0, None, None)  # never resolved (non-binary result)
     assert ("GHOST", "entry_threshold") not in rows  # no row ever existed, no error
 
 
