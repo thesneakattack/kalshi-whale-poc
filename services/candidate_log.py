@@ -90,7 +90,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from services import capture_writer, db
+from services import capture_writer, db, fault_log
 from services.diagnostics import _aio_db
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "candidate_log.db"
@@ -126,6 +126,23 @@ _IDX_REJECTION_EVENTS_UNRESOLVED_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
     "WHERE resolved = 0"
 )
+# Covers prune_gate()'s DELETE (issue #532) - adversarial review of that
+# PR measured a genuine full-table SCAN for its `gate_name = ? AND
+# rejected_at < ?` filter against a synthetic table shaped like
+# production. Safe to defer for the one gate this is actually designed to
+# purge (min_contracts is ~99% of the table, so a chronological scan
+# still finds batch-size matches quickly - same reasoning
+# market_history.prune()'s own unindexed age filter already relies on,
+# confirmed empirically), but the function takes an arbitrary gate_name
+# with no guard - calling it against any of the other, much sparser gates
+# at real multi-million-row scale measured ~2x slower per row and a scan
+# of the ENTIRE pre-cutoff range to confirm a small match count. Adding
+# the index removes the whole risk category rather than just guarding one
+# caller's intended use.
+_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate_rejected_at "
+    "ON rejection_events (gate_name, rejected_at)"
+)
 
 
 @contextlib.contextmanager
@@ -139,6 +156,7 @@ def _connect():
     with db.connect(DB_PATH, tables=("rejected_candidates", "rejection_events")) as conn:
         conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
         conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
+        conn.execute(_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL)
         db.add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
         db.add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
         db.add_column_if_missing(
@@ -211,6 +229,7 @@ async def _ensure_schema_aio(conn) -> None:
     await conn.execute(capture_writer.REJECTION_EVENTS_DDL_SQL)
     await conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
     await conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
+    await conn.execute(_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL)
     await _add_column_if_missing_aio(conn, "rejected_candidates", "unit_cost", "REAL")
     await _add_column_if_missing_aio(conn, "rejection_events", "unit_cost", "REAL")
     await _add_column_if_missing_aio(
@@ -673,6 +692,62 @@ def clear_range(before: float | None = None, after: float | None = None) -> int:
         cur = conn.execute(f"DELETE FROM rejected_candidates {where}", params)
         cur2 = conn.execute(f"DELETE FROM rejection_events {where}", params)
         return cur.rowcount + cur2.rowcount
+
+
+_PRUNE_BATCH = 50_000
+
+
+def prune_gate(gate_name: str, retention_hours: float, now: float | None = None,
+                *, batch_size: int = _PRUNE_BATCH) -> dict:
+    """One-off/manual backlog purge for a single gate's rejection_events
+    rows (issue #532) - NOT wired into any periodic sweep. #532's fix
+    (record_rejection() sampling min_contracts at write time) caps FUTURE
+    growth; it does nothing about the ~29.5M rows already written before
+    that fix shipped. This function is how that backlog gets cleared,
+    once, under explicit human go-ahead - same shape as services/
+    market_history.py's prune() (mirrored deliberately: retention_hours/
+    now/batch_size signature, cutoff = now - retention_hours*3600,
+    DELETE ... WHERE id IN (SELECT id ... LIMIT ?) so a multi-million-row
+    backlog drains in bounded batches rather than one long-held write
+    transaction), with one addition market_history.prune() doesn't need:
+    a gate_name filter, since only ONE gate's backlog is being purged
+    here, not the whole table - see this module's own "SAMPLING" docstring
+    section for why a blanket table-wide purge was rejected (it would
+    delete the ~1% of volume carrying the actual counterfactual signal
+    for the OTHER 10 gates, which were never the growth problem and have
+    no oversampling to correct).
+
+    Never wired into _maybe_prune_capture_stores (main.py) the way
+    market_history.prune()/fault_log.prune() are - giving rejection_events
+    an ongoing retention policy across every gate is a separate, broader
+    decision (this table still has none, deliberately, for the ~1% of
+    rows that carry real signal) that #532 never asked for and this
+    function does not decide.
+
+    LIMIT without ORDER BY (same reasoning as market_history.prune()):
+    rows are appended in roughly chronological rowid order via
+    capture_writer's batched flush, and the target gate is ~99% of the
+    table's volume, so the oldest cutoff-violating rows cluster at the
+    start of any scan - this drains a large backlog in bounded per-call
+    work rather than needing an index or a full sort.
+
+    Flushes rejection_events' capture_writer buffer first, same reasoning
+    as clear_range/clear_all - a row still sitting in the buffer isn't in
+    the table yet for this DELETE to find."""
+    now = now if now is not None else time.time()
+    cutoff = now - retention_hours * 3600
+    try:
+        capture_writer.flush_now("rejection_events")
+        with _connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM rejection_events WHERE id IN "
+                "(SELECT id FROM rejection_events WHERE gate_name = ? AND rejected_at < ? LIMIT ?)",
+                (gate_name, cutoff, batch_size),
+            )
+            return {"rejection_events_deleted": cur.rowcount, "cutoff": cutoff}
+    except Exception as exc:
+        fault_log.record("candidate_log", "prune_gate", exc)
+        return {"rejection_events_deleted": 0, "error": str(exc)}
 
 
 def _range_where(before: float | None, after: float | None) -> tuple[str, list]:

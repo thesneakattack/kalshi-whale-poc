@@ -593,6 +593,76 @@ def test_count_range_and_clear_range_include_population_rows():
     assert remaining_population[0]["gate_name"] == "entry_threshold"
 
 
+# ---- prune_gate - issue #532 backlog purge --------------------------------
+# The sampling fix (record_rejection()) caps FUTURE min_contracts growth;
+# it does nothing about the backlog written before it shipped. prune_gate()
+# is the one-off, gate-scoped, batched purge mechanism for that backlog -
+# mirrors market_history.prune()'s shape (retention_hours/now/batch_size,
+# LIMIT-bounded DELETE), plus a gate_name filter market_history's
+# single-purpose table doesn't need. prune_gate() itself is gate-agnostic
+# (the min_contracts-specific decision lives in record_rejection()'s own
+# sampling, not here) - these tests deliberately use OTHER gate names
+# (never min_contracts) so they aren't coupled to real Bernoulli sampling:
+# an un-mocked min_contracts record_rejection() call has only a 1% chance
+# of actually landing a row, which would make these tests flake.
+
+def test_prune_gate_deletes_only_the_named_gates_rows_before_cutoff():
+    cl.record_rejection("TICK-A", "whale_follow", "entry_threshold", 3, 10, now=1000.0)
+    cl.record_rejection("TICK-B", "whale_follow", "entry_threshold", 3, 10, now=2000.0)
+    cl.record_rejection("TICK-C", "whale_follow", "entry_threshold", 3, 10, now=5000.0)  # after cutoff
+    cl.record_rejection("TICK-D", "whale_follow", "max_spread", 0.5, 0.6, now=1000.0)  # different gate
+    result = cl.prune_gate("entry_threshold", retention_hours=0.0, now=4000.0)
+    assert result["rejection_events_deleted"] == 2
+    assert result["cutoff"] == 4000.0
+    pop = cl.population_gate_summary(min_samples=0)
+    remaining = {(row["gate_name"], row["rejected_count"]) for row in pop}
+    assert ("entry_threshold", 1) in remaining  # TICK-C survives (after cutoff)
+    assert ("max_spread", 1) in remaining  # untouched, different gate
+
+
+def test_prune_gate_never_touches_rejected_candidates():
+    """The deduped table was never the growth problem for any gate -
+    prune_gate() must leave it completely alone even for the gate it's
+    purging rejection_events rows from."""
+    cl.record_rejection("TICK-A", "whale_follow", "entry_threshold", 3, 10, now=1000.0)
+    cl.prune_gate("entry_threshold", retention_hours=0.0, now=5000.0)
+    gates = cl.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "entry_threshold"
+    assert gates[0]["rejected_count"] == 1
+
+
+def test_prune_gate_respects_batch_size():
+    for i in range(10):
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "entry_threshold", 3, 10, now=1000.0 + i)
+    result = cl.prune_gate("entry_threshold", retention_hours=0.0, now=5000.0, batch_size=4)
+    assert result["rejection_events_deleted"] == 4
+    pop = cl.population_gate_summary(min_samples=0)
+    assert pop[0]["rejected_count"] == 6  # 10 - 4, not fully drained in one call
+
+
+def test_prune_gate_flushes_the_capture_writer_buffer_first():
+    """A row still sitting in capture_writer's buffer isn't in the table
+    yet for this DELETE to find - same reasoning as clear_range/clear_all."""
+    cl.record_rejection("TICK-A", "whale_follow", "entry_threshold", 3, 10, now=1000.0)
+    assert cw.depth()["rejection_events"] == 1  # not yet flushed
+    result = cl.prune_gate("entry_threshold", retention_hours=0.0, now=5000.0)
+    assert result["rejection_events_deleted"] == 1
+
+
+def test_prune_gate_returns_zero_on_a_broken_store(monkeypatch):
+    """Never-raises contract, same as every other capture-store prune() in
+    this codebase (market_history.prune, fault_log.prune, etc.) - a
+    scheduled/manual sweep must survive one store's failure."""
+    import sqlite3
+
+    def _boom():
+        raise sqlite3.OperationalError("disk I/O error")
+    monkeypatch.setattr(cl, "_connect", _boom)
+    result = cl.prune_gate("entry_threshold", retention_hours=0.0, now=5000.0)
+    assert result == {"rejection_events_deleted": 0, "error": "disk I/O error"}
+
+
 def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, monkeypatch):
     """Task 3c: candidate_log.py's _connect() now creates rejected_candidates
     (and rejection_events) from capture_writer's shared, unit_cost-inclusive
@@ -677,6 +747,7 @@ def test_connect_still_creates_both_tables_indexes_and_unit_cost_columns(tmp_pat
         )}
         assert "idx_rejection_events_gate" in indexes
         assert "idx_rejection_events_unresolved" in indexes
+        assert "idx_rejection_events_gate_rejected_at" in indexes  # issue #532, prune_gate()
         rc_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejected_candidates)")}
         re_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejection_events)")}
         assert "unit_cost" in rc_cols
@@ -756,6 +827,7 @@ def test_population_gate_summary_async_creates_the_gate_index():
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_rejection_events_gate" in indexes
     assert "idx_rejection_events_unresolved" in indexes
+    assert "idx_rejection_events_gate_rejected_at" in indexes  # issue #532, prune_gate()
 
 
 def test_population_gate_summary_async_schema_init_adds_sample_weight_column(tmp_path, monkeypatch):
