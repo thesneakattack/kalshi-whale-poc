@@ -1,6 +1,13 @@
 # POST-RESTART STATUS — two-way comms re-established, 2026-09-05 ~03:3x UTC
 
-Coordinator is now `autotrade-48` (was `1f`). All 8 pre-restart peers accounted
+**Coordinator identity update (~04:3x UTC):** was `autotrade-48`, now
+`autotrade-01` after the coordinator's own terminal was accidentally closed
+and reopened — same session, same full context, nothing lost, just a new
+name. `48` is gone and will not respond; route to `autotrade-01`. If this
+happens again, verify via a direct reply before assuming continuity, same as
+every other identity claim tonight.
+
+Coordinator was `autotrade-1f` before the WSL restart, then `48`, now `01`. All 8 pre-restart peers accounted
 for and confirmed via direct reply, not `ListAgents` alone — a transient
 duplicate session (`autotrade-a7`) appeared for ~2s during startup and vanished
 on its own; harmless, but a reminder that a fresh `ListAgents` snapshot right
