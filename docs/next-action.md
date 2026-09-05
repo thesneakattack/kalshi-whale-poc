@@ -274,11 +274,18 @@ review was running, it did not finish. Do not assume a GO.
   from `gh api .../commits/37687b9/status`, never from memory — it was
   resolving normally at shutdown, which contradicts F1's "webhook silently
   broken" finding, so F1 may be stale or the breakage transient.
-- **#583** (this coordinator's #571/#567 correction) — revised `087c3ca` after
-  an adversarial NO-GO; self-review, adversarial review and consolidation all
-  posted. **CI green (`success`) at `087c3ca`.** This is the one PR whose full
-  cycle is complete; it is mergeable on return, and `Refs #582` means #582
-  stays open until #581 lands and confirms its provisional figures.
+- **#583** — **MERGED** (`78d1a9c`).
+- **#581** — **MERGED** (`0840adc`), #410's aiosqlite split, closes the
+  tick_executor-contention mechanism behind #579/#580.
+- **#575** — **MERGED** (`3d8e642`, 2026-09-05T09:29:54Z). Full cycle
+  completed by `bd` (formerly `24`/`d2`): self-review, genuinely independent
+  adversarial review, consolidation, revision against a 16-item fix list,
+  item-by-item recheck (plus one self-caught extra defect — `git log`'s
+  repeated `-S` flag is last-wins, silently drops earlier terms). Also
+  diagnosed a real Woodpecker tunnel outage mid-merge (public endpoint 502,
+  container itself healthy) without touching shared `ci-cd`/`traefik` infra;
+  documented remedy (`gh pr close`/`reopen` to regenerate the webhook) worked
+  on the second attempt, exactly as the doc predicted.
 
 ## 4. Open issues, current as of shutdown
 
