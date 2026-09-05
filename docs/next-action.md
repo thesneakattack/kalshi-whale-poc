@@ -360,9 +360,20 @@ review was running, it did not finish. Do not assume a GO.
   reloads; `auto_exit_enabled` stays paused (uncommitted, deliberate) until
   David decides to re-enable it. Merging does not do that automatically,
   and per the PR's own body the fix alone still doesn't justify it — the
-  YES-side auto-exit profit (279 exits, +$68,589) remains unexplained
-  (`07`'s investigation ruled out the newly-found YES-side mirror bug as
-  the cause; the selection-bias alternative is untested).
+  YES-side auto-exit profit remains not-fully-explained. **Correction
+  (`62`, issue #591, verified independently against the live DB to the
+  cent): the headline figure was wrong.** $68,589/279 double-counted 77
+  already-corrected rows whose stale fabricated `(realized ±X.XX)` text
+  was never rewritten by `correct_erroneous_close()` (it flips `excluded`
+  and adjusts bankroll, not the ledger text). **Real figure: $60,276.44 on
+  202 trades, 94.6% win rate.** `07`'s mirror-bug ruling-out stands
+  unaffected (checked `trades.price` directly, side-independent of this
+  count). Selection-bias falsifier run: a naive "sell after +X%" rule
+  across all 664 YES entries finds real but much smaller money ($12-19k
+  vs $60,276) — **not pure artifact, but not proof of genuine composite
+  edge either.** Full nuance in #591; this is now explicitly a decision
+  for David (how much certainty he needs), not resolvable further without
+  a bigger analysis (longer/out-of-sample window, or isolating factors).
 
 ## 4. Open issues, current as of shutdown
 
@@ -428,8 +439,11 @@ ticker-coalescing starvation. · **#582** #571's cost mis-attribution (PR #583).
    multiplier **decays as the base grows while the absolute rate does not** —
    at ~3.9 M/day it is ~1.9x/week now, so a future reader will wrongly think it
    is easing.
-5. **Unexplained YES-side profit** (279 exits, +$68,589) that #574 does not
-   account for.
+5. **Unexplained YES-side profit — corrected, see #591.** Was cited
+   everywhere tonight as "279 exits, +$68,589"; that figure double-counted
+   77 already-corrected rows' stale ledger text. Real: **202 trades,
+   $60,276.44, 94.6% win rate.** Not fully resolved either way — see the
+   gate-condition-#4 entry above for the falsifier result.
 
 ## 7. Standing rules that outlived tonight
 
