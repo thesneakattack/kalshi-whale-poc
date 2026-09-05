@@ -276,6 +276,53 @@ def test_record_snapshot_from_ticker_never_raises_and_logs_the_fault(tmp_path, m
     assert faults == [("market_history", "record_snapshot_from_ticker")]
 
 
+# --- issue #577 root fix (2026-09-05): no more fabricated 0.5 -----------------
+
+def test_record_snapshots_skips_a_row_with_yes_price_none():
+    # No DB_PATH monkeypatch needed - if this ever reached the DB it would
+    # raise (yes_price is REAL NOT NULL), which is exactly the failure mode
+    # this filter exists to prevent; the absence of a raised error here is
+    # itself part of the assertion.
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": None}])
+
+
+def test_record_snapshots_keeps_a_real_zero_yes_price(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": 0.0}])
+    assert mh.snapshot_count("TICK-A") == 1
+    with mh._connect(tmp_path / "market_history.db") as conn:
+        row = conn.execute("SELECT yes_price FROM snapshots WHERE ticker = ?", ("TICK-A",)).fetchone()
+    assert row == (0.0,)
+
+
+def test_record_snapshots_mixed_batch_only_the_real_price_row_lands(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([
+        {"ticker": "REAL", "yes_price": 0.62},
+        {"ticker": "MISSING", "yes_price": None},
+    ])
+    assert mh.snapshot_count("REAL") == 1
+    assert mh.snapshot_count("MISSING") == 0
+
+
+def test_record_snapshot_from_ticker_none_price_is_a_noop_not_a_fabrication(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    wrote = mh.record_snapshot_from_ticker("TICK-A", None, now=time.time())
+    assert wrote is False
+    assert mh.snapshot_count("TICK-A") == 0
+
+
+def test_record_snapshot_from_ticker_none_price_does_not_burn_the_throttle_window(tmp_path, monkeypatch):
+    # The None short-circuit must run BEFORE _last_ticker_snapshot updates,
+    # so a real price arriving on the very next message for the same
+    # ticker isn't held back by a no-op that wrote nothing.
+    _mh(tmp_path, monkeypatch)
+    now = time.time()
+    assert mh.record_snapshot_from_ticker("TICK-A", None, now=now) is False
+    assert mh.record_snapshot_from_ticker("TICK-A", 0.71, now=now + 0.01) is True
+    assert mh.snapshot_count("TICK-A") == 1
+
+
 # --- prune (2026-08-30 data retention gap closure) ---------------------------
 
 

@@ -23,6 +23,7 @@ from services.config import config_performance
 from services import whale_pipeline_perf
 from services.exits import position_netting
 from services.kalshi import websocket as kalshi_websocket
+from services.kalshi.contracts.trade import parse_fixed_point_dollars
 from services.market_events import event_lifecycle
 from services.position.account_positions import _slim_fill, _slim_position
 from services.app_state import broker, bump_generation, get_whale_provider, state, strategy, trade_stream
@@ -340,19 +341,32 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
     _, should_flush = series_watcher.record_book(ticker_msg, config_store.get(), now)
     if should_flush:
         asyncio.create_task(tick_executor.run(series_watcher.flush))
-    try:
-        state["latest_prices"][ticker] = float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars") or 0.5)
-    except (TypeError, ValueError):
-        return
-    # P7 Task 29 (redesigned): this handler is the primary writer for BOTH
-    # price dicts, and stamps each write so market_fetch.overlay_live_prices
-    # can tell a WS-fresh value from one that has been copied forward since
-    # its REST seed. latest_asks had no WS writer at all before this - the
-    # ask below was read onto the market row but never into latest_asks, so
-    # check_pending_fills only ever saw REST-seeded asks, frozen forever. A
-    # message without an ask leaves latest_asks untouched: check_pending_
-    # fills relies on "absent" meaning "no fresh ask", never a default.
-    state["latest_prices_updated_at"][ticker] = now
+    # Issue #577 (2026-09-05): this used to be
+    # `float(ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars")
+    # or 0.5)` - a falsy check, not a missing check, so it fabricated 0.5 both
+    # when neither field was present AND when the real bid was 0.0.
+    # parse_fixed_point_dollars preserves a genuine 0.0 and returns None for
+    # absent/malformed; a message with no real price simply leaves
+    # latest_prices/latest_prices_updated_at untouched for this ticker
+    # (this dict is incrementally updated across messages, unlike
+    # trading_loop's REST rebuild, so "untouched" keeps whichever real value
+    # was last written rather than erasing it) and no longer aborts the rest
+    # of this handler the way a caught parse exception used to.
+    price = parse_fixed_point_dollars(ticker_msg.get("yes_bid_dollars"))
+    if price is None:
+        price = parse_fixed_point_dollars(ticker_msg.get("price_dollars"))
+    if price is not None:
+        # P7 Task 29 (redesigned): this handler is the primary writer for
+        # BOTH price dicts, and stamps each write so
+        # market_fetch.overlay_live_prices can tell a WS-fresh value from
+        # one that has been copied forward since its REST seed. latest_asks
+        # had no WS writer at all before this - the ask below was read onto
+        # the market row but never into latest_asks, so check_pending_fills
+        # only ever saw REST-seeded asks, frozen forever. A message without
+        # an ask leaves latest_asks untouched: check_pending_fills relies on
+        # "absent" meaning "no fresh ask", never a default.
+        state["latest_prices"][ticker] = price
+        state["latest_prices_updated_at"][ticker] = now
     ask_raw = ticker_msg.get("yes_ask_dollars")
     if ask_raw not in (None, ""):
         try:
@@ -396,7 +410,13 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
         # lambda) so the deferred call on the tick-executor worker thread
         # never reads a possibly-mutated state["latest_prices"][ticker] or
         # matched_market by the time it actually runs.
-        snapshot_price = state["latest_prices"][ticker]
+        # Issue #577: latest_prices is sparse now (no fabricated 0.5
+        # backstop), so a ticker this handler has never seen a real price
+        # for is genuinely absent from the dict, not just "not yet
+        # written" - .get(...) rather than [...] avoids a KeyError, and
+        # record_snapshot_from_ticker below already treats None as "no
+        # real price to log this tick," never a fabricated one.
+        snapshot_price = state["latest_prices"].get(ticker)
         snapshot_volume_24h = float(matched_market.get("volume_24h_fp") or 0.0)
         snapshot_close_time = matched_market.get("close_time")
         asyncio.create_task(tick_executor.run(

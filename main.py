@@ -488,11 +488,16 @@ def _resolve_and_record_settlements(markets: list, market_results: dict, tick_no
     # independent of whale signals, independent of whether either strategy
     # ever trades a given market. Same real fields already fetched by the
     # caller, zero extra API cost.
+    # yes_price: None (no real bid this tick) is filtered out by
+    # record_snapshots itself, never written as a fabricated 0.5 - issue
+    # #577's root fix (2026-09-05). Was `float(m.get("yes_bid_dollars") or
+    # 0.5)`, the same falsy-not-missing bug as trading_loop's latest_prices
+    # (Task 2): fabricated on a genuinely absent bid AND on a real 0.0 one.
     market_history.record_snapshots(
         [
             {
                 "ticker": m["ticker"],
-                "yes_price": float(m.get("yes_bid_dollars") or 0.5),
+                "yes_price": parse_fixed_point_dollars(m.get("yes_bid_dollars")),
                 "spread": max(
                     float(m.get("yes_ask_dollars") or 0.0) - float(m.get("yes_bid_dollars") or 0.0), 0.0,
                 ) if m.get("yes_ask_dollars") is not None and m.get("yes_bid_dollars") is not None else None,
