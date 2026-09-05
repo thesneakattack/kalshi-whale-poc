@@ -173,13 +173,16 @@ async def get_confidence_calibration_report():
         # above - same issue #410 cache-alignment bug as services/analytics/
         # routes.py's _population_gates_cache (docs/superpowers/research/
         # 2026-09-04-issue-410-tick-executor-measurement.md Sec 3.4).
-        # _build_report()'s real cost is ~5.5s (a ~2s fetch plus a ~3.4s
-        # pure-Python _bucket_win_rates/_factor_report pass), so it burned a
-        # smaller but still material share of its own 30s TTL before the
-        # entry was written. This route is polled in the same batch as
-        # candidate-log/summary by refreshHistoryInsightsIfActive(), so both
-        # missing together is what can occupy both tick_executor workers at
-        # once.
+        # _build_report_async()'s real cost is ~8.0s, re-measured 2026-09-04
+        # against the live 295,807-row table (0.884s SQL + 2.691s json.loads
+        # + 4.383s bucket/factor pass), so it burned a smaller but still
+        # material share of its own 30s TTL before the entry was written.
+        # This route is polled in the same batch as candidate-log/summary by
+        # refreshHistoryInsightsIfActive(); before issue #410 both missing
+        # together could occupy both tick_executor workers at once, which is
+        # what made the alignment urgent. Neither route touches that pool any
+        # more, so the alignment now just halves the miss rate rather than
+        # protecting the trade path.
         _report_cache["cached_at"] = time.time()
         _report_cache["value"] = result
     result["evidence_provenance"] = evidence_provenance.current_completeness_state()

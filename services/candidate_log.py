@@ -391,8 +391,13 @@ def population_gate_summary(min_samples: int = 30) -> list[dict]:
     work, not this. Doing the grouping in SQL instead (measured: 4.8s for
     the same 6.2M rows, returning only ~10 grouped rows) cuts the
     Python-object cost to near zero and makes the remaining time actually
-    I/O-bound again, so the tick_executor offload at this function's own
-    call site (services/analytics/routes.py) is now doing real work.
+    I/O-bound again. That last clause used to read "so the tick_executor
+    offload at this function's own call site is now doing real work" -
+    corrected by issue #410, which took the reasoning one step further:
+    once the remaining cost is genuinely I/O-bound, a thread offload is the
+    WRONG tool for it too, and services/analytics/routes.py now calls
+    population_gate_summary_async() below instead. Re-measured 2026-09-04
+    against 28.7M rows: 18.2-22.5s of SQL, 0.000s of Python.
 
     Flushes capture_writer's rejection_events buffer first (P3 Task 16,
     2026-08-27) - record_rejection() no longer writes this table
