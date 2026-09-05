@@ -12,6 +12,24 @@ Scope is exactly that comparison, on the axes CLAUDE.md's data-plane HARD RULE n
 re-open the measurement (that is settled and merged) and does not cover the cache-alignment bug,
 which is orthogonal and already fixed separately (PR #569).
 
+
+> [!IMPORTANT]
+> **Correction, 2026-09-05 — §1's cost attribution for `_build_report()` is wrong. The
+> verdict below is not.** This doc calls that path *"~2s fetch + ~3.4s compute"* and concludes
+> aiosqlite helps *"only for the ~2s fetch"*. Measured against the live 295,807-row table during
+> implementation (PR #581): the "fetch" is **0.884s SQL (24.7%) + 2.691s `json.loads`/dict build
+> (75.3%)** — roughly **three-quarters CPU, not I/O**.
+>
+> Implementing this table literally therefore ships a **regression**: it moves 0.884s off-thread
+> and relocates **2.691s of GIL-holding work onto the event loop** — the exact failure `_aio_db`'s
+> own docstring records for `run_offline()`. The materialize step must go to `asyncio.to_thread`
+> too.
+>
+> The **Verdict stands unchanged** (aiosqlite + `asyncio.to_thread`, no third pool); only the
+> reasoning that assigns work to each half was wrong. Also re-measured in #581: the compute pass is
+> **4.383s**, not ~3.4s, and a cold 39.0s reading of the GROUP BY must not be quoted as steady
+> state against warm 18.2/18.8/22.5s. Tracked as **#582**.
+
 ## Verdict
 
 **Neither option alone. Adopt a split fix, matched to the two routes' genuinely different
@@ -32,11 +50,11 @@ inferred from the timings:
 | Path | Dominant cost | Nature | Does aiosqlite help? |
 |---|---|---|---|
 | `candidate_log.population_gate_summary()` (`services/candidate_log.py:274`) | 15-22s | **SQL-bound.** Its own docstring (`:310`): *"Aggregates via SQL GROUP BY, not a per-row Python loop (2026-08-26 fix)"* — one `conn.execute` of a `SELECT ... GROUP BY` at `:331-334`, trivial post-processing. | **Yes, fully.** The blocking is the driver waiting on SQLite. |
-| `whale_calibration._build_report()` | ~2s fetch + **~3.4s compute** | `_bucket_win_rates(rows: list[dict], factor_name: str)` (`services/whale_calibration/confidence_calibration.py:89`) takes an **already-materialised list** and does index-based tertile sorting per factor, 9 factors. **No database access at all.** | **Only for the ~2s fetch.** aiosqlite cannot touch the 3.4s, which is pure CPU. |
+| `whale_calibration._build_report()` | ~~~2s fetch + ~3.4s compute~~ **corrected: 0.884s SQL + 2.691s materialize + 4.383s compute — see the correction note above (#582)** | `_bucket_win_rates(rows: list[dict], factor_name: str)` (`services/whale_calibration/confidence_calibration.py:89`) takes an **already-materialised list** and does index-based tertile sorting per factor, 9 factors. **No database access at all.** | ~~Only for the ~2s fetch.~~ **Corrected: only for the 0.884s SQL.** The 2.691s materialize is CPU too and must go to `asyncio.to_thread` — see the correction note above (#582). |
 
 This is the crux, and it is why "just do the aiosqlite rewrite" — the research note's own leaning —
 is **insufficient as stated**. Converting `_build_report()` to aiosqlite and stopping there would
-move ~2s off the pool and leave the larger ~3.4s still blocking, still occupying a `tick_executor`
+move ~2s off the pool and leave the larger ~3.4s still blocking (the shape of this argument is right; its numbers are corrected above — only 0.884s is actually movable by aiosqlite), still occupying a `tick_executor`
 worker. A reader of §5 could easily implement exactly that and believe the route was fixed.
 
 ## 2. Option comparison
