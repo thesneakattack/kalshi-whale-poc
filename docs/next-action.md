@@ -53,7 +53,24 @@ every time, don't assume either outcome.
   families tabled, none implemented yet per the data-plane HARD RULE.
   `#579`'s original trigger stays genuinely unidentified; `#580` re-scopes
   to #601's real mechanism. Both issues stay open — only the shared-pool
-  hypothesis is closed.
+  hypothesis is closed. **#601 benchmark landed** (PR #603, docs-only,
+  own full review cycle): no new index needed at all — the existing
+  composite PRIMARY KEY `(ticker, strategy, gate_name)` already gives
+  ticker-scoped queries a fast plan (`EXPLAIN QUERY PLAN` confirmed).
+  Family 1 (index on `resolved`) rejected — barely helps, can regress
+  1275x without `ANALYZE`. **Family 2 (ticker-scoped UPDATE) chosen**:
+  13.87s→0.943s at real N=50 batch size (14.7x), zero change to
+  `settlement_resolver`'s loop or its per-ticker failure isolation,
+  byte-identical output verified. Family 3 (batching) rejected in its
+  naive single-transaction form (one poisoned ticker fails the whole
+  batch — a real completeness regression) but a per-ticker-commit variant
+  adds 2.6x more (38.4x total) while preserving isolation — approved as a
+  bounded follow-on to Family 2, not standalone. **Priority raised**: `49`
+  independently re-verified a second, previously-unknown call site
+  (`main.py:487`, fires unconditionally every 6s tick) — this isn't just
+  a settlement-surge ceiling, it's a continuous tax on the same pool the
+  whale-decision path shares. Implementation (Family 2 + bounded Family 3)
+  in progress.
 - `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
   watch, broadened 2026-09-05 from `#579`/`#580`-only to general app
   health** (David: nobody was covering this) — now also runs the full
@@ -89,7 +106,24 @@ every time, don't assume either outcome.
   hypothesis is sampling-cadence, unconfirmed. Correctly declined to push
   into a real per-tick replay (materially harder, would need a fresh
   approach) rather than force a fatigued attempt. Condition 4 stays open;
-  see detail above. Free for next assignment.
+  see detail above. **`#532` DONE, merged and deployed live** (PR #604,
+  `da1a0d7`, confirmed via `WatchFiles` + `merge-base --is-ancestor
+  6977c93 HEAD`): `record_rejection()` now Bernoulli-samples the
+  `min_contracts` gate at 1/100 (that gate alone was 98.98%/29.5M of
+  29.8M rows; every other gate stays fully recorded, unsampled).
+  `rejected_candidates` (the dedup table) is never sampled for any gate.
+  New `sample_weight` column makes `population_gate_summary()`'s
+  rejected/resolved counts unbiased Horvitz-Thompson estimates
+  (`SUM(sample_weight)` not `COUNT(*)`) — deliberately NOT applied to
+  ratio/mean stats (win rate, avg unit cost) or the `min_samples=30` gate
+  itself, since weighting that gate up would make it *less* protective for
+  the exact case it exists to catch. 8 tests verify the split actually
+  fires, not just asserted. Full self-review/adversarial-review/
+  consolidation cycle, CI green on all 6 required contexts, one cosmetic
+  nit fixed before merge. Scope is write-path only, matching `#578`'s
+  precedent — the existing ~29.5M-row `min_contracts` backlog is untouched,
+  explicitly flagged as its own follow-up needing a separate backup/
+  checkpoint/go-ahead. Free for next assignment.
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
