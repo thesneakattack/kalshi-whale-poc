@@ -1,0 +1,135 @@
+{
+ "section_a_index_variants": {
+  "0_no_index": {
+   "plan_unfiltered": [
+    [
+     2,
+     0,
+     0,
+     "SCAN rejected_candidates"
+    ]
+   ],
+   "plan_ticker": [
+    [
+     3,
+     0,
+     0,
+     "SEARCH rejected_candidates USING INDEX sqlite_autoindex_rejected_candidates_1 (ticker=?)"
+    ]
+   ],
+   "mean_ms_unfiltered": 258.68316294981923,
+   "mean_ms_ticker": 0.03789514994423371
+  },
+  "1_plain_partial_index_no_analyze": {
+   "plan_unfiltered": [
+    [
+     3,
+     0,
+     0,
+     "SEARCH rejected_candidates USING INDEX idx_plain (resolved=?)"
+    ]
+   ],
+   "plan_ticker": [
+    [
+     3,
+     0,
+     0,
+     "SEARCH rejected_candidates USING INDEX idx_plain (resolved=?)"
+    ]
+   ],
+   "mean_ms_unfiltered": 224.4637273999615,
+   "mean_ms_ticker": 48.50206469982368
+  },
+  "2_plain_partial_index_after_analyze": {
+   "plan_unfiltered": [
+    [
+     3,
+     0,
+     0,
+     "SCAN rejected_candidates USING INDEX idx_plain"
+    ]
+   ],
+   "plan_ticker": [
+    [
+     3,
+     0,
+     0,
+     "SEARCH rejected_candidates USING INDEX sqlite_autoindex_rejected_candidates_1 (ticker=?)"
+    ]
+   ],
+   "mean_ms_unfiltered": 215.3413627498594,
+   "mean_ms_ticker": 0.01873774990599486
+  },
+  "3_covering_partial_index_after_analyze": {
+   "plan_unfiltered": [
+    [
+     2,
+     0,
+     0,
+     "SEARCH rejected_candidates USING COVERING INDEX idx_covering (resolved=?)"
+    ]
+   ],
+   "plan_ticker": [
+    [
+     2,
+     0,
+     0,
+     "SEARCH rejected_candidates USING COVERING INDEX idx_covering (resolved=? AND ticker=?)"
+    ]
+   ],
+   "mean_ms_unfiltered": 189.60361670015118,
+   "mean_ms_ticker": 0.01152025024566683
+  }
+ },
+ "section_b_executemany_rowcount": {
+  "tickers_tested": 20,
+  "before_counts_per_ticker": {
+   "KXZECMINMON-ZEC-26SEP30-85000": 1,
+   "KXZECMINMON-ZEC-26SEP30-81000": 2,
+   "KXZECMINMON-ZEC-26SEP30-79000": 1,
+   "KXZEC15M-26SEP051330-30": 2,
+   "KXZEC15M-26SEP020015-15": 2,
+   "KXZEC15M-26AUG211615-15": 2,
+   "KXZEC15M-26AUG211000-00": 2,
+   "KXZEC15M-26AUG201745-45": 2,
+   "KXZEC15M-26AUG191615-15": 2,
+   "KXYTVIEWSW-TAY26AUG23-16.0M": 1,
+   "KXYTVIEWSW-TAY26AUG23-13.5M": 2,
+   "KXYTVIEWSW-MOR26AUG30-5.25M": 1,
+   "KXYTVIEWSW-ARI26SEP06-15.5M": 1,
+   "KXYTTOPVIDEO2D-26AUG24-KAT": 2,
+   "KXYTDAILYTOPVIDEOG-26AUG24-KAT": 2,
+   "KXYTDAILYTOPVIDEOG-26AUG24-KAL": 2,
+   "KXXRPMINMON-XRP-26SEP30-110": 1,
+   "KXXRPMINMON-XRP-26AUG31-090": 1,
+   "KXXRPMINMON-XRP-26AUG31-080": 1,
+   "KXXRPMINMON-XRP-26AUG31-040": 1
+  },
+  "expected_total_from_pre_count": 31,
+  "executemany_reported_rowcount": 31,
+  "actual_total_resolved_post_state": 31,
+  "remaining_unresolved_should_be_zero": {
+   "KXZECMINMON-ZEC-26SEP30-85000": 0,
+   "KXZECMINMON-ZEC-26SEP30-81000": 0,
+   "KXZECMINMON-ZEC-26SEP30-79000": 0,
+   "KXZEC15M-26SEP051330-30": 0,
+   "KXZEC15M-26SEP020015-15": 0,
+   "KXZEC15M-26AUG211615-15": 0,
+   "KXZEC15M-26AUG211000-00": 0,
+   "KXZEC15M-26AUG201745-45": 0,
+   "KXZEC15M-26AUG191615-15": 0,
+   "KXYTVIEWSW-TAY26AUG23-16.0M": 0,
+   "KXYTVIEWSW-TAY26AUG23-13.5M": 0,
+   "KXYTVIEWSW-MOR26AUG30-5.25M": 0,
+   "KXYTVIEWSW-ARI26SEP06-15.5M": 0,
+   "KXYTTOPVIDEO2D-26AUG24-KAT": 0,
+   "KXYTDAILYTOPVIDEOG-26AUG24-KAT": 0,
+   "KXYTDAILYTOPVIDEOG-26AUG24-KAL": 0,
+   "KXXRPMINMON-XRP-26SEP30-110": 0,
+   "KXXRPMINMON-XRP-26AUG31-090": 0,
+   "KXXRPMINMON-XRP-26AUG31-080": 0,
+   "KXXRPMINMON-XRP-26AUG31-040": 0
+  },
+  "rowcount_matches_actual": true
+ }
+}

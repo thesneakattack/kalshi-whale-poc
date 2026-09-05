@@ -1,0 +1,240 @@
+{
+ "generated_at": 1788645743.637349,
+ "total_distinct_unresolved_at_snapshot": 2000,
+ "section0_ground_truth": {
+  "unresolved_rows": 231162,
+  "total_rows": 258416,
+  "pct_unresolved": 89.5,
+  "plan_before_index": [
+   [
+    2,
+    0,
+    0,
+    "SCAN rejected_candidates"
+   ]
+  ]
+ },
+ "section1_baseline_raw_sql": {
+  "stats": {
+   "n": 30,
+   "mean_ms": 191.84576289996284,
+   "p50_ms": 191.7019659995276,
+   "p95_ms": 209.02568999918003,
+   "p99_ms": 211.5564859996084,
+   "max_ms": 211.5564859996084,
+   "min_ms": 175.9852180002781
+  },
+  "rows_scanned_per_call": 231162,
+  "matched": 0
+ },
+ "section1_baseline_real_function": {
+  "stats": {
+   "n": 30,
+   "mean_ms": 216.16193720007385,
+   "p50_ms": 215.05402799994044,
+   "p95_ms": 225.8952070005762,
+   "p99_ms": 228.96508399935556,
+   "max_ms": 228.96508399935556,
+   "min_ms": 210.06833499995992
+  },
+  "resolved_counts": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ]
+ },
+ "section2_index_plan": {
+  "plan_no_ticker_filter": [
+   [
+    3,
+    0,
+    0,
+    "SEARCH rejected_candidates USING INDEX idx_rejected_candidates_unresolved (resolved=?)"
+   ]
+  ],
+  "plan_with_ticker_filter": [
+   [
+    3,
+    0,
+    0,
+    "SEARCH rejected_candidates USING INDEX idx_rejected_candidates_unresolved (resolved=?)"
+   ]
+  ]
+ },
+ "section2_raw_sql_post_index": {
+  "stats": {
+   "n": 30,
+   "mean_ms": 205.3329448998435,
+   "p50_ms": 205.4130129999976,
+   "p95_ms": 220.54190299968468,
+   "p99_ms": 224.6216639996419,
+   "max_ms": 224.6216639996419,
+   "min_ms": 194.15010400007304
+  },
+  "rows_scanned_per_call": 231162,
+  "matched": 0
+ },
+ "section2_real_function_post_index": {
+  "stats": {
+   "n": 30,
+   "mean_ms": 235.09802116677747,
+   "p50_ms": 234.7125070009497,
+   "p95_ms": 241.57301500054018,
+   "p99_ms": 244.73509800009197,
+   "max_ms": 244.73509800009197,
+   "min_ms": 228.79050099982123
+  },
+  "resolved_counts": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ]
+ },
+ "section3_select": {
+  "query_plan": [
+   [
+    3,
+    0,
+    0,
+    "SEARCH rejected_candidates USING INDEX idx_rejected_candidates_unresolved (resolved=?)"
+   ]
+  ],
+  "real_ticker_stats": {
+   "n": 200,
+   "mean_ms": 47.0562288849942,
+   "p50_ms": 46.76983899844345,
+   "p95_ms": 49.34303899972292,
+   "p99_ms": 53.42444400048407,
+   "max_ms": 62.31522999951267,
+   "min_ms": 44.59255499932624
+  },
+  "absent_ticker_stats": {
+   "n": 100,
+   "mean_ms": 50.83129023005313,
+   "p50_ms": 49.56434999985504,
+   "p95_ms": 59.39093199958734,
+   "p99_ms": 62.133499999617925,
+   "max_ms": 64.08415199985029,
+   "min_ms": 46.05938500026241
+  }
+ },
+ "section3_family2_update": {
+  "real_ticker_stats": {
+   "n": 200,
+   "mean_ms": 7.954082374944847,
+   "p50_ms": 7.099057998857461,
+   "p95_ms": 12.427323999872897,
+   "p99_ms": 15.202061000309186,
+   "max_ms": 18.17387800110737,
+   "min_ms": 6.518696998682572
+  },
+  "absent_ticker_stats": {
+   "n": 100,
+   "mean_ms": 0.008239939998020418,
+   "p50_ms": 0.00766300036048051,
+   "p95_ms": 0.008893999620340765,
+   "p99_ms": 0.02999199932673946,
+   "max_ms": 0.03216900040570181,
+   "min_ms": 0.007474000085494481
+  },
+  "rowcount_mismatches": []
+ },
+ "section4a_baseline": {
+  "total_sec": 13.867166652000378,
+  "resolved_total": 107,
+  "per_call_stats": {
+   "n": 50,
+   "mean_ms": 277.3409034600627,
+   "p50_ms": 240.94390100071905,
+   "p95_ms": 276.395084001706,
+   "p99_ms": 1801.7937309996341,
+   "max_ms": 1801.7937309996341,
+   "min_ms": 230.0591679995705
+  },
+  "n_tickers": 50
+ },
+ "section4b_batch_existing_fn": {
+  "total_sec": 0.24387749600100506,
+  "resolved_total": 98,
+  "n_tickers": 50
+ },
+ "section4c_family2_only": {
+  "total_sec": 0.9426976360009576,
+  "resolved_total": 93,
+  "per_call_stats": {
+   "n": 50,
+   "mean_ms": 18.852608740089636,
+   "p50_ms": 17.830179998782114,
+   "p95_ms": 24.56232300028205,
+   "p99_ms": 36.13984599905962,
+   "max_ms": 36.13984599905962,
+   "min_ms": 17.032142000971362
+  },
+  "n_tickers": 50
+ },
+ "section4d_family2plus3_txn": {
+  "total_sec": 0.014597082999898703,
+  "resolved_total": 92,
+  "n_tickers": 50
+ },
+ "section4e_family2plus3_percommit": {
+  "total_sec": 0.3609092110000347,
+  "resolved_total": 110,
+  "n_tickers": 50,
+  "failures": []
+ }
+}
