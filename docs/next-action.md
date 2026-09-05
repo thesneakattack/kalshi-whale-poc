@@ -1,3 +1,56 @@
+# SESSION RECONCILIATION — reduced fleet, 2026-09-05 ~08:5x UTC (container-local)
+
+David closed several terminals ("removed a few sessions") and kept 4. Coordinator
+is now `autotrade-05` (chain: `1f` -> `48` -> `01` -> `05`, all one continuous
+session, no memory loss — only the SendMessage name keeps changing on reconnect).
+
+**New lesson, learned the hard way this round:** `ListAgents`' "started Xm ago"
+is **not evidence of a fresh, memory-less session**. The coordinator assumed all
+4 remaining peers were brand-new workers based solely on that field and briefed
+them as such — wrong for at least one of them (`autotrade-32` turned out to be
+`autotrade-8d`/`df`, PR #574's author, mid-hold, with full memory). "Started Xm
+ago" reflects when the *terminal/process* attached, not whether conversation
+memory survived. Verify identity by direct reply, every time, same discipline
+as the WSL-restart roster problem — this is the same failure shape one layer up.
+
+**Confirmed identity mapping for the current 4-session fleet (by direct reply,
+not inferred):**
+
+| current | actually is | role |
+|---|---|---|
+| `autotrade-32` | `autotrade-8d` (was `df`) | PR #574 author, holding |
+| `autotrade-07` | former `autotrade-7e` lineage (perf/I/O specialist from the earlier incident) | PR #574 independent reviewer — genuinely fresh to #574, dispatched its own fresh subagent |
+| `autotrade-bd` | `autotrade-24` (was `d2`) | PR #575 owner, mid-revision (8/16 fix-list items done as of this write) |
+| `autotrade-62` | `autotrade-a2` (was `64`) | was #577/#578 owner; **now also covers app-health watch** (see below) |
+
+**Confirmed genuinely gone** (three independent testimonies, not one absence):
+`autotrade-71` (was #574's prior independent reviewer — its work is superseded
+by `07`'s fresh pass, not resumed) and `autotrade-ef` (was app-health watch
+owner, #576/#579/#580). Nobody currently holds `ef`'s identity; `62`/`a2` has
+taken the watch role in addition to #577/#578 since #577/#578 are both blocked
+(pending #574, pending David) and have spare bandwidth.
+
+**Two documentation-drift findings from `62`/`a2`'s status sweep, being posted
+to GitHub now (do not treat this doc as the durable record for either):**
+- **#582** was auto-closed by PR #583's title keyword (04:08:19Z) *before*
+  #583's own stated condition — #581 merging and its figures being confirmed
+  — was actually met (#581 merged 04:20:47Z, 12 minutes later). Zero comments
+  on #582 ever. Needs reopening + the confirmation #583 promised, or an honest
+  note about what's still unconfirmed.
+- **#532**'s current figures (29.6M rows, 45.3 rows/sec measured over a 62s
+  bracket -> 3.91M/day, 99.0% from one gate, the 4.2x/week-decaying-to-1.9x/week
+  analysis) exist **only in this doc** — #532 itself has exactly one comment,
+  from 07:31Z, citing the older 25.8M/4.2x figures. Exactly the failure this
+  file's own closing rule warns about: state that should be durable on an
+  issue, sitting instead in a file this file itself calls liable to rot.
+
+Also: an unplanned `ddev` container rebuild happened during this session's own
+pipeline-health check (~08:44Z container-local time) — recovered cleanly,
+fastapi healthy, `0 oldest dropped` in the capture_writer retry warnings.
+Cause not chased; noted in case it recurs.
+
+---
+
 # POST-RESTART STATUS — two-way comms re-established, 2026-09-05 ~03:3x UTC
 
 **Coordinator identity update (~04:3x UTC):** was `autotrade-48`, now
