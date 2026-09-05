@@ -5,7 +5,12 @@ David asked to be alerted when safe to reset the bankroll and re-enable
 status:
 
 1. **PR #574 merges** — [DONE] `244372b`.
-2. **Deployed live** (pulled into primary, confirmed reload) — [ ] not yet.
+2. **Deployed live** (pulled into primary, confirmed reload) — [DONE]
+   confirmed at 2026-09-05T09:44Z: `WatchFiles` reload log explicitly named
+   the changed files (`kalshi_fees.py`, `position_netting.py`,
+   `paper_broker.py`, `main.py`, etc.), fresh `Started server process
+   [1464]`, `merge-base --is-ancestor 244372b HEAD` true. Real deploy, not
+   a claim. **Observation window (#3) starts now.**
 3. **Observed live for a real stretch afterward, no new exit-pricing
    anomalies** — [ ] not started (depends on #2).
 4. **Unexplained YES-side auto-exit profit addressed** (explained, or David
