@@ -71,9 +71,81 @@ Two limits, both real, so do not overstate it:
 | `36` | independent adversarial review of **#574** |
 | `8f` | implementing **#410** (design settled in #571) |
 | `d2` | owns PR **#575**, running its review cycle |
-| `21` | standing app-health/responsiveness watch; filed **#576** |
-| `64` | closed **#539**; now owns **#577** (`or 0.5` root cause) |
+| `21` | standing watch; owns the live incident; filed **#576/#579/#580** |
+| `64` | closed **#539**; owns **#577** + filed **#578**; designing the root fix |
 | `portfolio-87` | different repo (`~/code/portfolio/`), not ours |
+
+## 🚨 LIVE INCIDENT — whale prints are being lost (#579, #580)
+
+**Open, mechanism partly unproven, actively recurring in bursts.** Owner
+`21` (standing watch). This outranks everything else below.
+
+- **14,172 trade-class messages permanently lost** = **0.518%** of trade
+  traffic (`2,735,458` received / `2,721,286` processed). 100% trade-class;
+  ticker/lifecycle/control clean. Ongoing in saturate-then-drain bursts
+  since ~21:18 UTC.
+- **Unrecoverable, and not visible as loss anywhere downstream.** A
+  `QueueFull` drop in `_ingest_raw()` returns *before* the consumer
+  dequeues, so the message never reaches `series_watcher.record_trade()`,
+  never reaches `capture_writer`, never lands in `raw_trades`.
+  `capture_writer.dropped_rows.raw_trades: 0` is **not** reassurance — it
+  is 0 because capture_writer never saw them.
+- **They are gate-survivors, not noise.** The queue-full check runs *after*
+  `_gate_check_and_maybe_filter`, so below-threshold noise was already
+  stripped into a separate counter.
+- **The loss is biased, which makes 0.518% understate the damage.** Drops
+  are conditioned on having passed the gate, and gate-passing correlates
+  with genuine market activity — so loss concentrates in the higher-signal
+  subset *because* those flood the gate. Compounding, not correlating.
+- Separately, `queue_wait.lifetime.max_sec: 833.96` — a 13.9-minute wait on
+  messages that were **not** dropped. A timeliness failure in its own right.
+- Ruled out, each on evidence: not a reload regression (no
+  `Started server process` since ~21:35 UTC); not a memory leak
+  (`memory.current` 6.83 GB is **82% page cache** — `anon` is 1.08 GB and
+  stable); not the 2026-09-03 container-contention precedent (clean `/proc`
+  walk, no strays, nothing in D state); not handler timeouts (`record_trade`
+  is the first line of `_process_stream_trade` at 0.09ms, long before the
+  timeout-prone REST stages — so the count is 14,172, **not** 14,245).
+- **Leading hypothesis, verified as structure but NOT as causation:**
+  `services/tick_executor.py:80` is `ThreadPoolExecutor(max_workers=2)`, and
+  its own docstring (root-cause report **C1**) names
+  `candidate_ledger.claim()`/`record_decision()` — the per-whale-print
+  critical path via `decision_bridge` — as sharing those 2 threads with
+  `resolve_and_record` and capture-flush. Live: `settlement_resolver.pending`
+  went 104 → 687 → **2322**, `busy: true`. **Falsifier stated in #579/#580:**
+  per-task timing on `tick_executor`, or inbound trade-rate flat while drain
+  falls. Not clean same-instant correlation yet — the queue drained while the
+  backlog was still climbing.
+- **No knob changes.** Raising queue capacity converts a counted drop into an
+  invisible latency backlog — already a timeliness failure — and destroys the
+  evidence. Any mitigation comes to the coordinator with a mechanism first.
+
+## Decision in flight — David: scrap derived data, rebuild clean
+
+David (2026-09-04, late): *"as long as the whale signal logs are accurate we
+can scrap everything else and start clean."* Purge of the contaminated
+derived data is authorized in principle; **the root fix is the deliverable,
+not the purge.**
+
+**Premise VERIFIED on the corruption axis.** `signal_log` does not fabricate:
+316,258 rows, **32,915 with `price IS NULL`** — if `or 0.5` touched this path
+there would be exactly zero, since falsy-coalescing destroys absence. Only
+**1.25%** sit at exactly 0.5, against **29%** in `market_history.snapshots`.
+`correct` comes from Kalshi settlement via
+`settlement_resolver.resolve_from_market_results`, not from any app-derived
+price. No `or 0.5` anywhere in `services/whale_stream/` or `signal_log.py`.
+
+**Premise HOLED on the completeness axis** — see the incident above. Clean of
+corruption, not clean of holes.
+
+**Coordinator recommendation:** scrap the derived layers, keep the two
+sources of truth. Discard `market_history.snapshots`, the calibration cache,
+and `paper_broker` history (derived, contaminated, rebuildable). **Keep
+`signal_log` and `series_watcher`'s raw payloads** — the latter is the
+fidelity/replay layer, is what `df` used to re-price 214 exits for #574, and
+is the only thing that could re-derive truth for #578's snapshots. Scrapping
+it forecloses that permanently. **Fix #579 before starting the clean
+dataset**, or the rebuild inherits the burst-biased hole from hour one.
 
 ## Open work
 
@@ -125,7 +197,33 @@ Two limits, both real, so do not overstate it:
    **Sequencing: let #574 land first** — do not change the fabrication
    sites out from under a PR whose guards defend against them.
 
-6. **Issue #539 — closed out by `64`, keep open, no knob change.** Window
+6. **Issue #578 — contaminated snapshots, David's call.** Up to **1.43M**
+   fabricated 0.5 prices in `market_history.snapshots` (29% of a 7-day
+   window, 97% of tickers). **Only 6,504 are provably fabricated** — a hard
+   arithmetic lower bound, since `spread = ask - bid` and `ask <= 1.00` make
+   `spread > 0.5` impossible for a real 0.5 bid. Truth between the two is
+   **unrecoverable from that table**: no ask column, no substitution flag. So
+   "purge all impacted rows" does not name a set — purging all 1.43M destroys
+   genuine 0.5 bids at the *middle* of the probability range, which is where
+   calibration correction matters most. **Re-derivation from
+   `series_watcher`'s raw payloads is the uncosted option and must be
+   measured before anything destructive.** Backup first.
+
+7. **Root fix for #577 must go one layer deeper than `or 0.5`.** Two findings
+   force it: (a) `or 0.5` fires on a **real `0.0` bid** and does so
+   *type-dependently* — one live payload carried 146 `float` / 38 `str` / 25
+   `None`, so float `0.0` becomes 0.5 while string `"0.0"` is truthy and
+   stores correctly; `or` → `is None` is therefore **not** the fix; (b) the
+   damage is unrecoverable not because the code guessed but because
+   **nothing recorded that it had guessed**. Design must carry: producers
+   never substitute; schema able to represent absence *and provenance*;
+   consumer absence-handling; and a CI guard against falsy-coalescing on
+   price fields. Note `confidence_calibration.py:527`'s guard needs **no
+   change** — it is already correct and starts working once producers stop
+   lying to it. A fourth producer path exists that #577's body did not list:
+   `whale_stream_handlers.py:399` → `record_snapshot_from_ticker`.
+
+8. **Issue #539 — closed out by `64`, keep open, no knob change.** Window
    result: 90 events / 17.86h = **5.04/hr** (95% CI [4.00, 6.08]). Baseline
    2.4/hr predicted 42.9, elevated 13.5/hr predicted 241 — **both excluded**
    (z ≈ +7.2 and −9.7). Residual ~2.1x baseline, stable, ongoing. Per-event
