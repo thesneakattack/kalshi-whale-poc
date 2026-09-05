@@ -69,18 +69,20 @@ every time, don't assume either outcome.
   sparse-series `unknown`s (zero closed positions in 24h). Don't mistake
   this `overall: fail` for a data-plane regression.
 - `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **YES-side
-  auto-exit profit analysis (gate condition 4) — ablation run, result
-  INCONCLUSIVE** (see condition 4 detail above, do not read as resolved).
-  Found and fixed a real O(n²) bug in its own analysis script first (full
-  rescan + per-snapshot DB query inside an O(n) loop — 8.75hr honest ETA
-  collapsed to ~100s after a sliding-window + one-time in-memory load,
-  verified identical output before trusting it). Survived a live bankroll
-  reset mid-run cleanly: switched to `trade_archive`'s pre-reset epoch,
-  disclosed a real limitation (archive lacks the `excluded` flag) rather
-  than risk a new discrepancy, used the already-triple-verified 202/
-  $60,276.44 baseline as a fixed constant instead. Standing by for next
-  step on condition 4 (fix one of the two identified confounds, or
-  explicitly accept the approach can't answer this with available data).
+  auto-exit profit analysis (gate condition 4) — done for tonight, stopped
+  at the right point.** Found and fixed a real O(n²) bug in its own
+  analysis script first (8.75hr honest ETA collapsed to ~100s, verified
+  identical output before trusting it). Survived a live bankroll reset
+  mid-run cleanly (switched to `trade_archive`'s pre-reset epoch, disclosed
+  a real limitation rather than risk a new discrepancy). Ran the controlled
+  clean-vs-contaminated-price comparison: **contamination confound now
+  proven** (pnl/composite both flip sign when re-priced clean, staleness
+  identical as an internal-consistency check) **but a real unexplained gap
+  remains even clean** (~$58k short of the fair target) — leading
+  hypothesis is sampling-cadence, unconfirmed. Correctly declined to push
+  into a real per-tick replay (materially harder, would need a fresh
+  approach) rather than force a fatigued attempt. Condition 4 stays open;
+  see detail above. Free for next assignment.
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
@@ -104,6 +106,15 @@ David did not want. **No existing flag decouples "block new entries" from
 "keep signal detection running"** — `running: true` + `max_daily_loss_pct:
 0` is the current compromise; a real decoupling fix is a named, not-yet-
 requested follow-up if David wants a true preemptive block later.
+
+**Kill switch tripped as designed (2026-09-05T21:00:37Z, found by `ea`'s
+resumed watch):** `risk.halted: true`, `"Daily loss limit hit: -1.2%"`,
+equity $9,793.22 vs. the $10,000 reset — the `max_daily_loss_pct: 0`
+setting above did exactly its job on the very first loss. Real trading
+confirmed still off throughout (`trading_enabled: false`), paper-only.
+Not the #584-style silent-clear bug (verified currently, actively halted,
+not cleared). `ea` correctly did not touch it — clearing a halt is
+explicitly David's own action. Awaiting David's direction on the halt.
 
 **Infra: `ddev-router` outage RESOLVED (2026-09-05)** — traced to Windows
 port exclusion (`winnat` dynamically excluding port ranges that collide
@@ -190,7 +201,27 @@ question — do not create another one.**
   treat -$4,342.79 as evidence the composite lacks edge** until one of
   these is fixed or the approach is explicitly acknowledged as unable to
   answer the question with available data. Full results + caveats posted
-  to #591. Condition 4 stays open.
+  to #591.
+- **Controlled follow-up completed (2026-09-05): contamination confound
+  now PROVEN, not just suspected — but it isn't the whole story.** Same
+  291 entries, same formula, only the price source swapped
+  (`series_watcher.book_snapshots`, confirmed clean, vs. the original
+  `market_history.snapshots`): `pnl`-alone flips sign entirely (-$23,942.73
+  clean vs. +$15,122.08 original, a $39,065 swing); full composite also
+  flips sign (-$24,529.22 vs. +$10,541.39, $35,071 swing). Internal
+  consistency check: `staleness` (never reads price) is IDENTICAL to the
+  cent between both runs — proves the swing is genuinely price
+  contamination, not a bug in the comparison itself. **But even clean, a
+  real unexplained gap remains**: these 291 entries are only ~56% of real
+  auto-exit profit (fair target ~$33,700-34,000 for this subset), and the
+  clean replay still gives -$24,529 — ~$58k short, still wrong sign.
+  Leading remaining hypothesis is the sampling-cadence confound (still
+  unconfirmed, not a second proof) — resolving it needs a real per-tick
+  replay, a materially harder undertaking `0d` correctly declined to start
+  tonight rather than push a fatigued, ad hoc attempt at it. **Condition 4
+  stays open.** Real progress stands (mirror-bug ruled out, headline figure
+  corrected, contamination confound now proven) but the core edge-vs-
+  selection-bias question is unresolved. Full write-up on #591.
 
 ---
 
