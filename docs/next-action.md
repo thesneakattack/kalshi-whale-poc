@@ -63,14 +63,14 @@ so the work can be reclaimed — not an assignment to a name that no longer exis
 | `1f` | coordinator | this doc; PR **#583** open, revised, awaiting CI |
 | `df` | PR **#574** (author) | CI green at `219a350`; **merge held** |
 | `36` | independent review of #574 | pass in flight at `219a350` — **killed** |
-| `8f` | PR **#581** (#410) | `2eed9a7` pushed; CI + adversarial in flight — **killed** |
+| `8f` | PR **#581** (#410) | `37687b9` pushed (WIP); adversarial **NO-GO**, 10 findings |
 | `d2` | PR **#575** | self-review posted, NO-GO; adversarial in flight — **killed** |
 | `64` | **#577** design, filed **#578** | design in progress, may be unposted |
 | `21` | app-health watch | filed **#576/#579/#580**; final readings posted |
 
-Also filed at shutdown: **#584** (kill switch non-functional). `8f` had not
-confirmed its shutdown state when this was written - check `2eed9a7` and #581
-for uncommitted or unpushed work first thing.
+Also filed at shutdown: **#584** (kill switch non-functional). All six workers
+confirmed clean shutdown: nothing uncommitted, nothing unpushed, and every
+piece of chat-only state posted to a PR or issue first.
 
 **Both adversarial passes died to API rate limits, not to findings** - `d2`'s
 confirmed exactly one item (S4) before dying; `36`'s finished primary-source
@@ -93,11 +93,18 @@ review was running, it did not finish. Do not assume a GO.
   covers `c09b730`, **not** the current head — do not merge on it.
 - **#575** (recovered crash-recovery draft) — `d2`'s NO-GO stands; ≥3 HIGH
   findings unaddressed.
-- **#581** (#410 aiosqlite split) — cycle unfinished; re-read CI from
-  `gh api .../commits/2eed9a7/status`, never from memory.
+- **#581** (#410 aiosqlite split) — **adversarial review returned NO-GO as
+  submitted, 10 findings, posted in full** (comment 5549045515). F2 fixed and
+  F5 partially fixed in `37687b9` (WIP, 43/43 affected tests passing); **F3,
+  F4, F6, F7, F9 remain open** and **no consolidation is written**. Re-read CI
+  from `gh api .../commits/37687b9/status`, never from memory — it was
+  resolving normally at shutdown, which contradicts F1's "webhook silently
+  broken" finding, so F1 may be stale or the breakage transient.
 - **#583** (this coordinator's #571/#567 correction) — revised `087c3ca` after
-  an adversarial NO-GO; self-review, adversarial review and consolidation are
-  all posted. Awaiting CI only.
+  an adversarial NO-GO; self-review, adversarial review and consolidation all
+  posted. **CI green (`success`) at `087c3ca`.** This is the one PR whose full
+  cycle is complete; it is mergeable on return, and `Refs #582` means #582
+  stays open until #581 lands and confirms its provisional figures.
 
 ## 4. Open issues, current as of shutdown
 
