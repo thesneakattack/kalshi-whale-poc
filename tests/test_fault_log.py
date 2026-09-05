@@ -95,6 +95,75 @@ def test_summary_surfaces_the_loudest_faults():
     assert s["most_frequent"][0]["component"] == "index_feed"
 
 
+# ---- summary(since_ts=...) window-scoping - issue #599 -------------------
+# A fault row's `count` is a LIFETIME total (module docstring: dedup key
+# (component, operation, exc_type, message), incremented forever). Summing
+# it into a "since_ts" total is only exact when the row's whole life
+# (first_seen) is inside the window - a fault that predates the window and
+# is merely still active would otherwise leak its entire history into any
+# query narrow enough to still catch its last occurrence (the exact live
+# reproduction: an hours=1 and an hours=0.05 query both reported the same
+# 173,610-occurrence lifetime total for one old, still-firing fault).
+
+def test_summary_since_ts_excludes_a_pre_existing_faults_lifetime_count():
+    fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)
+    for _ in range(499):
+        fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)
+    fl.record("loop_watchdog", "stall", _boom("x"), now=5000.0)  # bumps last_seen
+    s = fl.summary(since_ts=4900.0)  # window starts after first_seen (1000), before last_seen (5000)
+    assert s["total_occurrences"] == 0
+    assert s["by_component"] == {}
+    assert s["most_frequent"] == []
+
+
+def test_summary_since_ts_includes_a_fault_created_entirely_within_the_window():
+    fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)  # predates the window
+    fl.record("index_feed", "flush", _boom("y"), now=5000.0)  # first_seen inside the window
+    s = fl.summary(since_ts=4900.0)
+    assert s["total_occurrences"] == 1
+    assert s["by_component"] == {"index_feed": 1}
+    assert s["most_frequent"][0]["component"] == "index_feed"
+
+
+def test_summary_since_ts_surfaces_pre_existing_active_faults_as_ongoing():
+    for _ in range(500):
+        fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)
+    fl.record("loop_watchdog", "stall", _boom("x"), now=5000.0)
+    s = fl.summary(since_ts=4900.0)
+    assert len(s["ongoing_faults"]) == 1
+    ongoing = s["ongoing_faults"][0]
+    assert ongoing["component"] == "loop_watchdog"
+    assert ongoing["count"] == 501  # the real all-time total, honestly labeled - not folded into total_occurrences
+    assert ongoing["first_seen"] == 1000.0
+    assert ongoing["last_seen"] == 5000.0
+
+
+def test_summary_distinct_faults_still_counts_ongoing_faults_as_active():
+    """distinct_faults keeps its original last_seen>=since_ts meaning - a
+    plain COUNT(*), never miscounted by summing a lifetime total - so a
+    pre-existing-but-still-firing fault still counts as one active
+    signature even though it contributes 0 to total_occurrences."""
+    fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)
+    fl.record("loop_watchdog", "stall", _boom("x"), now=5000.0)
+    fl.record("index_feed", "flush", _boom("y"), now=5000.0)
+    s = fl.summary(since_ts=4900.0)
+    assert s["distinct_faults"] == 2
+
+
+def test_summary_unbounded_query_is_unaffected_by_the_window_split():
+    """since_ts=None (the default) has no window boundary to misattribute
+    across - every clause collapses to unconditional, byte-for-byte the
+    same as before this fix, ongoing_faults empty (the concept is only
+    meaningful relative to a window)."""
+    for _ in range(500):
+        fl.record("loop_watchdog", "stall", _boom("x"), now=1000.0)
+    fl.record("loop_watchdog", "stall", _boom("x"), now=5000.0)
+    s = fl.summary()
+    assert s["total_occurrences"] == 501
+    assert s["by_component"] == {"loop_watchdog": 501}
+    assert s["ongoing_faults"] == []
+
+
 def test_recent_filters_by_component_and_time():
     fl.record("a", "op", _boom("x"), now=100.0)
     fl.record("b", "op", _boom("y"), now=200.0)
