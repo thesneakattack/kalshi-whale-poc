@@ -14,25 +14,52 @@ which is orthogonal and already fixed separately (PR #569).
 
 ## Verdict
 
+**Correction (2026-09-05, tracked as #582 — the Verdict below stands; §1's cost attribution does
+not).** This doc splits `whale_calibration._build_report()` into a *"~2s fetch"* plus *"~3.4s
+compute"* and concludes aiosqlite helps *"only for the ~2s fetch"*. That fetch is **not** I/O:
+`signal_log.resolved_signals_with_factors()` (`services/signal_log.py:688-745`) runs the SQL **and**
+a per-row `json.loads` loop inside one function, so "convert its fetch to aiosqlite" literally puts
+that CPU loop on the event loop — the regression `services/diagnostics/_aio_db.py`'s own docstring
+already records for `run_offline()`. **The materialize step must go to `asyncio.to_thread` too.**
+That mechanism is verified from source and is the load-bearing point of this correction.
+
+**The numbers below are PROVISIONAL.** They are transcribed from PR #581, which at the time of
+writing is **unmerged, unreviewed and has no CI result**, and no command or raw output is recorded
+for the fetch/materialize split. Do not treat them as settled; re-check them against #581 as merged.
+Provisionally: SQL **0.884s**, materialize **2.691s**, compute **4.383s** — a **~7.96s** total
+against §2's *"~5.5s"* (line ~46), i.e. the error is one of **magnitude as well as attribution**
+(the "fetch" is ~3.58s, not ~2s). On those figures aiosqlite addresses **~11%** of the path, not the
+~36% this doc implies.
+
+**Open question this correction does not settle (MED-5):** at ~11%, whether `aiosqlite` +
+`asyncio.to_thread` still beats a plain `await asyncio.to_thread(_build_report)` — one hop, no
+aiosqlite, and none of §3's `_aio_db` footgun surface — was **never compared**, because the design
+rejected "option 1" as a *new dedicated pool*, which `to_thread` on the default executor is not.
+Per the data-plane HARD RULE that comparison is owed before this path is considered closed.
+
+
 **Neither option alone. Adopt a split fix, matched to the two routes' genuinely different
 bottlenecks — and do not add a third thread pool.**
 
 - `candidate_log.population_gate_summary()` → **native `aiosqlite`** (option 2).
 - `whale_calibration._build_report()` → **`aiosqlite` for its fetch, plus `asyncio.to_thread`
-  for its compute pass** (option 2 + an offload, because option 2 alone provably cannot help the
+  for its compute pass** — **[corrected 2026-09-05, #582: "its fetch" here means the SQL *only*
+  (~0.884s). The materialize/`json.loads` step (~2.691s) is CPU and must ALSO go to
+  `asyncio.to_thread`; sending it to aiosqlite alone is a regression.]** (option 2 + an offload,
+  because option 2 alone provably cannot help the
   dominant cost).
 - **Reject option 1** (a new dedicated `ThreadPoolExecutor`) for both.
 
 ## 1. The asymmetry that decides this
 
-The research note measured `_build_report()`'s ~5.5s as a fetch plus a report-generation pass. The
+The research note measured `_build_report()`'s ~5.5s as a fetch plus a report-generation pass **[corrected #582: provisionally ~7.96s, and the "fetch" is ~3.58s not ~2s]**. The
 design-relevant fact is *what kind* of work each part is — verified by reading the functions, not
 inferred from the timings:
 
 | Path | Dominant cost | Nature | Does aiosqlite help? |
 |---|---|---|---|
 | `candidate_log.population_gate_summary()` (`services/candidate_log.py:274`) | 15-22s | **SQL-bound.** Its own docstring (`:310`): *"Aggregates via SQL GROUP BY, not a per-row Python loop (2026-08-26 fix)"* — one `conn.execute` of a `SELECT ... GROUP BY` at `:331-334`, trivial post-processing. | **Yes, fully.** The blocking is the driver waiting on SQLite. |
-| `whale_calibration._build_report()` | ~2s fetch + **~3.4s compute** | `_bucket_win_rates(rows: list[dict], factor_name: str)` (`services/whale_calibration/confidence_calibration.py:89`) takes an **already-materialised list** and does index-based tertile sorting per factor, 9 factors. **No database access at all.** | **Only for the ~2s fetch.** aiosqlite cannot touch the 3.4s, which is pure CPU. |
+| `whale_calibration._build_report()` | ~2s fetch + **~3.4s compute** — **[corrected #582: ~0.884s SQL + ~2.691s materialize + ~4.383s compute, provisional]** | `_bucket_win_rates(rows: list[dict], factor_name: str)` (`services/whale_calibration/confidence_calibration.py:89`) takes an **already-materialised list** and does index-based tertile sorting per factor, 9 factors. **No database access at all.** | **Only for the ~2s fetch.** aiosqlite cannot touch the 3.4s, which is pure CPU. **[corrected #582: only for the ~0.884s SQL — the ~2.691s materialize is CPU too. The quoted sentence remains true; it simply understates how much of this path aiosqlite cannot touch.]** |
 
 This is the crux, and it is why "just do the aiosqlite rewrite" — the research note's own leaning —
 is **insufficient as stated**. Converting `_build_report()` to aiosqlite and stopping there would
@@ -114,7 +141,7 @@ One further consideration, stated as an open question rather than a settled fact
 other `run_in_executor(None, ...)` caller. Its default ceiling (`min(32, cpu_count + 4)`) is far
 above `tick_executor`'s 2, so contention is unlikely to bind — but it is a shared resource, not a
 private one, and the implementation should confirm no other hot-path code is contending for it
-before treating the 3.4s offload as fully isolated.
+before treating the 3.4s offload as fully isolated **[corrected #582: the offload is ~2.691s materialize + ~4.383s compute, not 3.4s]**.
 
 ## 4. What this fix does *not* achieve
 
@@ -140,7 +167,9 @@ Per the data-plane HARD RULE's "permanent detection for recurrence" requirement:
 
 ## 6. What would falsify this recommendation
 
-- If `_bucket_win_rates`' 3.4s is not reproducible — the entire "aiosqlite alone is insufficient"
+- If `_bucket_win_rates`' 3.4s is not reproducible — **[#582: it did not reproduce at 3.4s; PR #581
+  re-measured it provisionally at 4.383s. The "aiosqlite alone is insufficient" conclusion is
+  strengthened, not weakened, since the CPU share grew]** — the entire "aiosqlite alone is insufficient"
   argument rests on that measurement plus the read that it takes `rows` as a parameter. Both should
   be re-confirmed at implementation time.
 - If the default executor turns out to be contended by hot-path work (§3's open question), the
