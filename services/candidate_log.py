@@ -126,6 +126,23 @@ _IDX_REJECTION_EVENTS_UNRESOLVED_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_rejection_events_unresolved ON rejection_events (ticker) "
     "WHERE resolved = 0"
 )
+# Covers prune_gate()'s DELETE (issue #532) - adversarial review of that
+# PR measured a genuine full-table SCAN for its `gate_name = ? AND
+# rejected_at < ?` filter against a synthetic table shaped like
+# production. Safe to defer for the one gate this is actually designed to
+# purge (min_contracts is ~99% of the table, so a chronological scan
+# still finds batch-size matches quickly - same reasoning
+# market_history.prune()'s own unindexed age filter already relies on,
+# confirmed empirically), but the function takes an arbitrary gate_name
+# with no guard - calling it against any of the other, much sparser gates
+# at real multi-million-row scale measured ~2x slower per row and a scan
+# of the ENTIRE pre-cutoff range to confirm a small match count. Adding
+# the index removes the whole risk category rather than just guarding one
+# caller's intended use.
+_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_rejection_events_gate_rejected_at "
+    "ON rejection_events (gate_name, rejected_at)"
+)
 
 
 @contextlib.contextmanager
@@ -139,6 +156,7 @@ def _connect():
     with db.connect(DB_PATH, tables=("rejected_candidates", "rejection_events")) as conn:
         conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
         conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
+        conn.execute(_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL)
         db.add_column_if_missing(conn, "rejected_candidates", "unit_cost", "REAL")
         db.add_column_if_missing(conn, "rejection_events", "unit_cost", "REAL")
         db.add_column_if_missing(
@@ -211,6 +229,7 @@ async def _ensure_schema_aio(conn) -> None:
     await conn.execute(capture_writer.REJECTION_EVENTS_DDL_SQL)
     await conn.execute(_IDX_REJECTION_EVENTS_GATE_SQL)
     await conn.execute(_IDX_REJECTION_EVENTS_UNRESOLVED_SQL)
+    await conn.execute(_IDX_REJECTION_EVENTS_GATE_REJECTED_AT_SQL)
     await _add_column_if_missing_aio(conn, "rejected_candidates", "unit_cost", "REAL")
     await _add_column_if_missing_aio(conn, "rejection_events", "unit_cost", "REAL")
     await _add_column_if_missing_aio(

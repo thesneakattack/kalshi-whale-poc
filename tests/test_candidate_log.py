@@ -747,6 +747,7 @@ def test_connect_still_creates_both_tables_indexes_and_unit_cost_columns(tmp_pat
         )}
         assert "idx_rejection_events_gate" in indexes
         assert "idx_rejection_events_unresolved" in indexes
+        assert "idx_rejection_events_gate_rejected_at" in indexes  # issue #532, prune_gate()
         rc_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejected_candidates)")}
         re_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejection_events)")}
         assert "unit_cost" in rc_cols
@@ -826,6 +827,7 @@ def test_population_gate_summary_async_creates_the_gate_index():
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_rejection_events_gate" in indexes
     assert "idx_rejection_events_unresolved" in indexes
+    assert "idx_rejection_events_gate_rejected_at" in indexes  # issue #532, prune_gate()
 
 
 def test_population_gate_summary_async_schema_init_adds_sample_weight_column(tmp_path, monkeypatch):
