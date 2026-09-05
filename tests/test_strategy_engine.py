@@ -2126,6 +2126,47 @@ def test_check_exits_still_settles_a_no_position_on_an_empty_book(tmp_path, monk
     assert broker.bankroll == pytest.approx(bankroll_before + 100.0, abs=0.01)
 
 
+def test_check_exits_still_settles_a_yes_position_at_a_yes_bid_of_1(tmp_path, monkeypatch):
+    # Mirror of the NO-side settlement test above, added alongside the C1
+    # fix (2026-09-05 round-5 review): the new yes_bid >= 1.0 guard must
+    # never block a SETTLEMENT close either - a market that genuinely
+    # settled YES quotes yes_bid 1.00 for real, and that terminal $1.00
+    # payout is exactly what the guard exists to distinguish from a garbage
+    # quote at the same value.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 1.0}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+        market_results={"TICK-A": "yes"},
+    )
+
+    assert len(decisions) == 1
+    assert "TICK-A" not in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before + 100.0, abs=0.01)
+
+
+def test_check_exits_will_not_sell_a_yes_position_at_a_garbage_bid_of_1(tmp_path, monkeypatch):
+    # The actual C1 fix under an unsettled market: yes_bid 1.0 with no
+    # settlement is a NO ask of 0.0 by docs/kalshi/get-market-orderbook.md's
+    # own equivalence - not a real quote - so the position must hold rather
+    # than book the fabricated $1.00/contract.
+    _no_corroboration(monkeypatch)
+    strategy, broker, risk = _strategy(tmp_path, monkeypatch)
+    broker.open_position("TICK-A", "yes", size=100, price=0.40, reason="entry")
+    bankroll_before = broker.bankroll
+
+    decisions = strategy.check_exits(
+        {"TICK-A": 1.0}, [], _cfg(auto_exit_enabled=True, auto_exit_threshold=0.0),
+    )
+
+    assert decisions == []
+    assert "TICK-A" in broker.positions
+    assert broker.bankroll == pytest.approx(bankroll_before)
+
+
 def test_check_exits_will_not_sell_a_yes_position_with_no_bid(tmp_path, monkeypatch):
     # Declared behavior CHANGE (2026-09-04 adversarial review, D3): a YES
     # position at yes_bid 0.00 previously stop-lossed at $0, booking a total

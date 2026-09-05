@@ -460,25 +460,36 @@ def test_forced_exit_quote_yes_with_no_bid_on_file_uses_the_fallback():
     assert unit_cost("yes", forced_exit_quote("yes", 0.0, 0.30, unknown_fallback=0.42)) == pytest.approx(0.0)
 
 
-def test_neither_quote_helper_ever_returns_a_dollar_per_contract_for_no():
-    # The one invariant this entire change set exists to enforce: a NO exit
+def test_neither_quote_helper_ever_returns_a_dollar_per_contract_on_either_side():
+    # The one invariant this entire change set exists to enforce: an exit
     # must never be paid $1.00/contract off a quote, because that is
-    # indistinguishable from the market having settled NO. A yes_ask of 0.0
-    # reached exactly that through both helpers (round-4 review found it in
-    # forced_exit_quote; sellable_quote, the AUTOMATED path, had it too and
-    # the review missed it) whenever the bid was 0.0 or absent so the crossed
-    # check could not fire.
-    for bid in (None, 0.0, 0.5, 1.0):
-        q = sellable_quote("no", bid, 0.0)
-        assert q is None or unit_cost("no", q) < 1.0, f"sellable_quote paid $1.00 at bid={bid}"
-        f = forced_exit_quote("no", bid, 0.0, unknown_fallback=0.60)
-        assert unit_cost("no", f) < 1.0, f"forced_exit_quote paid $1.00 at bid={bid}"
+    # indistinguishable from the market having settled in the holder's
+    # favor. Originally NO-only (a yes_ask of 0.0 reached exactly that
+    # through both helpers whenever the bid was 0.0 or absent so the crossed
+    # check couldn't fire), extended to a genuine bid x ask x side sweep
+    # after 2026-09-05's round-5 independent review found the identical
+    # class unguarded on the YES side (yes_bid >= 1.0, a NO ask of 0.0 by
+    # docs/kalshi/get-market-orderbook.md's own bid/ask equivalence) - the
+    # prior version of this test was point-based (4 bid values at a single
+    # ask of 0.0, NO side only) and could not have caught it.
+    quotes = (None, 0.0, 0.01, 0.5, 0.99, 1.0)
+    for side in ("yes", "no"):
+        for bid in quotes:
+            for ask in quotes:
+                q = sellable_quote(side, bid, ask)
+                assert q is None or unit_cost(side, q) < 1.0, (
+                    f"sellable_quote paid $1.00 at side={side} bid={bid} ask={ask}"
+                )
+                f = forced_exit_quote(side, bid, ask, unknown_fallback=0.60)
+                assert unit_cost(side, f) < 1.0, (
+                    f"forced_exit_quote paid $1.00 at side={side} bid={bid} ask={ask} -> {f}"
+                )
     # A zero ask routes to the fallback, not to a total loss: a genuinely
     # empty book announces itself as ask 1.0000, so 0.0 is garbage, and
-    # booking a wipeout on ambiguous data was round 3's lesson.
+    # booking a wipeout on ambiguous data was round 3's lesson. The mirror
+    # case (yes_bid 1.0, a NO ask of 0.0) routes to the fallback the same way.
     assert forced_exit_quote("no", 0.0, 0.0, unknown_fallback=0.60) == 0.60
-    # The real empty book still books zero, unchanged.
+    assert forced_exit_quote("yes", 1.0, 1.0, unknown_fallback=0.60) == 0.60
+    # The real empty book still books zero, unchanged, on both sides.
     assert unit_cost("no", forced_exit_quote("no", 0.0, 1.0, unknown_fallback=0.60)) == pytest.approx(0.0)
-    # YES keeps its mirror zero as a REAL $0.00 - a yes_bid of 0.00 is a real,
-    # common state (nobody bidding), unlike a yes_ask of 0.00.
     assert unit_cost("yes", forced_exit_quote("yes", 0.0, 0.3, unknown_fallback=0.6)) == pytest.approx(0.0)

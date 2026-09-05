@@ -422,8 +422,20 @@ def sellable_quote(
     if side not in ("yes", "no"):
         raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
     if side == "yes":
-        # No bid at all means nobody will buy this YES position.
-        return yes_bid if yes_bid is not None and yes_bid > 0.0 else None
+        # No bid at all means nobody will buy this YES position. A yes_bid
+        # of 1.00 is a NO ask of 0.00 - "a bid for yes at price X is
+        # equivalent to an ask for no at price (100-X)"
+        # (docs/kalshi/get-market-orderbook.md) - NO would be free, the
+        # identical not-a-real-quote class the NO branch's yes_ask <= 0.0
+        # guard below already catches, just unenforced on this side until
+        # now (2026-09-05 round-5 independent review, C1: this module's own
+        # "never pay $1.00/contract off a quote" invariant, enforced on the
+        # NO side since round 4, was unguarded here - unit_cost("yes", 1.0)
+        # is $1.00/contract fee-free, the exact fabrication this whole
+        # change set exists to kill, just approached from the other side).
+        if yes_bid is None or yes_bid <= 0.0 or yes_bid >= 1.0:
+            return None
+        return yes_bid
     # yes_ask >= 1.00 is a NO bid of 0.00 - the empty-book shape that
     # manufactured the phantom payouts. yes_ask <= 0.00 is not a real quote
     # at all (YES would be free) and MUST be caught here: it is reachable
@@ -503,14 +515,21 @@ def forced_exit_quote(
         # never fall through: unit_cost("no", 0.0) is $1.00/contract, the
         # exact fabrication this change set exists to kill. Routed to the
         # fallback rather than to zero-proceeds - deliberately diverging from
-        # the round-4 review's suggested `return 1.0`. A genuinely empty book
-        # announces itself as ask 1.0000 (docs/kalshi/
-        # sample_event_response.json), so a 0.0 ask is garbage or missing
-        # data, and round 3's lesson was precisely that booking a total loss
-        # on ambiguous data is the worse error. The YES branch below keeps
-        # its mirror-image zero as a real $0.00, because a yes_bid of 0.00 IS
-        # a real and common state - nobody bidding - confirmed live on this
-        # app's own book snapshots (bid 0.0 / ask 1.0, both sizes 0).
+        # the round-4 review's suggested `return 1.0`. This is an OBSERVATION
+        # from captured data, not documented Kalshi behavior (2026-09-05
+        # round-5 review, C4): docs/open-decisions.md (2026-09-01) already
+        # records that yes_ask_dollars' no-ask sentinel is "unconfirmed
+        # against docs/kalshi/" - get-market-orderbook.md gives the bid/ask
+        # equivalence but no empty-side sentinel, and
+        # docs/kalshi/sample_event_response.json:158's "1.0000" is one
+        # captured sample, not a schema statement. Either reading (1.0000 is
+        # the sentinel, or it isn't) leaves this branch's handling of 0.0 as
+        # the conservative choice: routed to the fallback, never to
+        # zero-proceeds or a payout, so the ambiguity does not change the
+        # money. The YES branch below keeps its mirror-image zero as a real
+        # $0.00, because a yes_bid of 0.00 IS a real and common state -
+        # nobody bidding - confirmed live on this app's own book snapshots
+        # (bid 0.0 / ask 1.0, both sizes 0).
         if yes_ask <= 0.0:
             return unknown_fallback                 # not a real quote -> unknown
         if yes_bid is not None and yes_ask < yes_bid:
@@ -520,6 +539,13 @@ def forced_exit_quote(
         return unknown_fallback                     # unknown: no bid on file
     if yes_bid <= 0.0:
         return 0.0                                  # genuinely no bid -> $0.00/contract
+    # A yes_bid of 1.00 is a NO ask of 0.00 - not a real quote (NO would be
+    # free), the identical garbage class the NO branch's yes_ask <= 0.0 case
+    # above already routes to unknown_fallback rather than a payout. Left
+    # unguarded here until now, unit_cost("yes", 1.0) is $1.00/contract
+    # fee-free (2026-09-05 round-5 independent review, C1).
+    if yes_bid >= 1.0:
+        return unknown_fallback                     # not a real quote -> unknown
     return yes_bid
 
 
