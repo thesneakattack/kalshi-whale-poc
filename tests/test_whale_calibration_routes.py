@@ -17,6 +17,7 @@ import asyncio
 
 import pytest
 
+from services import tick_executor
 from services.whale_calibration import routes as calibration_routes
 
 
@@ -55,16 +56,29 @@ def test_status_uses_resolved_with_factors_count_not_the_full_fetch(monkeypatch)
     assert result["resolved_count"] == 42
 
 
-def test_report_runs_via_tick_executor(monkeypatch):
-    calls = []
+def test_report_never_runs_via_tick_executor(monkeypatch):
+    """Deliberately the INVERSE of the assertion this test made until issue
+    #410 (it was named test_report_runs_via_tick_executor).
+
+    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+    Sec 5 asks for this inversion as permanent detection-for-recurrence:
+    this route's ~7s of work must never again occupy one of tick_executor's
+    2 workers, which are shared with candidate_ledger.claim()/
+    record_decision() on the live per-signal decision path."""
+    tick_executor_calls = []
+    fetch_calls = []
 
     async def _spy_run(fn):
-        calls.append(fn)
+        tick_executor_calls.append(fn)
         return fn()
 
-    monkeypatch.setattr(calibration_routes.tick_executor, "run", _spy_run)
+    async def _stub_fetch(since_ts=None):
+        fetch_calls.append(1)
+        return []
+
+    monkeypatch.setattr(tick_executor, "run", _spy_run)
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
-    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors_async", _stub_fetch)
     monkeypatch.setattr(
         calibration_routes.confidence_calibration, "generate_calibration_report",
         lambda rows, min_signals, weights: {"report": None, "gated_reason": "stub", "resolved_count": 0},
@@ -76,23 +90,36 @@ def test_report_runs_via_tick_executor(monkeypatch):
 
     result = asyncio.run(calibration_routes.get_confidence_calibration_report())
 
-    assert len(calls) == 1
+    assert tick_executor_calls == [], "the report must not go through tick_executor any more"
+    assert fetch_calls == [1], "the async aiosqlite fetch should have run exactly once"
     assert result == {
         "report": None, "gated_reason": "stub", "resolved_count": 0,
         "evidence_provenance": {"degraded": False, "defects": [], "checked_at": 0.0},
     }
 
 
-def test_apply_runs_via_tick_executor(monkeypatch):
-    calls = []
+def test_apply_never_runs_via_tick_executor(monkeypatch):
+    """Sibling inversion for POST /api/confidence-calibration/apply.
+
+    The design named "_build_report()" singular; there were in fact TWO
+    byte-identical closures, this route's and the polled report route's,
+    both on tick_executor. Converting only the polled one would have left
+    this ~7s occupancy in place on the same 2-worker pool. Both now share
+    _build_report_async, and this test is what keeps that true."""
+    tick_executor_calls = []
+    fetch_calls = []
 
     async def _spy_run(fn):
-        calls.append(fn)
+        tick_executor_calls.append(fn)
         return fn()
 
-    monkeypatch.setattr(calibration_routes.tick_executor, "run", _spy_run)
+    async def _stub_fetch(since_ts=None):
+        fetch_calls.append(1)
+        return []
+
+    monkeypatch.setattr(tick_executor, "run", _spy_run)
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
-    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors_async", _stub_fetch)
     monkeypatch.setattr(
         calibration_routes.confidence_calibration, "generate_calibration_report",
         lambda rows, min_signals, weights: {
@@ -111,7 +138,8 @@ def test_apply_runs_via_tick_executor(monkeypatch):
 
     result = asyncio.run(calibration_routes.apply_confidence_calibration_suggestion())
 
-    assert len(calls) == 1
+    assert tick_executor_calls == [], "apply must not go through tick_executor any more"
+    assert fetch_calls == [1], "the async aiosqlite fetch should have run exactly once"
     assert result == {"applied": True, "new_weights": {"depth_factor": 0.9}}
 
 
@@ -154,8 +182,12 @@ def test_confidence_calibration_report_is_cached_within_ttl(monkeypatch):
     log.py's own docstring)."""
     calls = []
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
+    async def _counting_fetch(since_ts=None):
+        calls.append(1)
+        return []
+
     monkeypatch.setattr(
-        calibration_routes.signal_log, "resolved_signals_with_factors", lambda: calls.append(1) or []
+        calibration_routes.signal_log, "resolved_signals_with_factors_async", _counting_fetch
     )
     monkeypatch.setattr(
         calibration_routes.confidence_calibration, "generate_calibration_report",
@@ -179,8 +211,12 @@ def test_confidence_calibration_report_recomputes_after_ttl_expires(monkeypatch)
     _REPORT_CACHE_TTL_SEC between the two calls."""
     calls = []
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
+    async def _counting_fetch(since_ts=None):
+        calls.append(1)
+        return []
+
     monkeypatch.setattr(
-        calibration_routes.signal_log, "resolved_signals_with_factors", lambda: calls.append(1) or []
+        calibration_routes.signal_log, "resolved_signals_with_factors_async", _counting_fetch
     )
     monkeypatch.setattr(
         calibration_routes.confidence_calibration, "generate_calibration_report",
@@ -221,12 +257,12 @@ def test_confidence_calibration_report_cache_is_stamped_at_completion_not_reques
 
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
 
-    def _slow_fetch():
+    async def _slow_fetch(since_ts=None):
         calls.append(1)
-        fake_now[0] += build_duration_sec  # _build_report()'s real measured cost
+        fake_now[0] += build_duration_sec  # _build_report_async()'s real measured cost
         return []
 
-    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors", _slow_fetch)
+    monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors_async", _slow_fetch)
     monkeypatch.setattr(
         calibration_routes.confidence_calibration, "generate_calibration_report",
         lambda rows, min_n, weights: {"report": None, "gated_reason": "stub", "resolved_count": 0},
