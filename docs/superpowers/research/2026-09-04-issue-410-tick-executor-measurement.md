@@ -28,8 +28,13 @@ blocking synchronous `sqlite3` reads to native `aiosqlite`
 (`services/quality/routes.py`'s `run_offline()`). This removes the thread-pool dependency for
 `population_gate_summary()`, which converts cleanly (pure SQL `GROUP BY`, trivial post-processing)
 — but **not** for `whale_calibration`'s `_build_report()`: its dominant 3.4s cost
+**[corrected 2026-09-05, #582 — provisional, from unmerged PR #581: the CPU cost is larger and
+starts earlier than this note says. The "~2s fetch" is itself ~75% CPU (~0.884s SQL + ~2.691s
+`json.loads`/materialize), and the compute pass re-measured at ~4.383s. Total ~7.96s, not ~5.5s.
+This note's *conclusion* — aiosqlite alone is insufficient — is strengthened, not weakened.]**
 (`_bucket_win_rates`/`_factor_report`) is pure Python with no database access at all, so an
-aiosqlite rewrite alone doesn't touch it. That path needs aiosqlite for its ~2s fetch *plus* a
+aiosqlite rewrite alone doesn't touch it. That path needs aiosqlite for its ~2s fetch **[#582: for
+the ~0.884s SQL portion only — the rest of the "fetch" is CPU and needs the offload too]** *plus* a
 separate offload (e.g. `asyncio.to_thread`, the same mechanism `services/quality/routes.py` uses
 right next to `run_offline()` for its own non-DB-driver-shaped work) for the compute pass. See
 "Recommendation" below for the full ranked comparison and the independent, orthogonal cache-bug
@@ -104,10 +109,10 @@ importing the real modules against the live `data/*.db` files, read-only:
 |---|---|---|
 | `candidate_log.population_gate_summary(30)` | 20.5s | 14.8s |
 | `signal_log.resolved_signals_with_factors()` | 2.08s (232,128 rows) | 2.18s |
-| `confidence_calibration.generate_calibration_report(rows, 30, None)` | 3.4s (on top of the fetch) | — |
+| `confidence_calibration.generate_calibration_report(rows, 30, None)` | 3.4s (on top of the fetch) **[#582: provisionally ~4.383s]** | — |
 
 `_build_report()`'s real total cost (fetch + report generation, both inside the one
-`tick_executor.run()` call in the route) is therefore **~5.5s**, not just the ~1-2s fetch alone —
+`tick_executor.run()` call in the route) is therefore **~5.5s** **[#582: provisionally ~7.96s]**, not just the ~1-2s fetch alone —
 this is a new number; the 9-factor `_bucket_win_rates` tertile pass
 (`services/whale_calibration/confidence_calibration.py:427`, one sort+filter per factor, 9 factors
 from `DEFAULT_WEIGHTS`) was previously undocumented in any comment or prior measurement I could
