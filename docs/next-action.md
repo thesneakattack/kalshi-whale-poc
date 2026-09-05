@@ -26,10 +26,21 @@ order:
 
 ---
 
-**Coordinator:** `autotrade-05` (chain tonight: `1f` → `48` → `01` → `05`, one
-continuous session — the SendMessage name changes on reconnect, memory
-doesn't). **Verify identity by direct reply before trusting a name** —
-`ListAgents`'s "started Xm ago" is not evidence of a fresh session; ask.
+**Coordinator:** `autotrade-36` (chain tonight: `1f` → `48` → `01` → `05` →
+`36`, one continuous session — the SendMessage name changes on reconnect,
+memory doesn't; `36` picked up right after the 2026-09-05 WSL restart below).
+**Verify identity by direct reply before trusting a name** — `ListAgents`'s
+"started Xm ago" is not evidence of a fresh session; ask.
+
+**Post-restart fleet state (2026-09-05, confirmed by `36`):** `ddev-router`
+came back `Up ... (healthy)` — the `winnat` fix worked. `paper_broker.db`/
+`market_history.db` both `PRAGMA quick_check: ok`, app responding 200. As
+expected, none of the 4 prior peer names (`07`/`32`/`62`/`bd`) survived the
+restart — `ListAgents` shows a new interactive session (`portfolio-ef`,
+identity being verified) and several offline Remote Control sessions.
+Nobody is currently active on PR #597, `#578` prep, the YES-side analysis,
+or the `#579`/`#580` watch — pick each back up from this file, not from
+assumed continuity.
 
 **Peers and current task, as of this write (all PAUSED for the WSL restart
 above — resume each exactly where it says, don't re-derive from scratch):**
