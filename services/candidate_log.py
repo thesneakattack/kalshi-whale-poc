@@ -309,16 +309,54 @@ def resolve_from_market_results(market_results: dict) -> int:
 
     Flushes capture_writer's rejected_candidates and rejection_events
     buffers first (P3 Task 16/17, 2026-08-27): a row still sitting in
-    either buffer doesn't exist in its table yet for this SELECT/UPDATE
-    to find, and would otherwise stay permanently unresolved once a
-    settled market drops out of a later tick's market_results - not just
-    delayed, genuinely lost data, unlike the same tradeoff elsewhere in
-    this plan where a late flush only delays visibility. Usually a near
-    no-op in practice: capture_writer's own background thread already
-    flushes within ~1s on its own cadence, well inside typical
-    poll_interval_sec tick spacing - this only does real work in the rare
-    case a rejection landed in the last <1s before this tick's resolve
-    call.
+    either buffer doesn't exist in its table yet for this UPDATE to find,
+    and would otherwise stay permanently unresolved once a settled market
+    drops out of a later tick's market_results - not just delayed,
+    genuinely lost data, unlike the same tradeoff elsewhere in this plan
+    where a late flush only delays visibility. Usually a near no-op in
+    practice: capture_writer's own background thread already flushes
+    within ~1s on its own cadence, well inside typical poll_interval_sec
+    tick spacing - this only does real work in the rare case a rejection
+    landed in the last <1s before this tick's resolve call.
+
+    TICKER-SCOPED DIRECT UPDATE (issue #601 / PR #603 Family 2, 2026-09-05):
+    this used to run `SELECT rowid, ticker FROM rejected_candidates WHERE
+    resolved = 0` with no ticker predicate at all - a `SCAN
+    rejected_candidates` (EXPLAIN QUERY PLAN, confirmed live) over every
+    unresolved row (231k+ measured live) on every single call, regardless
+    of which ticker(s) actually settled this tick. Paid twice over: once
+    per due ticker from settlement_resolver.py's sequential surge-drain
+    loop (~260ms/call there), and unconditionally every poll_interval_sec
+    (6s, config/settings.yaml) from main.py's
+    _resolve_and_record_settlements - a continuous steady-state tax on
+    tick_executor's shared 2-worker pool, the same pool whale_stream/
+    decision_bridge.py's whale-signal decision path uses, not merely a
+    rare settlement-surge problem.
+
+    Fixed by dropping the SELECT+Python-filter round trip entirely and
+    running a direct `UPDATE ... WHERE ticker = ? AND resolved = 0` per
+    ticker in market_results, batched via executemany exactly like
+    rejection_events' own UPDATE below already did. No new index needed:
+    the table's own existing composite PRIMARY KEY (ticker, strategy,
+    gate_name) already makes `ticker = ?` a fast index SEARCH (confirmed
+    live via EXPLAIN QUERY PLAN: `SEARCH rejected_candidates USING INDEX
+    sqlite_autoindex_rejected_candidates_1 (ticker=?)`) - PR #603's
+    benchmark measured 13.87s -> 0.943s per batch at a realistic N=50
+    (14.7x), re-confirmed independently in this fix's own review (live
+    read-only EXPLAIN QUERY PLAN + a ~1100x read-proxy timing gap on the
+    same live table). `to_resolve` below is exactly the same
+    (result, now, ticker) shape the old code already built for
+    rejection_events' UPDATE - the two tables' resolution predicates were
+    always identical, so one list now drives both.
+
+    The return value uses cursor.rowcount from the rejected_candidates
+    executemany rather than a Python-counted list length - independently
+    verified (this fix's own tests, not assumed from the sqlite3 docs)
+    that executemany()'s rowcount correctly sums across every per-tuple
+    UPDATE, including 0-row (absent ticker / already-resolved) and
+    multi-row (multi-gate-per-ticker) cases. max(..., 0) guards against a
+    driver ever reporting the -1 "not supported" sentinel leaking into a
+    value this module's callers treat as a plain count.
 
     Both UPDATE passes below batch via executemany rather than issuing one
     execute() per resolved row (2026-09-01 fix, capture_writer-adjacent
@@ -332,39 +370,44 @@ def resolve_from_market_results(market_results: dict) -> int:
     in one recent window, /api/health/faults, 2026-09-01). Batching keeps
     the write phase to at most two statements regardless of how many rows
     resolve in a given tick, shrinking the window a collision can happen
-    in - the actual mechanism, not a busy_timeout/retry tune."""
+    in - the actual mechanism, not a busy_timeout/retry tune.
+
+    Call-site shapes are unchanged by this fix (issue #601's own
+    investigation confirmed both, re-verified again here): settlement_
+    resolver.py's per-ticker surge loop still calls this once per due
+    ticker with a single-entry dict (its own try/except around
+    tick_executor.run() is the per-ticker failure-isolation mechanism,
+    entirely outside this function and untouched by it); main.py:487
+    still calls this once per tick with the whole tick's market_results
+    dict, which this fix's single executemany() naturally batches across
+    every ticker in that dict in one call - already "Family 3-shaped" by
+    construction there, so no separate batching change was needed at
+    that call site either."""
     capture_writer.flush_now("rejected_candidates")
     capture_writer.flush_now("rejection_events")
     now = time.time()
+    to_resolve = []
+    for ticker, result in market_results.items():
+        result = (result or "").strip().lower()
+        if result not in ("yes", "no"):
+            continue
+        to_resolve.append((result, now, ticker))
+
+    resolved_count = 0
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT rowid, ticker FROM rejected_candidates WHERE resolved = 0",
-        ).fetchall()
-        to_resolve = []
-        for rowid, ticker in rows:
-            result = (market_results.get(ticker) or "").strip().lower()
-            if result not in ("yes", "no"):
-                continue
-            to_resolve.append((result, now, rowid))
         if to_resolve:
-            conn.executemany(
-                "UPDATE rejected_candidates SET resolved = 1, result = ?, resolved_at = ? WHERE rowid = ?",
+            cur = conn.executemany(
+                "UPDATE rejected_candidates SET resolved = 1, result = ?, resolved_at = ? "
+                "WHERE ticker = ? AND resolved = 0",
                 to_resolve,
             )
-
-        events_to_resolve = []
-        for ticker, result in market_results.items():
-            result = (result or "").strip().lower()
-            if result not in ("yes", "no"):
-                continue
-            events_to_resolve.append((result, now, ticker))
-        if events_to_resolve:
+            resolved_count = max(cur.rowcount, 0)
             conn.executemany(
                 "UPDATE rejection_events SET resolved = 1, result = ?, resolved_at = ? "
                 "WHERE ticker = ? AND resolved = 0",
-                events_to_resolve,
+                to_resolve,
             )
-        return len(to_resolve)
+    return resolved_count
 
 
 def gate_summary() -> list[dict]:

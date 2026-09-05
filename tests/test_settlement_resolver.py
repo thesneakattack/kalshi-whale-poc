@@ -232,6 +232,52 @@ def test_a_raising_store_resolver_is_contained_retried_and_eventually_dropped(mo
     assert any("dropped_after_max_attempts" in str(f) for f in faults)
 
 
+def test_a_raising_candidate_log_resolver_does_not_block_other_tickers(monkeypatch):
+    """Same containment guarantee as
+    test_a_raising_store_resolver_is_contained_retried_and_eventually_dropped
+    above, exercised specifically through candidate_log - issue #601 / PR
+    #603's Family-2 fix touched only services/candidate_log.py's
+    resolve_from_market_results (a ticker-scoped direct UPDATE replacing an
+    unfiltered full-table-scanning SELECT); this confirms that fix left
+    run_pending()'s per-ticker isolation untouched. That isolation lives
+    entirely in settlement_resolver.py's own try/except around each
+    ticker's tick_executor.run(_resolve_one_sync) call (module docstring:
+    "a store resolver that raises is contained to its own ticker... must
+    never crash the loop") - it does not depend on anything internal to
+    candidate_log's query shape, so this must hold regardless of which of
+    the five stores is the one that raises."""
+    recorded = []
+    _patch_all_resolvers(monkeypatch, recorded)
+
+    def _poisoned_candidate_log(results):
+        ticker, result = next(iter(results.items()))
+        if ticker == "POISON":
+            raise RuntimeError("db locked")
+        recorded.append(("candidate_log", ticker, result))
+        return 1
+
+    monkeypatch.setattr("services.candidate_log.resolve_from_market_results", _poisoned_candidate_log)
+    faults = []
+    monkeypatch.setattr("services.fault_log.record", lambda *a, **k: faults.append(a) or True)
+    monkeypatch.setattr("services.fault_log.record_fault", lambda *a, **k: faults.append(a) or True)
+    now = time.time()
+    settlement_resolver.enqueue("POISON", now, now=now)
+    settlement_resolver.enqueue("OK", now, now=now)
+    client = _FakeClient({
+        "POISON": {"ticker": "POISON", "status": "finalized", "result": "yes"},
+        "OK": {"ticker": "OK", "status": "finalized", "result": "no"},
+    })
+
+    result = asyncio.run(settlement_resolver.run_pending(client, now=now + 61.0, max_attempts=2))
+
+    # The healthy ticker in the same batch still resolves even though
+    # candidate_log raised for POISON.
+    assert result["resolved"] == 1
+    assert ("candidate_log", "OK", "no") in recorded
+    assert result["still_pending"] == 1  # POISON retried, not lost, not crashing
+    assert any("resolve:POISON" in str(f) for f in faults)
+
+
 def test_retries_are_spaced_by_delay_sec_not_by_caller_cadence(monkeypatch):
     # Review finding (PR #198): without not_before, a 5s scheduler loop
     # burned the whole max_attempts budget in ~50s of wall clock. An

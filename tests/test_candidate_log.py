@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import re
 
 import pytest
 
@@ -93,13 +94,20 @@ class _CountingConn:
     determines how long its write transaction holds candidate_log.db's
     single file-level lock (issue #211-adjacent: capture_writer's own
     daemon thread flushes the same file on a 1s budget and loses the race
-    when this function's transaction runs long)."""
+    when this function's transaction runs long).
+
+    all_statements (issue #601 / PR #603 fix) additionally records EVERY
+    statement, reads included - write_statements alone can't catch the
+    unfiltered-SELECT full-table-scan bug this fixes, since a SELECT is a
+    read, not a write."""
 
     def __init__(self, real_conn):
         self._real = real_conn
         self.write_statements: list[str] = []
+        self.all_statements: list[str] = []
 
     def _note(self, sql):
+        self.all_statements.append(sql)
         if sql.strip().upper().startswith(("UPDATE", "INSERT", "DELETE")):
             self.write_statements.append(sql)
 
@@ -159,6 +167,142 @@ def test_resolve_from_market_results_batches_updates_instead_of_one_per_row(monk
     )
     gates = cl.gate_summary()
     assert gates[0]["resolved_count"] == n
+
+
+# ---- issue #601 / PR #603: unfiltered-SELECT full-table-SCAN fix ---------
+# resolve_from_market_results used to run `SELECT rowid, ticker FROM
+# rejected_candidates WHERE resolved = 0` with no ticker predicate - a
+# `SCAN rejected_candidates` (EXPLAIN QUERY PLAN, live-confirmed) over
+# 231k+ unresolved rows on EVERY call, including main.py:487's every-
+# poll_interval_sec (6s) tick call regardless of whether a market ever
+# traded. Family 2 (PR #603's recommendation, benchmarked 14.7x at a
+# realistic N=50 batch) replaces the SELECT+Python-filter+executemany
+# pattern with a direct ticker-scoped `UPDATE ... WHERE ticker = ? AND
+# resolved = 0`, which the table's own existing composite
+# PRIMARY KEY (ticker, strategy, gate_name) already turns into an index
+# SEARCH - zero new index needed. These tests re-derive the fix's load-
+# bearing claims directly rather than trusting the benchmark PR on faith.
+
+def test_resolve_from_market_results_never_issues_an_unfiltered_resolved_scan(monkeypatch):
+    """The actual bug, characterized directly: MUST fail against the
+    pre-fix shipped function (which issues exactly `... rejected_candidates
+    WHERE resolved = 0` with nothing else between the table name and the
+    predicate) and pass once every statement touching rejected_candidates'
+    resolved column also carries a ticker filter in the same statement."""
+    cl.record_rejection("TICK-A", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
+
+    real_connect = cl._connect
+    wrapped = []
+
+    @contextlib.contextmanager
+    def _spy_connect(*args, **kwargs):
+        with real_connect(*args, **kwargs) as real_conn:
+            conn = _CountingConn(real_conn)
+            wrapped.append(conn)
+            yield conn
+
+    monkeypatch.setattr(cl, "_connect", _spy_connect)
+
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+
+    assert len(wrapped) == 1
+    assert wrapped[0].all_statements, "resolve_from_market_results issued no SQL at all"
+    for sql in wrapped[0].all_statements:
+        normalized = " ".join(sql.split()).upper()
+        assert not re.search(r"REJECTED_CANDIDATES\s+WHERE\s+RESOLVED\s*=\s*0\b", normalized), (
+            f"unfiltered full-table scan reintroduced (issue #601): {sql}"
+        )
+
+
+def test_ticker_scoped_update_uses_the_existing_primary_key_index_not_a_scan():
+    """Confirms the fix rides the table's own composite PRIMARY KEY
+    (ticker, strategy, gate_name) - EXPLAIN QUERY PLAN must show
+    SEARCH ... USING INDEX (the PK's autoindex), never SCAN. Independently
+    live-verified against 231k+ real unresolved rows in
+    data/candidate_log.db during this fix's review (read-only,
+    EXPLAIN QUERY PLAN only - never against a mutated copy); this unit
+    test locks in the same query-plan shape here so a future regression to
+    an unfiltered predicate is caught without needing production-scale
+    data."""
+    with cl._connect() as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN UPDATE rejected_candidates SET resolved = 1, "
+            "result = ?, resolved_at = ? WHERE ticker = ? AND resolved = 0",
+            ("yes", 1000.0, "TICK-A"),
+        ).fetchall()
+    plan_text = " ".join(str(row[-1]) for row in plan).upper()
+    assert "SCAN" not in plan_text, plan_text
+    assert "SEARCH" in plan_text and "INDEX" in plan_text, plan_text
+
+
+def test_resolve_from_market_results_handles_every_edge_case_correctly():
+    """Byte-for-byte behavioral contract, re-derived here as this fix's own
+    committed regression test rather than trusted from PR #603's synthetic
+    fixture:
+    - a ticker with zero rows in the table is a silent no-op
+    - a ticker with multiple rows (different gate_name) resolves all of them
+      in one call (multi-row-per-ticker dedup)
+    - an already-resolved row for a ticker passed again is NOT re-touched
+      (WHERE resolved = 0 guard) - proven with a deliberately DIFFERENT
+      result on the second call, so a dropped guard would visibly flip it
+    - a non-yes/no result ('scalar') skips that ticker entirely
+    - the returned count is exactly the number of rejected_candidates rows
+      actually flipped to resolved=1 this call (cursor.rowcount contract -
+      independently verified in this PR that sqlite3's executemany() sums
+      rowcount across every per-tuple UPDATE, not assumed from the docs)
+    - resolved_at is genuinely set on the rows this call resolves, and
+      genuinely UNTOUCHED (not merely "still equal by coincidence") on a
+      row an earlier call already resolved - adversarial review (PR #617)
+      found the first cut of this test asserted resolved/result only and
+      never read resolved_at at all, so a resolved_at=0.0 mutant passed it
+      unchanged; this compares the actual timestamp values, not just their
+      presence, to close that claim-vs-coverage gap."""
+    import sqlite3
+    import time
+
+    cl.record_rejection("MULTI", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
+    cl.record_rejection("MULTI", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    cl.record_rejection("ALREADY", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
+    cl.record_rejection("SCALAR", "whale_follow", "entry_threshold", 0.5, 0.6, now=1000.0)
+
+    before_second_call = time.time()
+    first = cl.resolve_from_market_results({"ALREADY": "yes"})
+    assert first == 1
+
+    def _rows():
+        with sqlite3.connect(cl.DB_PATH) as conn:
+            return {
+                (r[0], r[1]): (r[2], r[3], r[4])
+                for r in conn.execute(
+                    "SELECT ticker, gate_name, resolved, result, resolved_at FROM rejected_candidates"
+                ).fetchall()
+            }
+
+    already_resolved_at_first = _rows()[("ALREADY", "entry_threshold")][2]
+    assert already_resolved_at_first is not None
+    assert already_resolved_at_first >= before_second_call  # a real wall-clock write, not a stub
+
+    before_third_call = time.time()
+    resolved = cl.resolve_from_market_results({
+        "MULTI": "no",
+        "ALREADY": "no",   # deliberately different from the first call's "yes" - a
+                            # dropped `resolved = 0` guard would flip this to "no"
+        "SCALAR": "scalar",
+        "GHOST": "yes",     # never rejected - no row exists for this ticker at all
+    })
+
+    assert resolved == 2  # only MULTI's two rows flip on this call
+
+    rows = _rows()
+    assert rows[("MULTI", "entry_threshold")][:2] == (1, "no")
+    assert rows[("MULTI", "max_spread")][:2] == (1, "no")
+    assert rows[("MULTI", "entry_threshold")][2] >= before_third_call  # real resolved_at, this call
+    assert rows[("MULTI", "max_spread")][2] >= before_third_call
+    # untouched by the 2nd call's "no" - both result AND resolved_at stay exactly
+    # what the first call wrote, not merely "still truthy"
+    assert rows[("ALREADY", "entry_threshold")] == (1, "yes", already_resolved_at_first)
+    assert rows[("SCALAR", "entry_threshold")] == (0, None, None)  # never resolved (non-binary result)
+    assert ("GHOST", "entry_threshold") not in rows  # no row ever existed, no error
 
 
 def test_hypothetical_win_rate_none_when_no_side_known():
