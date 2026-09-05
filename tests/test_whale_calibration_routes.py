@@ -114,19 +114,33 @@ def test_apply_never_runs_via_tick_executor(monkeypatch):
     byte-identical closures, this route's and the polled report route's,
     both on tick_executor. Converting only the polled one would have left
     this ~7s occupancy in place on the same 2-worker pool. Both now share
-    _build_report_async, and this test is what keeps that true."""
-    tick_executor_calls = []
-    fetch_calls = []
+    _build_report_async, and this test is what keeps that true.
 
-    async def _spy_run(fn):
-        tick_executor_calls.append(fn)
-        return fn()
+    Strengthened 2026-09-05 (adversarial review of this PR, finding F5,
+    remaining half - the report test's sibling was fixed first in 37687b9):
+    this test used to patch `tick_executor.run` by name, which a call
+    reached via `from services.tick_executor import run as _te_run` would
+    bypass (the name is bound at import time, before the patch applies),
+    and which a call moved inside a function this same test already stubs
+    out would never reach. `tick_executor.run()`'s own body is
+    `loop.run_in_executor(_executor, fn)` - patching `_executor.submit`
+    directly is the actual choke point, independent of import alias or call
+    depth. Same mechanism as test_report_never_runs_via_tick_executor
+    above; kept as two separate tests since they guard two separate
+    routes, not one shared code path."""
+    submitted = []
+    fetch_calls = []
+    original_submit = tick_executor._executor.submit
+
+    def _spy_submit(fn, *args, **kwargs):
+        submitted.append(fn)
+        return original_submit(fn, *args, **kwargs)
 
     async def _stub_fetch(since_ts=None):
         fetch_calls.append(1)
         return []
 
-    monkeypatch.setattr(tick_executor, "run", _spy_run)
+    monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
     monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors_async", _stub_fetch)
     monkeypatch.setattr(
@@ -147,7 +161,7 @@ def test_apply_never_runs_via_tick_executor(monkeypatch):
 
     result = asyncio.run(calibration_routes.apply_confidence_calibration_suggestion())
 
-    assert tick_executor_calls == [], "apply must not go through tick_executor any more"
+    assert submitted == [], "apply must not submit any work to tick_executor's pool any more"
     assert fetch_calls == [1], "the async aiosqlite fetch should have run exactly once"
     assert result == {"applied": True, "new_weights": {"depth_factor": 0.9}}
 

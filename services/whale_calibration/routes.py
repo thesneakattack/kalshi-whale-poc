@@ -74,8 +74,8 @@ async def _build_report_async(cc_cfg: dict, current_weights) -> dict:
     services/diagnostics/_aio_db.py's docstring already records for
     run_offline(). signal_log.resolved_signals_with_factors_async() is what
     keeps both halves off the loop; see its docstring for why the default
-    executor is safe here (20 workers, no trading hot-path contention -
-    verified, not assumed)."""
+    executor is safe here (20 workers, no *sustained* trading hot-path
+    contention - verified, not assumed)."""
     rows = await signal_log.resolved_signals_with_factors_async()
     return await asyncio.to_thread(
         confidence_calibration.generate_calibration_report,

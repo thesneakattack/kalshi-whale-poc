@@ -136,6 +136,17 @@ async def _ensure_schema_aio(conn) -> None:
     helper that also ran CREATE TABLE IF NOT EXISTS on every call"), because
     dropping it turns "no data yet" into a hard error.
 
+    Narrower than the sync path in one way (corrected 2026-09-05, an
+    earlier draft overstated this): _connect() self-heals a missing
+    PARENT DIRECTORY too, via services/db.py's own
+    `db_path.parent.mkdir(parents=True, exist_ok=True)`; this hook does
+    not, because it runs on a raw `aiosqlite.connect()` (services/
+    diagnostics/_aio_db.py) with no equivalent mkdir. Harmless in practice
+    only because `data/` already exists by the time this path is ever
+    reached (this process's own sync writers create it first) - not a
+    guarantee for a hypothetically fresh checkout with no `data/` dir at
+    all.
+
     Runs ONCE per (loop, db_path) on first open rather than per call - that
     is _aio_db's contract, and it is the one real behavioural difference
     from the sync path. Harmless here: the only writer to this file is this

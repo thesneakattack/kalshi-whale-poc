@@ -54,19 +54,26 @@ async def _ensure_schema_aio(conn) -> None:
     `await conn.execute(...)` calls, the way services/series_watcher.py's
     function of this name does. That module's DDL is four short CREATE
     INDEX statements plus two shared constants; this module's is a CREATE
-    TABLE, three CREATE INDEXes and eight guarded _add_column_if_missing
-    migrations, several with real history behind them. A hand-maintained
-    async copy of that would be a second source of truth for a schema that
-    still changes, and the failure mode - one path silently missing a
-    column another path expects - is exactly the kind of drift this
-    codebase has already been bitten by.
+    TABLE, four CREATE INDEXes and seven guarded _add_column_if_missing
+    migrations (corrected 2026-09-05 - an earlier draft of this docstring
+    said three/eight; recounted directly against _init_schema below), several
+    with real history behind them. A hand-maintained async copy of that
+    would be a second source of truth for a schema that still changes, and
+    the failure mode - one path silently missing a column another path
+    expects - is exactly the kind of drift this codebase has already been
+    bitten by.
 
     So it runs the ONE existing definition instead, on a worker thread
-    (_init_schema is synchronous and takes a sqlite3.Connection). _connect()
-    commits via its `with conn:` block, so the DDL is visible to the
-    aiosqlite connection already open against the same file by the time
-    this returns. The `conn` parameter is unused for that reason; the hook's
-    contract is only "run once on this key's first open".
+    (_init_schema is synchronous and takes a sqlite3.Connection). The DDL
+    is visible to the aiosqlite connection already open against the same
+    file by the time this returns because _init_schema(conn) runs BEFORE
+    _connect()'s `with conn:` block, under sqlite3's default autocommit
+    mode - not because that block later commits (corrected 2026-09-05: an
+    earlier draft of this docstring named the wrong mechanism; the `with
+    conn:` wrapper only covers the caller's own write, which happens after
+    schema init has already committed). The `conn` parameter is unused for
+    that reason; the hook's contract is only "run once on this key's first
+    open".
 
     Costs one short-lived sync connection on first open per (loop, path) -
     not per call."""
@@ -834,24 +841,45 @@ async def resolved_signals_with_factors_async(since_ts: float | None = None) -> 
     assumed (the design's Sec 3 leaves it as an explicit open question and
     its Sec 6 names it as a falsifier): the executor's ceiling on this
     container is 20 workers (cpu_count 16, min(32, n+4)), against
-    tick_executor's 2, and no trading hot-path work contends for it -
-    the WS trade path uses services/whalewatchers/_scoring_pool.py (4
+    tick_executor's 2, and no SUSTAINED trading hot-path work contends for
+    it - the WS trade path uses services/whalewatchers/_scoring_pool.py (4
     dedicated workers) and candidate retry uses _candidate_retry_pool.py,
     both of which chose a private pool over this executor for exactly this
     reason. Its other users are diagnostics/quality/research/backup route
-    work and loop_watchdog's fire-and-forget fault write.
+    work and loop_watchdog's fire-and-forget fault write, plus CPython's own
+    brief, incidental use of it for DNS resolution (getaddrinfo) during WS
+    reconnects - corrected 2026-09-05: an earlier draft claimed no trading
+    hot-path work uses this executor at all, which is not quite true, though
+    the conclusion (no realistic saturation risk) still holds at 20 workers
+    against at most two serial jobs added per calibration miss.
 
-    A schema_init IS passed, unlike services/diagnostics/diagnostics.py's
-    two existing _aio_db consumers of this same DB_PATH. The design's rule
-    is "pass nothing when the target DB file's schema is already guaranteed
-    to exist by its own write-path module" - and diagnostics is exactly that
-    case, a reader of somebody else's file. This module is not: signal_log
-    IS signal_log.db's owning write-path module, and its own _connect()
-    re-runs _init_schema() on every call, so every existing read here
-    self-heals a missing table rather than raising. Dropping that on the
-    async path was not theoretical - it surfaced immediately as
-    `sqlite3.OperationalError: no such table: signals` against a fresh DB,
-    i.e. "no data yet" turning into a 500.
+    A schema_init IS passed, unlike this same DB_PATH's three OTHER existing
+    _aio_db consumers - services/diagnostics/diagnostics.py (twice) and
+    services/series_watcher.py's per-series read (corrected 2026-09-05:
+    an earlier draft of this docstring said "two", counting only
+    diagnostics.py and missing series_watcher.py's consumer of this file).
+    The design's rule is "pass nothing when the target DB file's schema is
+    already guaranteed to exist by its own write-path module" - and both of
+    those are exactly that case, readers of somebody else's file. This
+    module is not: signal_log IS signal_log.db's owning write-path module,
+    and its own _connect() re-runs _init_schema() on every call, so every
+    existing read here self-heals a missing table rather than raising.
+    Dropping that on the async path was not theoretical - it surfaced
+    immediately as `sqlite3.OperationalError: no such table: signals`
+    against a fresh DB, i.e. "no data yet" turning into a 500.
+
+    Serialization tradeoff (F7, stated explicitly per the data-plane HARD
+    RULE rather than left implicit): _aio_db caches ONE connection per
+    (loop, db_path) and serializes every operation on it onto that
+    connection's single worker thread. This function is now a fourth
+    concurrent consumer of signal_log.DB_PATH's cached aiosqlite connection,
+    alongside the three named above - a cache miss here now queues behind
+    whichever of the other three is mid-read, rather than running in
+    parallel the way tick_executor's 2 workers allowed. The direction of
+    this tradeoff is deliberate and correct (protect the shared trade-path
+    pool; degrade dashboard/diagnostics latency under overlap instead), not
+    an oversight - but it is a real, measured-as-a-property-not-a-number
+    change in this file's own concurrency behavior, not a free lunch.
 
     Caveat, stated rather than left as a trap: _aio_db caches per (event
     loop, db_path) and only runs schema_init on a key's FIRST open, so if
