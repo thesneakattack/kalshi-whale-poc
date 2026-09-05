@@ -300,9 +300,14 @@ def test_population_gate_summary_ready_once_min_samples_met():
 def test_population_gate_summary_averages_unit_cost_across_the_undeduped_population():
     """Unlike gate_summary()'s dedup, every repeated rejection of the same
     ticker/gate is its own row in rejection_events - avg_unit_cost here
-    must average across all of them, not just the most recent."""
-    cl.record_rejection("TICK-A", "whale_watcher", "min_contracts", 10, 20, side="yes", unit_cost=0.9, now=1000.0)
-    cl.record_rejection("TICK-A", "whale_watcher", "min_contracts", 12, 20, side="yes", unit_cost=0.5, now=2000.0)
+    must average across all of them, not just the most recent.
+
+    Gate deliberately not min_contracts: that gate alone is sampled
+    (issue #532), so this test's exact-count assertions would flake under
+    real Bernoulli sampling - see the dedicated sampling tests below for
+    min_contracts-specific coverage."""
+    cl.record_rejection("TICK-A", "whale_watcher", "max_unit_cost", 10, 20, side="yes", unit_cost=0.9, now=1000.0)
+    cl.record_rejection("TICK-A", "whale_watcher", "max_unit_cost", 12, 20, side="yes", unit_cost=0.5, now=2000.0)
     pop = cl.population_gate_summary(min_samples=0)
     assert pop[0]["rejected_count"] == 2
     assert pop[0]["avg_unit_cost"] == pytest.approx(0.7)
@@ -319,6 +324,104 @@ def test_population_resolution_is_batched_by_ticker_not_row():
     pop = cl.population_gate_summary(min_samples=0)
     assert pop[0]["rejected_count"] == 4
     assert pop[0]["resolved_count"] == 4
+
+
+# ---- min_contracts sampling (rejection_events) - issue #532 --------------
+# min_contracts alone was 98.98% of rejection_events (29.5M of 29.8M rows,
+# unbounded) - record_rejection() now Bernoulli-samples that one gate at
+# write time rather than recording every rejection. These tests force the
+# coin flip deterministically via monkeypatch.setattr(cl.random, "random",
+# ...) (same idiom as tests/test_whale_simulator.py's random.expovariate
+# patches) rather than relying on statistical convergence over many calls.
+
+def test_min_contracts_rejection_dropped_below_the_sample_rate(monkeypatch):
+    """random.random() returning >= the sample rate means "not sampled" -
+    the rejection_events row must never be written, but the deduped
+    rejected_candidates table is untouched (every gate, unconditionally)."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.5)
+    cl.record_rejection("TICK-A", "whale_follow", "min_contracts", 3, 10, side="yes", now=1000.0)
+    assert cw.depth()["rejection_events"] == 0
+    assert cw.depth()["rejected_candidates"] == 1
+    gates = cl.gate_summary()
+    assert len(gates) == 1
+    assert gates[0]["gate_name"] == "min_contracts"
+
+
+def test_min_contracts_rejection_kept_above_the_sample_rate_with_inverse_weight(monkeypatch):
+    """random.random() returning below the sample rate means "sampled" -
+    the row lands with sample_weight = 1/rate, the Horvitz-Thompson weight
+    that recovers an unbiased population-size estimate from a uniform
+    sample."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.001)
+    cl.record_rejection("TICK-A", "whale_follow", "min_contracts", 3, 10, side="yes", now=1000.0)
+    cw.flush_now("rejection_events")
+    with cl._connect() as conn:
+        row = conn.execute("SELECT sample_weight FROM rejection_events").fetchone()
+    assert row[0] == pytest.approx(1.0 / cl._MIN_CONTRACTS_SAMPLE_RATE)
+
+
+def test_non_min_contracts_gates_are_never_sampled(monkeypatch):
+    """Every gate except min_contracts must keep recording every rejection
+    regardless of the coin flip - forcing random.random() to a value that
+    would drop a min_contracts row must have zero effect here."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.999)
+    for i in range(5):
+        cl.record_rejection(f"TICK-{i}", "market_native", "max_spread", 0.08, 0.05, now=1000.0 + i)
+    assert cw.depth()["rejection_events"] == 5
+    cw.flush_now("rejection_events")
+    with cl._connect() as conn:
+        weights = [r[0] for r in conn.execute("SELECT sample_weight FROM rejection_events").fetchall()]
+    assert weights == [1.0] * 5
+
+
+def test_population_gate_summary_rejected_count_is_an_unbiased_estimate_when_sampled(monkeypatch):
+    """rejected_count/resolved_count must scale by the inverse sample rate
+    for a sampled gate - SUM(sample_weight), not COUNT(*) - so a caller
+    reading population_gate_summary() sees an estimate of the true
+    population size, not just how many rows happen to be on disk."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.001)  # always sampled
+    for i in range(4):
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "min_contracts", 3, 10, side="yes", now=1000.0 + i)
+    cl.resolve_from_market_results({"TICK-0": "yes", "TICK-1": "yes", "TICK-2": "no"})
+    pop = cl.population_gate_summary(min_samples=0)
+    assert len(pop) == 1
+    scale = 1.0 / cl._MIN_CONTRACTS_SAMPLE_RATE
+    assert pop[0]["rejected_count"] == round(4 * scale)
+    assert pop[0]["resolved_count"] == round(3 * scale)  # 3 of 4 resolved
+
+
+def test_population_gate_summary_min_samples_gate_stays_on_raw_sample_count(monkeypatch):
+    """The min_samples=30-style statistical-precision gate (sided_total)
+    must reflect the REAL number of observed, resolved-and-sided samples -
+    never the weight-scaled population estimate. A weighted count here
+    would make the gate LESS protective for exactly the gate that most
+    needs it (this test's own assignment: 'verify the sampling doesn't
+    bias population_gate_summary()'s downstream stats')."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.001)  # always sampled
+    for i in range(3):
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "min_contracts", 3, 10, side="yes", now=1000.0 + i)
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    # 3 raw resolved-and-sided samples, scaled rejected_count would be
+    # 3 * 100 = 300 - min_samples=5 must gate on the raw 3, not 300.
+    pop = cl.population_gate_summary(min_samples=5)
+    assert pop[0]["hypothetical_win_rate_n"] == 3
+    assert pop[0]["status"] == "insufficient"
+    assert pop[0]["hypothetical_win_rate"] is None
+    # Sanity check the estimate really is scaled, to prove this isn't
+    # passing merely because sampling silently didn't happen.
+    assert pop[0]["rejected_count"] == round(3 / cl._MIN_CONTRACTS_SAMPLE_RATE)
+
+
+def test_population_gate_summary_avg_unit_cost_stays_on_raw_sample_count(monkeypatch):
+    """Same reasoning as the min_samples test above, for avg_unit_cost_n -
+    a mean over a uniform sample is already unbiased without weighting, so
+    weighting it would double-count the correction."""
+    monkeypatch.setattr(cl.random, "random", lambda: 0.001)  # always sampled
+    cl.record_rejection("TICK-A", "whale_follow", "min_contracts", 3, 10, unit_cost=0.9, now=1000.0)
+    cl.record_rejection("TICK-B", "whale_follow", "min_contracts", 3, 10, unit_cost=0.5, now=2000.0)
+    pop = cl.population_gate_summary(min_samples=0)
+    assert pop[0]["avg_unit_cost"] == pytest.approx(0.7)
+    assert pop[0]["avg_unit_cost_n"] == 2  # raw, not scaled by 1/sample_rate
 
 
 def test_clear_all_wipes_the_population_table_too():
@@ -361,6 +464,7 @@ def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, m
         re_cols = [r[1] for r in conn.execute("PRAGMA table_info(rejection_events)").fetchall()]
     assert "unit_cost" in rc_cols
     assert "unit_cost" in re_cols
+    assert "sample_weight" in re_cols  # issue #532
 
 
 def test_population_gate_summary_includes_edge_gate_rejections(tmp_path, monkeypatch):
@@ -433,6 +537,7 @@ def test_connect_still_creates_both_tables_indexes_and_unit_cost_columns(tmp_pat
         re_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejection_events)")}
         assert "unit_cost" in rc_cols
         assert "unit_cost" in re_cols
+        assert "sample_weight" in re_cols  # issue #532
 
 
 def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch, _redirect_db):
@@ -507,6 +612,24 @@ def test_population_gate_summary_async_creates_the_gate_index():
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_rejection_events_gate" in indexes
     assert "idx_rejection_events_unresolved" in indexes
+
+
+def test_population_gate_summary_async_schema_init_adds_sample_weight_column(tmp_path, monkeypatch):
+    """_ensure_schema_aio's own ALTER-TABLE migration path (mirroring
+    _connect()'s sync one) must add sample_weight to a rejection_events
+    table that predates issue #532, not just to a freshly-created one -
+    the sync path already gets this for free from the DDL constant, the
+    migration path is the one that can silently drift (same "narrower in
+    one way" caveat this module's own _ensure_schema_aio docstring names
+    for the parent-directory case)."""
+    monkeypatch.setattr(cl, "DB_PATH", tmp_path / "candidate_log.db")
+    with cl._connect() as conn:
+        conn.execute("ALTER TABLE rejection_events DROP COLUMN sample_weight")
+        conn.commit()
+    asyncio.run(cl.population_gate_summary_async(min_samples=0))
+    with cl._connect() as conn:
+        re_cols = {r[1] for r in conn.execute("PRAGMA table_info(rejection_events)")}
+    assert "sample_weight" in re_cols
 
 
 def test_population_gate_summary_async_yields_to_the_event_loop():
