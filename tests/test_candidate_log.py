@@ -512,11 +512,54 @@ def test_population_gate_summary_async_creates_the_gate_index():
 def test_population_gate_summary_async_yields_to_the_event_loop():
     """The whole point of the conversion: the read must yield to the loop
     rather than occupying it (or a tick_executor worker) for its full
-    duration. A concurrently-scheduled coroutine must get to run while the
+    duration. A concurrently-scheduled coroutine must get to run WHILE the
     read is in flight. This is the design's Sec 5 "assert the aiosqlite read
-    path yields" detection requirement."""
+    path yields" detection requirement.
+
+    CORRECTED (adversarial review of this PR, finding F2): the original
+    version of this test asserted `progressed` truthy only AFTER `await
+    ticker` - by which point the ticker had unconditionally run to
+    completion regardless of whether the read itself ever yielded control.
+    Reproduced live: a coroutine whose body is a synchronous
+    `time.sleep(0.05)` with zero internal awaits passes the original test
+    body unchanged (`progressed` ends up populated purely because the test
+    awaits the ticker afterward, not because anything ran concurrently with
+    it). The fix snapshots progress the instant the read call returns,
+    before the ticker is awaited - that is the only point that can
+    distinguish "yielded during the read" from "ran only after"."""
     cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
     progressed = []
+    progress_at_read_return = []
+    read_thread_ids = []
+
+    # Wrap aiosqlite's execute_fetchall to record which OS thread actually
+    # runs the SQL - aiosqlite serializes all operations for a connection
+    # onto ONE dedicated worker thread, so this must never be the test's own
+    # (main) thread. Closes the other half of F2: yielding control back to
+    # the loop is necessary but not sufficient - the SQL itself must be off
+    # the calling thread, not merely awaited.
+    import threading
+    from services.diagnostics import _aio_db as aio_db_module
+
+    original_connection_for = aio_db_module.connection_for
+
+    async def _spy_connection_for(db_path, schema_init=None):
+        conn = await original_connection_for(db_path, schema_init=schema_init)
+        # Patch the SYNC callable aiosqlite dispatches to its worker thread
+        # (Connection._execute_fetchall), not the async wrapper
+        # (execute_fetchall) that awaits it - the async wrapper resumes back
+        # on the calling (event-loop/main) thread once the worker replies,
+        # so recording the thread id there would always show the wrong
+        # thread and silently pass. This is the actual callable that runs
+        # ON the worker thread.
+        original_sync_fetchall = conn._execute_fetchall
+
+        def _spy_sync_fetchall(sql, parameters):
+            read_thread_ids.append(threading.get_ident())
+            return original_sync_fetchall(sql, parameters)
+
+        conn._execute_fetchall = _spy_sync_fetchall
+        return conn
 
     async def _exercise():
         async def _ticker():
@@ -524,11 +567,23 @@ def test_population_gate_summary_async_yields_to_the_event_loop():
                 await asyncio.sleep(0)
                 progressed.append(1)
 
-        ticker = asyncio.create_task(_ticker())
-        result = await cl.population_gate_summary_async(min_samples=0)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cl._aio_db, "connection_for", _spy_connection_for)
+            ticker = asyncio.create_task(_ticker())
+            result = await cl.population_gate_summary_async(min_samples=0)
+        # THIS is the only meaningful checkpoint - taken before the ticker
+        # is awaited, so it reflects only what ran DURING the read.
+        progress_at_read_return.append(len(progressed))
         await ticker
         return result
 
     result = asyncio.run(_exercise())
     assert result != []
-    assert progressed, "no other coroutine ran during the async read - it never yielded"
+    assert progress_at_read_return[0] > 0, (
+        "the ticker made zero progress before the read returned - "
+        "the async read never actually yielded control to the loop"
+    )
+    assert read_thread_ids, "execute_fetchall spy never recorded a call - test is broken"
+    assert threading.get_ident() not in read_thread_ids, (
+        "the SQL ran on the test's own (main) thread, not aiosqlite's worker thread"
+    )

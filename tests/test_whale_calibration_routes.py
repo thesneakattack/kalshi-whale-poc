@@ -64,19 +64,28 @@ def test_report_never_runs_via_tick_executor(monkeypatch):
     Sec 5 asks for this inversion as permanent detection-for-recurrence:
     this route's ~7s of work must never again occupy one of tick_executor's
     2 workers, which are shared with candidate_ledger.claim()/
-    record_decision() on the live per-signal decision path."""
-    tick_executor_calls = []
-    fetch_calls = []
+    record_decision() on the live per-signal decision path.
 
-    async def _spy_run(fn):
-        tick_executor_calls.append(fn)
-        return fn()
+    Guards at the mechanism level (adversarial review of this PR, finding
+    F5): patching `tick_executor.run` misses a call reached via an
+    import-time-bound alias, and misses one made from inside a function
+    this test stubs out entirely. `tick_executor.run()`'s body is
+    `loop.run_in_executor(_executor, fn)`, which submits to `_executor` -
+    patching `_executor.submit` directly is the actual choke point,
+    independent of how the call got there."""
+    submitted = []
+    fetch_calls = []
+    original_submit = tick_executor._executor.submit
+
+    def _spy_submit(fn, *args, **kwargs):
+        submitted.append(fn)
+        return original_submit(fn, *args, **kwargs)
 
     async def _stub_fetch(since_ts=None):
         fetch_calls.append(1)
         return []
 
-    monkeypatch.setattr(tick_executor, "run", _spy_run)
+    monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
     monkeypatch.setattr(calibration_routes.config_store, "get", lambda: _cfg())
     monkeypatch.setattr(calibration_routes.signal_log, "resolved_signals_with_factors_async", _stub_fetch)
     monkeypatch.setattr(
@@ -90,7 +99,7 @@ def test_report_never_runs_via_tick_executor(monkeypatch):
 
     result = asyncio.run(calibration_routes.get_confidence_calibration_report())
 
-    assert tick_executor_calls == [], "the report must not go through tick_executor any more"
+    assert submitted == [], "the report must not submit any work to tick_executor's pool any more"
     assert fetch_calls == [1], "the async aiosqlite fetch should have run exactly once"
     assert result == {
         "report": None, "gated_reason": "stub", "resolved_count": 0,

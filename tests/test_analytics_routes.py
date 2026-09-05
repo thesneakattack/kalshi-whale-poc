@@ -45,29 +45,38 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
     back onto that pool fails here instead of quietly costing trade
     latency.
 
-    Patches the shared services.tick_executor module itself rather than an
-    attribute on the route module - services/analytics/routes.py no longer
-    imports it at all, and patching the shared module catches a re-added
-    call arriving by any import path, not just the one name this module
-    used to bind."""
-    tick_executor_calls = []
+    Guards at the mechanism level rather than the function name (adversarial
+    review of this PR, finding F5): patching `tick_executor.run` misses a
+    call reached via `from services.tick_executor import run as _te_run`
+    (the name is bound before the patch applies) and misses a call made
+    from INSIDE a function this same test stubs out (population_gate_
+    summary_async here is fully replaced, so a tick_executor call moved
+    inside it would never execute). Both were reproduced live against the
+    pre-fix version of this test. `tick_executor.run()`'s own body
+    (services/tick_executor.py) is `loop.run_in_executor(_executor, fn)`,
+    which CPython's asyncio implements as `_executor.submit(fn)` - patching
+    `_executor.submit` directly is therefore the actual choke point: any
+    call that reaches this pool, by any name, any import alias, from any
+    call depth, submits work to this one ThreadPoolExecutor instance."""
+    submitted = []
     async_calls = []
+    original_submit = tick_executor._executor.submit
 
-    async def _spy_run(fn):
-        tick_executor_calls.append(fn)
-        return fn()
+    def _spy_submit(fn, *args, **kwargs):
+        submitted.append(fn)
+        return original_submit(fn, *args, **kwargs)
 
     async def _stub_async(min_samples):
         async_calls.append(min_samples)
         return [{"stub": "pop"}]
 
-    monkeypatch.setattr(tick_executor, "run", _spy_run)
+    monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_async)
 
     result = asyncio.run(analytics_routes.get_candidate_log_summary())
 
-    assert tick_executor_calls == [], "population_gates must not go through tick_executor any more"
+    assert submitted == [], "population_gates must not submit any work to tick_executor's pool any more"
     assert async_calls == [30], "the async aiosqlite path should have been called once, with min_samples"
     assert result == {"gates": [{"stub": "gates"}], "population_gates": [{"stub": "pop"}]}
 
