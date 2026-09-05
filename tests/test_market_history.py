@@ -6,6 +6,7 @@ from services import market_history as mh
 def _mh(tmp_path, monkeypatch):
     monkeypatch.setattr(mh, "DB_PATH", tmp_path / "market_history.db")
     mh._last_ticker_snapshot.clear()  # module-level throttle state, shared across tests
+    monkeypatch.setattr(mh, "_skipped_no_price_count", 0)  # same reason - shared module global
     return mh
 
 
@@ -303,6 +304,37 @@ def test_record_snapshots_mixed_batch_only_the_real_price_row_lands(tmp_path, mo
     ])
     assert mh.snapshot_count("REAL") == 1
     assert mh.snapshot_count("MISSING") == 0
+
+
+def test_skipped_no_price_count_is_zero_before_anything_is_skipped(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    assert mh.skipped_no_price_count() == {"skipped_rows": 0, "counter_scope": "process lifetime"}
+
+
+def test_record_snapshots_counts_a_skipped_row(tmp_path, monkeypatch):
+    # PR #588's adversarial review: filtering the whole row is a real,
+    # previously-absent completeness cost - this counter is what makes it
+    # visible instead of silent, per the data-plane HARD RULE.
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([{"ticker": "TICK-A", "yes_price": None}])
+    assert mh.skipped_no_price_count()["skipped_rows"] == 1
+
+
+def test_record_snapshots_only_counts_the_skipped_rows_not_the_real_ones(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([
+        {"ticker": "REAL", "yes_price": 0.62},
+        {"ticker": "MISSING-1", "yes_price": None},
+        {"ticker": "MISSING-2", "yes_price": None},
+    ])
+    assert mh.skipped_no_price_count()["skipped_rows"] == 2
+
+
+def test_skipped_no_price_count_accumulates_across_calls(tmp_path, monkeypatch):
+    _mh(tmp_path, monkeypatch)
+    mh.record_snapshots([{"ticker": "A", "yes_price": None}])
+    mh.record_snapshots([{"ticker": "B", "yes_price": None}])
+    assert mh.skipped_no_price_count()["skipped_rows"] == 2
 
 
 def test_record_snapshot_from_ticker_none_price_is_a_noop_not_a_fabrication(tmp_path, monkeypatch):

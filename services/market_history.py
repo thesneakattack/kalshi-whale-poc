@@ -55,6 +55,14 @@ _TICKER_SNAPSHOT_MIN_INTERVAL_SEC = 5.0
 # throttle - it already runs at most once per poll_interval_sec).
 _last_ticker_snapshot: dict[str, float] = {}
 
+# Issue #577's adversarial review (PR #588): record_snapshots() filtering
+# out a row with no real yes_price is a completeness effect that did not
+# exist before this fix (previously every row was written, just sometimes
+# with a fabricated price) - the data-plane HARD RULE requires that never
+# be silent. This counts it; process-lifetime, matching
+# capture_writer._dropped_counts' own scope convention.
+_skipped_no_price_count = 0
+
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -200,9 +208,19 @@ def record_snapshots(rows: list[dict], timestamp: float | None = None):
     left that could ever be mistaken for an observed one. Filtered here,
     not only at each caller, so this is the one place that decides "no
     real price, no row" regardless of how many producers eventually call
-    this function."""
+    this function.
+
+    A filtered row's other real fields (volume_24h, time_to_close_sec) are
+    dropped along with it, not just the price - a genuine completeness
+    cost this fix introduces that did not exist before (previously every
+    row was written, just sometimes with a fabricated price). Counted in
+    _skipped_no_price_count / skipped_no_price_count() below rather than
+    left silent, per the data-plane HARD RULE (adversarial review, PR
+    #588)."""
+    global _skipped_no_price_count
     ts = timestamp if timestamp is not None else time.time()
     real_rows = [r for r in rows if r.get("yes_price") is not None]
+    _skipped_no_price_count += len(rows) - len(real_rows)
     if not real_rows:
         return
     with _connect(DB_PATH) as conn:
@@ -215,6 +233,33 @@ def record_snapshots(rows: list[dict], timestamp: float | None = None):
                 for r in real_rows
             ],
         )
+
+
+def skipped_no_price_count() -> dict:
+    """Rows record_snapshots() has filtered out this process lifetime
+    because yes_price was None (no real bid/price observed that tick),
+    for services/diagnostics/routes.py's /api/health/pipeline - the
+    completeness cost issue #577's fix introduces, made visible per the
+    data-plane HARD RULE rather than left silent (PR #588's adversarial
+    review). Same "process lifetime, resets on reload" scope as
+    services/capture_writer.loss_snapshot().
+
+    Scope: only counts record_snapshots()' own filter (the REST-tick path,
+    main.py:495, and any future caller that submits a None-price row).
+    Does NOT count record_snapshot_from_ticker()'s separate None
+    short-circuit (the WS path) - that one fires on "no real price in
+    THIS message" at per-message frequency, throttled, and is expected to
+    be routinely nonzero on a healthy stream (many ticker messages carry
+    no bid update at all); folding it into the same counter would drown
+    out the REST-path signal this counter exists to surface, which reads
+    once per market per tick and means "this market genuinely had no real
+    bid in this REST snapshot." Deliberately narrower than the adversarial
+    review's finding named both paths - accepted here to keep this metric
+    interpretable rather than counting two differently-shaped things
+    together; revisit with a second, WS-scoped counter if the REST-path
+    number alone proves insufficient to reason about the completeness
+    cost."""
+    return {"skipped_rows": _skipped_no_price_count, "counter_scope": "process lifetime"}
 
 
 def record_snapshot_from_ticker(
