@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from services import (
     candidate_log,
     market_analyst_agent,
-    series_evaluator, signal_log, tick_executor,
+    series_evaluator, signal_log,
 )
 from services.config import config_performance
 from services.history import regime_analytics, suggestion_decisions, trade_analytics
@@ -102,21 +102,40 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # undeduped population, with an honest "insufficient" status per gate
     # rather than a number earned from too few samples.
     # population_gate_summary runs an unfiltered scan of rejection_events
-    # (6.2M rows and growing as of 2026-08-26, no retention applied) -
-    # proven via a live py-spy stack trace to block the event loop for
-    # 17-38s on every call, since this route is polled routinely by the
-    # dashboard (ROADMAP.md's "Path to production" section). Offloaded via
-    # tick_executor the same way main.py's other heavy synchronous DB
-    # calls already are. gate_summary() reads the much smaller (62K-row),
-    # deduped rejected_candidates table - not implicated by that trace, so
-    # left inline rather than offloaded speculatively.
+    # (28.7M rows as of 2026-09-04, no retention applied - 6.2M when this
+    # comment was first written on 2026-08-26, 25.8M when issue #532 was
+    # updated earlier the same day as this edit) - proven via a live py-spy
+    # stack trace to block the event loop for 17-38s on every call, since
+    # this route is polled routinely by the dashboard (ROADMAP.md's "Path
+    # to production" section).
     #
-    # 30s TTL cache on top of the tick_executor offload above (2026-09-03,
-    # Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md)
-    # - offloading moved the ~4.8s scan off the event loop but didn't stop
-    # every dashboard poll from paying it; caching the route response is
-    # the fix, not a since_ts bound on population_gate_summary() itself
-    # (it computes a total-sample gate, not a recency-scoped read).
+    # Now served by candidate_log's native aiosqlite path, NOT tick_executor
+    # (issue #410, implementing docs/superpowers/specs/2026-09-04-issue-410-
+    # pool-vs-aiosqlite-design.md). The offload this comment used to
+    # describe moved the block off the event loop but parked it on one of
+    # tick_executor's 2 workers for the query's whole 15-22s - workers
+    # shared with candidate_ledger.claim()/record_decision() on the live
+    # per-signal decision path. The query is 100% SQL-bound (re-measured at
+    # implementation time: 18.2-22.5s of SQL, 0.000s of Python, because the
+    # GROUP BY returns 11 rows rather than 28.7M), so a worker thread had
+    # nothing to usefully own.
+    #
+    # This does NOT make the query faster and does NOT stop its cost
+    # climbing - that is issue #532 (rejection_events' unbounded growth),
+    # untouched here and the actual root cause.
+    #
+    # gate_summary() reads the much smaller (62K-row), deduped
+    # rejected_candidates table - not implicated by that trace, so left
+    # inline rather than offloaded speculatively.
+    #
+    # 30s TTL cache on top of the offload above (2026-09-03, Task 6b of
+    # docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) - moving
+    # the scan off the event loop never stopped every dashboard poll from
+    # paying it; caching the route response is the fix, not a since_ts
+    # bound on population_gate_summary() itself (it computes a total-sample
+    # gate, not a recency-scoped read). Still load-bearing after issue
+    # #410: aiosqlite changed WHERE the query blocks, not how long it
+    # takes, so without this cache every poll would still pay 15-22s.
     now = time.time()
     if (
         _population_gates_cache["cached_at"] is not None
@@ -124,8 +143,8 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     ):
         population_gates = _population_gates_cache["value"]
     else:
-        population_gates = await tick_executor.run(
-            lambda: candidate_log.population_gate_summary(min_population_samples)
+        population_gates = await candidate_log.population_gate_summary_async(
+            min_population_samples
         )
         # Stamped at COMPLETION, not at the `now` captured on request
         # receipt above (issue #410, docs/superpowers/research/2026-09-04-
@@ -136,9 +155,12 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         # 30000ms measured from when it last FIRED (frontend/src/js/main.js:
         # 79-98), so the next poll lands at T_fire + [30, 36)s - at or past
         # a window measured from the previous fire, making essentially every
-        # scheduled poll a miss. Each miss re-occupies one of tick_executor's
-        # 2 workers, shared with candidate_ledger.claim()/record_decision()
-        # on the live per-signal decision path.
+        # scheduled poll a miss. Before issue #410's conversion each miss
+        # re-occupied one of tick_executor's 2 workers, shared with
+        # candidate_ledger.claim()/record_decision() on the live per-signal
+        # decision path; a miss now costs an aiosqlite connection thread
+        # instead, so the alignment still matters (it halves the miss rate)
+        # but it no longer competes with trade decisions.
         _population_gates_cache["cached_at"] = time.time()
         _population_gates_cache["value"] = population_gates
     return {
