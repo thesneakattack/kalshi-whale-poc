@@ -49,11 +49,32 @@ status:
 3. **Observed live for a real stretch afterward, no new exit-pricing
    anomalies** — [ ] not started (depends on #2).
 4. **Unexplained YES-side auto-exit profit addressed** (explained, or David
-   explicitly accepts the risk) — [ ] still open. Ruled out: the newly-found
-   YES-side mirror bug (checked directly against `trades.price`, the exact
-   value fed into `unit_cost()` — zero of 279 rows hit `price>=1.0`).
-   Untested: the selection-bias alternative (auto-exit fires on the `pnl`
-   factor, so the bucket is by-construction already-favorable positions). **Assigned to `62` now** — the natural next step now that #574/#577 are both live.
+   explicitly accepts the risk) — [ ] still open, **this is the single
+   authoritative status for this item — do not duplicate it elsewhere in
+   this file.**
+   - Ruled out: the newly-found YES-side mirror bug (checked directly
+     against `trades.price` — zero of 279 rows hit `price>=1.0`).
+   - **Headline figure corrected** (`62`, issue #591, verified independently
+     to the cent against live `paper_broker.db`): the widely-cited "279
+     exits, +$68,589" double-counted 77 already-corrected rows whose stale
+     `(realized ±X.XX)` ledger text was never rewritten by
+     `correct_erroneous_close()`. **Real: 202 trades, $60,276.44, 94.6% win
+     rate** (77 excluded = $8,312.41 + 202 real = $60,276.44 = $68,588.85,
+     confirming the mechanism).
+   - Selection-bias falsifier run: a naive "sell after +X%" rule across all
+     664 YES entries finds real but far smaller money ($12-19k vs
+     $60,276.44) — not pure artifact, not proof of genuine composite edge.
+   - **David's decision: commission the larger analysis, both avenues.**
+     Assigned to `62`. Feasibility checked first: **avenue 1 (out-of-sample
+     window) is genuinely impossible** — the entire trade history is one
+     ~2-day window with zero trades in 18.87h+ since, confirmed
+     independently; substitute is a labeled split-half *robustness, not
+     validation* check. **Avenue 2 (factor isolation) is feasible and
+     narrower than expected** — `analyst_divergence` and
+     `series_track_record` proven zero-contributors from source (empty
+     table; zero config weight), leaving `pnl` (done) + `sentiment` +
+     `staleness` as the real ablation. In progress, full review cycle
+     before this reaches a decision.
 5. **No active data-completeness incident** — trending positive but not
    resolved: `#579`/`#580` showed a clean 16-minute drain with zero drops
    post-`#581`, but both stay open pending more evidence; root cause for
@@ -461,11 +482,11 @@ ticker-coalescing starvation. · **#582** #571's cost mis-attribution (PR #583).
    multiplier **decays as the base grows while the absolute rate does not** —
    at ~3.9 M/day it is ~1.9x/week now, so a future reader will wrongly think it
    is easing.
-5. **Unexplained YES-side profit — corrected, see #591.** Was cited
-   everywhere tonight as "279 exits, +$68,589"; that figure double-counted
-   77 already-corrected rows' stale ledger text. Real: **202 trades,
-   $60,276.44, 94.6% win rate.** Not fully resolved either way — see the
-   gate-condition-#4 entry above for the falsifier result.
+5. **Unexplained YES-side profit** — status tracked in **one place only**:
+   the "BANKROLL-RESET / RE-ENABLE-TRADING GATE" section's condition #4,
+   near the top of this file. Do not duplicate its detail here again; this
+   line existing twice with drifting content is exactly what caused a real
+   error tonight (a corrected figure not yet reaching this section).
 
 ## 7. Standing rules that outlived tonight
 
