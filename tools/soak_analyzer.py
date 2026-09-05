@@ -523,6 +523,26 @@ def check_event_loop_stalls(faults: dict) -> Check:
     Same complete-count-from-by_component discipline as
     check_exit_engine_faults - by_component is the total, most_frequent is
     a truncated top-N.
+
+    This docstring's "each fault_log row already aggregates one persisted
+    observability window's stall_count" was true when written (2026-09-01)
+    but stopped being the only loop_watchdog row shape once
+    services/loop_watchdog.py started writing its own always-accumulating
+    `stall` fault directly from the hot loop (2026-09-03, for stack-trace
+    attribution - a fixed message, so fault_log's dedup collapses every
+    occurrence into one row whose count grows forever). Both rows share
+    the `loop_watchdog` component, so by_component summed them together -
+    before issue #599's fix, that meant this gate's `n` was silently
+    dominated by the ever-growing accumulator's lifetime total the moment
+    its `last_seen` fell in the 24h window (which, for a currently-active
+    fault, is nearly always), pinning this check to FAIL uninformatively
+    regardless of whether stalls were actually happening in the last 24h.
+    fault_log.summary()'s window-scoping fix (2026-09-05) excludes a
+    pre-existing-but-still-active row's lifetime count from by_component
+    entirely (see its own docstring) - a fresh `event_loop_stall` row is
+    still counted normally (it's newly created each window it fires), so
+    this check now discriminates a real stall-free 24h window from one
+    that genuinely isn't, instead of being stuck on the accumulator.
     """
     by_comp = (faults or {}).get("by_component") or {}
     if "loop_watchdog" not in by_comp:

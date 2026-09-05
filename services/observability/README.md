@@ -384,6 +384,23 @@ known gap: a genuinely healthy zero-stall window reports UNKNOWN rather
 than PASS, since a SQL `GROUP BY` never emits a zero-valued key (also
 tracked in `docs/open-decisions.md`).
 
+**Contamination from a second write path, found and fixed 2026-09-05
+(issue #599).** `services/loop_watchdog.py` later grew its own direct
+`fault_log.record_fault("loop_watchdog", "stall", ...)` write (2026-09-03,
+for stack-trace attribution on the hot loop) - a FIXED message, so
+`fault_log`'s dedup collapses every occurrence into one row whose `count`
+accumulates forever, unlike the windowed `event_loop_stall` row this
+section describes. Both share the `loop_watchdog` component, so
+`by_component` summed them together: `check_event_loop_stalls` was
+silently pinned to FAIL the moment that accumulator's `last_seen` fell in
+the 24h window (nearly always, for a currently-active fault) regardless of
+whether real stalls happened in that window. Fixed in `fault_log.summary()`
+itself (a row whose `first_seen` predates the query window is excluded
+from `by_component`/`total_occurrences`/`most_frequent` and surfaced
+separately as `ongoing_faults` instead) - `event_loop_stall` rows are
+unaffected (each is freshly created the window it fires), so this check
+now discriminates correctly again.
+
 
 ### `candidate_retry.*` — H4-recovery retry queue (realtime data-plane remediation P2 Task 12, 2026-08-26)
 

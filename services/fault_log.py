@@ -108,6 +108,19 @@ def _connect():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_last ON faults (last_seen DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_component ON faults (component, last_seen DESC)")
+        # Issue #599 fix (2026-09-05): summary()'s since_ts-scoped queries
+        # filter on first_seen now (see summary()'s own docstring), which
+        # had no covering index - adversarial review of that fix measured
+        # a real degradation from `SEARCH ... USING INDEX idx_faults_last`
+        # to `SCAN faults` for most_frequent's query against live data
+        # (36,858 rows: ~2x slower, 78.8ms->151.9ms/20 calls). This table's
+        # own module docstring assumes dedup keeps it small, but other
+        # dedup'd stores already sit at 8k-25k rows - not yet a genuine
+        # problem at today's size, but this endpoint (/api/health/pipeline)
+        # already caused a real 191s/504 incident once (issue #210), so a
+        # free, mechanical index addition is worth taking now rather than
+        # waiting for it to become one.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_first ON faults (first_seen)")
         _ensure_null_exc_type_dedup_index(conn)
         with conn:
             yield conn
@@ -400,20 +413,73 @@ def prune(retention_hours: float, now: float | None = None) -> int:
 
 def summary(since_ts: float | None = None) -> dict:
     """Counts by component and severity - the shape a health endpoint wants,
-    so an active fault shows up as a number rather than as silence."""
+    so an active fault shows up as a number rather than as silence.
+
+    since_ts splits rows three ways (issue #599 fix, 2026-09-05). A row's
+    `count` is a LIFETIME total (see this module's own docstring: one row
+    per distinct (component, operation, exc_type, message), incremented on
+    every occurrence for the row's entire life - `first_seen` never moves
+    once set, only `last_seen`/`count` do on a repeat). That makes summing
+    `count` exact for a row whose `first_seen` itself falls inside the
+    window (its whole life is inside the window, so its whole count is)
+    but WRONG for a row that predates the window and is merely still
+    active (`first_seen < since_ts <= last_seen`): summing its full
+    lifetime count silently attributes years of history to whatever narrow
+    window happened to catch its next occurrence. Confirmed live
+    (2026-09-05): a fixed-message loop_watchdog/stall fault accumulated
+    176,513 lifetime occurrences over ~63 hours, and both an `hours=1` and
+    an `hours=0.05` query reported that exact same total, because its
+    `last_seen` was recent in both - issue #599's own reproduction of this
+    exact defect.
+
+    - `distinct_faults` keeps its original `last_seen >= since_ts` meaning
+      ("how many distinct fault signatures are active in this window") -
+      a plain COUNT(*), never miscounted by summing a lifetime total, so
+      it needs no change.
+    - `total_occurrences`/`by_component`/`by_severity`/`most_frequent` now
+      sum `count` only over rows whose `first_seen >= since_ts` - exact by
+      construction, at the cost of undercounting a pre-existing-but-still-
+      firing fault's in-window share (which this schema cannot recover:
+      there is no per-occurrence timestamp, only the row's own first/last-
+      seen and a running total).
+    - Pre-existing-but-still-active rows (`first_seen < since_ts <=
+      last_seen`) are surfaced separately as `ongoing_faults` - all-time
+      count, first_seen, last_seen, explicitly labeled - so a real,
+      still-happening problem stays visible (the data-plane HARD RULE's
+      completeness requirement) rather than silently dropping out of the
+      windowed total it can no longer safely contribute to.
+
+    since_ts=None (the default, "everything ever") needs none of this: with
+    no window boundary there is nothing a lifetime count could misattribute
+    across, so every clause collapses to unconditional and behavior is
+    byte-for-byte what it always was."""
     try:
         with _connect() as conn:
-            clause, params = ("WHERE last_seen >= ?", [since_ts]) if since_ts is not None else ("", [])
-            distinct, total = conn.execute(
-                f"SELECT COUNT(*), COALESCE(SUM(count), 0) FROM faults {clause}", params).fetchone()
+            if since_ts is not None:
+                active_clause, active_params = "WHERE last_seen >= ?", [since_ts]
+                exact_clause, exact_params = "WHERE first_seen >= ?", [since_ts]
+                ongoing_clause = "WHERE first_seen < ? AND last_seen >= ?"
+                ongoing_params = [since_ts, since_ts]
+            else:
+                active_clause, active_params = "", []
+                exact_clause, exact_params = "", []
+                ongoing_clause, ongoing_params = "WHERE 0", []
+
+            distinct = conn.execute(
+                f"SELECT COUNT(*) FROM faults {active_clause}", active_params).fetchone()[0]
+            total = conn.execute(
+                f"SELECT COALESCE(SUM(count), 0) FROM faults {exact_clause}", exact_params).fetchone()[0]
             by_component = dict(conn.execute(
-                f"SELECT component, SUM(count) FROM faults {clause} GROUP BY component "
-                "ORDER BY 2 DESC", params).fetchall())
+                f"SELECT component, SUM(count) FROM faults {exact_clause} GROUP BY component "
+                "ORDER BY 2 DESC", exact_params).fetchall())
             by_severity = dict(conn.execute(
-                f"SELECT severity, SUM(count) FROM faults {clause} GROUP BY severity", params).fetchall())
+                f"SELECT severity, SUM(count) FROM faults {exact_clause} GROUP BY severity", exact_params).fetchall())
             worst = conn.execute(
                 f"SELECT component, operation, exc_type, message, count, last_seen "
-                f"FROM faults {clause} ORDER BY count DESC LIMIT 5", params).fetchall()
+                f"FROM faults {exact_clause} ORDER BY count DESC LIMIT 5", exact_params).fetchall()
+            ongoing = conn.execute(
+                f"SELECT component, operation, exc_type, message, count, first_seen, last_seen "
+                f"FROM faults {ongoing_clause} ORDER BY count DESC LIMIT 10", ongoing_params).fetchall()
     except Exception as exc:
         return {"error": str(exc)}
     return {
@@ -425,5 +491,10 @@ def summary(since_ts: float | None = None) -> dict:
             {"component": c, "operation": o, "exc_type": t, "message": m,
              "count": n, "last_seen": ls}
             for c, o, t, m, n, ls in worst
+        ],
+        "ongoing_faults": [
+            {"component": c, "operation": o, "exc_type": t, "message": m,
+             "count": n, "first_seen": fs, "last_seen": ls}
+            for c, o, t, m, n, fs, ls in ongoing
         ],
     }
