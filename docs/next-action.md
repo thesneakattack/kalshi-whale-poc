@@ -371,9 +371,15 @@ review was running, it did not finish. Do not assume a GO.
   count). Selection-bias falsifier run: a naive "sell after +X%" rule
   across all 664 YES entries finds real but much smaller money ($12-19k
   vs $60,276) — **not pure artifact, but not proof of genuine composite
-  edge either.** Full nuance in #591; this is now explicitly a decision
-  for David (how much certainty he needs), not resolvable further without
-  a bigger analysis (longer/out-of-sample window, or isolating factors).
+  edge either.** Full nuance in #591. **David's decision: commission the
+  larger analysis, both avenues, not one.** Assigned to `62`: (1) scope
+  whether a genuinely clean out-of-sample window exists at all, given how
+  much of tonight's history is itself contaminated by #574/#577/#578,
+  before designing around one; (2) get the composite score's actual
+  current weights from source and run a per-factor ablation against the
+  same 664 YES entries, same real-settlement methodology as #591.
+  Feasibility first, then the real analysis. Full review cycle given this
+  bears on a real-money-adjacent decision.
 
 ## 4. Open issues, current as of shutdown
 
