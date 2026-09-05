@@ -1,3 +1,37 @@
+# POST-RESTART STATUS — two-way comms re-established, 2026-09-05 ~03:3x UTC
+
+Coordinator is now `autotrade-48` (was `1f`). All 8 pre-restart peers accounted
+for and confirmed via direct reply, not `ListAgents` alone — a transient
+duplicate session (`autotrade-a7`) appeared for ~2s during startup and vanished
+on its own; harmless, but a reminder that a fresh `ListAgents` snapshot right
+after a mass restart can show a ghost.
+
+**Identity mapping (old name -> new name), confirmed by each session's own
+reply, not assumed:**
+
+| old | new | inherited memory? | owns |
+|---|---|---|---|
+| `d2` | `autotrade-24` | yes | PR #575 |
+| `df` | `autotrade-8d` | yes | PR #574 (author) |
+| `36` | `autotrade-71` | yes | PR #574 (independent review) |
+| `21` | `autotrade-ef` | yes | app-health watch, #576/#579/#580 |
+| `64` | `autotrade-a2` | yes | #577/#578 |
+| `8f` | `autotrade-bf` | **NO — came back with zero memory** | PR #581 (#410) |
+
+**The one loss from the restart: `8f`'s successor session lost all memory of
+the #410/#581 work.** Nothing was lost from the repo's side — PR #581, its
+branch, and all 3 comments (self-review, production-scale equivalence check,
+full adversarial NO-GO with 10 findings) survived on GitHub untouched. The
+session has been re-briefed to re-orient from the PR directly rather than from
+memory. Two portfolio-named sessions (`portfolio-96`, `portfolio-cd`) both
+confirmed they are on a **different, unrelated repo** (`~/code/portfolio`
+infra/traefik work) and were never autotrade workers.
+
+**Do not assume names above stay stable.** They are current as of this
+banner's timestamp; verify via a reply if it matters later.
+
+---
+
 # CRASH RECOVERY — planned WSL restart, 2026-09-05 ~03:1x UTC
 
 Written by coordinator `autotrade-1f` immediately before a **deliberate** WSL
@@ -65,7 +99,7 @@ so the work can be reclaimed — not an assignment to a name that no longer exis
 | `36` | independent review of #574 | pass in flight at `219a350` — **killed** |
 | `8f` | PR **#581** (#410) | `37687b9` pushed (WIP); adversarial **NO-GO**, 10 findings |
 | `d2` | PR **#575** | self-review posted, NO-GO; adversarial in flight — **killed** |
-| `64` | **#577** design, filed **#578** | design in progress, may be unposted |
+| `64` (now `autotrade-a2`) | **#577** design, filed **#578** | **posted** (comment 5549041032, labeled INCOMPLETE) — confirmed by the session itself post-restart; only this row was stale, the #578 coverage numbers below were already correct |
 | `21` | app-health watch | filed **#576/#579/#580**; final readings posted |
 
 Also filed at shutdown: **#584** (kill switch non-functional). All six workers
