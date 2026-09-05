@@ -83,6 +83,17 @@ CONTRACT_DOCS: dict[str, ContractDocs] = {
     # not a Kalshi-specific operation of its own.
     "force_reconnect": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
     "ensure_consumer_progressing": ("docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md"),
+    # Issue #576's independent ticker-map flush: same "no per-message gap-
+    # detection/resume capability on this API tier, so an app-side recovery
+    # mechanism is correct, not a Kalshi-specific operation of its own"
+    # reasoning as ensure_consumer_progressing/force_reconnect above, plus
+    # market-ticker.md since what it actually dispatches is real ticker-
+    # channel data (the same coalescing semantics _coalesce_ticker already
+    # maps to that page).
+    "flush_pending_tickers": (
+        "docs/kalshi/websocket-connection.md", "docs/kalshi/quick_start_websockets.md",
+        "docs/kalshi/market-ticker.md",
+    ),
     # Exposes this connection's already-loaded signing credentials to
     # services/index_feed/backfill.py (issue #260) - the CF Benchmarks REST
     # passthrough historical-values call needs the same signed-request auth
@@ -206,6 +217,22 @@ _LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
 # same reasoning applied here on the async-I/O side instead of the thread
 # side, not a load-bearing capacity guess of its own.
 _TRADE_DISPATCH_CONCURRENCY = 4
+
+# Issue #576's fix: batch cap for flush_pending_tickers(), the independent
+# scheduled drain of _ticker_by_market (see that method's own docstring for
+# the semaphore-contention starvation it exists to cover - a regime
+# _consume_market_from's own QueueEmpty branch structurally cannot reach
+# while the consumer is suspended awaiting _trade_dispatch_semaphore).
+# Derived from #576's own incident telemetry, not guessed: pending_tickers
+# peaked at 177 during that ~15-minute episode. 25 is well below that peak
+# so one flush_pending_tickers() call can never itself become an unbounded
+# synchronous burst (draining an arbitrarily large map in one go would just
+# relocate the same "one slow pass blocks everything else" failure shape
+# into the flush task) - and at main.py's _ticker_flush_loop 0.25s default
+# cadence, a map at the observed peak still fully drains in
+# ceil(177/25) = 8 flush ticks (~2s at 0.25s/tick), nowhere near the >300s
+# staleness #576 flagged.
+_TICKER_FLUSH_BATCH_MAX = 25
 
 
 def _trade_ticker_key(data: dict) -> str | None:
@@ -397,6 +424,21 @@ class KalshiStreamGateway:
         # ingest_metrics, never silent.
         self._ticker_by_market: dict[str, tuple[float, dict]] = {}
         self._coalesced = 0
+        # Issue #576: the handler set run() was called with, bound once at
+        # the top of that method (not per-connection/reconnect - the same
+        # callbacks are passed to every reconnect attempt) so
+        # flush_pending_tickers() can reach them without threading a second
+        # copy through main.py's scheduler wiring. None until run() has
+        # actually started at least once.
+        self._active_callbacks: tuple | None = None
+        # Lifetime counters for flush_pending_tickers() (issue #576) - same
+        # plain-monotonic-int idiom as _connects/_reconnects above (and
+        # services/settlement_resolver.py's own _stats counters): "runs" is
+        # every call (including a no-op tick on an empty map, so it also
+        # answers "is the supervised loop still alive"), "total" is the
+        # cumulative count of tickers actually flushed.
+        self._ticker_flush_runs = 0
+        self._ticker_flush_total = 0
         # Option B (2026-09-03): bounded-concurrency trade dispatch - see
         # _TRADE_DISPATCH_CONCURRENCY's own comment and
         # _dispatch_trade_concurrent's docstring. Instance-scoped (one bound
@@ -675,6 +717,14 @@ class KalshiStreamGateway:
 
     async def run(self, on_trade, on_ticker, on_status=None, on_fill=None, on_position=None,
                   on_index=None, on_lifecycle=None) -> None:
+        # Issue #576: bound once, up front - flush_pending_tickers() reads
+        # this same tuple, so it can dispatch through the identical handler
+        # set _consume_market_from uses without a second call chain
+        # threading callbacks through main.py's scheduler wiring again. The
+        # same callbacks are passed to every reconnect attempt this while
+        # loop makes, so binding once here (not per-connection below) is
+        # correct - there is nothing to re-bind on a reconnect.
+        self._active_callbacks = (on_trade, on_ticker, on_status, on_fill, on_position, on_index, on_lifecycle)
         backoff = 1.0
         while not self._stop:
             if not self.enabled:
@@ -1222,6 +1272,57 @@ class KalshiStreamGateway:
     def _pending_ticker_by_market(self) -> dict[str, dict]:
         return {ticker: data for ticker, (_, data) in self._ticker_by_market.items()}
 
+    async def flush_pending_tickers(self) -> int:
+        """Independent scheduled drain of _ticker_by_market (issue #576).
+
+        _consume_market_from's own QueueEmpty branch only reaches this map
+        when the market queue happens to be momentarily empty. Under
+        semaphore contention (Option B, 2026-09-03: on_trade's REST-resolve
+        can hold _trade_dispatch_semaphore for a while) that consumer can
+        instead be fully suspended awaiting a semaphore slot for an
+        arbitrarily long stretch and never reach the loop top at all - no
+        counter or fairness parameter inside that loop can help, because the
+        loop isn't running. This method is the independent path: called on
+        its own timer (main.py's _ticker_flush_loop), it drains the map on
+        its own schedule regardless of market_queue's state or whether
+        _consume_market_from is currently suspended elsewhere.
+
+        Pops up to _TICKER_FLUSH_BATCH_MAX entries, oldest-key-first - the
+        same `next(iter(...))` + `.pop()` pair _consume_market_from's own
+        QueueEmpty branch already uses, so a given ticker is handled
+        identically regardless of which of the two paths reaches it first.
+        No `await` happens between a popped entry and its dispatch to
+        _process_item, so the map is already updated (that entry gone)
+        before anything else on the event loop can run - a fresh WS update
+        for the SAME market arriving while this dispatch is still in flight
+        finds no existing entry and starts a brand-new one
+        (_coalesce_ticker's own "existing is None" branch), so it is never
+        lost and never merged into the stale copy already being processed.
+        Running both drain paths concurrently against the same dict is safe
+        for the same reason: whichever path's pop runs first on the event
+        loop is the one that owns that entry.
+
+        Returns 0, doing nothing, when the map is empty or when run() has
+        never actually started a connection (self._active_callbacks is
+        None - direct-ingest callers such as tests or replay tooling may
+        populate the map without ever calling run())."""
+        self._ticker_flush_runs += 1
+        if not self._ticker_by_market or self._active_callbacks is None:
+            return 0
+        (on_trade, on_ticker, on_status, on_fill,
+         on_position, on_index, on_lifecycle) = self._active_callbacks
+        flushed = 0
+        while flushed < _TICKER_FLUSH_BATCH_MAX and self._ticker_by_market:
+            ticker = next(iter(self._ticker_by_market))
+            enqueued_at, data = self._ticker_by_market.pop(ticker)
+            await self._process_item(
+                (enqueued_at, "ticker", data), on_trade, on_ticker, on_status,
+                on_fill, on_position, on_index, on_lifecycle,
+            )
+            flushed += 1
+        self._ticker_flush_total += flushed
+        return flushed
+
     async def _consume_market_from(self, queue: asyncio.Queue, on_trade=None, on_ticker=None, on_status=None,
                                    on_fill=None, on_position=None, on_index=None, on_lifecycle=None) -> None:
         """Market-queue consumer (P4 Task 19a): FIFO-drains real queue items
@@ -1517,6 +1618,10 @@ class KalshiStreamGateway:
                 # (lifetime, monotone) and the pending map's current size.
                 "coalesced_tickers": self._coalesced,
                 "pending_tickers": len(self._ticker_by_market),
+                # Issue #576's independent flush task (flush_pending_tickers)
+                # - lifetime counters, same shape as coalesced_tickers above.
+                "ticker_flush_runs": self._ticker_flush_runs,
+                "ticker_flush_total": self._ticker_flush_total,
                 "high_water": self._queue_high_water,
                 "oldest_message_age_sec": self._oldest_message_age(now),
             },
