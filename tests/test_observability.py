@@ -651,7 +651,8 @@ def _fake_ingest_metrics() -> dict:
         "discarded_on_reconnect_by_class": {"ticker": 7},
         "handler_exceptions_total": 3, "handler_exceptions_by_class": {"trade": 3},
         "handler_timeouts_total": 1, "handler_timeouts_by_class": {"trade": 1},
-        "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75},
+        "queue": {"depth": 12, "capacity": 20000, "high_water": 900, "oldest_message_age_sec": 0.75,
+                  "coalesced_tickers": 37, "pending_tickers": 6},
         "queue_wait": {
             "last_sec": 0.2,
             "lifetime": {"count": 496, "max_sec": 9.0, "avg_sec": 0.3},
@@ -701,6 +702,13 @@ def test_capture_from_runtime_flattens_ws_ingest_metrics_under_the_stream_prefix
     assert metrics["trade_stream.ingest.queue_depth"] == 12.0
     assert metrics["trade_stream.ingest.queue_high_water"] == 900.0
     assert metrics["trade_stream.ingest.oldest_message_age_sec"] == 0.75
+    # #576: the ticker-coalescing map's own size (pending_tickers) and its
+    # lifetime absorbed-update counter (coalesced_tickers) - same "always
+    # emitted" gauge convention as queue_depth/queue_high_water above, so a
+    # starvation backstop for #576 can see the map's history, not just a
+    # live snapshot via GET /api/health/pipeline.
+    assert metrics["trade_stream.ingest.pending_tickers"] == 6.0
+    assert metrics["trade_stream.ingest.coalesced_tickers"] == 37.0
     assert metrics["trade_stream.ingest.queue_wait.window_max_sec"] == 2.5
     assert metrics["trade_stream.ingest.queue_wait.window_avg_sec"] == 0.4
     assert metrics["trade_stream.ingest.queue_wait.window_p95_upper_bound_sec"] == 1.0
@@ -783,6 +791,12 @@ def test_maybe_capture_resets_ingest_windows_only_after_a_sample_is_persisted():
     observability.maybe_capture(cfg, state, trade_stream, index_stream)  # sample persisted
     assert trade_stream.reset_calls == 1 and index_stream.reset_calls == 1
     assert observability.history("trade_stream.ingest.queue_depth", since_ts=0)[0]["value"] == 12.0
+    # #576: pending_tickers/coalesced_tickers must reach the same durable
+    # history table queue_depth does - GET /api/observability/history?
+    # metric=trade_stream.ingest.pending_tickers is the query surface a
+    # future starvation backstop for the ticker-coalescing map depends on.
+    assert observability.history("trade_stream.ingest.pending_tickers", since_ts=0)[0]["value"] == 6.0
+    assert observability.history("trade_stream.ingest.coalesced_tickers", since_ts=0)[0]["value"] == 37.0
 
 
 def test_server_error_25_finding_warns_when_kalshi_reported_subscription_overflow_this_window():
