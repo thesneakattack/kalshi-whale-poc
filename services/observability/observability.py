@@ -403,6 +403,16 @@ def _flatten_ingest_metrics(prefix: str, im: dict) -> dict:
     queue = im.get("queue") or {}
     out[f"{p}.queue_depth"] = float(queue.get("depth") or 0)
     out[f"{p}.queue_high_water"] = float(queue.get("high_water") or 0)
+    # pending_tickers/coalesced_tickers (#576 investigation): the ticker-
+    # coalescing map's own size (a live gauge, same "always emitted" style
+    # as queue_depth) and its lifetime absorbed-update counter (same style
+    # as queue_high_water) - both already live in ingest_metrics()'s
+    # "queue" block (services/kalshi/websocket.py's Task 19a coalescing
+    # visibility) but were never persisted, so a starvation backstop for
+    # #576 had no historical series to work from, only the live snapshot
+    # GET /api/health/pipeline exposes.
+    out[f"{p}.pending_tickers"] = float(queue.get("pending_tickers") or 0)
+    out[f"{p}.coalesced_tickers"] = float(queue.get("coalesced_tickers") or 0)
     if queue.get("oldest_message_age_sec") is not None:
         out[f"{p}.oldest_message_age_sec"] = float(queue["oldest_message_age_sec"])
     wait = im.get("queue_wait") or {}

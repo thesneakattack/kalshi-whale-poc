@@ -982,6 +982,156 @@ def test_price_fabrication_scanner_is_registered_with_the_audit_cli():
     assert scanner.scan_price_fabrication in audit_cli._SCANNERS
 
 
+# --- issue #590: ternary/IfExp shape + intermediate-variable indirection ---
+
+def test_price_fabrication_scanner_catches_a_direct_ternary(tmp_path):
+    # The mechanical case: both the test and the live branch are direct
+    # .get() calls, no variable to resolve.
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def f(m):\n'
+        '    return m.get("yes_bid_dollars") if m.get("yes_bid_dollars") is not None else 0.5\n',
+    )
+    assert _price_fabrication_ids(tmp_path)
+
+
+def test_price_fabrication_scanner_catches_the_flipped_ternary_ordering(tmp_path):
+    # `LITERAL if cond else X` - the literal is the ternary's body, not its
+    # orelse.
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def f(m):\n'
+        '    return 0.5 if m.get("yes_bid_dollars") is None else m.get("yes_bid_dollars")\n',
+    )
+    assert _price_fabrication_ids(tmp_path)
+
+
+def test_price_fabrication_scanner_catches_issue_590s_own_worked_example(tmp_path):
+    # Issue #590's literal reproduction: an intermediate variable, assigned
+    # exactly once from a price-shaped .get(), used in a ternary. This is
+    # the shape claim 1 was ACTUALLY filed against - a direct-call-only
+    # ternary matcher would not catch this, and the issue's own claim would
+    # stay half-fixed if this test didn't pass.
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def f(m):\n'
+        '    bid = m.get("yes_bid_dollars")\n'
+        '    price = bid if bid is not None else 0.5\n'
+        '    return price\n',
+    )
+    assert _price_fabrication_ids(tmp_path)
+
+
+def test_price_fabrication_scanner_catches_issue_590s_or_worked_example(tmp_path):
+    # Issue #590 claim 2's literal reproduction, for the pre-existing `or`
+    # shape: `bid = m.get(...); price = bid or 0.5`. Same single-assignment
+    # resolution as the ternary case above, reused for BoolOp.
+    _write(
+        tmp_path / "services" / "rogue.py",
+        'def f(m):\n'
+        '    bid = m.get("yes_bid_dollars")\n'
+        '    price = bid or 0.5\n'
+        '    return price\n',
+    )
+    assert _price_fabrication_ids(tmp_path)
+
+
+def test_price_fabrication_scanner_ignores_a_ternary_with_a_non_literal_fallback(tmp_path):
+    # The exact real shape at services/whale_simulator.py:82 - a genuine
+    # intermediate-variable ternary on a price-shaped field, but the
+    # fallback is a Call (random.uniform(...)), not a numeric literal, so
+    # it's not fabrication and must not be flagged.
+    _write(
+        tmp_path / "services" / "fine.py",
+        "import random\n"
+        "def f(market):\n"
+        '    yes_bid = float(market.get("yes_bid_dollars") or 0)\n'
+        "    price = yes_bid if yes_bid > 0 else random.uniform(0.05, 0.95)\n"
+        "    return price\n",
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_does_not_resolve_a_reassigned_intermediate_variable(tmp_path):
+    # Deliberately conservative: `bid` is assigned twice in the same
+    # function, so its origin is ambiguous - the scanner's existing bias
+    # (dynamic/non-literal dict keys) is "don't flag when ambiguous," which
+    # this extends rather than overriding. A false negative here is the
+    # accepted, documented cost of not building full dataflow analysis.
+    _write(
+        tmp_path / "services" / "fine.py",
+        'def f(m):\n'
+        '    bid = m.get("yes_bid_dollars")\n'
+        '    bid = bid if bid is not None else 0\n'
+        '    price = bid or 0.5\n'
+        '    return price\n',
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_does_not_resolve_a_variable_from_a_different_function(tmp_path):
+    # Same conservative bias, cross-function: `bid` in g() is a distinct
+    # local variable from any `bid` elsewhere in the module - resolution is
+    # scoped to the enclosing function/module body only, never global.
+    _write(
+        tmp_path / "services" / "fine.py",
+        'def f(m):\n'
+        '    bid = m.get("yes_bid_dollars")\n'
+        '    return bid\n'
+        "\n"
+        "def g(bid):\n"
+        "    price = bid or 0.5\n"
+        "    return price\n",
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_does_not_resolve_a_name_assigned_inside_a_branch(tmp_path):
+    # Deliberately out of scope: this scanner's single-assignment resolution
+    # only inspects the DIRECT statement list of the enclosing function/
+    # module (matching how _dict_get_key only recognizes a direct Call/
+    # Subscript) - an assignment inside an `if`/`for`/`while` body is not
+    # found, so `bid` here resolves to nothing and the ternary is ignored.
+    _write(
+        tmp_path / "services" / "fine.py",
+        'def f(m, flag):\n'
+        '    if flag:\n'
+        '        bid = m.get("yes_bid_dollars")\n'
+        '    else:\n'
+        '        bid = None\n'
+        '    price = bid if bid is not None else 0.5\n'
+        '    return price\n',
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_does_not_resolve_a_lambda_parameter_against_an_outer_assignment(tmp_path):
+    # A lambda's own parameter shadows any outer name of the same spelling -
+    # `bid` inside the lambda body is the parameter, not the unrelated outer
+    # `bid = m.get(...)` that merely shares its name. Resolving it against
+    # the outer assignment would be a false positive.
+    _write(
+        tmp_path / "services" / "fine.py",
+        'def f(m):\n'
+        '    bid = m.get("yes_bid_dollars")\n'
+        '    transform = lambda bid: bid or 0.5\n'
+        '    return transform(bid)\n',
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
+def test_price_fabrication_scanner_ignores_an_ifexp_test_that_is_not_a_none_or_truthiness_check(tmp_path):
+    # A ternary keyed on an unrelated condition, even if the live branch
+    # happens to be price-shaped, isn't the fabrication pattern this class
+    # is about (the fallback isn't standing in for "missing/falsy").
+    _write(
+        tmp_path / "services" / "fine.py",
+        'def f(m, other_flag):\n'
+        '    return m.get("yes_bid_dollars") if other_flag else 0.5\n',
+    )
+    assert _price_fabrication_ids(tmp_path) == []
+
+
 @pytest.mark.slow
 def test_price_fabrication_scanner_is_clean_on_this_repo_except_the_baselined_simulator():
     """Issue #577's fix removed every real fabricated-price-fallback site
