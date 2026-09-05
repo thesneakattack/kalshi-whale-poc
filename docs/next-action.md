@@ -64,6 +64,20 @@ was previously a separate open design thread.
 
 ---
 
+
+**Policy confirmed explicitly (David, 2026-09-05): the lean-execution amendment
+(#587) applies to the full "nothing advances on one pass" research → design/spec
+→ implementation-plan pipeline, not only PR review cycles.** Tonight's #577/
+#578/#579/#580 work has run this pipeline informally (GitHub issue comments
+for investigation and design, not formal `docs/superpowers/` staged
+documents) — that's fine, don't retroactively formalize what's already done.
+Going forward, any stage of this pipeline that produces its own artifact
+still needs self-review + independent adversarial review + consolidation
+genuinely present, but sized to the content: no restated context, no
+ceremony, no artifact inflated beyond what the work actually calls for.
+Shrink artifacts, never skip one — same rule as before, now stated as
+covering the whole pipeline explicitly.
+
 # SESSION RECONCILIATION — reduced fleet, 2026-09-05 ~08:5x UTC (container-local)
 
 David closed several terminals ("removed a few sessions") and kept 4. Coordinator
