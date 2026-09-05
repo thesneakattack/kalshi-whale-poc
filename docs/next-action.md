@@ -1,73 +1,42 @@
 # Next action
 
-## ⚠ RESUME POINT — WSL was shut down 2026-09-05 to fix a Windows networking issue
-
-**The whole fleet (07/32/62/bd + this coordinator) was PAUSED before shutdown
-— nobody was mid-write, nothing destructive was in flight.** On resume, in
-order:
-1. Confirm WSL/Docker Desktop actually came back: `ddev describe`, then
-   `docker ps -a --filter name=ddev-router` — should show `Up`, not
-   `Created`. If still `Created`/failing, the `winnat` restart (or `wsl
-   --shutdown` + Docker Desktop relaunch) didn't fully clear it; see
-   `windows-port-exclusion-breaks-ddev-router` memory for the exact
-   Windows-host remedy (cannot be run from inside WSL2).
-2. Verify data integrity: `data/*.db` files present, non-zero, recent
-   mtimes; a quick `PRAGMA quick_check` on `paper_broker.db`/
-   `market_history.db` if anything looks off. No corruption expected — this
-   was a clean shutdown, not a crash — but confirm, don't assume.
-3. Re-run `ListAgents`; the 4 peer names above will very likely NOT survive
-   (new session IDs) — **verify identity by direct reply before trusting
-   any name**, per the standing lesson below. Re-brief whichever sessions
-   reconnect using this file, not conversational memory.
-4. Nothing was lost that matters: `git status`/`git log` on `main` is the
-   record, PR #597 is safely on GitHub mid-review (see below), `#578`'s
-   checkpoint is a posted GitHub comment, `32`'s fresh backup exists on
-   disk. Resume each peer's task exactly as described below.
-
----
-
 **Coordinator:** `autotrade-36` (chain tonight: `1f` → `48` → `01` → `05` →
 `36`, one continuous session — the SendMessage name changes on reconnect,
-memory doesn't; `36` picked up right after the 2026-09-05 WSL restart below).
-**Verify identity by direct reply before trusting a name** — `ListAgents`'s
-"started Xm ago" is not evidence of a fresh session; ask.
+memory doesn't). **Verify identity by direct reply before trusting a name**
+— `ListAgents`'s "started Xm ago" is not evidence of a fresh session, in
+EITHER direction: a WSL restart (2026-09-05, Windows `winnat` port-exclusion
+fix, see `windows-port-exclusion-breaks-ddev-router` memory) was survived by
+all 4 fleet peers' MEMORY, but only 1 of 4 kept its SendMessage name — ask
+every time, don't assume either outcome.
 
-**Post-restart fleet state (2026-09-05, confirmed by `36`):** `ddev-router`
-came back `Up ... (healthy)` — the `winnat` fix worked. `paper_broker.db`/
-`market_history.db` both `PRAGMA quick_check: ok`, app responding 200. As
-expected, none of the 4 prior peer names (`07`/`32`/`62`/`bd`) survived the
-restart — `ListAgents` shows a new interactive session (`portfolio-ef`,
-identity being verified) and several offline Remote Control sessions.
-Nobody is currently active on PR #597, `#578` prep, the YES-side analysis,
-or the `#579`/`#580` watch — pick each back up from this file, not from
-assumed continuity.
-
-**Peers and current task, as of this write (all PAUSED for the WSL restart
-above — resume each exactly where it says, don't re-derive from scratch):**
-- `32` (chain: `df`→`8d`, PR #574 author) — **on `#578` pre-purge prep**
-  (non-destructive), checkpoint artifact posted (issue #578 comment): fix
-  re-verified live and holding (contamination flat at 6,260, zero new
-  fabricated rows since the fix), fresh full backup taken and verified.
-  Still holding the actual purge — gated on `62`'s ablation finishing
-  cleanly + coordinator go.
-- `07` (separate lineage, independent reviewer) — **on `#576`**: A-vs-B
-  decided — **Family B (independent scheduled flush), not A** (A's own
-  benchmark showed it structurally can't help under the mechanistically
-  plausible trigger — semaphore/resolve contention suspends the consumer
-  before A's counter check ever runs; B, as a genuinely separate task, gets
-  scheduled regardless). PR #597 open (`ceace0e7`, `fix/576-ticker-flush-
-  independent-drain`, mergeable), adversarial-reviewed GO-with-followups
-  (raw benchmark numbers need committing somewhere durable or explicit
-  "reasoned default, not measured" relabeling — see standing lessons); PR
-  CI was still running its `pr/*` contexts at pause time (push contexts all
-  green), consolidation not yet posted — check both before merging.
-- `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
-  last clean reading pre-pause: `dropped_after_max_attempts: 0`,
-  `handler_timeouts_total: 0`, `queue.depth: 0`, `settlement_resolver.pending:
-  8` — no regression through the pause.
-- `62` (chain: `64`→`a2`, `#577`/`#578` owner) — **on the YES-side auto-exit
-  profit analysis** (gate condition 4 below): split-half robustness check
-  DONE (see below). The pnl+sentiment+staleness ablation was killed
+**Peers and current task, as of this write, all reconfirmed post-WSL-restart:**
+- `c4` (was `32`, chain `df`→`8d`→`32`→`c4`, PR #574 author) — **on `#578`
+  pre-purge prep** (non-destructive), checkpoint artifact posted (issue
+  #578 comment): fix re-verified live and holding (contamination flat at
+  6,260, zero new fabricated rows since the fix), fresh full backup taken
+  and verified. Still holding the actual purge — gated on `0d`'s ablation
+  finishing cleanly + coordinator go.
+- `49` (was `07`, kept memory AND name through the restart, separate
+  lineage, independent reviewer) — **on `#576`**: A-vs-B decided — **Family
+  B (independent scheduled flush), not A** (A's own benchmark showed it
+  structurally can't help under the mechanistically plausible trigger —
+  semaphore/resolve contention suspends the consumer before A's counter
+  check ever runs; B, as a genuinely separate task, gets scheduled
+  regardless). PR #597 open (`ceace0e7`, `fix/576-ticker-flush-independent-
+  drain`, mergeable), adversarial-reviewed GO-with-followups (raw benchmark
+  numbers need committing somewhere durable or explicit "reasoned default,
+  not measured" relabeling — see standing lessons); rechecking current
+  CI/consolidation state post-restart before merging.
+- `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
+  watch on `#579`/`#580`**, resumed post-restart; last clean reading
+  pre-pause: `dropped_after_max_attempts: 0`, `handler_timeouts_total: 0`,
+  `queue.depth: 0`, `settlement_resolver.pending: 8` — no regression
+  through the pause, independently re-verified `ddev-router` healthy itself
+  before resuming rather than trusting the coordinator's word.
+- `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **on the
+  YES-side auto-exit profit analysis** (gate condition 4 below): split-half
+  robustness check DONE (see below). The pnl+sentiment+staleness ablation
+  was killed
   mid-run **three times** by unexplained full-stack restarts before the
   Windows root cause was found — paused before a 4th attempt; resume by
   relaunching once the fleet is confirmed stable post-WSL-restart, not
