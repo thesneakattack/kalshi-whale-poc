@@ -284,6 +284,7 @@ async def _process_stream_trade(trade: dict) -> None:
                 state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {}, opened_since=now,
                 category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
                 tick_cache={}, latest_prices_updated_at=state["latest_prices_updated_at"],
+                latest_asks=state["latest_asks"],
             ):
                 await _handle_close_decision(close_decision)
         signals_emitted = len(signals)
@@ -448,6 +449,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
                     state["latest_prices"], state["signal_feed"], cfg_now, state.get("market_results") or {},
                     opened_since=now, category_by_ticker=_category_by_ticker(), close_times=_close_time_by_ticker(),
                     tick_cache=tick_cache, latest_prices_updated_at=state["latest_prices_updated_at"],
+                    latest_asks=state["latest_asks"],
                 ):
                     await _handle_close_decision(close_decision)
             # Safe under near-simultaneous callers (this WS site + trading_
@@ -464,6 +466,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
                 await _handle_fill_decision(fill_decision, now)
             for close_decision in position_netting.review(
                 broker, state["market_titles"], state["event_titles"], state["latest_prices"], cfg_now, now=now,
+                latest_asks=state["latest_asks"],
             ):
                 await _handle_close_decision(close_decision)
     bump_generation()

@@ -365,6 +365,190 @@ def unit_cost(side: str, yes_price: float | None) -> float | None:
     raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
 
 
+# Sentinel for sellable_quote's crossed_against: distinguishes "caller said
+# nothing, use yes_bid" from an explicit None meaning "there is no valid bid
+# to check crossing against, skip that check". A plain None default collapses
+# those two into one and silently reinstates the yes_bid comparison.
+_CROSSED_AGAINST_YES_BID = object()
+
+
+def sellable_quote(
+    side: str, yes_bid: float | None, yes_ask: float | None,
+    *, crossed_against: float | None = _CROSSED_AGAINST_YES_BID,
+) -> float | None:
+    """The price, in YES terms, at which an open `side` position can actually
+    be SOLD right now - or None when it cannot be sold at all.
+
+    Companion to unit_cost() above and deliberately in the same module: that
+    function answers "what does one contract of this side cost at this yes
+    price", this one answers "which yes price is this side's sale actually
+    struck at". Both encode the same one-sided convention, so a caller that
+    gets the first right and the second wrong still books the wrong money.
+
+    Kalshi returns yes bids and no bids only: "a bid for yes at price X is
+    equivalent to an ask for no at price (100-X)" (docs/kalshi/
+    get-market-orderbook.md:7). Reading that in the selling direction, the
+    bid a holder hits is yes_bid for a YES position and (1 - yes_ask) for a
+    NO one. Returning yes_ask for the NO case, rather than the NO bid
+    directly, keeps every caller on this app's one universal convention -
+    every price it carries is a yes price - so unit_cost(side, quote) turns
+    the result into per-contract dollars unchanged.
+
+    The 2026-09-04 incident this exists to prevent: exits priced BOTH sides
+    off state["latest_prices"] (yes_bid), valuing a NO position at
+    (1 - yes_bid) - the NO *ask*, what it costs to BUY no, not what a seller
+    receives. On an empty yes book (yes_bid 0.000) that paid $1.00/contract
+    as if the market had settled NO. 506 auto-exits booked +$174,727 against
+    -$72,361 of real settlements over two days, and the same phantom mark
+    maxed the auto-exit confidence factor so the exit fired.
+
+    Returns None rather than falling back to a guessed quote, in three
+    cases: no ask at all for a NO position, an ask of 1.00 (a NO bid of
+    0.00 - the empty-book shape above), and a book crossed against the bid.
+    A caller that must not refuse (a manual flatten) uses
+    forced_exit_quote() below instead of inventing its own fallback.
+
+    crossed_against: the bid the ask is checked against for a crossed book,
+    when that differs from the `yes_bid` used for pricing. services/exits/
+    exit_engine.py may substitute a REST-corroborated bid (up to 120s old,
+    from market_history) for the WS one before pricing a YES exit; comparing
+    a stale REST bid against a live WS ask is not like-for-like and would
+    refuse legitimate NO exits on a market that has genuinely moved, so that
+    caller passes the raw WS bid here while still pricing off the
+    corroborated one. Omitted entirely, it defaults to `yes_bid` (same
+    value for both jobs); passed as an explicit None it SKIPS the crossed
+    check, which is what a caller means when the ticker has no live quote
+    at all and `yes_bid` is only a historical entry-price fallback."""
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
+    if side == "yes":
+        # No bid at all means nobody will buy this YES position. A yes_bid
+        # of 1.00 is a NO ask of 0.00 - "a bid for yes at price X is
+        # equivalent to an ask for no at price (100-X)"
+        # (docs/kalshi/get-market-orderbook.md) - NO would be free, the
+        # identical not-a-real-quote class the NO branch's yes_ask <= 0.0
+        # guard below already catches, just unenforced on this side until
+        # now (2026-09-05 round-5 independent review, C1: this module's own
+        # "never pay $1.00/contract off a quote" invariant, enforced on the
+        # NO side since round 4, was unguarded here - unit_cost("yes", 1.0)
+        # is $1.00/contract fee-free, the exact fabrication this whole
+        # change set exists to kill, just approached from the other side).
+        if yes_bid is None or yes_bid <= 0.0 or yes_bid >= 1.0:
+            return None
+        return yes_bid
+    # yes_ask >= 1.00 is a NO bid of 0.00 - the empty-book shape that
+    # manufactured the phantom payouts. yes_ask <= 0.00 is not a real quote
+    # at all (YES would be free) and MUST be caught here: it is reachable
+    # whenever the bid is 0.0 or absent, so the crossed check below cannot
+    # fire, and unit_cost("no", 0.0) is $1.00/contract - the exact
+    # fabrication this change set exists to kill, on the automated exit path.
+    # Found 2026-09-04 round 4, which reported it only against
+    # forced_exit_quote; it was here too.
+    if yes_ask is None or yes_ask >= 1.0 or yes_ask <= 0.0:
+        return None
+    bid = yes_bid if crossed_against is _CROSSED_AGAINST_YES_BID else crossed_against
+    if bid is not None and yes_ask < bid:
+        return None
+    return yes_ask
+
+
+def forced_exit_quote(
+    side: str, yes_bid: float | None, yes_ask: float | None, *, unknown_fallback: float,
+) -> float:
+    """sellable_quote(), but never None - for the manual "get flat now" paths
+    (POST /api/trading/flatten-all, POST /api/trading/close-positions,
+    position netting) where refusing to close is not an option the caller
+    has, unlike an automated exit check that can simply leave the position
+    alone until the next tick.
+
+    Three cases, and the distinction between the last two is the whole point
+    of this function existing separately from sellable_quote():
+
+    - Sellable: the real quote, same as sellable_quote().
+    - A genuinely EMPTY book (yes_ask >= 1.00, i.e. a NO bid of 0.00):
+      ZERO proceeds - yes_price 0.0 for YES, 1.00 for NO, both of which
+      unit_cost() turns into $0.00/contract. Never the fabricated $1.00 the
+      old (1 - yes_bid) path produced. "Nobody will buy this" is worth
+      nothing, not everything; the 2026-09-04 repair credited exactly $0.00
+      to the one live position that hit this case
+      (KXETHD-26SEP0418-T2449.99, yes_ask 1.00 with zero resting size,
+      market resolving YES).
+    - An UNKNOWN quote - a NO position with no ask on file at all -
+      `unknown_fallback`, which every caller sets to the position's own
+      entry price so no P&L is invented in either direction.
+
+    That third case is not hypothetical and is why `unknown_fallback` is
+    required rather than defaulted (2026-09-04 adversarial review, D5):
+    state["latest_asks"] is deliberately sparse - main.py only writes a
+    ticker's ask when the exchange actually sent one, "genuinely missing,
+    not defaulted" - and measured live, 25 of 209 active markets (12%)
+    carried no ask at all. Folding missing data into the empty-book branch
+    would book a total loss on every one of those, which is a worse error
+    than the bug this whole change set exists to fix: the old code at least
+    fell back to a price near break-even. Missing data is not evidence of an
+    empty book.
+
+    Written out explicitly rather than delegating the decision to
+    sellable_quote(), because that function's single None answer collapses
+    three very different causes - unknown, empty, and contradictory - and a
+    forced exit has to price each one differently. Routing them all to
+    zero-proceeds was a real defect (2026-09-04 round-3 review): a CROSSED
+    book means the two quotes disagree, which is unknown, not worthless.
+    With state["latest_prices"] substituting a fabricated 0.5 for any
+    missing bid (`or 0.5` - and NOT only at main.py:1109: the same
+    fabrication is written at whale_stream_handlers.py:345, the WS primary
+    writer, and at main.py:495, which feeds the market_history snapshots
+    used as "independent" corroboration, so that corroboration is not
+    independent of this defect at all), a NO position on a market with a
+    real ask of 0.01 read as crossed and booked $0.00/contract against a
+    true value of $0.99 - measured live at 65 of 209 active markets. Note
+    that fabricated 0.5 is the root enabler here and is NOT fixed by this
+    function; see this module's callers and the PR's own follow-up note."""
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be exactly 'yes' or 'no', got {side!r}")
+    if side == "no":
+        if yes_ask is None:
+            return unknown_fallback                 # unknown: no ask on file
+        if yes_ask >= 1.0:
+            return 1.0                              # genuinely empty book -> $0.00/contract
+        # An ask of 0.00 is NOT a real quote (YES would be free) and must
+        # never fall through: unit_cost("no", 0.0) is $1.00/contract, the
+        # exact fabrication this change set exists to kill. Routed to the
+        # fallback rather than to zero-proceeds - deliberately diverging from
+        # the round-4 review's suggested `return 1.0`. This is an OBSERVATION
+        # from captured data, not documented Kalshi behavior (2026-09-05
+        # round-5 review, C4): docs/open-decisions.md (2026-09-01) already
+        # records that yes_ask_dollars' no-ask sentinel is "unconfirmed
+        # against docs/kalshi/" - get-market-orderbook.md gives the bid/ask
+        # equivalence but no empty-side sentinel, and
+        # docs/kalshi/sample_event_response.json:158's "1.0000" is one
+        # captured sample, not a schema statement. Either reading (1.0000 is
+        # the sentinel, or it isn't) leaves this branch's handling of 0.0 as
+        # the conservative choice: routed to the fallback, never to
+        # zero-proceeds or a payout, so the ambiguity does not change the
+        # money. The YES branch below keeps its mirror-image zero as a real
+        # $0.00, because a yes_bid of 0.00 IS a real and common state -
+        # nobody bidding - confirmed live on this app's own book snapshots
+        # (bid 0.0 / ask 1.0, both sizes 0).
+        if yes_ask <= 0.0:
+            return unknown_fallback                 # not a real quote -> unknown
+        if yes_bid is not None and yes_ask < yes_bid:
+            return unknown_fallback                 # quotes contradict each other -> unknown
+        return yes_ask
+    if yes_bid is None:
+        return unknown_fallback                     # unknown: no bid on file
+    if yes_bid <= 0.0:
+        return 0.0                                  # genuinely no bid -> $0.00/contract
+    # A yes_bid of 1.00 is a NO ask of 0.00 - not a real quote (NO would be
+    # free), the identical garbage class the NO branch's yes_ask <= 0.0 case
+    # above already routes to unknown_fallback rather than a payout. Left
+    # unguarded here until now, unit_cost("yes", 1.0) is $1.00/contract
+    # fee-free (2026-09-05 round-5 independent review, C1).
+    if yes_bid >= 1.0:
+        return unknown_fallback                     # not a real quote -> unknown
+    return yes_bid
+
+
 def breakeven_unit_cost(unit_cost: float, ticker: str | None = None) -> float:
     """The win probability a contract bought at `unit_cost` needs just to
     break even, expressed as a unit cost in dollars per contract (the two

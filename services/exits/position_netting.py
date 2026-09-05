@@ -168,16 +168,35 @@ def expected_value(profile: dict, members: list[tuple[str, object]], latest_pric
     return sum(probs.get(scenario, 0.0) * pnl for scenario, pnl in profile.items())
 
 
-def _unwind_now_value(members: list[tuple[str, object]], latest_prices: dict) -> float:
+def _unwind_now_value(
+    members: list[tuple[str, object]], latest_prices: dict, latest_asks: dict | None = None,
+) -> float:
     """Certain P&L if every position in `members` were closed right now at
     live prices - proceeds minus cost basis minus entry fee minus the real
     exit fee each leg would incur (services/kalshi_fees.py, the same
     formula PaperBroker.close_position itself uses). Unlike
     expected_value(), this needs no probability weighting - closing locks
-    in the outcome immediately, nothing left to be uncertain about."""
+    in the outcome immediately, nothing left to be uncertain about.
+
+    latest_asks (2026-09-04 adversarial review, D6): this is a SALE price,
+    not a probability, so it takes the side of the book each leg would
+    actually be sold into - yes_bid for YES, yes_ask for NO. Pricing a NO
+    leg at (1 - yes_bid) overstated its "close now" value on a thin book and
+    pushed close_all over the hold baseline; once the execution below was
+    corrected to the real bid but this was not, the decision and its
+    execution disagreed in the worst direction - recommending a close on
+    inflated value, then executing it at the true one. That is a strictly
+    worse failure than the original bug, where both were inflated together.
+    Deliberately NOT applied to _scenario_probabilities, which reads a
+    market's price as its implied probability - the bid is this app's
+    convention for that everywhere else."""
     total = 0.0
     for ticker, pos in members:
         price = latest_prices.get(ticker, pos.entry_price)
+        if latest_asks is not None:
+            price = kalshi_fees.forced_exit_quote(
+                pos.side, price, latest_asks.get(ticker), unknown_fallback=pos.entry_price,
+            )
         proceeds = pos.size * kalshi_fees.unit_cost(pos.side, price)
         exit_fee = kalshi_fees.taker_fee(pos.size, price, ticker=ticker)
         cost_basis = pos.size * kalshi_fees.unit_cost(pos.side, pos.entry_price)
@@ -187,6 +206,7 @@ def _unwind_now_value(members: list[tuple[str, object]], latest_prices: dict) ->
 
 def _best_variable_action(
     profile: dict, members: list[tuple[str, object]], latest_prices: dict, include_outside: bool,
+    latest_asks: dict | None = None,
 ) -> tuple[str | None, list[str], float | None]:
     """Evaluates trim_worst_leg and close_all against the hold baseline for
     a still-genuinely-outcome-dependent group. Returns (action, [tickers to
@@ -209,12 +229,12 @@ def _best_variable_action(
         remaining = [(t, p) for t, p in members if t != ticker]
         remaining_profile = payout_profile(remaining, include_outside) if remaining else {}
         remaining_ev = expected_value(remaining_profile, remaining, latest_prices) if remaining else 0.0
-        leg_value = _unwind_now_value([(ticker, pos)], latest_prices)
+        leg_value = _unwind_now_value([(ticker, pos)], latest_prices, latest_asks)
         improvement = (remaining_ev + leg_value) - ev_hold
         if improvement > best_trim_improvement:
             best_trim_ticker, best_trim_improvement = ticker, improvement
 
-    close_all_improvement = _unwind_now_value(members, latest_prices) - ev_hold
+    close_all_improvement = _unwind_now_value(members, latest_prices, latest_asks) - ev_hold
 
     candidates = [
         ("trim_worst_leg", [best_trim_ticker] if best_trim_ticker else [], best_trim_improvement),
@@ -273,6 +293,7 @@ def _materiality_bar(
 
 def describe_groups(
     broker, market_titles: dict, event_titles: dict, latest_prices: dict, cfg: dict, now: float | None = None,
+    latest_asks: dict | None = None,
 ) -> list[dict]:
     """Read-only view of every currently-open netting-eligible group, its
     payout profile, classification, and recommended action - the entire
@@ -332,8 +353,22 @@ def describe_groups(
             # NULL` instead - `trades.fee` already holds each leg's own
             # real per-leg fee, from this same taker_fee call at this same
             # price. See paper_broker.Trade.netting_exit_fee_usd.
+            # Priced at the SAME quote review() will actually execute at
+            # (2026-09-04 round-3 review): this used latest_prices for both
+            # sides while execution moved to the real bid, so for a NO leg
+            # the comment above - "this same taker_fee call at this same
+            # price" - had quietly become false, and the fee curve peaks at
+            # 0.5 and vanishes near 0/1, so the stored netting_exit_fee_usd
+            # could be off by ~100%.
             exit_fee_cost = sum(
-                kalshi_fees.taker_fee(pos.size, latest_prices.get(t, pos.entry_price), ticker=t)
+                kalshi_fees.taker_fee(
+                    pos.size,
+                    kalshi_fees.forced_exit_quote(
+                        pos.side, latest_prices.get(t, pos.entry_price),
+                        (latest_asks or {}).get(t), unknown_fallback=pos.entry_price,
+                    ) if latest_asks is not None else latest_prices.get(t, pos.entry_price),
+                    ticker=t,
+                )
                 for t, pos in members
             )
             entry["recommendation"] = {
@@ -343,7 +378,9 @@ def describe_groups(
                 "reason": "payout is negative under every possible outcome - the loss is already fixed regardless of timing; closing now frees up bankroll/position headroom instead of leaving it dead until settlement",
             }
         else:
-            action, tickers, improvement = _best_variable_action(profile, members, latest_prices, include_outside)
+            action, tickers, improvement = _best_variable_action(
+                profile, members, latest_prices, include_outside, latest_asks,
+            )
             bar, vol_ratio = _materiality_bar(members, min_edge, normal_vol, vol_lookback, now)
             # The two USD figures are rounded exactly as the reason sentence
             # formats them (:.2f), so the structured values - and the trades
@@ -373,6 +410,7 @@ def describe_groups(
 
 def review(
     broker, market_titles: dict, event_titles: dict, latest_prices: dict, cfg: dict, now: float | None = None,
+    latest_asks: dict | None = None,
 ) -> list[dict]:
     """Runs once per tick, after strategy.check_exits - group-level netting
     analysis on whatever survived per-position exit rules first (clean
@@ -381,13 +419,32 @@ def review(
     (position_netting.enabled, default False) - real automated
     position-closing action needs the same "ships fully built, off by
     default" treatment as auto_exit_enabled/kelly_fraction_of_cap
-    elsewhere in this app."""
+    elsewhere in this app. NOTE: "default False" is the CODE default only.
+    config/settings.yaml has enabled: true and has since before 2026-09-04,
+    so this module IS live and has executed real closes (6 in
+    paper_broker.db, 2 of them NO legs). Read "opt-in" as "was opted into",
+    not "is inert" - a 2026-09-04 review read the old wording as the latter
+    and nearly dismissed a live money defect on it.
+
+    latest_asks (2026-09-04): only the actual SALE below is repriced onto
+    the side of the book the position exits into - yes_bid for a YES
+    position, yes_ask for a NO one, since the NO bid is (1 - yes_ask).
+    Pricing a NO close off latest_prices (yes_bid) paid the NO *ask*, and on
+    an empty yes book that fabricated $1.00/contract. Deliberately NOT
+    threaded into the EV/scenario math in describe_groups above: those use a
+    market's price as its implied probability, where the bid is the app's
+    existing convention everywhere else, and changing that would silently
+    move every netting recommendation rather than just its execution price.
+    forced_exit_quote, not sellable_quote, because a netting decision that
+    has already been made must not half-execute."""
     net_cfg = cfg.get("position_netting") or {}
     if not net_cfg.get("enabled", False):
         return []
     now = now if now is not None else time.time()
     decisions = []
-    for group in describe_groups(broker, market_titles, event_titles, latest_prices, cfg, now=now):
+    for group in describe_groups(
+        broker, market_titles, event_titles, latest_prices, cfg, now=now, latest_asks=latest_asks,
+    ):
         rec = group["recommendation"]
         if rec["action"] == "hold":
             continue
@@ -396,6 +453,10 @@ def review(
             if pos is None:
                 continue
             price = latest_prices.get(ticker, pos.entry_price)
+            if latest_asks is not None:
+                price = kalshi_fees.forced_exit_quote(
+                    pos.side, price, latest_asks.get(ticker), unknown_fallback=pos.entry_price,
+                )
             reason = f"position netting ({group['status']}, event {group['event_ticker']}): {rec['reason']}"
             # Four structured values ride onto the trades row as columns:
             # the first three from issue #213 (the sentence's own numbers,

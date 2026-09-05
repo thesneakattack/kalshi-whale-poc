@@ -174,6 +174,7 @@ async def reset_broker(body: ResetBody = ResetBody()):
         if body.close_positions_first and not ranged:
             closed = broker.close_all_positions(
                 state["latest_prices"], f"reset: closed before {scope} reset",
+                latest_asks=state["latest_asks"],
             )
             cleared.append({"domain": "close_positions_first", "closed": len(closed)})
         # Archive BEFORE anything else is destroyed (2026-08-17 direct
