@@ -34,13 +34,20 @@ rate flat while drain falls).
    `candidate_log.db` with empty page cache is exactly when a cold-start
    pathology shows. **#549** (fault_log WAL cold-start race) is a known one.
 2. `GET /api/state` — confirm `running: true`, both WS streams connected.
-3. **Verify the safety state before anything else:**
+3. **🚨 THE DAILY-LOSS KILL SWITCH IS NON-FUNCTIONAL — see #584.** The UTC
+   rollover re-based `day_start_bankroll` to the *negative repaired* value
+   (-8338.35) and cleared `halted` -> 0 **automatically, not by a human**.
+   Nothing is trading, so nothing is at risk this instant — but there is **no
+   working loss guard** if anything resumes before David resets the bankroll.
+   Check this before anything is allowed to trade. Do not "fix" it by editing
+   risk state; the bankroll reset is David's own action.
+4. **Verify the safety state:**
    `grep -n auto_exit_enabled config/settings.yaml` must read **`false`**, and
    `git status --short config/settings.yaml` must still show ` M`. If either
    changed, something reset it — say so loudly, do not "fix" it silently.
-4. `git status --short` and `git log origin/main..HEAD --oneline` in the
+5. `git status --short` and `git log origin/main..HEAD --oneline` in the
    primary. Expect ~20 unpushed commits on `main` (see §5).
-5. `ls /run/user/1000/cc-socks/*.sock` + `/proc/<pid>` to see who is actually
+6. `ls /run/user/1000/cc-socks/*.sock` + `/proc/<pid>` to see who is actually
    back. **Do not trust `ListAgents` alone** — it showed a dead coordinator as
    live earlier tonight. `readlink /proc/<pid>/cwd` names each session's
    checkout and gives worktree occupancy for free.
@@ -59,7 +66,17 @@ so the work can be reclaimed — not an assignment to a name that no longer exis
 | `8f` | PR **#581** (#410) | `2eed9a7` pushed; CI + adversarial in flight — **killed** |
 | `d2` | PR **#575** | self-review posted, NO-GO; adversarial in flight — **killed** |
 | `64` | **#577** design, filed **#578** | design in progress, may be unposted |
-| `21` | app-health watch | filed **#576/#579/#580** |
+| `21` | app-health watch | filed **#576/#579/#580**; final readings posted |
+
+Also filed at shutdown: **#584** (kill switch non-functional). `8f` had not
+confirmed its shutdown state when this was written - check `2eed9a7` and #581
+for uncommitted or unpushed work first thing.
+
+**Both adversarial passes died to API rate limits, not to findings** - `d2`'s
+confirmed exactly one item (S4) before dying; `36`'s finished primary-source
+gathering and never wrote a review. Both posted INCOMPLETE comments. **Silence
+on the unchecked items is not "found nothing".** A fresh pass must run from
+scratch for #574 and #575.
 
 **Anything marked "killed" returned no verdict.** If a PR comment claims a
 review was running, it did not finish. Do not assume a GO.
@@ -93,8 +110,13 @@ path; leading **by elimination**, falsifier unmet. · **#577** `or 0.5`
 fabricated bids, 5 sites; root fix must be deeper than `or → is None`
 (a real `0.0` bid is mishandled, and wire types are mixed: 146 float / 38 str /
 25 None in one payload). · **#578** up to 1.43M contaminated snapshots;
-**6,504 provably** fabricated is the only hard bound; **re-derivation coverage
-from `series_watcher` is unmeasured and gates the purge decision**. · **#576**
+**6,504 provably** fabricated is the only hard bound. **Re-derivation coverage
+IS measured** (comment 5547552268): 14,246 of 1,433,666 sampled against
+`series_watcher.book_snapshots` -> **48.8% recoverable** (4.0% within +/-5s,
+13.4% +/-30s, 31.5% +/-300s); 51.2% have no raw coverage. Of recovered rows
+**93.2% were a real `0.0` bid, not a real 0.5** - so purge collateral damage
+drops from "up to 1.4M genuine values" to roughly **0.5% (~7k)**, which makes
+a purge far less costly than this doc's earlier framing implied. · **#576**
 ticker-coalescing starvation. · **#582** #571's cost mis-attribution (PR #583).
 · **#532** `rejection_events` — see §6.
 
