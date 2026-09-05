@@ -95,7 +95,18 @@ kalshi:
   # risk already disclosed above, not a new one.
   trade_exit_check_min_interval_sec: 2.0
   request_timeout_sec: 10
-  trade_stream_exchange_wide: true
+  # Scoped back to watchlist-only 2026-09-05 (direct product-scope decision,
+  # David): the whale-signal log was dominated by off-watchlist noise (see
+  # GH #595, Whale Watch Terminal trade tape Sports-dominated), and finding
+  # new whale-active markets is explicitly out of scope right now - focus on
+  # a few watched markets, expand later. This is the same flag the 2026-08-17
+  # exchange-wide rollout added (services/app_state.py's trade_stream
+  # construction, services/kalshi/websocket.py's exchange_wide_trades) -
+  # flipping it back to true (+ a real restart, see app_state.py's comment)
+  # re-enables exchange-wide whale discovery whenever that's back in scope.
+  # The exchange-wide code path itself (_resolve_unknown_markets and friends)
+  # is untouched, just unused while this is false.
+  trade_stream_exchange_wide: false
   market_lifecycle_stream_enabled: true
   top_series_per_category: 30
 realtime_data_plane:
