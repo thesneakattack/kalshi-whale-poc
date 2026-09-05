@@ -130,6 +130,22 @@ purge go-ahead.
 
 ## Standing lessons (apply, don't re-litigate)
 
+- **Dispatch subagents in parallel for independent pieces of a task list**
+  (David, 2026-09-05) — applies to every session including the coordinator.
+  Independent sub-tasks run on their own tracks and converge on
+  completion, rather than being worked one at a time in one context.
+  Doesn't change the self-review → adversarial-review → consolidation
+  stage order (consolidation genuinely needs both prior outputs) — it's
+  about how the content of any one stage gets built.
+- **Checkpoint/push regularly, but don't bombard GitHub with pushes/PRs/
+  comments all at once** (David, 2026-09-05) — with up to 4 sessions
+  hitting one repo's API, a simultaneous burst risks tripping GitHub's
+  rate limit (primary or secondary/abuse-detection) and stalling every
+  session's `gh`/API calls at once, not just the one that caused it.
+  Doesn't reverse "push ASAP once verified" — keep polling loops at
+  reasonable intervals rather than tight loops, and if a real rate-limit
+  error comes back, back off and retry with a delay rather than hammering
+  again immediately.
 - **Post durable findings to a PR or issue, never leave them only in
   chat.** Every real loss tonight was state that lived only in a session
   that then died.
