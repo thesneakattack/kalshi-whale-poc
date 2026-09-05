@@ -43,19 +43,31 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
   loop + the every-6s tick call) now fast. **Now on `#616`** (edge-gate
   enablement prerequisites): reading the full decision comment before
   starting spec D1's banded cost-aware gate diagnostic.
-- **`0d`** (was `62`) — mid-review on **PR #614** (`#599`'s fix: `fault_log.
-  summary()` no longer leaks a fault row's lifetime count into narrow
-  `hours=` windows; also fixed `soak_analyzer.check_event_loop_stalls`,
-  found silently pinned to permanent FAIL by the same bug class). Self-review
-  posted, adversarial review + CI in progress. Condition-4 YES-side analysis
-  is done for tonight (see gate section below) — correctly stopped rather
-  than push a fatigued per-tick-replay attempt.
-  **Next goal, independent of #614:** `#532`'s ~29.5M-row `min_contracts`
-  backlog purge — unblocked now (the write-path fix, PR #604, is already
-  merged and live; #614 is an unrelated #599 fix, not the trigger — caught
-  and corrected after an initial mix-up). Same pattern as `#578`:
-  checkpoint, backup, verify the sampling fix is holding, then get the
-  coordinator's explicit go before executing.
+- **`0d`** (was `62`) — **`#599` DONE, merged and deployed live** (PR #614,
+  `1453e63`, confirmed via `WatchFiles` + `merge-base --is-ancestor
+  ee3719e HEAD`; adversarial review added `idx_faults_first`). Also fixed
+  `soak_analyzer.check_event_loop_stalls`, found silently pinned to
+  permanent FAIL by the same bug class. Condition-4 YES-side analysis is
+  done for tonight (see gate section below) — correctly stopped rather
+  than push a fatigued per-tick-replay attempt. **Now on `#532`'s backlog
+  purge, mechanism-first**: caught and corrected its own mid-mistake
+  (started writing the purge mechanism on `#599`'s branch, would have
+  bundled two unrelated initiatives — reverted cleanly, moved to its own
+  branch). **PR #620** (mechanism only, nothing invoked against real data
+  yet): `candidate_log.prune_gate(gate_name, retention_hours, now,
+  batch_size)` mirrors `market_history.prune()`'s exact shape, scoped to
+  one named gate's `rejection_events` rows only, `rejected_candidates`
+  untouched for any gate, not wired into any automatic sweep — a one-off
+  tool for the manual purge, not a new standing policy. Self-review
+  honestly flagged one unverified assumption (no index covers the
+  `gate_name`+`rejected_at` filter; reasoned by analogy to `market_
+  history.prune()`'s own unindexed age filter, not measured) — adversarial
+  review dispatched specifically to verify that empirically. Already
+  confirmed once tonight, independent of #620: `#604`'s sampling fix is
+  holding live (`min_contracts` rows all carry `sample_weight=100.0`,
+  every other gate `1.0`, zero exceptions across the table's history).
+  Once #620 lands: full pre-purge checkpoint, then the coordinator's
+  explicit go before executing, same pattern as `#578`.
 - **`c4`** (was `32`) — free, two goals just assigned:
   1. Review **PR #618** — a 2-day-old completed branch (`fix/tier0-live-
      incident-remediation`, 7 commits: `_connect()` leak fixes across 5
