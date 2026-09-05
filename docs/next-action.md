@@ -1,439 +1,206 @@
 # Next action
 
-**Coordinator:** `autotrade-36` (chain tonight: `1f` → `48` → `01` → `05` →
-`36`, one continuous session — the SendMessage name changes on reconnect,
-memory doesn't). **Verify identity by direct reply before trusting a name**
-— `ListAgents`'s "started Xm ago" is not evidence of a fresh session, in
-EITHER direction: a WSL restart (2026-09-05, Windows `winnat` port-exclusion
+**Coordinator:** `autotrade-36` (chain tonight: `1f`→`48`→`01`→`05`→`36`, one
+continuous session — the SendMessage name changes on reconnect, memory
+doesn't). **Verify identity by direct reply before trusting a name, in
+EITHER direction** — a WSL restart tonight (Windows `winnat` port-exclusion
 fix, see `windows-port-exclusion-breaks-ddev-router` memory) was survived by
-all 4 fleet peers' MEMORY, but only 1 of 4 kept its SendMessage name — ask
-every time, don't assume either outcome.
+all 4 peers' memory, but only 1 of 4 kept its SendMessage name.
 
-**Peers and current task, as of this write, all reconfirmed post-WSL-restart:**
-- `c4` (was `32`, chain `df`→`8d`→`32`→`c4`, PR #574 author) — **`#578` DONE.**
-  Looped David in directly before executing (not just the coordinator's
-  relayed go — right call for something this destructive). Purged via the
-  real, production-tested `prune()` function (retention_hours=0, cutoff
-  pinned exactly to the fix commit `da4b93a`'s timestamp): 5,049,063
-  pre-fix rows deleted, 102 batches, 36.9s, 0 errors. Post-purge: 494,197
-  rows remain, ALL confirmed post-fix (oldest row timestamp exactly at the
-  cutoff), 0 hard-lower-bound fabricated rows, `integrity_check: ok`, app
-  stayed up throughout. Deliberately skipped `VACUUM` (a separate,
-  unapproved exclusive-lock operation) — file stays ~800MB with 84% of
-  pages on the freelist, reusable but not reclaimed; pre-purge backup
-  (`20260905T174550Z`) still available if ever needed. Free for next
-  assignment.
-- `49` (was `07`, kept memory AND name through the restart, separate
-  lineage, independent reviewer) — **`#576` DONE, merged and deployed live**
-  (PR #597, merge commit `70fc147`, pulled onto the primary and confirmed
-  live via `WatchFiles` + `merge-base --is-ancestor 2546f5c HEAD`). Family
-  B (independent scheduled flush) shipped over A (A's own benchmark showed
-  it structurally can't help under the mechanistically plausible trigger —
-  semaphore/resolve contention suspends the consumer before A's counter
-  check ever runs). The adversarial review's benchmark-falsifiability
-  followup was self-resolved after its recovering subagent didn't survive
-  the WSL restart: `49` recovered the script from disk, re-verified it
-  against the PR's actual shipped code, fixed a real `quality_audit`
-  boundary finding along the way, added a smoke test, committed the raw
-  benchmark output as a durable artifact (`33a83e2`). PR was briefly
-  auto-closed by an unrelated coordinator docs commit's phrasing (see
-  standing lessons), reopened cleanly, no state lost. **`#579`/`#580`
-  shared-2-worker-pool hypothesis: FALSIFIED**, real numbers (PR #600,
-  benchmark harness + raw output committed) — sub-second p95 under every
-  current-state scenario including a synthetic reproduction of #580's own
-  reported surge (p95 307ms vs. the 10s timeout); a positive control
-  (re-adding the pre-#581 diagnostic routes) reproduces the original
-  failure exactly, proving the harness genuinely detects the mechanism
-  when present. **Real, previously-unknown root cause found for #580**:
-  an unindexed full-table scan in `candidate_log.py`'s settlement path
-  (`rejected_candidates WHERE resolved = 0`, no index, 258k+ rows) — caps
-  throughput at ~2-3 tickers/sec vs. the 9.16/sec surge rate. Independently
-  re-verified by both `49` and the coordinator (`EXPLAIN QUERY PLAN` shows
-  `SCAN rejected_candidates`). Filed as **#601** with 3 competing fix
-  families tabled, none implemented yet per the data-plane HARD RULE.
-  `#579`'s original trigger stays genuinely unidentified; `#580` re-scopes
-  to #601's real mechanism. Both issues stay open — only the shared-pool
-  hypothesis is closed. **#601 benchmark landed** (PR #603, docs-only,
-  own full review cycle): no new index needed at all — the existing
-  composite PRIMARY KEY `(ticker, strategy, gate_name)` already gives
-  ticker-scoped queries a fast plan (`EXPLAIN QUERY PLAN` confirmed).
-  Family 1 (index on `resolved`) rejected — barely helps, can regress
-  1275x without `ANALYZE`. **Family 2 (ticker-scoped UPDATE) chosen**:
-  13.87s→0.943s at real N=50 batch size (14.7x), zero change to
-  `settlement_resolver`'s loop or its per-ticker failure isolation,
-  byte-identical output verified. Family 3 (batching) rejected in its
-  naive single-transaction form (one poisoned ticker fails the whole
-  batch — a real completeness regression) but a per-ticker-commit variant
-  adds 2.6x more (38.4x total) while preserving isolation — approved as a
-  bounded follow-on to Family 2, not standalone. **Priority raised**: `49`
-  independently re-verified a second, previously-unknown call site
-  (`main.py:487`, fires unconditionally every 6s tick) — this isn't just
-  a settlement-surge ceiling, it's a continuous tax on the same pool the
-  whale-decision path shares. Implementation (Family 2 + bounded Family 3)
-  in progress.
-- `ea` (was `bd`, chain `d2`→`24`→`bd`→`ea`, PR #575 owner) — **standing
-  watch, broadened 2026-09-05 from `#579`/`#580`-only to general app
-  health** (David: nobody was covering this) — now also runs the full
-  CLAUDE.md check order (`/api/quality/summary`, `/api/health/faults`,
-  `/api/observability/summary`, `/api/health/storage`) on the same cadence.
-  Coordinator's own pass found: normal-range event-loop stalls (few/min,
-  mostly <200ms, one 3s spike), a brief SQLite lock episode ~20min prior
-  (2 occurrences, nothing since), 2 observability warnings (`kalshi_client`
-  rate-limit hits 6/23 samples, `settlement_edge.db` grew 2.7x/23.6h) —
-  none urgent. **#599 filed**: `/api/health/faults`'s `hours=` window leaks
-  one legacy fault signature's all-time count into any query — cross-check
-  individual `faults[].last_seen`, don't trust `summary.total_occurrences`
-  for that one signature (id 24009). `ea` independently re-verified all 4
-  endpoints (not taking the coordinator's summary at face value) and added
-  one clarification worth keeping: `/api/quality/summary`'s
-  `diagnostics.overall: "fail"` is NOT a new incident — it's `series_funnel`
-  flagging the already-documented pricing/edge gap (CLAUDE.md's own
-  "Standing goal": KXBTC15M/KXETHD underwater after fees at entry,
-  0.60-0.95 unit-cost band negative-EV, designed not implemented) plus
-  sparse-series `unknown`s (zero closed positions in 24h). Don't mistake
-  this `overall: fail` for a data-plane regression.
-- `0d` (was `62`, chain `64`→`a2`→`62`→`0d`, `#577`/`#578` owner) — **YES-side
-  auto-exit profit analysis (gate condition 4) — done for tonight, stopped
-  at the right point.** Found and fixed a real O(n²) bug in its own
-  analysis script first (8.75hr honest ETA collapsed to ~100s, verified
-  identical output before trusting it). Survived a live bankroll reset
-  mid-run cleanly (switched to `trade_archive`'s pre-reset epoch, disclosed
-  a real limitation rather than risk a new discrepancy). Ran the controlled
-  clean-vs-contaminated-price comparison: **contamination confound now
-  proven** (pnl/composite both flip sign when re-priced clean, staleness
-  identical as an internal-consistency check) **but a real unexplained gap
-  remains even clean** (~$58k short of the fair target) — leading
-  hypothesis is sampling-cadence, unconfirmed. Correctly declined to push
-  into a real per-tick replay (materially harder, would need a fresh
-  approach) rather than force a fatigued attempt. Condition 4 stays open;
-  see detail above. **`#532` DONE, merged and deployed live** (PR #604,
-  `da1a0d7`, confirmed via `WatchFiles` + `merge-base --is-ancestor
-  6977c93 HEAD`): `record_rejection()` now Bernoulli-samples the
-  `min_contracts` gate at 1/100 (that gate alone was 98.98%/29.5M of
-  29.8M rows; every other gate stays fully recorded, unsampled).
-  `rejected_candidates` (the dedup table) is never sampled for any gate.
-  New `sample_weight` column makes `population_gate_summary()`'s
-  rejected/resolved counts unbiased Horvitz-Thompson estimates
-  (`SUM(sample_weight)` not `COUNT(*)`) — deliberately NOT applied to
-  ratio/mean stats (win rate, avg unit cost) or the `min_samples=30` gate
-  itself, since weighting that gate up would make it *less* protective for
-  the exact case it exists to catch. 8 tests verify the split actually
-  fires, not just asserted. Full self-review/adversarial-review/
-  consolidation cycle, CI green on all 6 required contexts, one cosmetic
-  nit fixed before merge. Scope is write-path only, matching `#578`'s
-  precedent — the existing ~29.5M-row `min_contracts` backlog is untouched,
-  explicitly flagged as its own follow-up needing a separate backup/
-  checkpoint/go-ahead. Free for next assignment.
+**Safety, check every session start:** `auto_exit_enabled: false` and
+`risk.max_daily_loss_pct: 0` in `config/settings.yaml`, both uncommitted
+(David's own edits) — must stay uncommitted and unchanged.
+`kalshi_account.trading_enabled` stays `false`. Never touch any of these
+without David. **Kill switch is currently TRIPPED** (`risk.halted: true`,
+"Daily loss limit hit", 2026-09-05T21:00:37Z) — working as designed on the
+first paper loss after the reset, not a bug. David said this is fine as-is;
+awaiting his direction on when/whether to clear it. A third, unexplained
+config diff also sits uncommitted: `whale_watcher_kalshi.min_contracts.
+KXBTC15M: 2500 → 2000` — provenance unknown, nobody on the fleet claims it,
+flagged to David directly, not yet resolved.
 
-`ef` (original app-health watch owner) is confirmed gone, not renamed.
+**Infra:** `ddev-router` outage (Windows port-exclusion) resolved via WSL
+restart — `windows-port-exclusion-breaks-ddev-router` memory has the full
+signature if it recurs. Live app healthy, DB integrity confirmed.
 
-**Safety, check every session start:** `auto_exit_enabled: false` in
-`config/settings.yaml`, uncommitted (David's own edit) — must stay
-uncommitted and unchanged. `kalshi_account.trading_enabled` stays `false`.
-Never touch either without David.
+---
 
-**Bankroll reset + risk lockdown (David, 2026-09-05 ~20:42Z):** paper
-bankroll reset to a clean $10,000 (pre-reset trade history archived,
-`trade_archive` `epoch_id=9`, "pre-reset 2026-09-05 20:42", 2,184 trades —
-not destroyed). `risk.max_daily_loss_pct` set to `0` (also uncommitted,
-same pattern as `auto_exit_enabled`) — reactive, not preemptive: trips the
-kill switch on the first position showing any loss, does not block a new
-position from opening in the meantime. `running` was briefly toggled
-`false` then back to `true` at David's explicit request, specifically
-because `state["running"]` gates whale-signal detection/logging itself
-(`whale_stream_handlers.py:233`, verified in source) — pausing the loop
-was found to ALSO stop signal logging, not just position-opening, which
-David did not want. **No existing flag decouples "block new entries" from
-"keep signal detection running"** — `running: true` + `max_daily_loss_pct:
-0` is the current compromise; a real decoupling fix is a named, not-yet-
-requested follow-up if David wants a true preemptive block later.
+## Peers — current task and next goal
 
-**Kill switch tripped as designed (2026-09-05T21:00:37Z, found by `ea`'s
-resumed watch):** `risk.halted: true`, `"Daily loss limit hit: -1.2%"`,
-equity $9,793.22 vs. the $10,000 reset — the `max_daily_loss_pct: 0`
-setting above did exactly its job on the very first loss. Real trading
-confirmed still off throughout (`trading_enabled: false`), paper-only.
-Not the #584-style silent-clear bug (verified currently, actively halted,
-not cleared). `ea` correctly did not touch it — clearing a halt is
-explicitly David's own action. Awaiting David's direction on the halt.
+- **`49`** (was `07`) — mid-review on **PR #617** (`#601`'s fix: ticker-scoped
+  UPDATE replacing an unindexed full-table scan in `candidate_log.py`'s
+  settlement path, ~14.7x, plus a bounded per-ticker-commit batching
+  complement, ~38.4x total — both call sites, including a previously-unknown
+  continuous 6s-tick tax on the shared whale-decision pool). Self-review
+  posted, adversarial review + CI in progress.
+  **Next goal once #617 merges:** issue **#616** (edge-gate enablement
+  prerequisites) — spec D1's banded cost-aware gate diagnostic specifically,
+  sequenced "after #601's index fix," so `49` is the natural owner.
+- **`0d`** (was `62`) — mid-review on **PR #614** (`#599`'s fix: `fault_log.
+  summary()` no longer leaks a fault row's lifetime count into narrow
+  `hours=` windows; also fixed `soak_analyzer.check_event_loop_stalls`,
+  found silently pinned to permanent FAIL by the same bug class). Self-review
+  posted, adversarial review + CI in progress. Condition-4 YES-side analysis
+  is done for tonight (see gate section below) — correctly stopped rather
+  than push a fatigued per-tick-replay attempt.
+  **Next goal, independent of #614:** `#532`'s ~29.5M-row `min_contracts`
+  backlog purge — unblocked now (the write-path fix, PR #604, is already
+  merged and live; #614 is an unrelated #599 fix, not the trigger — caught
+  and corrected after an initial mix-up). Same pattern as `#578`:
+  checkpoint, backup, verify the sampling fix is holding, then get the
+  coordinator's explicit go before executing.
+- **`c4`** (was `32`) — free, two goals just assigned:
+  1. Review **PR #618** — a 2-day-old completed branch (`fix/tier0-live-
+     incident-remediation`, 7 commits: `_connect()` leak fixes across 5
+     modules + a health-probe timeout bound) recovered from disk and pushed
+     tonight. Explicitly unreviewed — needs the full self-review/adversarial/
+     consolidation cycle before it's mergeable.
+  2. Drive **issue `#150`** to an actual decision. What was chased tonight as
+     a "new" stall emergency (`#605`) turned out to be a duplicate of this
+     already-known, already-deferred issue: `asyncio.wait_for`'s timeout
+     can't actually kill the underlying OS thread once running, so every
+     handler timeout leaks a worker slot from the shared pool — confirmed
+     live, magnitude matches exactly (~9.3-9.6s stalls against a 10s
+     timeout). `#150` names two competing fixes (dedicated smaller thread
+     pool, or root-cause the SQLite hang) — benchmark and compare them with
+     the same rigor `49` gave `#601`, don't pick one blind.
+- **`ea`** (was `bd`) — standing watch, broadened to general app health
+  (`/api/quality/summary`, `/api/health/faults`, `/api/observability/
+  summary`, `/api/health/storage`) plus `#579`/`#580`. Currently clean;
+  briefed that `#150`'s stall pattern and a likely upcoming `#532` backlog
+  purge are both expected, not fresh incidents. **Next goal:** keep watching
+  on the same cadence, flag genuine deviations from documented baselines.
 
-**Infra: `ddev-router` outage RESOLVED (2026-09-05)** — traced to Windows
-port exclusion (`winnat` dynamically excluding port ranges that collide
-with Docker Desktop's WSL2 port-forwarder), fixed by David restarting WSL.
-Confirmed post-restart: `ddev-router` `Up ... (healthy)`, `paper_broker.db`/
-`market_history.db` both `PRAGMA quick_check: ok`, app live. Also explained
-3 unexplained full-stack container restarts that night (all 4 peers
-independently confirmed zero `ddev restart`/`stop`/`start` from their own
-history) — see `windows-port-exclusion-breaks-ddev-router` memory for the
-full signature and remedy if this recurs. `https://autotrade.webfoundry.dev`
-(the separate `traefik` container) was the working access point during the
-outage but goes down with everything else during the WSL restart itself.
+`ef` (original app-health watch owner) confirmed gone, not renamed.
 
 ---
 
 ## THE ACTION: bankroll-reset / re-enable-trading gate
 
 David asked to be alerted when it's safe to reset the bankroll and
-re-enable `auto_exit_enabled`. **This is the single tracker for that
-question — do not create another one.**
+re-enable `auto_exit_enabled`. **Single tracker — do not create another.**
+(Note: the bankroll itself was separately reset tonight per David's own
+direct action, independent of this gate being met — see Safety above. This
+gate is specifically about re-enabling `auto_exit_enabled`/live strategy
+trust, which stays a distinct question.)
 
-1. `#574` (exit-valuation fix) merged — ✅ `244372b`.
-2. Deployed live, confirmed reload (not just merged) — ✅ 2026-09-05T09:44Z,
-   `WatchFiles` named the changed files, fresh server process,
-   `merge-base --is-ancestor 244372b HEAD` true.
+1. `#574` (exit-valuation fix) — ✅ merged `244372b`, confirmed live.
+2. Deployed + reload confirmed — ✅ 2026-09-05T09:44Z.
 3. Observed live for a real stretch, no new exit-pricing anomalies — ⬜
-   window opened 09:44Z, not yet long enough to call.
-4. Unexplained YES-side auto-exit profit addressed — ⬜ **in progress, see
-   below.**
-5. No active data-completeness incident — ⬜ trending positive
-   (`#579`/`#580` showed a clean 16-minute drain with zero drops after
-   `#581`), not resolved; both stay open pending more evidence.
+   window reopened after tonight's reset; too short to call again.
+4. Unexplained YES-side auto-exit profit addressed — ⬜ real progress, not
+   resolved (detail below).
+5. No active data-completeness incident — ⬜ `#579`/`#580`'s shared-pool
+   hypothesis falsified, real mechanism found and being fixed (`#601`,
+   `49`); `#150` (separate mechanism) still open, being scoped (`c4`).
 
 **0 of 5 fully met.**
 
-### Condition 4 detail — YES-side profit
+### Condition 4 — YES-side profit (`#591`), current state
 
-- Mirror-bug ruled out: checked directly against `trades.price`, zero of
-  279 rows hit `price>=1.0`.
-- **Headline figure was wrong, now corrected** (`62`, issue #591, verified
-  independently to the cent against live `paper_broker.db`): "279 exits,
-  +$68,589" double-counted 77 already-corrected rows whose stale
-  `(realized ±X.XX)` ledger text was never rewritten by
-  `correct_erroneous_close()` (it flips `excluded` and adjusts bankroll,
-  not the ledger text). **Real: 202 trades, $60,276.44, 94.6% win rate**
-  (77 excluded = $8,312.41 + 202 real = $60,276.44 = $68,588.85, confirming
-  the mechanism, not just the correction).
-- Selection-bias falsifier (naive "sell after +X%" across all 664 YES
-  entries): finds real but far smaller money ($12–19k vs $60,276.44) — not
-  pure artifact, not proof of genuine composite edge either.
-- **Split-half robustness check DONE** (`62`, dispatched as a parallel
-  subagent, 2026-09-05): cross-validated against #591's own figures —
-  99+103=202 auto-exits, $19,204.93+$41,071.51=$60,276.44, verified
-  independently to the cent by the coordinator. Naive-rule gap appears in
-  BOTH halves (41.0%/20.0% of real) — not a single-period artifact.
-  Independently pinned the underlying-bug timeline sharper than the
-  original framing: #574 merged the day AFTER the window ended
-  (2026-09-05T09:41:47Z), #577 closed entirely after
-  (2026-09-05T10:19:40Z), #578 still open today — verified directly via
-  `gh` by the coordinator, not just relayed.
-- **David's decision: commission the larger analysis, both avenues.**
-  Assigned to `62`/`0d` (same continuous session). Feasibility checked
-  first, verified independently: **avenue 1 (out-of-sample window) is
-  genuinely impossible** — the entire trade history is one ~2-day window,
-  zero trades in 18.87h+ and still climbing; substitute is a labeled
-  split-half *robustness, not validation* check. **Avenue 2 (factor
-  isolation) is feasible and narrower than expected** — `analyst_divergence`
-  and `series_track_record` proven zero-contributors from source (empty
-  table; zero config weight), leaving `pnl` (done) + `sentiment` +
-  `staleness` as the real ablation.
-- **Factor-isolation ablation completed 2026-09-05, but result is
-  INCONCLUSIVE, not a resolution of condition 4** — `0d` explicitly flagged
-  this itself rather than let a dramatic number stand unqualified. Full
-  composite replay (pnl+sentiment+staleness): **-$4,342.79**, sharply
-  diverging from the real +$60,276.44 (pnl alone +$7,665; sentiment alone
-  -$40,007; staleness alone -$44,510 — both net-negative in isolation).
-  **Two real, unresolved confounds identified, not yet separated:**
-  (1) 7.6% of the 198,962 snapshot-points walked are exactly `0.5` —
-  measured contamination from the pre-#577-fix fabricated-price era, a
-  real fraction of which are fake, not real, bids; (2) the replay only
-  evaluates at `market_history.snapshots` cadence (~5-6s/ticker), far
-  sparser than the live system's actual per-tick evaluation — could
-  systematically under-fire relative to what really happened. **Do not
-  treat -$4,342.79 as evidence the composite lacks edge** until one of
-  these is fixed or the approach is explicitly acknowledged as unable to
-  answer the question with available data. Full results + caveats posted
-  to #591.
-- **Controlled follow-up completed (2026-09-05): contamination confound
-  now PROVEN, not just suspected — but it isn't the whole story.** Same
-  291 entries, same formula, only the price source swapped
-  (`series_watcher.book_snapshots`, confirmed clean, vs. the original
-  `market_history.snapshots`): `pnl`-alone flips sign entirely (-$23,942.73
-  clean vs. +$15,122.08 original, a $39,065 swing); full composite also
-  flips sign (-$24,529.22 vs. +$10,541.39, $35,071 swing). Internal
-  consistency check: `staleness` (never reads price) is IDENTICAL to the
-  cent between both runs — proves the swing is genuinely price
-  contamination, not a bug in the comparison itself. **But even clean, a
-  real unexplained gap remains**: these 291 entries are only ~56% of real
-  auto-exit profit (fair target ~$33,700-34,000 for this subset), and the
-  clean replay still gives -$24,529 — ~$58k short, still wrong sign.
-  Leading remaining hypothesis is the sampling-cadence confound (still
-  unconfirmed, not a second proof) — resolving it needs a real per-tick
-  replay, a materially harder undertaking `0d` correctly declined to start
-  tonight rather than push a fatigued, ad hoc attempt at it. **Condition 4
-  stays open.** Real progress stands (mirror-bug ruled out, headline figure
-  corrected, contamination confound now proven) but the core edge-vs-
-  selection-bias question is unresolved. Full write-up on #591.
+Mirror-bug ruled out; headline figure corrected from a double-counting bug
+(202 trades, $60,276.44, 94.6% win rate — not the original $68,589/279);
+naive-rule selection-bias falsifier and split-half robustness check both
+done. Factor-isolation ablation (`0d`) found the composite replay diverges
+sharply from real profit, but proved why: a controlled clean-vs-
+contaminated-price comparison shows the **contamination confound is real**
+(pnl/composite flip sign entirely when re-priced on clean data; `staleness`,
+which never reads price, is identical between runs — internal-consistency
+proof it's genuinely price contamination). **But even clean, a real ~$58k
+gap remains unexplained** for the tested subset — leading hypothesis is the
+replay's sampling cadence being sparser than the live system's real
+per-tick evaluation, unconfirmed. Resolving that needs a materially harder
+real per-tick replay; `0d` correctly declined to force that attempt while
+fatigued tonight. **Condition 4 stays open.** Full detail and numbers on
+issue `#591`.
 
 ---
 
-## Standing priority (David, 2026-09-05 — reinforced later the same night)
+## Standing priorities (David, verbatim, both nights)
 
 > "Right now the priorities are the data plane overall integrity and
 > accuracy and near-zero latency, and also fixing the errors downstream of
-> that so we can confidently turn trading back on... resetting whole
-> tables and pruning table rows etc is totally allowed... as long as the
-> math is right, I am okay starting from 0 for everything."
+> that so we can confidently turn trading back on... resetting whole tables
+> and pruning table rows etc is totally allowed... as long as the math is
+> right, I am okay starting from 0 for everything."
 
 > "Remember to stay on track with the 2 priorities I gave at the start: the
 > data-plane and the logged data integrity - no corruptions due to software
 > problems, no contaminations due to mishandled logic (like what caused the
 > trade log issues, losses being counted as wins, etc)."
 
-**Two named priorities, not one blended one — read every open thread against
-both:** (1) the data plane itself (completeness/accuracy/flow-rate/
-timeliness/fidelity/speed, per CLAUDE.md's HARD RULE), and (2) logged data
-integrity specifically — no software-caused corruption, no mishandled-logic
-contamination. The named failure pattern ("losses being counted as wins")
-is exactly the NO-side exit-valuation bug (PR #574) and the #591
-double-counting bug — both already-caught instances of priority 2, not
-hypothetical. `0d`'s YES-side ablation is priority-2 work by this
-definition (distinguishing genuine profit from a logic-contamination
-artifact), not a side investigation — keep it framed that way.
+Two named priorities, read every open thread against both: (1) the data
+plane itself (completeness/accuracy/flow-rate/timeliness/fidelity/speed,
+CLAUDE.md's HARD RULE), (2) logged data integrity specifically — no
+software-caused corruption, no mishandled-logic contamination. The NO-side
+exit-valuation bug (`#574`) and the `#591` double-counting bug are both
+already-caught instances of priority 2, not hypothetical — `0d`'s YES-side
+work is priority-2 work by this definition, not a side investigation.
 
-- **Tier 1 (data-plane):** `#577` (fabricated `or 0.5` prices) — **done,
-  merged, deployed, verified live** (392/392 current markets have a real
-  price, zero at exactly 0.5). `#579`/`#580` (whale-print drops /
-  `tick_executor` contention) — mitigated by `#581`, trending clean, not
-  formally closed.
-- **Tier 2 (downstream):** `#574` — **done**, see gate above.
-- **Purge authorization** (bounded): resetting/pruning `data/*.db` tables
-  is fine once the write path is verified correct. Order, unchanged:
-  fix → verify → **pre-purge checkpoint** (confirm nothing still needs the
-  current data for analysis, take a full backup, get an explicit go from
-  the coordinator) → purge. Simplifies `#578` (contaminated
-  `market_history` snapshots) from "recover what's recoverable" to "fix
-  `#577`'s write path [done], then purge" — the recovery measurement
-  already done (48.8% recoverable, 93.2% of those a real 0.0) isn't
-  wasted, just no longer required first. Same logic applies to `#532`.
-- **Lean-execution policy** (PR #587, merged): self-review + independent
-  adversarial review + consolidation still required at every stage of any
-  multi-stage pipeline, PR or otherwise — but sized to the content. Shrink
-  artifacts, never skip one. No pre-merge courtesy pings required; a
-  session holding a genuine GO can act on it without a second blessing.
+**Lean-execution policy** (PR #587): self-review + independent adversarial
+review + consolidation still required at every PR/pipeline stage, sized to
+the content — shrink artifacts, never skip one.
 
 ---
 
-## Open issues
+## Tonight's Fable-model decision pass (David's delegation, 2026-09-05)
 
-- **`#579`** trade-class whale-print loss (14,172 historical, gate-survivors,
-  `QueueFull` before the consumer) — root cause open; diagnostic-route
-  hypothesis falsified for that burst. **`#580`** settlement backlog
-  sharing `tick_executor`'s 2-worker pool — leading by elimination,
-  falsifier unmet. Both mitigated by `#581`, neither formally closed.
-- **`#578`** — **DONE, purged.** 5,049,063 pre-fix `market_history.snapshots`
-  rows deleted via `prune()` cut exactly to the `#577` fix commit's
-  timestamp (`da4b93a`), 102 batches, 36.9s, 0 errors. 494,197 rows remain,
-  all confirmed post-fix, 0 fabricated, `integrity_check: ok`. `VACUUM`
-  deliberately skipped (unapproved); backup preserved
-  (`20260905T174550Z`). Was blocked earlier on `0d`'s YES-side ablation
-  actively querying this same table live — resolved by waiting for that
-  work to finish rather than racing it.
-- **`#532`** `rejection_events` unbounded growth — 29.8M rows, 98.98% from
-  one gate (`min_contracts`, ~23.8M resolved samples against a
-  `min_samples=30` threshold — wildly oversampled). Measured rate spans
-  18–32 rows/sec depending on method (not a single clean number); the
-  "4.2x/week" multiplier mechanically decays as the base grows while the
-  absolute rate doesn't — don't read a smaller multiplier later as
-  improvement. Coordinator recommendation: sample `min_contracts` at write
-  time, keep every other gate whole.
-- **`#589`** — DONE via PR #592 (recorded in `open-decisions.md`, still
-  genuinely open there pending `#578`'s purge decision). **`#590`** — DONE,
-  PR #593 merged (`4c0e11b`): bounded single-assignment reaching-definition
-  resolution closes both the ternary and intermediate-variable fabrication
-  shapes; real remaining limits (reassignment, branch-scoped, cross-function)
-  documented, not claimed as full coverage.
-- **`#576`** ticker-coalescing starvation — **DONE, merged and deployed
-  live** (PR #597, `70fc147`; observability-persistence half PR #594,
-  `a2e9757`). Mechanism: `_consume_market_from` only services the ticker
-  map when the trade queue happens to empty, unbounded under sustained
-  load. Family B (independent scheduled flush) shipped over A per real
-  benchmark numbers — see peer roster above for detail.
-- **`#595`/`#596`** — DONE, merged (`9870b76`). Whale Watch Terminal's trade
-  tape was exchange-wide (Sports >95%) despite being labeled
-  "watchlist-only" — `state["trade_tape"]`'s streaming-path insert had no
-  watchlist filter. **David's decision: go watchlist-only, not fix the
-  filter** — off-watchlist whale discovery is out of scope right now
-  (signal log noise, "focus on a few markets and then expand" later).
-  Flipped the existing `trade_stream_exchange_wide` config flag to `false`
-  (already the purpose-built knob, no new code) — reversible by flipping it
-  back + a real restart whenever exchange-wide is back in scope. Live-
-  verified: `mode: stream` (not degraded to polling), `exchange_wide:
-  false`, trade tape watchlist-only. Caused the `ddev-router` incident
-  above as a side effect of the required restart, not of the change itself.
-- **Connectivity-badge fix** — DONE, merged (PR #598). Root-caused a David
-  report of "the whole dashboard looks stale" while using the
-  `autotrade.webfoundry.dev` tunnel workaround above: loading the page as
-  `https://user:pass@host/...` (credentials embedded in the URL) makes the
-  Fetch spec throw on every same-origin `fetch()` from then on, forever —
-  not a backend defect, the backend was fully live the whole time. Fix
-  distinguishes this permanent failure from an ordinary transient
-  connection drop and tells the viewer to reload with the bare URL instead
-  of showing a countdown that will never resolve on its own. Live-verified
-  both branches via chrome-devtools before and after merge, adversarial
-  review GO.
+David delegated the entire `docs/open-decisions.md` backlog for direct
+decisions ("review open-decisions and next-action and make the decisions on
+your own using fable"). Result, independently spot-checked by the
+coordinator before trusting it (branch-protection status, the recovered
+tier0 branch, and the Kalshi no-ask-sentinel finding all held up): 41 of
+~42 lines decided, 10 new issues filed (`#606`–`#613`, `#615`, `#616`), 11
+decisions posted on existing issues/PRs. Full reasoning lives on each
+GitHub item, not duplicated here. Two things surfaced that need David
+specifically:
 
-## Decisions waiting on David
+1. **`main` branch protection is genuinely OFF**, not just API-unreadable —
+   triple-confirmed independently (`GET /branches/main` → `"protected":
+   false`, both via `gh api` and a raw `curl` bypassing `gh` entirely; a
+   peer's own initial recheck hit the same old 403 by querying the
+   different, Pro-gated `/branches/main/protection` sub-resource, then
+   found the correct endpoint and confirmed it themselves too). The
+   `branching-and-ci.md` doc's description of a configured required-
+   status-check gate is stale. Interim practice (manually read
+   `commits/<sha>/status` before every merge) is already standing
+   behavior — restoring real enforcement needs GitHub Pro or a public
+   repo. Tracked as `#615`.
+2. The unexplained `KXBTC15M` config diff noted in Safety above.
 
-**Tracked in `docs/open-decisions.md`, per CLAUDE.md — the single list of
-parked decisions, not duplicated here.** Cleaned up 2026-09-05 (~63 lines
-→ 51): removed everything marked `RESOLVED` per the file's own convention,
-trimmed 3 entries that mixed a resolved narrative with a still-open
-decision down to just the open part. Six items from tonight specifically:
-`ef662c0`'s home, whether the rebuild-on-`signal_log` plan still applies,
-`#532`'s retention design, `#578`'s purge go-ahead, `#589`'s
-schema-column timing, and the branch-protection-API 403 gap. The other
-~45 lines are a genuine backlog dating back to 2026-08-22 — not urgent,
-but unanswered.
+`docs/open-decisions.md` now holds just these 2 open lines plus pointers to
+every decided item's GitHub home — check there for the full list, not here.
+
+---
 
 ## Standing lessons (apply, don't re-litigate)
 
 - **Never put a closing-shaped verb next to a bare issue/PR number in a
-  commit message pushed straight to `main`** (self-inflicted, 2026-09-05) —
-  a docs commit describing "`49` also resolved `#597`'s benchmark-
-  falsifiability followup" auto-closed PR #597 via GitHub's issue-linking
-  regex (`resolved #597` — it doesn't care what comes after the number,
-  "'s followup" included), even though the commit never touched that PR's
-  branch and nobody intended to close it. `49` root-caused and reopened it
-  cleanly, nothing lost. Write "issue #N"/"PR #N" or otherwise separate a
-  closing-shaped word (close/closes/closed/fix/fixes/fixed/resolve/
-  resolves/resolved) from a bare `#N` reference — this applies to every
-  commit message and PR body in this repo, not just this file's own.
-- **Commit hot-path benchmark scripts/raw output somewhere durable, not just
-  the PR/issue prose** (`07`, 2026-09-05, from `#576`'s A-vs-B review) — a
-  benchmark run in a throwaway subagent worktree produces numbers that
-  become unfalsifiable to a future reader the moment the worktree's gone.
-  Paste the raw output as a code block in the PR/issue, or land the script
-  in a scratch-but-tracked location — don't let a cited number's only home
-  be a sentence describing it.
+  commit message pushed straight to `main`** — GitHub's issue-linking regex
+  doesn't care what comes after the number ("resolved #597's followup"
+  auto-closed PR #597 once tonight). Write "issue #N"/"PR #N", or separate
+  a closing-shaped word (close/closes/fix/fixes/resolve/resolves, etc.)
+  from a bare `#N` reference — applies to every commit message and PR body
+  in this repo.
+- **Commit hot-path benchmark scripts/raw output somewhere durable**, not
+  just PR/issue prose — a benchmark run in a throwaway worktree produces
+  numbers that become unfalsifiable the moment the worktree's gone.
 - **Dispatch subagents in parallel for independent pieces of a task list**
-  (David, 2026-09-05) — applies to every session including the coordinator.
-  Independent sub-tasks run on their own tracks and converge on
-  completion, rather than being worked one at a time in one context.
-  Doesn't change the self-review → adversarial-review → consolidation
-  stage order (consolidation genuinely needs both prior outputs) — it's
-  about how the content of any one stage gets built.
+  — every session including the coordinator. Doesn't change the
+  self-review → adversarial-review → consolidation stage order.
 - **Checkpoint/push regularly, but don't bombard GitHub with pushes/PRs/
-  comments all at once** (David, 2026-09-05) — with up to 4 sessions
-  hitting one repo's API, a simultaneous burst risks tripping GitHub's
-  rate limit (primary or secondary/abuse-detection) and stalling every
-  session's `gh`/API calls at once, not just the one that caused it.
-  Doesn't reverse "push ASAP once verified" — keep polling loops at
-  reasonable intervals rather than tight loops, and if a real rate-limit
-  error comes back, back off and retry with a delay rather than hammering
-  again immediately.
+  comments all at once** — up to 4-5 sessions hitting one repo's API risks
+  a rate limit that stalls everyone, not just the one that caused it.
 - **Post durable findings to a PR or issue, never leave them only in
-  chat.** Every real loss tonight was state that lived only in a session
+  chat** — every real loss tonight was state that lived only in a session
   that then died.
 - **Verify identity and state by direct reply / live check, never by
-  inference** — `ListAgents` uptime, a doc's last-known state, and a
-  peer's relayed claim have all been wrong at least once tonight.
+  inference** — `ListAgents` uptime, a doc's last-known state, and a peer's
+  relayed claim have all been wrong at least once tonight, in both
+  directions (assumed-fresh-was-actually-continuous and vice versa).
 - **No knob changes** (queue capacity, worker counts, subscription scope,
   rates) without a measured bottleneck and its mechanism.
-- **This file holds the single next action and current state — rewrite
-  it, don't append to it.** Three copies of the YES-side-profit status
-  drifted independently earlier tonight because edits kept landing in
-  whichever copy an editor's search text happened to match. Full history
-  of tonight (the WSL restart, the messaging outage, the fleet
-  reconciliation, every PR's blow-by-blow) is in `git log`/`git show` on
-  this file and the relevant PRs/issues — that's the durable record, not
-  this file.
+- **This file holds the single next action and current state — rewrite it,
+  don't append to it.** Full history of tonight (every PR's blow-by-blow,
+  every investigation's numbers) is in `git log`/`git show` and the
+  relevant PRs/issues — that's the durable record, not this file.
