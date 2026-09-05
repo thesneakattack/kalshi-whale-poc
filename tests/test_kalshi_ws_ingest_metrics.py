@@ -188,6 +188,7 @@ def test_queue_high_water_tracks_peak_depth_across_the_connection(queue_mode):
     assert gw.ingest_metrics(now=1.0)["queue"] == {
         "depth": 3, "capacity": 20000, "high_water": 3, "oldest_message_age_sec": 0.0,
         "coalesced_tickers": 0, "pending_tickers": 0,
+        "ticker_flush_runs": 0, "ticker_flush_total": 0,
     }
     asyncio.run(_drain(gw, now=1.0))
     gw._ingest_raw(_trade("x"), now=1.0)
@@ -472,6 +473,7 @@ def test_ingest_metrics_before_any_connection_reports_an_empty_queue_rather_than
     assert m["queue"] == {
         "depth": 0, "capacity": 20000, "high_water": 0, "oldest_message_age_sec": 0.0,
         "coalesced_tickers": 0, "pending_tickers": 0,
+        "ticker_flush_runs": 0, "ticker_flush_total": 0,
     }
     assert m["connection"]["connects"] == 0
 
