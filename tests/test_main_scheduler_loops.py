@@ -232,6 +232,47 @@ def test_lifespan_starts_a_liveness_loop_for_each_active_stream():
     assert "trade_stream_liveness_task.cancel()" in source and "index_stream_liveness_task.cancel()" in source
 
 
+# --- _ticker_flush_loop (issue #576) -----------------------------------
+# The drain mechanism itself (batch cap, interleaving safety) is unit-tested
+# directly against services/kalshi/websocket.py's flush_pending_tickers();
+# this file only checks the small loop that polls it on a timer and that
+# main.lifespan actually starts one, scoped to trade_stream only.
+
+def test_ticker_flush_loop_polls_flush_pending_tickers(monkeypatch):
+    calls = []
+
+    class FakeGateway:
+        async def flush_pending_tickers(self):
+            calls.append(True)
+            return 0
+
+    sleeps = {"n": 0}
+
+    async def fake_sleep(_sec):
+        sleeps["n"] += 1
+        if sleeps["n"] > 3:
+            raise _Stop
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    with pytest.raises(_Stop):
+        asyncio.run(main._ticker_flush_loop(FakeGateway()))
+
+    assert len(calls) == 3  # one flush per sleep interval
+
+
+def test_lifespan_starts_the_ticker_flush_loop_for_trade_stream_only():
+    """Scoped deliberately: index_stream never calls set_market_tickers, so
+    its own ticker-coalescing map is provably always empty (see
+    _ticker_flush_loop's own docstring) - wiring a second, permanently
+    no-op instance there would be unjustified complexity, not defense in
+    depth."""
+    source = inspect.getsource(main.lifespan)
+    assert source.count("_ticker_flush_loop") == 1
+    assert "trade_stream_ticker_flush_task" in source
+    assert "trade_stream_ticker_flush_task.cancel()" in source
+    assert "index_stream_ticker_flush" not in source
+
+
 # --- _index_feed_backfill_loop (issue #260) ---------------------------------
 # The gap-detection/REST-fetch logic itself lives in and is unit-tested
 # directly against services/index_feed/backfill.py; this file only checks

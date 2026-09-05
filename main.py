@@ -1406,6 +1406,35 @@ async def _stream_consumer_liveness_loop(gateway, *, interval_sec: float = 10.0)
         await gateway.ensure_consumer_progressing()
 
 
+async def _ticker_flush_loop(gateway, *, interval_sec: float = 0.25) -> None:
+    """Independent scheduled drain of gateway's ticker-coalescing map
+    (issue #576) - calls gateway.flush_pending_tickers() every
+    interval_sec, decoupled entirely from market_queue's own state so it
+    keeps draining even while services/kalshi/websocket.py's
+    _consume_market_from is fully suspended awaiting the trade-dispatch
+    semaphore - the plausible starvation trigger #576 root-caused (a pure
+    message-count fairness counter inside that consumer loop cannot help,
+    because the loop isn't running while suspended there). See that
+    module's flush_pending_tickers()/_TICKER_FLUSH_BATCH_MAX for the
+    mechanism and batch-cap justification.
+
+    interval_sec=0.25 (not the also-benchmarked 1.0s): a sustained-backlog
+    simulation (2026-09-05, 1800 ticker updates) delivered only 350/1800 at
+    1.0s vs. 1475/1800 at 0.25s - monotonic improvement with a shorter
+    interval - while idle-tick overhead at 0.25s measured 0.58-4.3ms,
+    negligible against the 250ms period itself. No real cost to biasing
+    toward the tighter, better-performing interval.
+
+    Wired only for trade_stream (see lifespan()): index_stream never calls
+    set_market_tickers, so its own _ticker_by_market map is provably
+    always empty - the same per-gateway-applicability reasoning
+    _index_feed_backfill_loop's own CF-Benchmarks-only scoping already
+    follows a few lines below."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        await gateway.flush_pending_tickers()
+
+
 async def _index_feed_backfill_loop(gateway, *, interval_sec: float = 10.0) -> None:
     """Reconnect-gap backfill for services/index_feed/ (issue #260): every
     interval_sec, checks gateway.ingest_metrics()['connection'] for a
@@ -1487,6 +1516,7 @@ async def lifespan(app: FastAPI):
     ))
     trade_stream_task = None
     trade_stream_liveness_task = None
+    trade_stream_ticker_flush_task = None
     if _streaming_trade_tape_enabled():
         trade_stream_task = task_supervisor.supervise(
             lambda: trade_stream.run(
@@ -1500,6 +1530,12 @@ async def lifespan(app: FastAPI):
         )
         trade_stream_liveness_task = task_supervisor.supervise(
             lambda: _stream_consumer_liveness_loop(trade_stream), component="trade_stream", operation="liveness", restart=True,
+        )
+        # Issue #576: independent ticker-map flush, trade_stream only (see
+        # the flush loop function's own docstring for why index_stream is
+        # excluded).
+        trade_stream_ticker_flush_task = task_supervisor.supervise(
+            lambda: _ticker_flush_loop(trade_stream), component="trade_stream", operation="ticker_flush", restart=True,
         )
     index_stream_task = None
     index_stream_liveness_task = None
@@ -1531,6 +1567,7 @@ async def lifespan(app: FastAPI):
         await trade_stream.close()
         trade_stream_task.cancel()
         trade_stream_liveness_task.cancel()
+        trade_stream_ticker_flush_task.cancel()
     if index_stream_task is not None:
         await index_stream.close()
         index_stream_task.cancel()
