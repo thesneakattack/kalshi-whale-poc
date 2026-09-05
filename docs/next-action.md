@@ -1,3 +1,57 @@
+# STANDING PRIORITY — David, 2026-09-05 ~09:0x UTC (container-local)
+
+**"Right now the priorities are the data plane overall integrity and accuracy
+and near-zero latency, and also fixing the errors downstream of that so we can
+confidently turn trading back on... resetting whole tables and pruning table
+rows etc is totally allowed... as long as the math is right, I am okay
+starting from 0 for everything."**
+
+This re-orders active work and relaxes one standing constraint. Read before
+picking anything up.
+
+**Ordering, explicit:**
+1. Data-plane integrity/accuracy/near-zero-latency — **#577** (fabricated
+   `or 0.5` bid values, the largest data-plane *accuracy* defect found
+   tonight) and **#579/#580** (whale-print drops / `tick_executor`
+   contention, *completeness* and *latency*). Both now top priority,
+   in parallel — **#577 is unblocked from waiting on #574**: different
+   files entirely, no technical dependency, and it is the data-plane
+   category David just named directly.
+2. Downstream-error fixes so trading can confidently resume — **#574**
+   (NO/YES-side exit-pricing fabrication). Continues exactly as before,
+   just now explicitly framed as tier 2, not tier 1.
+3. **#575** (crash-recovery documentation) is **not** in either category —
+   it is process documentation, unrelated to the data plane or trading.
+   Let it finish merging (nearly done, self-contained), then its owner
+   moves to tier-1 work rather than starting anything else outside this
+   priority list.
+
+**Relaxation, bounded:** resetting/pruning `data/*.db` tables broadly is
+explicitly authorized once the underlying write path is verified correct —
+this **simplifies #578** (the ~1.43M-row contaminated `market_history`
+snapshots) from "measure re-derivation coverage, recover what's
+recoverable" to "fix #577's write path, verify it, then purge" — the
+careful recovery work `a2`/`62` already did (48.8% recoverable, 93.2% of
+recovered rows a real 0.0 not 0.5) is not wasted, just no longer required
+before acting. Same logic applies to **#532**'s `rejection_events` growth:
+a blunt prune becomes acceptable once the write path stops logging one row
+per sub-threshold print.
+
+**The relaxation is NOT a blank check — order matters and is unchanged:**
+verify the write-path fix first, purge second. Purging before the fix is
+confirmed correct just lets fresh data get contaminated again immediately.
+"As long as the math is right" is the gate on using this authorization, not
+a suspension of it.
+
+**Consequence for the bankroll-reset/re-enable-trading question David asked
+to be alerted on:** unchanged in substance, but #578/#532 move from "design
+questions" to "mechanical cleanup once #577 lands" — meaning the actual
+gating conditions are now #574 (fully fixed, including the newly-found
+YES-side mirror gap below) and #577, not the data-recovery question that
+was previously a separate open design thread.
+
+---
+
 # SESSION RECONCILIATION — reduced fleet, 2026-09-05 ~08:5x UTC (container-local)
 
 David closed several terminals ("removed a few sessions") and kept 4. Coordinator
