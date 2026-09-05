@@ -1,3 +1,29 @@
+# PR #588 — #577's implementation, open, CI green, awaiting adversarial review
+
+`62` (formerly `a2`/`64`) implemented #577's fabricated-bid-value root fix:
+**7 producer sites** (not 6 — found a 7th, `market_analyst_agent/per_market.py`'s
+LLM prompt text, feeding a fabricated price directly into the analyst's own
+reasoning). Promoted the private `_dollars` helper to public
+`parse_fixed_point_dollars`, shared by every site. Schema: `yes_price` stays
+`REAL NOT NULL` (SQLite can't drop NOT NULL without a table rebuild on a
+~5M-row table) — `record_snapshots()` filters unreal rows at the one shared
+choke point instead. CI guard shipped (`tools/quality_audit/price_fabrication.py`,
+modeled on the existing `unit_cost.py`), one real finding
+(`whale_simulator.py:110`), baselined with a dated, falsifiable exemption, not
+silently allow-listed. Fixed a real CI failure along the way
+(`project-manifest.json` staleness). Verified independently: the 7th site's
+fix and the baseline exemption both check out against the actual diff.
+
+**8 commits, pushed incrementally per the ASAP directive, not batched.**
+Merged `origin/main` mid-flight (picking up #574) with no conflicts; found
+`exit_engine.py`'s D8 fix (from #574's own review) had anticipated
+`latest_prices.get(ticker)` returning `None` — dead code before this PR,
+now live. The two PRs are complementary.
+
+CI confirmed green, 12/12. Self-review posted; independent adversarial
+review dispatched (fresh Agent, no memory of this conversation). **Not
+merging until that lands**, regardless of how clean it looks.
+
 # BANKROLL-RESET / RE-ENABLE-TRADING GATE — status as of #574's merge
 
 David asked to be alerted when safe to reset the bankroll and re-enable
