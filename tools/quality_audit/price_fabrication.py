@@ -38,6 +38,60 @@ tree and the fix is mechanical (call parse_fixed_point_dollars and either
 omit the missing value or handle None explicitly, per issue #577). tests/
 is never scanned (a test may spell the expression out to pin a fixture,
 e.g. asserting the OLD buggy behavior stays fixed).
+
+Issue #590 (this class in two more syntactic shapes, found by PR #588's own
+adversarial review, since fixed here):
+
+1. **Ternary/IfExp**: `price = bid if bid is not None else 0.5` (or the
+   flipped ordering, `0.5 if bid is None else bid`) produces an `ast.IfExp`,
+   not an `ast.BoolOp` - a distinct node type the original scanner never
+   looked at. `_fabricated_ifexp` below handles both orderings and both
+   `is None`/`is not None`/truthiness test shapes.
+2. **Intermediate-variable indirection**: `bid = m.get(...); price = bid or
+   0.5` (or the ternary equivalent) breaks `_dict_get_key`, whose only
+   recognized shapes are a direct `.get(...)` call or subscript - a bare
+   `ast.Name` operand was invisible to it. `_resolve_name_origin` below
+   closes this for a NAME operand in either the `or`-chain or the ternary,
+   by finding where that name is assigned.
+
+That resolution is deliberately bounded, not general dataflow analysis:
+`_single_assignment_value` looks only at the DIRECT statement list of the
+enclosing function or module body (an assignment inside an `if`/`for`/
+`while`/nested-`def` is invisible to it, same as `_dict_get_key` only
+seeing a call/subscript written directly, never one three names away), and
+only resolves a name assigned EXACTLY ONCE in that scope - a reassigned or
+multiply-assigned name is treated as ambiguous, not as its first or last
+assignment. Cross-function name reuse never resolves: a `bid` parameter in
+one function is never confused with a `bid` local in another, since
+resolution never looks outside the referencing name's own immediately
+enclosing function/module body.
+
+This scanner's existing bias for a genuinely ambiguous case (issue #577's
+own investigation, and the non-string/dynamic-key exclusion below) is to
+NOT flag rather than guess - a false negative on a name this scanner can't
+confidently trace, over a false positive that erodes trust in a
+confidence-high check. The reassigned-name and branch-scoped-assignment
+cases above are accepted, documented gaps for exactly that reason, not
+oversights - as is `_single_assignment_value` only ever matching a plain
+`ast.Assign`: an augmented assignment (`bid += 1`), an annotated one
+(`bid: float = m.get(...)`), a tuple/multiple target (`bid, ask = ...`), or
+a chained one (`a = b = m.get(...)`) all correctly fail to resolve rather
+than crash or, worse, resolve to the wrong target - a real-repo instance
+of any of these would silently stay unflagged (2026-09-05 independent
+review, confirmed by direct execution against all four shapes; no false
+positive or crash in any case, only the same accepted false-negative bias
+already documented above). Closing them requires real control-flow-sensitive dataflow
+analysis, which issue #590 itself weighed against `services/config/
+config_usage.py`'s own precedent (that scanner documents an analogous
+intermediate-variable limitation as an accepted gap rather than building
+reaching-definition tracking for it - `config_usage.py`'s docstring cites
+the same "single unbroken chain" reasoning) and found disproportionate to
+the residual exposure once this bounded, single-assignment version closes
+the two shapes that actually round-trip through this codebase's own real
+call sites (issue #590's own worked examples, and the true-negative
+`services/whale_simulator.py:82` shape - a genuine intermediate-variable
+ternary whose fallback is a function call, not a literal, so it was never
+a violation and stays correctly unflagged either way).
 """
 from __future__ import annotations
 
@@ -84,21 +138,169 @@ def _is_nonzero_numeric_literal(node: ast.expr) -> bool:
     )
 
 
+# --- issue #590: bounded single-assignment name resolution -----------------
+# See this module's own docstring for exactly what this does and does not
+# cover. `_link_parents`/`_enclosing_scope_body` give each Name node a way to
+# find its immediately enclosing function/module body without a general
+# symbol table; `_single_assignment_value` is the actual bound.
+
+_SCOPE_NODE_TYPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _link_parents(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node  # type: ignore[attr-defined]
+
+
+def _enclosing_scope_body(node: ast.AST) -> list[ast.stmt] | None:
+    current = getattr(node, "parent", None)
+    while current is not None:
+        if isinstance(current, _SCOPE_NODE_TYPES):
+            return current.body
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _single_assignment_value(name: str, scope_body: list[ast.stmt]) -> ast.expr | None:
+    """The RHS of `name`'s assignment, if `scope_body` (a flat statement
+    list - deliberately NOT recursed into any nested if/for/while/def, so an
+    assignment inside one of those is invisible here) contains EXACTLY ONE
+    `name = <expr>` at its top level. Two or more assignments to the same
+    name, or none, both return None - ambiguous is treated the same as
+    absent, never resolved to "the first" or "the last" one."""
+    found: ast.expr | None = None
+    count = 0
+    for stmt in scope_body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id == name
+        ):
+            count += 1
+            found = stmt.value
+    return found if count == 1 else None
+
+
+def _shadowed_by_lambda_param(node: ast.expr, name: str) -> bool:
+    """True if `node` sits inside an `ast.Lambda` whose parameter list
+    includes `name`, strictly between `node` and its enclosing function/
+    module - i.e. `name` here refers to the lambda's own parameter, not
+    whatever `_enclosing_scope_body` would otherwise resolve it against.
+    Without this check, `lambda bid: bid or 0.5` could be wrongly resolved
+    against an unrelated outer `bid = m.get(...)` that merely happens to
+    share the parameter's name - a false positive this confidence-high
+    check must not produce, even though this exact shape isn't in this
+    codebase today (found in review, not from an observed instance -
+    correctness of new detection logic doesn't get to wait for a real
+    false positive to prove it)."""
+    current = getattr(node, "parent", None)
+    while current is not None and not isinstance(current, _SCOPE_NODE_TYPES):
+        if isinstance(current, ast.Lambda):
+            params = current.args
+            all_names = [a.arg for a in (*params.posonlyargs, *params.args, *params.kwonlyargs)]
+            if params.vararg is not None:
+                all_names.append(params.vararg.arg)
+            if params.kwarg is not None:
+                all_names.append(params.kwarg.arg)
+            if name in all_names:
+                return True
+        current = getattr(current, "parent", None)
+    return False
+
+
+def _resolve_name_origin(node: ast.expr) -> str | None:
+    """If `node` is a bare Name whose value, traced through EXACTLY ONE
+    assignment in its own immediately enclosing function/module body,
+    resolves to a `.get(...)`/subscript call on a price-shaped key, return
+    that key. None for anything else (not a Name, no scope found, no single
+    assignment, the resolved value isn't itself a `.get()`/subscript, or
+    `name` is shadowed by an enclosing lambda's own parameter of the same
+    name - deliberately not recursive, so a chain of `a = b; b =
+    m.get(...)` is one hop too far and stays unresolved, same conservative
+    bias)."""
+    if not isinstance(node, ast.Name):
+        return None
+    if _shadowed_by_lambda_param(node, node.id):
+        return None
+    scope_body = _enclosing_scope_body(node)
+    if scope_body is None:
+        return None
+    value = _single_assignment_value(node.id, scope_body)
+    if value is None:
+        return None
+    return _dict_get_key(value)
+
+
+def _price_shaped_origin(node: ast.expr) -> str | None:
+    """A price-shaped `.get(...)`/subscript key for `node`, whether it's
+    written directly (`_dict_get_key`) or reached through exactly one
+    intermediate-variable hop (`_resolve_name_origin`, issue #590)."""
+    key = _dict_get_key(node)
+    if key is None:
+        key = _resolve_name_origin(node)
+    return key
+
+
 def _fabricated_fallback(node: ast.AST) -> ast.expr | None:
     """`node` is `X.get(<price-key>) or ... or <nonzero literal>` (any
     number of `or`-chained values before the literal, Python flattens
     `a or b or c` into one BoolOp - the exact shape
     `ticker_msg.get("yes_bid_dollars") or ticker_msg.get("price_dollars")
-    or 0.5` had). Returns the offending literal, or None."""
+    or 0.5` had). An earlier value may also be a bare Name resolving to a
+    price-shaped origin (issue #590, `_price_shaped_origin`). Returns the
+    offending literal, or None."""
     if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
         return None
     *earlier, last = node.values
     if not _is_nonzero_numeric_literal(last):
         return None
     for value in earlier:
-        key = _dict_get_key(value)
+        key = _price_shaped_origin(value)
         if key is not None and _is_price_shaped_key(key):
             return last
+    return None
+
+
+def _ifexp_none_or_truthiness_target(test: ast.expr) -> ast.expr | None:
+    """If `test` is `X is None`, `X is not None`, or a bare truthiness check
+    on `X` (just `X`, or `not X`), return `X`. None for anything else - a
+    ternary keyed on an unrelated condition isn't this bug's shape even if
+    one branch happens to be price-shaped (issue #590)."""
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1:
+        if isinstance(test.ops[0], (ast.Is, ast.IsNot)) and isinstance(test.comparators[0], ast.Constant) \
+                and test.comparators[0].value is None:
+            return test.left
+        return None
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return test.operand
+    return test
+
+
+def _fabricated_ifexp(node: ast.AST) -> ast.expr | None:
+    """`node` is `X if <None/truthiness check on X> else <nonzero literal>`
+    or the flipped ordering, `<nonzero literal> if <None/truthiness check on
+    X> else X`, where X is price-shaped directly or through one
+    intermediate-variable hop (issue #590, C1). Returns the offending
+    literal, or None."""
+    if not isinstance(node, ast.IfExp):
+        return None
+    target = _ifexp_none_or_truthiness_target(node.test)
+    if target is None:
+        return None
+    for live, literal in ((node.body, node.orelse), (node.orelse, node.body)):
+        if not _is_nonzero_numeric_literal(literal):
+            continue
+        # The live branch must be the SAME expression the test is about -
+        # comparing source text (ast.unparse) rather than node identity,
+        # since `test` and `body`/`orelse` are necessarily different AST
+        # nodes even when they read the exact same source expression.
+        if ast.unparse(live) != ast.unparse(target):
+            continue
+        key = _price_shaped_origin(live)
+        if key is not None and _is_price_shaped_key(key):
+            return literal
     return None
 
 
@@ -108,8 +310,9 @@ def scan_price_fabrication(repo_root: Path) -> list[QualityFinding]:
     for path in source.iter_python_files(repo_root):
         rel = source.relative_path(repo_root, path)
         tree = source.parse_python(path)
+        _link_parents(tree)
         for node in ast.walk(tree):
-            literal = _fabricated_fallback(node)
+            literal = _fabricated_fallback(node) or _fabricated_ifexp(node)
             if literal is None:
                 continue
             findings.append(QualityFinding(
