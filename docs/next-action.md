@@ -1,36 +1,66 @@
 # Next action
 
+## ⚠ RESUME POINT — WSL was shut down 2026-09-05 to fix a Windows networking issue
+
+**The whole fleet (07/32/62/bd + this coordinator) was PAUSED before shutdown
+— nobody was mid-write, nothing destructive was in flight.** On resume, in
+order:
+1. Confirm WSL/Docker Desktop actually came back: `ddev describe`, then
+   `docker ps -a --filter name=ddev-router` — should show `Up`, not
+   `Created`. If still `Created`/failing, the `winnat` restart (or `wsl
+   --shutdown` + Docker Desktop relaunch) didn't fully clear it; see
+   `windows-port-exclusion-breaks-ddev-router` memory for the exact
+   Windows-host remedy (cannot be run from inside WSL2).
+2. Verify data integrity: `data/*.db` files present, non-zero, recent
+   mtimes; a quick `PRAGMA quick_check` on `paper_broker.db`/
+   `market_history.db` if anything looks off. No corruption expected — this
+   was a clean shutdown, not a crash — but confirm, don't assume.
+3. Re-run `ListAgents`; the 4 peer names above will very likely NOT survive
+   (new session IDs) — **verify identity by direct reply before trusting
+   any name**, per the standing lesson below. Re-brief whichever sessions
+   reconnect using this file, not conversational memory.
+4. Nothing was lost that matters: `git status`/`git log` on `main` is the
+   record, PR #597 is safely on GitHub mid-review (see below), `#578`'s
+   checkpoint is a posted GitHub comment, `32`'s fresh backup exists on
+   disk. Resume each peer's task exactly as described below.
+
+---
+
 **Coordinator:** `autotrade-05` (chain tonight: `1f` → `48` → `01` → `05`, one
 continuous session — the SendMessage name changes on reconnect, memory
 doesn't). **Verify identity by direct reply before trusting a name** —
 `ListAgents`'s "started Xm ago" is not evidence of a fresh session; ask.
 
-**Peers and current task, as of this write:**
+**Peers and current task, as of this write (all PAUSED for the WSL restart
+above — resume each exactly where it says, don't re-derive from scratch):**
 - `32` (chain: `df`→`8d`, PR #574 author) — **on `#578` pre-purge prep**
   (non-destructive), checkpoint artifact posted (issue #578 comment): fix
   re-verified live and holding (contamination flat at 6,260, zero new
   fabricated rows since the fix), fresh full backup taken and verified.
-  Confirmed unaffected by the `ddev-router`/restart incident below (own
-  work already checkpointed before it hit). Still holding the actual purge
-  — gated on `62`'s ablation finishing cleanly + coordinator go.
+  Still holding the actual purge — gated on `62`'s ablation finishing
+  cleanly + coordinator go.
 - `07` (separate lineage, independent reviewer) — **on `#576`**: A-vs-B
   decided — **Family B (independent scheduled flush), not A** (A's own
   benchmark showed it structurally can't help under the mechanistically
   plausible trigger — semaphore/resolve contention suspends the consumer
   before A's counter check ever runs; B, as a genuinely separate task, gets
-  scheduled regardless). PR #597 open, adversarial-reviewed GO-with-
-  followups (raw benchmark numbers need committing somewhere durable or
-  explicit "reasoned default, not measured" relabeling — see standing
-  lessons); consolidation in progress, not merged yet.
+  scheduled regardless). PR #597 open (`ceace0e7`, `fix/576-ticker-flush-
+  independent-drain`, mergeable), adversarial-reviewed GO-with-followups
+  (raw benchmark numbers need committing somewhere durable or explicit
+  "reasoned default, not measured" relabeling — see standing lessons); PR
+  CI was still running its `pr/*` contexts at pause time (push contexts all
+  green), consolidation not yet posted — check both before merging.
 - `bd` (chain: `d2`→`24`, PR #575 owner) — **standing watch on `#579`/`#580`**,
-  reconfirmed clean 2026-09-05 (`dropped_after_max_attempts: 0`,
-  `handler_timeouts_total: 0`, `queue.depth: 1`, `settlement_resolver.pending:
-  38`) — no regression.
+  last clean reading pre-pause: `dropped_after_max_attempts: 0`,
+  `handler_timeouts_total: 0`, `queue.depth: 0`, `settlement_resolver.pending:
+  8` — no regression through the pause.
 - `62` (chain: `64`→`a2`, `#577`/`#578` owner) — **on the YES-side auto-exit
   profit analysis** (gate condition 4 below): split-half robustness check
-  DONE (see below). Ablation job was killed mid-run by the `ddev-router`
-  restart incident (container disappeared entirely, exit 137, zero partial
-  progress survived) — re-running from scratch now.
+  DONE (see below). The pnl+sentiment+staleness ablation was killed
+  mid-run **three times** by unexplained full-stack restarts before the
+  Windows root cause was found — paused before a 4th attempt; resume by
+  relaunching once the fleet is confirmed stable post-WSL-restart, not
+  before.
 
 `ef` (original app-health watch owner) is confirmed gone, not renamed.
 
@@ -39,19 +69,20 @@ doesn't). **Verify identity by direct reply before trusting a name** —
 uncommitted and unchanged. `kalshi_account.trading_enabled` stays `false`.
 Never touch either without David.
 
-**Infra: `ddev-router` is down (2026-09-05, deferred by David).** A
-`ddev restart` (applying PR #596 below) triggered a Docker Desktop/WSL2
-port-forward subsystem failure (`/forwards/expose returned unexpected
-status: 500`, a different port each retry — not a real port conflict, the
-forwarder itself is wedged). `docker start ddev-router` cannot fix this;
-needs a full Docker Desktop restart, which would kill every running
-container machine-wide mid-peer-work. **David chose to defer it** and use
-`https://autotrade.webfoundry.dev` (the separate, unaffected `traefik`
-container/public tunnel) instead of the primary
-`kalshi-whale-poc.ddev.site:8443` URL in the meantime. The app itself
-(fastapi/web/db) is unaffected and confirmed running correctly — this is
-an access-routing problem only, not a data-plane defect. Revisit next
-natural restart point.
+**Infra: `ddev-router` down → traced to Windows port exclusion, WSL restart
+in progress (2026-09-05).** Root cause found, not just deferred: Windows'
+`winnat` service dynamically excludes port ranges that collide with Docker
+Desktop's WSL2 port-forwarder, producing `/forwards/expose returned
+unexpected status: 500` on a different port each retry (7900→7910→8143 —
+not a real port conflict). This also explains 3 separate unexplained
+full-stack container restarts tonight (all 4 peers independently confirmed,
+checked their own command history, zero `ddev restart`/`stop`/`start`
+issued by any of them — see `windows-port-exclusion-breaks-ddev-router`
+memory for the full signature and the Windows-host-side fix
+(`net stop/start winnat`, unreachable from inside WSL2). David is
+restarting WSL now to apply it. `https://autotrade.webfoundry.dev` (the
+separate `traefik` container) was the working access point during the
+outage but goes down with everything else during the WSL restart itself.
 
 ---
 
