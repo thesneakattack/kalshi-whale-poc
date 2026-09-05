@@ -14,9 +14,13 @@ picking anything up.
    `or 0.5` bid values, the largest data-plane *accuracy* defect found
    tonight) and **#579/#580** (whale-print drops / `tick_executor`
    contention, *completeness* and *latency*). Both now top priority,
-   in parallel — **#577 is unblocked from waiting on #574**: different
-   files entirely, no technical dependency, and it is the data-plane
-   category David just named directly.
+   in parallel — **#577 is unblocked from waiting on #574. Precision: this
+   specific unblock is the coordinator's own scheduling call applying
+   David's stated priority, not a sentence David said verbatim** — he named
+   the data-plane category as top priority; the coordinator concluded #577
+   qualifies and has no technical dependency on #574 (different files
+   entirely), and reordered on that basis. Correct if this reasoning is
+   wrong, not because it's misattributed.
 2. Downstream-error fixes so trading can confidently resume — **#574**
    (NO/YES-side exit-pricing fabrication). Continues exactly as before,
    just now explicitly framed as tier 2, not tier 1.
