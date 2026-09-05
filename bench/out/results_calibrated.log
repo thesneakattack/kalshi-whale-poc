@@ -1,0 +1,104 @@
+
+--- running S0_baseline_decisions_only for 90.0s ---
+
+=== S0_baseline_decisions_only ===  pool util=0.02 submissions=126 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                        63          0.1        0.1        0.2        0.2        0.3   0.000  0.000  0.000      0.00         18.7
+decision.record_decision              63          0.1        0.1        0.2        0.2        0.3   0.000  0.000  0.000      0.00         22.2
+DECISION_COMBINED                    126          0.1        0.1        0.2        0.3        0.3   0.000  0.000  0.000         -            -
+decision e2e (claim->record_decision): n=66 mean=45.1ms p50=43.1ms p95=65.0ms p99=75.8ms max=124.2ms
+
+--- running S1_realistic_quiet for 90.0s ---
+
+=== S1_realistic_quiet ===  pool util=0.19 submissions=288 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                        48          2.9        0.1        0.2       84.6       84.6   0.000  0.000  0.000      0.04         18.5
+decision.record_decision              48          2.0        0.1        5.5       77.0       77.0   0.000  0.000  0.000      0.06         23.9
+flush                                 11          0.2        0.1        0.4        0.4        0.4   0.000  0.000  0.000      0.00         61.5
+settlement                            16          2.9        0.1        8.1       28.7       28.7   0.000  0.000  0.000      0.19        284.8
+snapshot                             155          7.0        0.1       19.4      188.3      243.7   0.026  0.000  0.000      0.08          8.9
+tick.flush_secondary                   3         12.0        0.1       35.7       35.7       35.7   0.000  0.000  0.000      0.33       5268.1
+tick.flush_trade_capture               3          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00        726.1
+tick.resolve_and_record                2          6.7        0.1       13.4       13.4       13.4   0.000  0.000  0.000      0.50       1254.1
+tick.series_stats_bulk                 2          0.1        0.1        0.2        0.2        0.2   0.000  0.000  0.000      0.00       1276.6
+DECISION_COMBINED                     96          2.4        0.1        0.3       77.0       84.6   0.000  0.000  0.000         -            -
+decision e2e (claim->record_decision): n=51 mean=50.7ms p50=44.5ms p95=67.4ms p99=199.0ms max=199.0ms
+
+--- running S2_settlement_surge_realistic_signals for 90.0s ---
+
+=== S2_settlement_surge_realistic_signals ===  pool util=0.52 submissions=512 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                        51         29.9        0.1      255.8      308.4      308.4   0.118  0.000  0.000      0.22         18.7
+decision.record_decision              51         47.7        0.1      301.1      415.5      415.5   0.176  0.000  0.000      0.22         22.4
+flush                                 17          9.5        0.1       18.7      140.7      140.7   0.059  0.000  0.000      0.12         60.7
+settlement                           214          3.6        0.1       23.1       50.6       56.0   0.000  0.000  0.000      0.19        291.7
+snapshot                             171         34.8        0.1      221.3      284.4      424.2   0.146  0.000  0.000      0.28          8.9
+tick.flush_secondary                   2         11.6        0.1       23.2       23.2       23.2   0.000  0.000  0.000      0.50       3125.7
+tick.flush_trade_capture               2          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00       3533.1
+tick.resolve_and_record                2          2.7        0.1        5.3        5.3        5.3   0.000  0.000  0.000      0.50       1897.8
+tick.series_stats_bulk                 2          0.2        0.1        0.2        0.2        0.2   0.000  0.000  0.000      0.00       1800.1
+DECISION_COMBINED                    102         38.8        0.1      268.5      311.7      415.5   0.147  0.000  0.000         -            -
+decision e2e (claim->record_decision): n=57 mean=115.4ms p50=46.6ms p95=532.2ms p99=577.1ms max=628.7ms
+
+--- running S3_settlement_surge_peak_signals for 90.0s ---
+
+=== S3_settlement_surge_peak_signals ===  pool util=0.65 submissions=1671 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                       636         36.3        0.1      286.8      459.7      530.2   0.099  0.000  0.000      0.39         18.5
+decision.record_decision             636         36.8        0.1      316.9      486.7      517.9   0.080  0.000  0.000      0.41         22.2
+flush                                 17         42.1        0.1      138.6      300.0      300.0   0.118  0.000  0.000      0.47         51.6
+settlement                           202         12.0        0.1       86.7      108.2      169.1   0.025  0.000  0.000      0.22        300.3
+snapshot                             172         31.9        0.1      203.9      333.1      456.2   0.105  0.000  0.000      0.41          8.7
+tick.flush_secondary                   2         29.0        0.1       57.8       57.8       57.8   0.000  0.000  0.000      0.50       4365.0
+tick.flush_trade_capture               2          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00       4214.7
+tick.resolve_and_record                2          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00        913.2
+tick.series_stats_bulk                 2          0.1        0.1        0.2        0.2        0.2   0.000  0.000  0.000      0.00        964.6
+DECISION_COMBINED                   1272         36.5        0.1      307.3      483.4      530.2   0.090  0.000  0.000         -            -
+decision e2e (claim->record_decision): n=668 mean=114.6ms p50=53.0ms p95=601.3ms p99=807.3ms max=1081.9ms
+
+--- running S4_adversarial_all_elevated for 90.0s ---
+
+=== S4_adversarial_all_elevated ===  pool util=1.07 submissions=2904 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                       945        123.6       51.6      492.2     1151.5     4787.9   0.158  0.012  0.000      0.94         18.5
+decision.record_decision             945        168.8       48.1      516.2     4865.2     6044.8   0.160  0.023  0.000      0.97         21.0
+flush                                 78       1069.1      447.6     3994.3     4230.1     4382.2   0.718  0.308  0.000      1.00        176.3
+settlement                           101        164.1       72.2      682.7     1315.8     1707.3   0.406  0.030  0.000      0.95        587.3
+snapshot                             829        955.1      319.1     4108.6     5143.6     6065.5   0.649  0.282  0.000      0.97          8.7
+tick.flush_secondary                   2        589.8       65.6     1114.1     1114.1     1114.1   0.500  0.500  0.000      1.00      20000.1
+tick.flush_trade_capture               2         60.8       54.4       67.3       67.3       67.3   0.000  0.000  0.000      1.00       5000.1
+tick.resolve_and_record                1        132.7      132.7      132.7      132.7      132.7   1.000  0.000  0.000      1.00      10000.1
+tick.series_stats_bulk                 1        418.3      418.3      418.3      418.3      418.3   1.000  0.000  0.000      1.00       5000.1
+DECISION_COMBINED                   1890        146.2       49.9      509.1     2303.9     6044.8   0.159  0.017  0.000         -            -
+decision e2e (claim->record_decision): n=1057 mean=314.4ms p50=145.5ms p95=1059.3ms p99=5737.7ms max=6723.8ms
+
+--- running S5_pinned_long_tick_plus_surge for 90.0s ---
+
+=== S5_pinned_long_tick_plus_surge ===  pool util=1.16 submissions=1390 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                       519        239.7      303.6      429.5      477.5     1862.9   0.671  0.002  0.000      0.88         18.8
+decision.record_decision             517        251.2      304.6      447.2      559.1     1850.6   0.679  0.006  0.000      0.89         21.3
+flush                                 14        208.1      209.1      412.4      416.1      416.1   0.643  0.000  0.000      1.00         60.1
+settlement                           183         84.8       83.6      131.7      170.6      203.1   0.191  0.000  0.000      0.97        291.1
+snapshot                             155        235.7      222.4      413.2     1283.8     1849.9   0.774  0.019  0.000      0.88          9.0
+tick.flush_secondary                   1        142.9      142.9      142.9      142.9      142.9   1.000  0.000  0.000      1.00     120000.1
+tick.flush_trade_capture               1          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00       1000.2
+DECISION_COMBINED                   1036        245.5      304.0      435.4      519.1     1862.9   0.675  0.004  0.000         -            -
+decision e2e (claim->record_decision): n=580 mean=489.5ms p50=654.9ms p95=849.1ms p99=930.2ms max=2272.3ms
+
+--- running S6_POSITIVE_CONTROL_pre581_diag_routes for 90.0s ---
+
+=== S6_POSITIVE_CONTROL_pre581_diag_routes ===  pool util=1.45 submissions=253 window=85s
+label                                  n wait_mean_ms     p50_ms     p95_ms     p99_ms     max_ms  >100ms    >1s   >10s both_busy work_mean_ms
+decision.claim                        15      11020.3    18526.7    21627.1    21631.9    21631.9   0.800  0.533  0.533      0.80         20.4
+decision.record_decision              16      17961.5    22576.1    48956.5    48963.2    48963.2   0.688  0.500  0.500      0.75         23.6
+diag_route                            10      15814.2    16031.9    30819.3    30819.3    30819.3   0.900  0.800  0.600      0.90      22463.0
+flush                                 18      27678.5    28193.4    48481.1    53600.8    53600.8   0.889  0.833  0.833      0.94         61.9
+settlement                            37       3088.7        0.2    21468.5    48653.5    48653.5   0.108  0.108  0.108      0.38        291.1
+snapshot                             152      27876.2    27162.7    50698.1    53688.6    54569.9   0.941  0.901  0.875      0.95          8.8
+tick.flush_secondary                   1          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00       2930.0
+tick.flush_trade_capture               2      21593.9        0.2    43187.7    43187.7    43187.7   0.500  0.500  0.500      0.50       1019.8
+tick.resolve_and_record                1      18758.5    18758.5    18758.5    18758.5    18758.5   1.000  1.000  1.000      1.00       1202.3
+tick.series_stats_bulk                 1          0.1        0.1        0.1        0.1        0.1   0.000  0.000  0.000      0.00       1466.1
+DECISION_COMBINED                     31      14602.8    18526.7    48953.2    48963.2    48963.2   0.742  0.516  0.516         -            -
+decision e2e (claim->record_decision): n=66 mean=6990.9ms p50=155.7ms p95=70596.3ms p99=70628.0ms max=70650.7ms
