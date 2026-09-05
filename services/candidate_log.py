@@ -58,9 +58,10 @@ sees a stale undercount or an incomplete wipe.
 SAMPLING (min_contracts only, added 2026-09-05, issue #532)
 
 "No dedup key at all" above stopped being literally true for one gate:
-min_contracts alone was 98.98% of 29.8M rows (23.8M of them resolved,
-against a min_samples=30 statistical-precision gate - roughly 794,000x
-oversampled for that purpose) and unbounded, so record_rejection() now
+min_contracts alone was 98.98% of 29.8M rows (23,841,626 of them
+resolved, against a min_samples=30 statistical-precision gate -
+23,841,626 / 30 =~ 794,721x oversampled for that purpose) and unbounded,
+so record_rejection() now
 writes a Bernoulli sample of min_contracts rejections to rejection_events
 instead of every one - see _MIN_CONTRACTS_SAMPLE_RATE below. Every other
 gate is untouched: still one row per call, weight always 1.0. rejected_
