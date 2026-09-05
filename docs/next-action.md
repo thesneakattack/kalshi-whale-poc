@@ -378,8 +378,24 @@ review was running, it did not finish. Do not assume a GO.
   before designing around one; (2) get the composite score's actual
   current weights from source and run a per-factor ablation against the
   same 664 YES entries, same real-settlement methodology as #591.
-  Feasibility first, then the real analysis. Full review cycle given this
-  bears on a real-money-adjacent decision.
+  **Feasibility findings (verified independently, spot-checked against
+  live DB): avenue 1 is genuinely impossible.** The entire trade history
+  is one ~2-day window (2026-09-02 20:49:59 - 2026-09-04 21:58:53 UTC,
+  confirmed via `MIN`/`MAX(timestamp)`), identical across every accessible
+  backup to the millisecond (a real reset point, not a query artifact),
+  and zero trades of any kind since — confirmed independently, 18.87h and
+  climbing with no new activity. No data exists to hold out in either
+  direction. Substitute: a labeled split-half **robustness, not
+  validation** check, explicitly not presented as out-of-sample.
+  **Avenue 2 is feasible and narrower than expected**: `analyst_divergence`
+  proven a zero-contributor (`analyses` table has 0 rows, ever) and
+  `series_track_record` zero by config (`weight: 0.0`) — real work is
+  `pnl` (already #591) + `sentiment` + `staleness`, individually and
+  combined, same real-settlement/no-look-ahead method. One methodological
+  risk flagged and handled: live staleness reads `time.time()` directly
+  (no injectable `as_of`), so a faithful replay forks that one line rather
+  than calling production code verbatim. Full review cycle before this
+  reaches the gate decision.
 
 ## 4. Open issues, current as of shutdown
 
