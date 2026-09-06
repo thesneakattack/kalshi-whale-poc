@@ -563,23 +563,51 @@ async def _scheduler_loop(trigger, name: str) -> None:
     while the app is paused, exactly as trading_loop's own gate behaved. The
     interval sits well under every trigger's own due() interval (the tightest
     is catalog_scan's 15s), so due()-precision is preserved; a not-due call
-    is one dict comparison."""
+    is one dict comparison.
+
+    Issue #585: `trigger` is called generically for all nine registered
+    triggers, eight of which are plain `def ... -> None` (they stay fast by
+    spawning their own real work as an independent task_supervisor.supervise
+    background task and returning immediately - unaffected by this check,
+    since calling them still returns None). `_maybe_run_auto_apply` is the
+    one exception: it does its (rare, hours-scale) calibration-snapshot work
+    inline rather than backgrounding it, and that work includes a call this
+    loop must be able to await (services.signal_log.
+    resolved_signals_with_factors_async(), routed off the event loop per
+    services.signal_log's own async/sync split for issue #410/#581) - so it
+    is now `async def` and calling it returns a coroutine instead of running
+    synchronously. iscoroutine() tells the two shapes apart: a plain sync
+    trigger's `None` return is left alone (identical to before), an async
+    trigger's coroutine is awaited right here - serialized with this loop's
+    own sleep cycle exactly as the old fully-synchronous call was, so no new
+    overlap-guard is needed for auto_apply's due()/cooldown checks."""
     while True:
         await asyncio.sleep(_SCHEDULER_TRIGGER_INTERVAL_SEC)
         if not state["running"]:
             continue
-        trigger(config_store.get())
+        result = trigger(config_store.get())
+        if asyncio.iscoroutine(result):
+            await result
 
 
-def _maybe_run_auto_apply(cfg: dict) -> None:
+async def _maybe_run_auto_apply(cfg: dict) -> None:
     """Calibration-history snapshot + calibration auto-apply, and unified
     advisory auto-apply - moved verbatim out of trading_loop (P8 Task 36).
     Both are hours-scale (snapshot_interval_sec 21600, auto_apply_cooldown_sec
     86400) and were the one place the tick still did real inline work when
     due instead of the _maybe_* trigger shape everything else uses. Still
     inline-when-due here (same blocking profile as before, once every several
-    hours); offloading the due-time work itself via tick_executor is a
-    follow-up, not part of this pure relocation."""
+    hours) EXCEPT for the one line issue #585 measured at ~13.8s of
+    GIL-holding event-loop time: cc_rows below now awaits
+    signal_log.resolved_signals_with_factors_async() (built for #410/#581,
+    "same query, same output, same contract" per its own docstring) instead
+    of calling the sync resolved_signals_with_factors() inline. That forced
+    this function itself to become `async def` - its only caller,
+    _scheduler_loop, was verified (not assumed) to already support awaiting
+    a trigger that returns a coroutine, see that function's own docstring.
+    Offloading the REST of this due-time work (the report computation, the
+    advisory block below) via tick_executor is still a separate follow-up,
+    not part of this fix."""
     tick_now = time.time()
 
     # Calibration-history tracking (Gap 6, docs/config-tuning-data-
@@ -596,7 +624,7 @@ def _maybe_run_auto_apply(cfg: dict) -> None:
     if cc_cfg.get("enabled") and calibration_history.due(
         tick_now, cc_cfg.get("snapshot_interval_sec", 21600)
     ):
-        cc_rows = signal_log.resolved_signals_with_factors()
+        cc_rows = await signal_log.resolved_signals_with_factors_async()
         cc_result = confidence_calibration.generate_calibration_report(
             cc_rows, cc_cfg["min_resolved_signals"], cfg.get("whale_confidence_weights"),
         )

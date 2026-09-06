@@ -31,6 +31,18 @@ def _run_loop_for(n_sleeps: int, trigger, running: bool, monkeypatch):
         asyncio.run(main._scheduler_loop(trigger, "unit"))
 
 
+def _run_auto_apply(cfg: dict) -> None:
+    """Issue #585: _maybe_run_auto_apply is `async def` now (it awaits
+    signal_log.resolved_signals_with_factors_async() when a calibration
+    snapshot is due) - this just spares every test below an inline
+    asyncio.run(...) at its one call site."""
+    asyncio.run(main._maybe_run_auto_apply(cfg))
+
+
+async def _fake_resolved_signals_with_factors_async(*_a, **_k):
+    return []
+
+
 def test_scheduler_loop_invokes_the_trigger_with_live_config_each_interval(monkeypatch):
     calls = []
     monkeypatch.setattr(main.config_store, "get", lambda: {"marker": 1})
@@ -75,24 +87,91 @@ def test_maybe_run_auto_apply_is_a_noop_when_both_features_are_off(monkeypatch):
     monkeypatch.setattr(main.calibration_history, "due", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be consulted")))
     monkeypatch.setattr(main.advisory_engine, "generate_recommendations", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")))
 
-    main._maybe_run_auto_apply({"confidence_calibration": {"enabled": False}, "advisory": {"enabled": False}})
+    _run_auto_apply({"confidence_calibration": {"enabled": False}, "advisory": {"enabled": False}})
 
 
 def test_maybe_run_auto_apply_reaches_the_moved_calibration_block_when_due(monkeypatch):
     reached = {}
     monkeypatch.setattr(main.calibration_history, "due", lambda *a, **k: True)
-    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors_async",
+                         _fake_resolved_signals_with_factors_async)
     def fake_report(rows, min_n, weights):
         reached["called"] = (rows, min_n)
         return {"report": None}
     monkeypatch.setattr(main.confidence_calibration, "generate_calibration_report", fake_report)
 
-    main._maybe_run_auto_apply({
+    _run_auto_apply({
         "confidence_calibration": {"enabled": True, "min_resolved_signals": 7},
         "advisory": {"enabled": False},
     })
 
     assert reached["called"] == ([], 7)  # the block moved intact and is reachable from its new home
+
+
+# --- Issue #585: the calibration-snapshot path (~13.8s measured live) routes
+# through signal_log.resolved_signals_with_factors_async() instead of
+# blocking the event loop on the sync resolved_signals_with_factors(). The
+# load-bearing fact this fix depends on: _maybe_run_auto_apply is called
+# generically from _scheduler_loop alongside eight other plain sync `def
+# ... -> None` triggers (test_trading_loop_no_longer_hosts_the_relocated_
+# trigger_calls above enumerates all nine), so becoming `async def` only
+# works because _scheduler_loop was verified (not assumed) to already await
+# a trigger's return value when it is a coroutine - see the two tests below.
+
+def test_maybe_run_auto_apply_is_a_coroutine_function():
+    """The property the whole fix hinges on: if this were still a plain
+    `def`, _scheduler_loop's `await result` branch would never fire and the
+    calibration snapshot would silently stop running (never awaited, never
+    an exception) - see test_scheduler_loop_awaits_a_coroutine_trigger below
+    for the other half of that guarantee."""
+    assert inspect.iscoroutinefunction(main._maybe_run_auto_apply)
+
+
+def test_maybe_run_auto_apply_calibration_snapshot_awaits_the_async_signal_log_call(monkeypatch):
+    """Issue #585's actual fix: cc_rows must come from
+    resolved_signals_with_factors_async() (routed off the event loop per
+    #410/#581's aiosqlite + asyncio.to_thread split), never from the sync
+    resolved_signals_with_factors() this function used to call inline and
+    that blocked the loop for ~13.8s measured live."""
+    monkeypatch.setattr(main.calibration_history, "due", lambda *a, **k: True)
+    monkeypatch.setattr(
+        main.signal_log, "resolved_signals_with_factors",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call the sync, event-loop-blocking version")),
+    )
+    seen = {}
+
+    async def fake_async_resolved(*a, **k):
+        seen["called"] = True
+        return []
+
+    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors_async", fake_async_resolved)
+    monkeypatch.setattr(main.confidence_calibration, "generate_calibration_report",
+                         lambda rows, min_n, weights: {"report": None})
+
+    _run_auto_apply({
+        "confidence_calibration": {"enabled": True, "min_resolved_signals": 7},
+        "advisory": {"enabled": False},
+    })
+
+    assert seen.get("called") is True
+
+
+def test_scheduler_loop_awaits_a_coroutine_trigger(monkeypatch):
+    """The generic half of the fix: _scheduler_loop is shared by
+    _maybe_run_auto_apply (now async) and eight plain sync triggers. A sync
+    trigger's `None` return must stay untouched (asserted by
+    test_scheduler_loop_invokes_the_trigger_with_live_config_each_interval
+    above); a trigger that returns a coroutine (as an async def trigger
+    does when called) must actually be awaited, or the real work inside it
+    silently never runs."""
+    ran = []
+
+    async def async_trigger(cfg):
+        ran.append(cfg)
+
+    _run_loop_for(3, async_trigger, running=True, monkeypatch=monkeypatch)
+
+    assert len(ran) == 3  # the coroutine body actually executed each interval, not just constructed
 
 
 # --- P8 Task 37: candidate_retry.run_pending from its own supervised loop -----
@@ -433,7 +512,8 @@ def test_settlement_resolver_loop_is_supervised_from_lifespan():
 def _wire_calibration_auto_apply(monkeypatch, degraded: bool):
     monkeypatch.setattr(main.calibration_history, "due", lambda *a, **k: True)
     monkeypatch.setattr(main.calibration_history, "record_snapshot", lambda *a, **k: None)
-    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors", lambda: [])
+    monkeypatch.setattr(main.signal_log, "resolved_signals_with_factors_async",
+                         _fake_resolved_signals_with_factors_async)
     monkeypatch.setattr(main.confidence_calibration, "generate_calibration_report", lambda rows, min_n, weights: {
         "report": {
             "resolved_count": 200, "suggested_weights": {"depth_factor": 0.6},
@@ -470,7 +550,7 @@ _CALIBRATION_CFG = {
 def test_calibration_auto_apply_writes_new_weights_when_evidence_is_clean(monkeypatch):
     updates, logged, bumps = _wire_calibration_auto_apply(monkeypatch, degraded=False)
 
-    main._maybe_run_auto_apply(_CALIBRATION_CFG)
+    _run_auto_apply(_CALIBRATION_CFG)
 
     assert updates == [{"whale_confidence_weights": {"depth_factor": 0.6}}]
     assert len(logged) == 1 and logged[0]["auto_applied"] is True
@@ -480,7 +560,7 @@ def test_calibration_auto_apply_writes_new_weights_when_evidence_is_clean(monkey
 def test_calibration_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypatch):
     updates, logged, bumps = _wire_calibration_auto_apply(monkeypatch, degraded=True)
 
-    main._maybe_run_auto_apply(_CALIBRATION_CFG)
+    _run_auto_apply(_CALIBRATION_CFG)
 
     assert updates == []  # known completeness defect open - refuse the automatic write
     assert logged == []
@@ -535,7 +615,7 @@ _ADVISORY_CFG = {
 def test_advisory_auto_apply_writes_when_evidence_is_clean(monkeypatch):
     updates, logged, bumps = _wire_advisory_auto_apply(monkeypatch, degraded=False)
 
-    main._maybe_run_auto_apply(_ADVISORY_CFG)
+    _run_auto_apply(_ADVISORY_CFG)
 
     assert updates == [{"strategy": {"entry_threshold": 0.6}}]
     assert len(logged) == 1 and logged[0]["auto_applied"] is True
@@ -545,7 +625,7 @@ def test_advisory_auto_apply_writes_when_evidence_is_clean(monkeypatch):
 def test_advisory_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypatch):
     updates, logged, bumps = _wire_advisory_auto_apply(monkeypatch, degraded=True)
 
-    main._maybe_run_auto_apply(_ADVISORY_CFG)
+    _run_auto_apply(_ADVISORY_CFG)
 
     assert updates == []  # known completeness defect open - refuse the automatic write
     assert logged == []
@@ -576,7 +656,7 @@ def test_maybe_run_auto_apply_passes_declined_ids(monkeypatch):
                          lambda: {"degraded": False, "defects": [], "checked_at": 0.0})
     monkeypatch.setattr(main.suggestion_decisions, "declined_ids", lambda: {"decl-1", "decl-2"})
 
-    main._maybe_run_auto_apply(_ADVISORY_CFG)
+    _run_auto_apply(_ADVISORY_CFG)
 
     assert len(calls) == 1
     assert calls[0].get("declined_ids") == {"decl-1", "decl-2"}
