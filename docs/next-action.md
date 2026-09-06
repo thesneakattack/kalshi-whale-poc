@@ -1,14 +1,14 @@
 # Next action
 
-**FLEET PAUSED 2026-09-06, ~3.5 hours from pause-start.** David called the
-pause. All 4 peers (`49`, `0d`, `c4`, `ea`) were told to checkpoint whatever
-they had in flight and go idle — no new work until the coordinator pings
-again or David says otherwise. Coordinator (`autotrade-36`) is also
-suspended for the duration via chained `ScheduleWakeup` calls (max 3600s
-each). **On resume: check each peer's actual checkpoint state below before
-assuming anything continued in the background — pausing an interactive
-session stops it accepting new instructions, but doesn't guarantee every
-in-flight action (e.g. a subagent it dispatched) stopped mid-step.**
+**FLEET PAUSED 2026-09-06 — wakeup rescheduled to 1 hour out (David's
+override, replacing the original 3.5h chain).** David called the pause.
+All 4 peers (`49`, `0d`, `c4`, `ea`) were told to checkpoint whatever they
+had in flight and go idle — no new work until the coordinator pings again
+or David says otherwise. **On wake-up: check each peer's actual checkpoint
+state below before assuming anything continued in the background — pausing
+an interactive session stops it accepting new instructions, but doesn't
+guarantee every in-flight action (e.g. a subagent it dispatched) stopped
+mid-step.**
 
 **Coordinator:** `autotrade-36` (chain tonight: `1f`→`48`→`01`→`05`→`36`, one
 continuous session). **Verify identity by direct reply before trusting a
