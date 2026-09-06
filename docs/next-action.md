@@ -259,31 +259,99 @@ duplicate `work/616-...`/`feat/616-...` branches (49's live worktree, not
 a real duplicate — confirmed same commit, harmless, leave alone),
 anything backing PR #631 or any live peer's active branch.
 
-### Next action on resume (in order)
+### Next action on wake-up — David's detailed execution instructions (2026-09-06, given mid-pause)
 
-1. Check for completion notifications from the plans-audit agent and the
-   2 execution agents. Read their reports. Do not re-dispatch anything
-   they already covered.
-2. If any execution agent failed or left something half-done, finish it
-   directly (small, bounded fixes) rather than re-running the whole thing.
-3. With all 5 inventory results + the architecture map in hand, draft the
-   lane taxonomy + per-lane policy as a real design artifact (a spec-
-   shaped doc, likely `docs/superpowers/specs/2026-09-06-planning-lanes-
-   design.md` or similar — pick a location consistent with whatever the
-   lane design itself says about where lane docs live). Candidate lane
-   count from the architecture map: roughly 8-9 (Kalshi ingestion, whale
-   signal, strategy/risk/execution, analytics/advisory/research,
-   data-plane hot-path, observability/quality/safety, config, frontend,
-   tooling/CI/process — exact boundaries and naming are the actual design
-   work, not decided yet).
-4. Run that design through self-review + adversarial review (genuinely
-   independent, memory-less Agent call) + consolidation before creating
-   any real lane structure or moving a single plan doc into it.
-5. On GO: create the lane structure, assign every still-open plan/spec/
-   research item and every open issue cluster to a lane, land as a PR,
-   run the PR-level review cycle, merge.
-6. Resume normal peer coordination on `#605`'s fix (c4), `#631`'s last two
-   items (49), and continue holding `#532` for David (0d).
+All 5 inventory agents + both mechanical execution agents are done (see
+above) — do NOT redo that work. This is the concrete plan for what
+happens the moment the pause ends, superseding the shorter list this
+replaced. David's instructions, translated into an ordered plan:
+
+**0. Explicit permission: this is allowed to be destructive.** "You are
+allowed to be destructive so you can rebuild" — closing/merging/deleting
+issues, branches, and whole docs wholesale in service of the lane
+structure is in scope, not just additive reorganization. This does NOT
+extend to `data/*.db` files, safety gates, or anything CLAUDE.md's
+"Safety invariants" section protects — those protections are a separate
+axis and still stand.
+
+**1. Design pass (coordinator does this directly, not delegated):** draft
+the lane taxonomy + a naming hierarchy for the levels *within* a lane
+(currently informally "lane → track → plan/branch → task", but the
+existing `docs/superpowers/active-tracks-board.md` already defines
+"Track A/B/C" as top-level umbrella programs — **this collision must be
+resolved as part of the design, not ignored**; David explicitly floated
+renaming the whole lane/track/path vocabulary if that makes it clearer).
+Use the 5 completed inventory reports + architecture map above as raw
+material — do not re-derive them. Candidate lane count from the
+architecture map: ~8-9 (Kalshi ingestion, whale signal, strategy/risk/
+execution, analytics/advisory/research, data-plane hot-path,
+observability/quality/safety, config, frontend, tooling/CI/process) —
+exact boundaries/naming are the real work, not decided.
+
+**2. Fable-model adversarial review.** Dispatch an `Agent` call with
+`model: "fable"` (genuinely independent, memory-less, no Explore/Plan
+agent type) to adversarially review the design — re-derive load-bearing
+claims from primary sources (the actual issue/branch/doc lists, not the
+design doc's own summary tables), same as every other adversarial pass
+tonight.
+
+**3. Consolidation** — GO/no-go, per CLAUDE.md's "nothing advances on one
+pass" (this is a process/architecture change, squarely in scope; lean
+execution is fine, skipping the artifact is not). **Don't move to step 4
+until this says GO** — "once you're satisfied with the plan" was explicit
+in David's instruction.
+
+**4. Populate the lanes — parallel, worker sessions AND subagents, both.**
+Once GO: assign lane-population work across the 4 peer sessions (`49`,
+`0d`, `c4`, `ea`) AND dispatched subagents (peers may use their own
+subagents too) to: walk every item from the 5 inventory reports, assign
+it to exactly one lane, and for each item **decide branch-vs-tracked-
+issue** (does this warrant its own initiative branch, or stay a tracked
+GitHub issue for now) — reconciling the specific conflicts/duplicates
+already found tonight (stale issues `#377`/`#488` saying "not started"
+despite merged work; `#401`-`#408` labeled `status:done` but still open;
+`#322`/`#326` decided GO in `open-decisions.md` but still open/claimable;
+the two uncommitted `#576` "PROTOTYPE" worktrees found by the branch-
+hygiene agent; the 24-file 2026-09-03 docs bundle's final home).
+
+**5. Priority order, explicit:** the Kalshi ingestion lane — the REST API
++ WebSocket connection/transport layer (`services/kalshi/`,
+`market_catalog/`, `market_watch/`, `market_events/`, `whale_stream/`
+transport-level, `index_feed/`, `series_cache/`, `title_cache/`) **and
+everything downstream of/dependent on it** — comes first, both in
+finishing the lane's own design detail and in being the first lane
+actually populated/reconciled. Other lanes follow after.
+
+**6. Anti-drift / anti-bloat mechanisms — design and document as part of
+the lane policy, not an afterthought:**
+- A recurring re-consolidation cadence (something like a `/lane-sync`
+  skill mirroring `kanban-board-sync`'s shape — check before building a
+  new one from scratch, per the standing "prefer proven tooling" rule).
+- Branch/worktree lifecycle rules that prevent perpetual sprawl: tie
+  every new branch to a lane + issue reference so orphaning is harder to
+  do by accident, flag branches past some age threshold for mandatory
+  triage, keep worktree count bounded (tonight's cleanup got local
+  branches from 82 down to a much smaller number — the policy needs to
+  keep it there, not just have cleaned it once).
+- A duplicate/conflict check as a *habit* before starting new work in a
+  lane (search the lane's existing tracked items first), not just a
+  periodic sweep.
+
+**7. Visualization deliverable — required by the end.** David wants to
+*see* the lanes: what's in each one, how it's organized internally, and
+how work moves between granularities (lane → track/plan → task-group)
+within it. Produce a diagram of this workflow architecture plus an
+overview of the anti-drift/anti-bloat practice. A published interactive
+Artifact (a lane board — one page, filterable/browsable, backed by the
+lane data) is likely a better fit than a static image given David
+explicitly wants to *see and track* this on an ongoing basis, not just
+read a one-time diagram — but at minimum a Mermaid diagram checked into
+the lane policy doc is the floor. Decide the exact form during design,
+not before.
+
+**8. Resume normal peer coordination in parallel with the above**: `c4`'s
+`#605` fix (PRs #636/#637, both draft, review cycle not started), `49`'s
+`#631` last two items, `0d` continuing to hold `#532` for David directly.
 
 ---
 
