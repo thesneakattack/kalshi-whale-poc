@@ -274,10 +274,34 @@ extend to `data/*.db` files, safety gates, or anything CLAUDE.md's
 "Safety invariants" section protects — those protections are a separate
 axis and still stand.
 
-**0b. Prefer pre-built solutions over hand-rolling** (David, 2026-09-06,
-reinforcing CLAUDE.md's existing "prefer proven tooling over handspun"
-rule specifically for this initiative). Before building any new custom
-mechanism, check whether an existing tool already does the job:
+**0b. Prefer pre-built solutions over hand-rolling — and for keeping
+things tidy going forward specifically, prefer a written rule over any
+tool at all** (David, 2026-09-06, refining this twice: first "leverage
+pre-built solutions," then explicitly "the focus should be on what keeps
+things tidy moving forward after reorganizing... even just rules in
+CLAUDE.md instead of hand-rolled or added tooling is an option, preferred
+even"). **Ordering of preference for every anti-drift/anti-bloat
+mechanism in step 6, evaluated in this order, stop at the first that
+genuinely does the job:**
+1. **A documented rule/convention** (a line in CLAUDE.md or `.claude/
+   rules/*.md`) that sessions read and follow by discipline — zero build
+   cost, zero new failure surface, and this repo has a direct precedent
+   for exactly this: `guard_workflow.py`'s R2/R4/R6 automated guards were
+   *removed* and replaced with documented conventions after the
+   automation itself caused real incidents (stale-liveness false
+   positives denying real merges, among others) — a written rule that a
+   session actually reads is not automatically the weaker option.
+2. **An existing pre-built tool's built-in feature** (GitHub Projects
+   fields/views, labels, milestones — see the candidates below) — only
+   once a plain rule can't do the job (e.g. something needing queryable
+   structured state across sessions, not just remembered discipline).
+3. **Extending existing repo tooling** (`tools/kanban_sync`) — only once
+   1 and 2 both fall short.
+4. **New custom tooling** — last resort, and per CLAUDE.md's existing
+   rule, defaults to *disabled* until its own run history proves real
+   value, not merely error-free operation.
+
+Concrete candidates for step 2, if a rule alone isn't enough:
 - **GitHub Projects (v2)** — native custom fields + board/grouped views
   could represent lanes directly (group-by a `Lane` field) without a
   bespoke tracker; `tools/kanban_sync/project_status.py` already syncs a
@@ -355,19 +379,24 @@ finishing the lane's own design detail and in being the first lane
 actually populated/reconciled. Other lanes follow after.
 
 **6. Anti-drift / anti-bloat mechanisms — design and document as part of
-the lane policy, not an afterthought:**
-- A recurring re-consolidation cadence (something like a `/lane-sync`
-  skill mirroring `kanban-board-sync`'s shape — check before building a
-  new one from scratch, per the standing "prefer proven tooling" rule).
-- Branch/worktree lifecycle rules that prevent perpetual sprawl: tie
-  every new branch to a lane + issue reference so orphaning is harder to
-  do by accident, flag branches past some age threshold for mandatory
-  triage, keep worktree count bounded (tonight's cleanup got local
-  branches from 82 down to a much smaller number — the policy needs to
-  keep it there, not just have cleaned it once).
-- A duplicate/conflict check as a *habit* before starting new work in a
-  lane (search the lane's existing tracked items first), not just a
-  periodic sweep.
+the lane policy, not an afterthought. Apply the step-0b ordering to each
+one below — try a plain written rule first, escalate only if it
+genuinely can't work as a rule alone:**
+- A recurring re-consolidation habit — likely just a CLAUDE.md/rules-file
+  line ("before starting work in a lane, re-check its tracked items for
+  duplicates/stale entries") rather than a new scheduled job; only reach
+  for a `/lane-sync` skill (mirroring `kanban-board-sync`'s shape) if a
+  written habit provably doesn't get followed.
+- Branch/worktree lifecycle: a documented rule (e.g. "every branch name
+  must reference its lane + issue; a branch idle past N days gets
+  triaged, not just left") is the default; a `lane:*` label or a
+  Projects field is the fallback only if the rule alone doesn't keep
+  worktree/branch count bounded in practice (tonight's cleanup got local
+  branches from 82 down to a much smaller number — the point is keeping
+  it there, not just having cleaned it once).
+- A duplicate/conflict check as a documented *habit* before starting new
+  work in a lane (search the lane's existing tracked items first) — this
+  is squarely a "just write the rule" case, not a tooling problem.
 
 **7. Visualization deliverable — required by the end.** David wants to
 *see* the lanes: what's in each one, how it's organized internally, and
