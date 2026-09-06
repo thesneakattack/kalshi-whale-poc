@@ -343,7 +343,9 @@ straight to hand-rolling.
 **1. Design pass (coordinator does this directly, not delegated):** draft
 the lane taxonomy + a naming hierarchy for the levels *within* a lane
 (currently informally "lane → track → plan/branch → task", but the
-existing `docs/superpowers/active-tracks-board.md` already defines
+existing `docs/superpowers/plans/2026-08-26-active-tracks-board.md`
+(corrected path — round 1 of the design cited this wrong, caught by
+Fable's adversarial review) already defines
 "Track A/B/C" as top-level umbrella programs — **this collision must be
 resolved as part of the design, not ignored**; David explicitly floated
 renaming the whole lane/track/path vocabulary if that makes it clearer).
@@ -366,6 +368,32 @@ pass" (this is a process/architecture change, squarely in scope; lean
 execution is fine, skipping the artifact is not). **Don't move to step 4
 until this says GO** — "once you're satisfied with the plan" was explicit
 in David's instruction.
+
+**STATUS (2026-09-06, live): round 1 came back NO-GO from a genuinely
+independent Fable-model adversarial review** — real, well-evidenced
+findings, not nitpicks: Lane 5 ("data-plane hot path") was defined by a
+*property* instead of a package boundary, so it overlapped every other
+lane by construction, and its own cited evidence (tonight's PRs) was
+checked against actual PR file lists and found false (only 1 of 7 PRs
+actually touched Lane 5's packages); at least 9 packages/files were
+mis-assigned against their own docstrings; the Track A/B/C reconciliation
+cited a wrong file path and a wrong claim about where Program sequencing
+lives; the GitHub Projects claim contradicted the repo's own code
+comments (`labels.py` already documents Projects can't group by label,
+only by a field); migration mechanics would have silently orphaned 10
+plan-tracking issues + 86 sub-issues and broken ~378 path references.
+**Round 2 is written**, addressing all 7 blocking + 4 required + 1
+optional fix (package-bounded Lane 5 renamed "Runtime infrastructure"
+with a separate `concern:hotpath` label for cross-cutting properties, a
+stated reapplicable straddler-resolution rule, corrected Track C/Projects
+claims, re-sequenced migration, corrected numeric citations) — self-
+reviewed, and a **fresh independent Fable adversarial review of round 2
+is currently running**. Full detail: `docs/superpowers/specs/2026-09-06-
+planning-lanes-design*.md` (design, self-review, consolidation — round 1
+and round 2 both present, round 2 is the current draft under review).
+These files are intentionally left uncommitted in the working tree until
+the full cycle reaches GO, then land as one PR (matching how other
+initiatives' review-cycle artifacts were structured tonight).
 
 **4. Populate the lanes — parallel, worker sessions AND subagents, both.**
 Once GO: assign lane-population work across the 4 peer sessions (`49`,
