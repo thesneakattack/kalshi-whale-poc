@@ -66,3 +66,112 @@ ALL_PHASE_LABELS = frozenset({
 SYNC_MARKER_KIND_WORKTREE = "worktree"
 SYNC_MARKER_KIND_ROADMAP = "roadmap"
 SYNC_MARKER_KIND_PLAN = "plan"
+
+# lane:* / concern:* (2026-09-06, docs/superpowers/specs/2026-09-06-planning-
+# lanes-design.md §3/§8 rule 5) - the planning-lanes migration's own
+# vocabulary, replacing the retired area:* labels. LANES is the single
+# source of truth for "closest primary fit" (lane number -> name -> primary
+# package list, verbatim from the design's §3 table); CONCERNS mirrors it
+# for cross-cutting properties that aren't lanes (currently just
+# concern:hotpath - CLAUDE.md's data-plane HARD RULE class of defect,
+# sync-on-event-loop / blocking I/O on a hot path). An issue/PR carries
+# exactly one lane:N label plus zero or more concern:* labels (§3's own
+# "cross-cutting concerns are not lanes" rule) - this module only defines
+# the label strings and the lane->package map; which one applies to a given
+# issue is a judgment call made against that issue's own content, same as
+# every other label family here.
+CONCERN_HOTPATH = "concern:hotpath"
+
+CONCERNS = {
+    "hotpath": CONCERN_HOTPATH,
+}
+
+LANES = {
+    1: {
+        "label": "lane:1",
+        "name": "Kalshi & index data ingestion",
+        "packages": [
+            "services/kalshi/", "market_catalog/", "market_events/",
+            "market_watch/", "whale_stream/whale_stream_handlers.py",
+            "whale_stream/index_stream_handlers.py", "index_feed/ingestion.py",
+            "index_feed/backfill.py", "series_cache.py", "title_cache.py",
+            "series_evaluator.py", "game_state.py", "market_history.py",
+            "series_watcher.py",
+        ],
+    },
+    2: {
+        "label": "lane:2",
+        "name": "Whale signal detection & calibration",
+        "packages": [
+            "whalewatchers/", "whalewatchers/kalshi_trade_tape.py",
+            "whalewatchers/whale_simulator.py", "whalewatchers/confidence_scoring.py",
+            "whalewatchers/whale_gate.py", "whale_calibration/", "signal_log.py",
+            "whale_stream/decision_bridge.py", "candidate_retry.py",
+        ],
+    },
+    3: {
+        "label": "lane:3",
+        "name": "Strategy, risk & execution",
+        "packages": [
+            "strategy_engine.py", "exits/", "risk_manager.py", "paper_broker.py",
+            "execution.py", "shadow_mode.py", "position/", "mutual_exclusivity.py",
+            "settlement_edge_entry.py", "settlement_resolver.py", "kalshi_fees.py",
+        ],
+    },
+    4: {
+        "label": "lane:4",
+        "name": "Analytics, advisory & research",
+        "packages": [
+            "analytics/", "advisory/", "backtest/", "history/", "research/",
+            "stats_power.py", "market_analyst_agent/", "settlement_edge.py",
+            "candidate_log.py", "index_feed/settlement_algebra.py",
+            "candidate_ledger.py", "trade_category.py", "config_performance.py",
+            "ml_feed.py", "data_quarantine.py",
+        ],
+    },
+    5: {
+        "label": "lane:5",
+        "name": "Runtime infrastructure",
+        "packages": [
+            "capture_writer.py", "task_supervisor.py", "loop_watchdog.py",
+            "tick_executor.py", "http_client.py", "db.py", "pagination.py",
+            "fault_log.py", "app_state.py", "state_view.py", "market_lookup.py",
+            "auth.py", "accounts_store.py", "logging_config.py",
+        ],
+    },
+    6: {
+        "label": "lane:6",
+        "name": "Observability, quality & safety infra",
+        "packages": [
+            "quality/", "observability/", "storage_health/", "diagnostics/",
+            "alerting/", "backup/", "reset/", "latency_agg.py",
+            "whale_pipeline_perf.py",
+        ],
+    },
+    7: {
+        "label": "lane:7",
+        "name": "Config & control plane",
+        "packages": [
+            "services/config/", "services/config/routes.py",
+            "services/config/config_paths.py", "services/config/config_store.py",
+            "services/config/config_bounds.py", "services/config/config_overrides.py",
+            "config/settings.yaml",
+        ],
+    },
+    8: {
+        "label": "lane:8",
+        "name": "Frontend & dashboard",
+        "packages": ["frontend/", "static/", "history_push.py", "ws_manager.py"],
+    },
+    9: {
+        "label": "lane:9",
+        "name": "Tooling, CI & process governance",
+        "packages": [
+            "tools/", ".claude/rules/", ".claude/skills/", ".claude/hooks/",
+            ".github/workflows/", ".woodpecker/", "scripts/", "tests/",
+            "bench/", "ui_samples/",
+        ],
+    },
+}
+
+ALL_LANE_LABELS = frozenset(lane["label"] for lane in LANES.values())
