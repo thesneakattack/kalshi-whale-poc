@@ -224,12 +224,32 @@ available to a delegated subagent (main-session-only) — not a decision to
 skip it, a real tooling gap worth remembering for future dispatches of
 git-merging subagents. No live peer was actually touching these files, so
 no real collision occurred this time.
-- **Branch/worktree hygiene**: deleting 3 leftover confirmed-superseded
-  remote branches, cleaning up confirmed-merged local branches/worktrees
-  (checking `ListAgents`/lock status first), removing genuinely-dead
-  detached-HEAD worktrees, and landing `docs/branch-audit-2026-09-05.md`
-  itself as a real merged PR (rebased onto current main, stale claims
-  corrected) so it stops being an orphaned artifact.
+**Branch/worktree hygiene: DONE.** 3 leftover remote branches deleted; 5
+of 8 confirmed-merged branches/worktrees cleaned; 5 of 6 dead detached
+worktrees removed; `docs/branch-audit-2026-09-05.md` landed as **PR #638**
+(rebased, full review cycle, GO, merged `86ce2e8`) — no longer an orphaned
+artifact. **Two real findings that need a decision on resume, not
+mechanical:**
+- `feat/532-prune-gate-backlog-purge`'s worktree was correctly SKIPPED —
+  a genuinely live process (pid 15142, ~8h) has its cwd there, found via
+  `/proc` even though `git worktree list`'s lock marker missed it. This is
+  `0d`'s own worktree (matches its ~8h session age) — not a stray, no
+  action needed, just confirms the safety check worked.
+  `ListAgents` was unavailable to the delegated subagent throughout this
+  task (a real tooling gap for future git-surgery dispatches, not a
+  choice) — the `/proc` liveness check is what actually caught this one;
+  worth using both together going forward, not `git worktree list` alone.
+- **Two worktrees (`agent-a025fbb863ef969ed`, `agent-a57cf8e0fd682f79f`)
+  hold uncommitted, explicitly-labeled "PROTOTYPE... not for merge"
+  benchmark experiments for open issue `#576`** (Family A/B fairness
+  scheduling) — not anticipated by the original branch audit, correctly
+  left untouched rather than guessed at. **Needs a coordinator/human call
+  on resume**: formalize into a real reviewed PR, or confirm it's
+  genuinely disposable and discard. Do not delete without checking first
+  — this is uncommitted work with no other copy.
+- Skipped `agent-a8d30b1638081ed66` (same-day detached worktree) purely
+  because `ListAgents` wasn't reachable to confirm liveness — check it
+  directly on resume rather than re-dispatching another subagent for it.
 
 **Explicitly NOT touched by either agent**: `docs/kalshi/` (out of scope,
 David's instruction), anything under `docs/superpowers/{research,specs,
