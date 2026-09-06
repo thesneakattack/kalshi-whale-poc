@@ -1,121 +1,85 @@
 # Next action
 
 **Coordinator:** `autotrade-36` (chain tonight: `1f`→`48`→`01`→`05`→`36`, one
-continuous session — the SendMessage name changes on reconnect, memory
-doesn't). **Verify identity by direct reply before trusting a name, in
-EITHER direction** — a WSL restart tonight (Windows `winnat` port-exclusion
-fix, see `windows-port-exclusion-breaks-ddev-router` memory) was survived by
-all 4 peers' memory, but only 1 of 4 kept its SendMessage name.
+continuous session). **Verify identity by direct reply before trusting a
+name, in EITHER direction** — session names have changed on reconnect
+multiple times tonight, sometimes with memory intact, sometimes not.
+
+**Communication note:** a session named `autotrade-1d` appeared tonight
+(unverified identity, 2-way reply never landed) — David said he gave it
+direct instructions to relay to the coordinator, but SendMessage round-trips
+with it didn't work. Unresolved; don't assume it's a fleet peer or ignore it
+outright — check status if it reappears, but don't burn time chasing a
+broken channel.
 
 **Safety, check every session start:** `auto_exit_enabled: false` and
 `risk.max_daily_loss_pct: 0` in `config/settings.yaml`, both uncommitted
 (David's own edits) — must stay uncommitted and unchanged.
 `kalshi_account.trading_enabled` stays `false`. Never touch any of these
 without David. **Kill switch is currently TRIPPED** (`risk.halted: true`,
-"Daily loss limit hit", 2026-09-05T21:00:37Z) — working as designed on the
-first paper loss after the reset, not a bug. David said this is fine as-is;
-awaiting his direction on when/whether to clear it. A third, unexplained
-config diff also sits uncommitted: `whale_watcher_kalshi.min_contracts.
-KXBTC15M: 2500 → 2000` — provenance unknown, nobody on the fleet claims it,
-flagged to David directly, not yet resolved.
+`halt_reason` has retripped at least once at ~0% loss — confirmed this is
+the *designed* behavior of `max_daily_loss_pct: 0`, not a bug: it trips on
+any flat-or-losing day by construction). David said the halt is fine as-is;
+no action needed unless he says otherwise.
 
 **Infra:** `ddev-router` outage (Windows port-exclusion) resolved via WSL
-restart — `windows-port-exclusion-breaks-ddev-router` memory has the full
-signature if it recurs. Live app healthy, DB integrity confirmed.
+restart earlier tonight — `windows-port-exclusion-breaks-ddev-router` memory
+has the full signature if it recurs. Live app healthy, DB integrity
+confirmed repeatedly throughout the night.
 
 ---
 
 ## Peers — current task and next goal
 
-- **`49`** (was `07`) — **`#601` DONE, merged and deployed live** (PR #617,
-  `aedd8ad`, confirmed via `WatchFiles` + `merge-base --is-ancestor 6b32ac3
-  HEAD`). Full arc: measured → 3 fix families benchmarked (PR #603) →
-  Family 2 (ticker-scoped UPDATE, no new index needed — the table's
-  existing composite primary key already covers it) implemented with TDD +
-  self-administered mutation testing → adversarial review ran a 4000-trial
-  independent differential test against verbatim pre/post SQL, zero
-  mismatches, plus live `EXPLAIN QUERY PLAN` confirmation (232.4ms scan →
-  0.0075ms index search) on the real 5.1GB file → 2 real gaps found and
-  fixed before merge (a test that didn't actually assert `resolved_at`,
-  caught via a mutant that passed with a wrong value; a structurally
-  identical bug in `market_analyst_agent/per_market.py` filed as its own
-  follow-up, **`#619`**, not fixed blind). Both call sites (settlement
-  loop + the every-6s tick call) now fast. **Now on `#616`** (edge-gate
-  enablement prerequisites): reading the full decision comment before
-  starting spec D1's banded cost-aware gate diagnostic.
-- **`0d`** (was `62`) — **`#599` DONE, merged and deployed live** (PR #614,
-  `1453e63`, confirmed via `WatchFiles` + `merge-base --is-ancestor
-  ee3719e HEAD`; adversarial review added `idx_faults_first`). Also fixed
-  `soak_analyzer.check_event_loop_stalls`, found silently pinned to
-  permanent FAIL by the same bug class. Condition-4 YES-side analysis is
-  done for tonight (see gate section below) — correctly stopped rather
-  than push a fatigued per-tick-replay attempt. **Now on `#532`'s backlog
-  purge, mechanism-first**: caught and corrected its own mid-mistake
-  (started writing the purge mechanism on `#599`'s branch, would have
-  bundled two unrelated initiatives — reverted cleanly, moved to its own
-  branch). **PR #620** (mechanism only, nothing invoked against real data
-  yet): `candidate_log.prune_gate(gate_name, retention_hours, now,
-  batch_size)` mirrors `market_history.prune()`'s exact shape, scoped to
-  one named gate's `rejection_events` rows only, `rejected_candidates`
-  untouched for any gate, not wired into any automatic sweep — a one-off
-  tool for the manual purge, not a new standing policy. Self-review
-  honestly flagged one unverified assumption (no index covers the
-  `gate_name`+`rejected_at` filter; reasoned by analogy to `market_
-  history.prune()`'s own unindexed age filter, not measured) — adversarial
-  review dispatched specifically to verify that empirically. Already
-  confirmed once tonight, independent of #620: `#604`'s sampling fix is
-  holding live (`min_contracts` rows all carry `sample_weight=100.0`,
-  every other gate `1.0`, zero exceptions across the table's history).
-  Once #620 lands: full pre-purge checkpoint, then the coordinator's
-  explicit go before executing, same pattern as `#578`.
-- **`c4`** (was `32`) — **`#150` and `#618` both DONE.** `#150` (PR #622,
-  `bca3905`): Family 1 (dedicated smaller thread pool) already shipped for
-  both the WS-trade and candidate-retry paths, predating this investigation;
-  Family 2's literal proposal (missing `busy_timeout`) doesn't exist — every
-  connection already has one, and `#150`'s own telemetry (timeouts, zero
-  exceptions) rules out ordinary SQLite lock contention as the mechanism.
-  **No code fix — the real hang mechanism stays genuinely unexplained**
-  without live stack-capture instrumentation, stated plainly rather than
-  forced. Caught its own near-miss: both self-review and adversarial review
-  missed an easy, one-grep-away false claim before `c4` caught it. `#618`:
-  **closed, not merged** — independently re-verified all 3 of the
-  adversarial review's claims before acting (real GitHub merge conflict;
-  a would-be silent duplicate-function merge; `main`'s version is a strict
-  superset, not just equivalent). One genuine nugget salvaged faithfully as
-  **PR #623** (a corrected code-comment cross-reference, mechanical).
-  **`#585` DONE, merged and deployed live** (PR #624 `backtest/routes.py`
-  ~5.4s, PR #625 `main.py`'s `_maybe_run_auto_apply` ~13.8s, both full
-  self-review/adversarial/consolidation cycles as real PR comments,
-  confirmed live via `WatchFiles` at `394e41c`). First, cross-referenced
-  against tonight's `#605` stall timestamps — **clean negative result**:
-  neither call site fired during the stall window (verified: zero access-
-  log traffic for one; the other's 6h-interval gate wasn't due for hours).
-  `#605`'s actual mechanism stays unexplained; `#585` closes on its own
-  independent merits, not as a root-cause claim. **Real finding along the
-  way**: `_maybe_run_auto_apply` was called generically alongside 8 other
-  sync triggers with no `await` anywhere — a naive `async def` conversion
-  alone would have silently killed the whole calibration/auto-apply
-  feature; fixed via an `iscoroutine()` branch in the scheduler loop
-  instead. One residual filed as **#626** (a smaller ~1.1s un-offloaded
-  cost, out of scope for #585). **`#530` DONE** (PR #628, docs-only,
-  `f8b3b47`): smartly avoided redoing an existing 2-day-old 88-handler
-  census (`docs/event-loop-blocking-routes-census-2026-09-03.md`, 63
-  BLOCKING instances) from scratch — reconciled current status instead.
-  `/api/quality/summary` already fixed (PR #552, confirmed merged;
-  11.6-33.4s → 3.4-3.8s live). `services/observability/routes.py`
-  (`history`/`summary`) confirmed still open and live-reproduced (`/api/
-  state` stalls ~7s while it runs concurrently, same shape as the
-  already-fixed bug) — ~61 other instances remain catalogued but
-  unreproduced. **Now fixing `observability/routes.py` specifically**
-  (the one with real evidence); the rest of the backlog stays logged for
-  later, not chased all in one night. `#586` (shutdown-only hang) still
-  with `ea` — PR #627 open, review cycle in progress.
+- **`49`** (was `07`) — **`#601`/`#576` both DONE and deployed live earlier.**
+  **Now on `#616`** (edge-gate enablement prerequisites, spec D1 only —
+  items 2/3 of #616 explicitly out of scope): traced the exact spec
+  (`docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md`
+  §D1, function `population_gate_summary_banded`), confirmed this is
+  genuinely new shipped code (the only prior version was an uncommitted
+  scratchpad prototype). Checked sibling functions first to preserve their
+  existing SQL-side-GROUP-BY/async discipline rather than regress it.
+  Dispatched full implementation (sync+async pair, new diagnostics check,
+  TDD, real query-cost measurement, full review cycle) — in progress, not
+  yet landed.
+- **`0d`** (was `62`) — **`#599`/`#620` (the `#532` purge mechanism) both DONE
+  and deployed live.** Condition-4 YES-side work is done for tonight (see
+  gate section below), correctly stopped rather than force a fatigued
+  per-tick-replay attempt. **`#532`'s actual pre-purge measurement is done**
+  (live, read-only, against the real 31.7M-row table): purge target
+  (pre-`#604`-cutoff `min_contracts` rows) = 31,429,358; post-fix sampled
+  rows so far = 1,782 (~36k/day, matches design intent); zero non-
+  `min_contracts` rows carry a non-1.0 `sample_weight` anywhere in the
+  table's history (the "keep every other gate whole" invariant holds with
+  zero exceptions); `rejected_candidates` (untouched) = 258,456 rows;
+  `integrity_check: ok`. **Held before posting the checkpoint or taking the
+  backup** — David paused mid-task to give `0d` direct instructions;
+  resolve that with `0d` directly before doing anything on `#532`, don't
+  assume the coordinator can just say "go."
+- **`c4`** (was `32`) — **`#150`, `#618`, `#585`, `#530` all DONE.** Real
+  outcomes worth knowing: `#150` needed no code fix (both named options were
+  already moot; real hang mechanism stays genuinely unexplained without new
+  instrumentation — stated plainly, not forced into a fix). `#618` was
+  closed, not merged (independently re-verified: genuine GitHub conflict,
+  the work was already superseded by a different commit lineage) — one
+  small genuine nugget salvaged as PR #623. `#585`'s two event-loop-blocking
+  fixes are live; checked against tonight's stall timestamps first and got
+  a clean negative (neither call site fired during the stall window) —
+  closes on independent merits, not as a root-cause claim; caught a real
+  near-miss where a naive fix would have silently killed the whole
+  calibration/auto-apply feature. `#530`'s sweep found `/api/quality/
+  summary` already fixed elsewhere and `observability/routes.py` still
+  live-reproduced (~7s stall) — ~61 other catalogued instances deliberately
+  left untouched for later, not chased all in one night.
+  **Now on `#629`** (`observability/routes.py` fix, the one instance with
+  real evidence): **PR #630 open, CI fully green, self-review posted,
+  adversarial review + consolidation still in progress** — not merged yet.
 - **`ea`** (was `bd`) — standing watch, broadened to general app health
-  (`/api/quality/summary`, `/api/health/faults`, `/api/observability/
-  summary`, `/api/health/storage`) plus `#579`/`#580`. Currently clean;
-  briefed that `#150`'s stall pattern and a likely upcoming `#532` backlog
-  purge are both expected, not fresh incidents. **Next goal:** keep watching
-  on the same cadence, flag genuine deviations from documented baselines.
+  plus `#579`/`#580`, still clean. Also driving **`#586`** via a dispatched
+  subagent (kept its own context on the watch, didn't switch off it):
+  **PR #627 open, CI fully green, self-review posted, adversarial review
+  still running** (confirmed genuinely alive, not stalled) — not merged
+  yet.
 
 `ef` (original app-health watch owner) confirmed gone, not renamed.
 
@@ -125,44 +89,44 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
 
 David asked to be alerted when it's safe to reset the bankroll and
 re-enable `auto_exit_enabled`. **Single tracker — do not create another.**
-(Note: the bankroll itself was separately reset tonight per David's own
-direct action, independent of this gate being met — see Safety above. This
-gate is specifically about re-enabling `auto_exit_enabled`/live strategy
-trust, which stays a distinct question.)
+(The bankroll itself was already reset tonight per David's own direct
+action, independent of this gate — see Safety above. This gate is
+specifically about re-enabling `auto_exit_enabled`/live strategy trust.)
 
-1. `#574` (exit-valuation fix) — ✅ merged `244372b`, confirmed live.
-2. Deployed + reload confirmed — ✅ 2026-09-05T09:44Z.
+1. `#574` (exit-valuation fix) — ✅ merged, confirmed live.
+2. Deployed + reload confirmed — ✅.
 3. Observed live for a real stretch, no new exit-pricing anomalies — ⬜
    window reopened after tonight's reset; too short to call again.
 4. Unexplained YES-side auto-exit profit addressed — ⬜ real progress, not
    resolved (detail below).
 5. No active data-completeness incident — ⬜ `#579`/`#580`'s shared-pool
-   hypothesis falsified, real mechanism found and being fixed (`#601`,
-   `49`); `#150` (separate mechanism) still open, being scoped (`c4`).
+   hypothesis falsified with a real fix shipped (`#601`); `#150` closed
+   with no fix needed; `#585`/`#530`/`#586` (a separate, newly-discovered
+   class of event-loop-blocking bugs) mostly fixed tonight, `#629`/`#586`
+   still mid-review, ~61 lower-priority instances still open.
 
-**0 of 5 fully met.**
+**0 of 5 fully met**, but meaningfully more evidence-backed progress
+tonight than the number alone shows.
 
 ### Condition 4 — YES-side profit (`#591`), current state
 
 Mirror-bug ruled out; headline figure corrected from a double-counting bug
 (202 trades, $60,276.44, 94.6% win rate — not the original $68,589/279);
 naive-rule selection-bias falsifier and split-half robustness check both
-done. Factor-isolation ablation (`0d`) found the composite replay diverges
-sharply from real profit, but proved why: a controlled clean-vs-
-contaminated-price comparison shows the **contamination confound is real**
-(pnl/composite flip sign entirely when re-priced on clean data; `staleness`,
-which never reads price, is identical between runs — internal-consistency
-proof it's genuinely price contamination). **But even clean, a real ~$58k
-gap remains unexplained** for the tested subset — leading hypothesis is the
-replay's sampling cadence being sparser than the live system's real
-per-tick evaluation, unconfirmed. Resolving that needs a materially harder
-real per-tick replay; `0d` correctly declined to force that attempt while
-fatigued tonight. **Condition 4 stays open.** Full detail and numbers on
-issue `#591`.
+done. Factor-isolation ablation found the composite replay diverges sharply
+from real profit, but a controlled clean-vs-contaminated-price comparison
+proved why: the **contamination confound is real** (pnl/composite flip sign
+entirely when re-priced on clean data; `staleness`, which never reads
+price, is identical between runs — internal-consistency proof). **But even
+clean, a real ~$58k gap remains unexplained** for the tested subset —
+leading hypothesis is the replay's sampling cadence being sparser than the
+live system's real per-tick evaluation, unconfirmed. Resolving that needs a
+materially harder real per-tick replay — correctly not attempted tonight
+while fatigued. **Condition 4 stays open.** Full detail on issue `#591`.
 
 ---
 
-## Standing priorities (David, verbatim, both nights)
+## Standing priorities (David, verbatim)
 
 > "Right now the priorities are the data plane overall integrity and
 > accuracy and near-zero latency, and also fixing the errors downstream of
@@ -177,45 +141,20 @@ issue `#591`.
 
 Two named priorities, read every open thread against both: (1) the data
 plane itself (completeness/accuracy/flow-rate/timeliness/fidelity/speed,
-CLAUDE.md's HARD RULE), (2) logged data integrity specifically — no
-software-caused corruption, no mishandled-logic contamination. The NO-side
-exit-valuation bug (`#574`) and the `#591` double-counting bug are both
-already-caught instances of priority 2, not hypothetical — `0d`'s YES-side
-work is priority-2 work by this definition, not a side investigation.
+CLAUDE.md's HARD RULE), (2) logged data integrity — no software-caused
+corruption, no mishandled-logic contamination. `0d`'s YES-side work is
+priority-2 work by this definition, not a side investigation.
 
 **Lean-execution policy** (PR #587): self-review + independent adversarial
 review + consolidation still required at every PR/pipeline stage, sized to
 the content — shrink artifacts, never skip one.
 
----
-
-## Tonight's Fable-model decision pass (David's delegation, 2026-09-05)
-
-David delegated the entire `docs/open-decisions.md` backlog for direct
-decisions ("review open-decisions and next-action and make the decisions on
-your own using fable"). Result, independently spot-checked by the
-coordinator before trusting it (branch-protection status, the recovered
-tier0 branch, and the Kalshi no-ask-sentinel finding all held up): 41 of
-~42 lines decided, 10 new issues filed (`#606`–`#613`, `#615`, `#616`), 11
-decisions posted on existing issues/PRs. Full reasoning lives on each
-GitHub item, not duplicated here. Two things surfaced that need David
-specifically:
-
-1. **`main` branch protection is genuinely OFF**, not just API-unreadable —
-   triple-confirmed independently (`GET /branches/main` → `"protected":
-   false`, both via `gh api` and a raw `curl` bypassing `gh` entirely; a
-   peer's own initial recheck hit the same old 403 by querying the
-   different, Pro-gated `/branches/main/protection` sub-resource, then
-   found the correct endpoint and confirmed it themselves too). The
-   `branching-and-ci.md` doc's description of a configured required-
-   status-check gate is stale. Interim practice (manually read
-   `commits/<sha>/status` before every merge) is already standing
-   behavior — restoring real enforcement needs GitHub Pro or a public
-   repo. Tracked as `#615`.
-2. The unexplained `KXBTC15M` config diff noted in Safety above.
-
-`docs/open-decisions.md` now holds just these 2 open lines plus pointers to
-every decided item's GitHub home — check there for the full list, not here.
+`docs/open-decisions.md`: cleaned up in a Fable-model pass tonight (David's
+delegation), 41 items decided across ~10 new issues + 11 decisions on
+existing ones. Currently holds just **one** open line: `#615` (`main`
+branch protection is genuinely, triple-confirmed OFF — GitHub Pro or a
+public repo needed to restore it; interim manual `commits/<sha>/status`
+checks are the standing, permanent practice either way).
 
 ---
 
@@ -223,30 +162,31 @@ every decided item's GitHub home — check there for the full list, not here.
 
 - **Never put a closing-shaped verb next to a bare issue/PR number in a
   commit message pushed straight to `main`** — GitHub's issue-linking regex
-  doesn't care what comes after the number ("resolved #597's followup"
-  auto-closed PR #597 once tonight). Write "issue #N"/"PR #N", or separate
-  a closing-shaped word (close/closes/fix/fixes/resolve/resolves, etc.)
-  from a bare `#N` reference — applies to every commit message and PR body
-  in this repo.
+  doesn't care what comes after the number. Write "issue #N"/"PR #N", or
+  separate a closing-shaped word (close/closes/fix/fixes/resolve/resolves)
+  from a bare `#N` reference.
 - **Commit hot-path benchmark scripts/raw output somewhere durable**, not
-  just PR/issue prose — a benchmark run in a throwaway worktree produces
-  numbers that become unfalsifiable the moment the worktree's gone.
+  just PR/issue prose — a benchmark in a throwaway worktree becomes
+  unfalsifiable the moment the worktree's gone.
 - **Dispatch subagents in parallel for independent pieces of a task list**
-  — every session including the coordinator. Doesn't change the
-  self-review → adversarial-review → consolidation stage order.
+  — every session including the coordinator. A session can keep its own
+  context on a standing job (e.g. a health watch) while a dispatched
+  subagent handles a separate task end-to-end, including its own review
+  cycle — this worked cleanly tonight (`ea`+`#586`).
 - **Checkpoint/push regularly, but don't bombard GitHub with pushes/PRs/
-  comments all at once** — up to 4-5 sessions hitting one repo's API risks
-  a rate limit that stalls everyone, not just the one that caused it.
+  comments all at once** — several sessions hitting one repo's API risks a
+  rate limit that stalls everyone.
 - **Post durable findings to a PR or issue, never leave them only in
-  chat** — every real loss tonight was state that lived only in a session
-  that then died.
+  chat.**
 - **Verify identity and state by direct reply / live check, never by
-  inference** — `ListAgents` uptime, a doc's last-known state, and a peer's
-  relayed claim have all been wrong at least once tonight, in both
-  directions (assumed-fresh-was-actually-continuous and vice versa).
-- **No knob changes** (queue capacity, worker counts, subscription scope,
-  rates) without a measured bottleneck and its mechanism.
+  inference** — in both directions (assumed-fresh was actually continuous,
+  and vice versa, both happened tonight).
+- **No knob changes** without a measured bottleneck and its mechanism.
+- **Distinguish `MERGEABLE`/CI-green from actually review-complete** — a
+  PR can be conflict-free and fully green while still only carrying a
+  self-review, no adversarial pass or consolidation yet. Check comment
+  count/content, not just the merge/CI badges, before assuming something's
+  ready.
 - **This file holds the single next action and current state — rewrite it,
-  don't append to it.** Full history of tonight (every PR's blow-by-blow,
-  every investigation's numbers) is in `git log`/`git show` and the
+  don't append to it.** Full history is in `git log`/`git show` and the
   relevant PRs/issues — that's the durable record, not this file.
