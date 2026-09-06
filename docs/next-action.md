@@ -210,21 +210,20 @@ design.
 
 ### Execution phase — 2 mechanical cleanup agents dispatched, status unknown at pause time
 
-Both were still running when the pause was called; the docs-consolidation
-agent got as far as posting its self-review and is now polling CI in the
-background to merge on green on its own (autonomous, no further input
-needed unless CI comes back red). **Check both PRs/reports on resume
-before doing anything else with `docs/*.md` or branches — do not
-re-dispatch duplicates.**
-
-- **Docs consolidation executor**: executing the already-approved
-  2026-08-27 list (archive/delete 20 named files into
-  `docs/archive-2026-08-27/` or outright `git rm` per file, land the 5
-  pre-drafted ROADMAP bullets + 1 addendum, delete
-  `docs/coordination-status-2026-09-03.md`, add the 2 missing frozen-
-  archive dates to CLAUDE.md's list) via its own branch+PR (lightweight
-  self-review only, per CLAUDE.md's mechanical-change exemption — this is
-  executing an already-decided list, not a new claim).
+**Docs consolidation executor: DONE**, merged during the pause window —
+**PR #635** merged, branch deleted. 13 files `git rm`'d (dead, no residual
+value), 8 files `git mv`'d into new `docs/archive-2026-08-27/` (still
+citation-worthy, kept), ROADMAP.md got the 5 pre-drafted P4 bullets + the
+addendum folded into the existing sports-legal-risk bullet, CLAUDE.md's
+frozen-list gap fixed, 5 stale in-repo path references updated to point
+at the new archive location, consolidation doc itself marked "Executed
+2026-09-06 — see PR #635" and left in place as record. CI green on all
+required contexts. One process gap self-disclosed: the agent couldn't run
+the `ListAgents` peer-courtesy-ping before merging because that tool isn't
+available to a delegated subagent (main-session-only) — not a decision to
+skip it, a real tooling gap worth remembering for future dispatches of
+git-merging subagents. No live peer was actually touching these files, so
+no real collision occurred this time.
 - **Branch/worktree hygiene**: deleting 3 leftover confirmed-superseded
   remote branches, cleaning up confirmed-merged local branches/worktrees
   (checking `ListAgents`/lock status first), removing genuinely-dead
