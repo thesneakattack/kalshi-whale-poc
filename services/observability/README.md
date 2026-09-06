@@ -719,6 +719,33 @@ notification path from this module.
   dropped_messages`/`messages_received` (cumulative, always real) are the
   metrics to check first if the stream-perf pair looks perpetually missing.
 
+## `GET /api/observability/history|summary` dispatch off the event loop (issue #629, 2026-09-06)
+
+Both routes call `observability.history()`/`observability.summary()` —
+plain sqlite3 reads via `_connect()`, not aiosqlite. Until this fix they
+called those functions directly from the `async def` route body with no
+dispatch, blocking the whole process's event loop for the call's
+duration: `_connect()`'s own docstring recorded this as item 2 of issue
+#530, measured live at 0.79–1.02s at the default `hours=24` and ~7.66s at
+`hours=720`; #530's sweep separately reproduced a concurrent `GET
+/api/state` call stalling ~7s while `GET /api/observability/summary?
+hours=720` was in flight. Both calls are now wrapped in `asyncio.to_thread`
+in `routes.py` (same mechanism PR #552 used in `services/quality/
+routes.py`'s composed route, and for the same reason it, not a shared
+pool, is the right one here — see `routes.py`'s own module docstring).
+Live in-container measurement against a copy of the real
+`data/observability.db` (~3M rows, ~298h span) reproduced both sides
+cleanly: before the fix, one concurrent fast endpoint got exactly 1
+sample in during a 5.95s `summary(hours=720)` call (near-total
+starvation); after the fix, the same fast endpoint got 300 samples in
+during a 6.22s call, at ~1.3ms max — indistinguishable from its ~1.1ms
+baseline with nothing else in flight. `history()` itself is fast at its
+default `hours=24` (~6ms against the same real-scale data) and was never
+the concurrency-stall trigger; it's dispatched for the same correctness
+reason (an `async def` route must never call a synchronous DB read
+inline, regardless of today's measured cost) and because a large `hours`
+value on a low-volume metric can still scan a wide row range.
+
 ## Reconnect gap duration + per-position ticker cadence (P8 Task 34, 2026-08-27)
 
 Two new metric families, both added because a benchmark planned for the
