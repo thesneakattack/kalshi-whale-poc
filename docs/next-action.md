@@ -6,12 +6,37 @@ reply before trusting a name, in either direction.
 
 ---
 
-## Safety (check every session start)
+## Safety (check every session start — read this, don't just trust `git status`)
 
 `strategy.auto_exit_enabled: false` and `risk.max_daily_loss_pct: 0` in
 `config/settings.yaml`, both **uncommitted** (David's own edits) — must
 stay uncommitted and unchanged. `kalshi_account.trading_enabled` stays
 `false`. Kill switch TRIPPED by design; David confirmed that's fine.
+
+**Real incident, 2026-09-06, caught by a peer's routine status check:**
+both safety lines were found **silently reverted** to their unsafe
+defaults (`auto_exit_enabled: true`, `max_daily_loss_pct: 0.8`) with
+**zero working-tree diff** — `git status --short` looked completely
+clean, which is exactly why nobody noticed sooner. Root cause: a bare
+`git checkout <branch>` on the shared primary (done to *inspect* a PR
+branch, not to commit) can drop the override if the target branch's
+tracked file differs and it isn't stashed first — the established
+stash-before-commit pattern was never applied to read-only checkouts.
+Memory: `bare-checkout-can-drop-uncommitted-safety-config`. **Fixed
+immediately** (restored both lines, confirmed live via `GET /api/config`
+within seconds — config is live-reloaded, no restart needed). **Actual
+impact was nil**, checked directly: `trading_enabled` was `false`
+throughout (real capital never at risk), `risk.halted` stayed `true`
+(kill switch didn't self-clear), and `GET /api/state` showed **zero open
+paper positions** during the unknown-length window — nothing was
+available for the wrongly-live auto-exit logic to act on.
+
+**Standing check from now on**: a clean `git status` is not proof these
+two lines survived — `grep -n 'auto_exit_enabled\|max_daily_loss_pct'
+config/settings.yaml` and confirm `false`/`0` directly, at session start
+and after any checkout on the primary. Prefer `EnterWorktree` over a
+bare `git checkout` for read-only inspection of another branch — it
+removes the hazard instead of requiring perfect discipline every time.
 
 ---
 
