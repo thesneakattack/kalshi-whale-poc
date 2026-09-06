@@ -5,12 +5,23 @@ continuous session). **Verify identity by direct reply before trusting a
 name, in EITHER direction** — session names have changed on reconnect
 multiple times tonight, sometimes with memory intact, sometimes not.
 
-**Communication note:** a session named `autotrade-1d` appeared tonight
-(unverified identity, 2-way reply never landed) — David said he gave it
-direct instructions to relay to the coordinator, but SendMessage round-trips
-with it didn't work. Unresolved; don't assume it's a fleet peer or ignore it
-outright — check status if it reappears, but don't burn time chasing a
-broken channel.
+**`autotrade-1d` mystery RESOLVED:** it was the session David tasked with a
+full branch/PR audit (`docs/branch-audit-2026-09-05.md`, on its own branch
+`docs/branch-audit-2026-09-05`); its permission request to the coordinator
+never got through (2-way comms genuinely failed), so it correctly saved the
+audit unapproved. **The audit was Fable-assessed, spot-checked (8/27
+superseded-branch claims independently re-verified, all held), and its
+action plan EXECUTED 2026-09-06 on David's direct go:** local branches
+82→16, 9 merged remote branches deleted, 24+3 content-verified-superseded
+branches force-deleted (worktrees checked for liveness+dirt first — all
+clean), `feat/candlestick-volatility` pushed to origin per its recorded
+decision (stays unmerged), `feat/frontend-realtime-push` deleted + issue
+#398 closed, the orphaned PR #505 adversarial review recovered and posted
+as a PR comment (branch deleted), the stale #448 record corrected on the
+issue and in `open-decisions.md`, PR #603 merged as the durable #601
+benchmark record, and the orphaned #546 root-cause research doc is being
+recovered as its own docs PR (background agent, lean review cycle). The
+audit's methodology lesson is in Standing lessons below.
 
 **Safety, check every session start:** `auto_exit_enabled: false` and
 `risk.max_daily_loss_pct: 0` in `config/settings.yaml`, both uncommitted
@@ -39,9 +50,13 @@ confirmed repeatedly throughout the night.
   genuinely new shipped code (the only prior version was an uncommitted
   scratchpad prototype). Checked sibling functions first to preserve their
   existing SQL-side-GROUP-BY/async discipline rather than regress it.
-  Dispatched full implementation (sync+async pair, new diagnostics check,
-  TDD, real query-cost measurement, full review cycle) — in progress, not
-  yet landed.
+  Checkpointed as **draft PR #631** when its implementation subagent hit a
+  rate limit mid-edit (verified on-disk state was valid and tested — 62
+  passing — before committing, not a blind commit). Done: the core banded
+  diagnostic + route wiring. Disclosed gap blocking merge: the banded query
+  costs ~2x the existing one and needs a decoupled cache TTL first. Not
+  started: the `check_gate_cost_bands` diagnostics check. **Resumed on
+  exactly those two items**, then full review cycle before leaving draft.
 - **`0d`** (was `62`) — **`#599`/`#620` (the `#532` purge mechanism) both DONE
   and deployed live.** Condition-4 YES-side work is done for tonight (see
   gate section below), correctly stopped rather than force a fatigued
@@ -83,13 +98,24 @@ confirmed repeatedly throughout the night.
   end-to-end, all three fixes deployed live (`#624`, `#625`, `#630`). One
   more harmless instance noted for the ~61-item backlog
   (`tools/kalshi_rate_limit_probe.py:303`, one-shot CLI, not touched).
-  Free for next assignment.
-- **`ea`** (was `bd`) — standing watch, broadened to general app health
-  plus `#579`/`#580`, still clean. Also driving **`#586`** via a dispatched
-  subagent (kept its own context on the watch, didn't switch off it):
-  **PR #627 open, CI fully green, self-review posted, adversarial review
-  still running** (confirmed genuinely alive, not stalled) — not merged
-  yet.
+  **Now on `#605` — David's direct "fix the stall" instruction.** Full arc:
+  instrument → catch live → root-cause → fix. Two coordinator-supplied
+  leads to check first: (1) `fault_log` dedup never updates
+  `first_traceback` (per the #599 finding), so the garbage
+  multiprocessing-bootstrap stall traceback may be a weeks-old first
+  capture with every fresh one discarded since; (2)
+  `loop_watchdog._capture_stall_traceback()` may capture the watchdog's
+  own thread's stack, not the blocked loop's — `sys._current_frames()`
+  keyed to the loop thread is the standard fix. Known constraints: stalls
+  burst at ~9.3-9.6s just under the 10s handler timeout; timeouts fire
+  with ZERO exceptions (rules out plain SQLite busy-wait); `#585`'s call
+  sites ruled out by timestamp; hot-path instrumentation must have its
+  cost measured before shipping.
+- **`ea`** (was `bd`) — standing watch, resumed. **`#627`/`#586`: one step
+  from merge** — self-review posted, a real GO-verdict adversarial review
+  landed (the reviewer wasn't dead, just took ~2.6h; `ea` corrected its own
+  earlier "confirmed dead" call plainly), CI green. Told to write the
+  consolidation and merge on GO with per-context CI reads.
 
 `ef` (original app-health watch owner) confirmed gone, not renamed.
 
@@ -169,6 +195,13 @@ checks are the standing, permanent practice either way).
 ---
 
 ## Standing lessons (apply, don't re-litigate)
+
+- **Ancestry checks lie about supersession — compare content.** The branch
+  audit found 14 branches that `git log origin/main..<branch>` called
+  "undelivered" whose code was fully on `main`, shipped via squashed/
+  rewritten/differently-named commits. `merge-base --is-ancestor` proves
+  merged; it cannot prove UN-merged. Before calling a branch's work lost or
+  undelivered, read `main`'s actual current files.
 
 - **Never put a closing-shaped verb next to a bare issue/PR number in a
   commit message pushed straight to `main`** — GitHub's issue-linking regex
