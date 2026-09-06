@@ -97,10 +97,19 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
   alone would have silently killed the whole calibration/auto-apply
   feature; fixed via an `iscoroutine()` branch in the scheduler loop
   instead. One residual filed as **#626** (a smaller ~1.1s un-offloaded
-  cost, out of scope for #585). **Now on `#530`**'s broader sweep, running
-  as a background docs-only research agent, same pattern as `#150`'s
-  benchmark. `#586` (shutdown-only hang, lower frequency) delegated to
-  `ea` in parallel — PR #627 open, CI running, review cycle in progress.
+  cost, out of scope for #585). **`#530` DONE** (PR #628, docs-only,
+  `f8b3b47`): smartly avoided redoing an existing 2-day-old 88-handler
+  census (`docs/event-loop-blocking-routes-census-2026-09-03.md`, 63
+  BLOCKING instances) from scratch — reconciled current status instead.
+  `/api/quality/summary` already fixed (PR #552, confirmed merged;
+  11.6-33.4s → 3.4-3.8s live). `services/observability/routes.py`
+  (`history`/`summary`) confirmed still open and live-reproduced (`/api/
+  state` stalls ~7s while it runs concurrently, same shape as the
+  already-fixed bug) — ~61 other instances remain catalogued but
+  unreproduced. **Now fixing `observability/routes.py` specifically**
+  (the one with real evidence); the rest of the backlog stays logged for
+  later, not chased all in one night. `#586` (shutdown-only hang) still
+  with `ea` — PR #627 open, review cycle in progress.
 - **`ea`** (was `bd`) — standing watch, broadened to general app health
   (`/api/quality/summary`, `/api/health/faults`, `/api/observability/
   summary`, `/api/health/storage`) plus `#579`/`#580`. Currently clean;
