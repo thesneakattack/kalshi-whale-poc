@@ -1,6 +1,6 @@
 """CLI entrypoint for the kanban board sync (docs/superpowers/specs/
 2026-08-26-kanban-board-sync-design.md). `python -m tools.kanban_sync sync
---sources worktree,roadmap,track` runs the fully mechanical sources (used
+--sources worktree,roadmap` runs the fully mechanical sources (used
 by the /checkpoint skill integration, Task 12); `--sources plan`
 additionally needs `--plan-classifications <path-to-json>`, produced by
 the on-demand kanban-board-sync skill's judgment-assisted classification
@@ -23,7 +23,6 @@ from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync.plan_tasks import decompose_plan
 from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
 from tools.kanban_sync.sources_roadmap import parse_roadmap_items
-from tools.kanban_sync.sources_tracks import parse_track_items
 from tools.kanban_sync.sources_worktree import (
     collect_worktree_items, live_worktree_branches, parse_worktree_list,
 )
@@ -34,9 +33,8 @@ from tools.kanban_sync.sync import (
 
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
-ACTIVE_TRACKS_BOARD_PATH = Path("docs/superpowers/plans/2026-08-26-active-tracks-board.md")
 PLANS_DIR = Path("docs/superpowers/plans")
-KNOWN_SOURCES = frozenset({"worktree", "roadmap", "track", "plan"})
+KNOWN_SOURCES = frozenset({"worktree", "roadmap", "plan"})
 
 
 def _check_project_scope() -> None:
@@ -110,7 +108,7 @@ def _collect_items(
     closure pass (Part B), since that pass only makes sense when this run
     actually has fresh worktree state to check against."""
     # Checked first, before any source-specific work (including real
-    # subprocess calls for worktree/track), so a missing flag fails fast
+    # subprocess calls for worktree), so a missing flag fails fast
     # rather than after wasting real `git`/`gh` calls (Task 10 review
     # finding #2).
     if "plan" in sources and plan_classifications is None:
@@ -130,8 +128,6 @@ def _collect_items(
         live_branches = live_worktree_branches(parse_worktree_list(porcelain))
     if "roadmap" in sources:
         items += parse_roadmap_items(ROADMAP_PATH.read_text())
-    if "track" in sources:
-        items += parse_track_items(ACTIVE_TRACKS_BOARD_PATH.read_text())
     if "plan" in sources:
         items += build_plan_items(json.loads(plan_classifications.read_text()))
 
@@ -221,7 +217,7 @@ def _cmd_push_status(args: argparse.Namespace) -> None:
 
 
 def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
-    for path in list_plan_candidates(PLANS_DIR, ACTIVE_TRACKS_BOARD_PATH.read_text()):
+    for path in list_plan_candidates(PLANS_DIR):
         print(path)
 
 
@@ -229,11 +225,12 @@ def _cmd_decompose_plan(args: argparse.Namespace) -> None:
     _check_project_scope()
     client = GithubClient(REPO)
     if args.parent_issue is not None:
-        # A track-tracked plan (active-tracks-board.md) carries a track:*
-        # marker, not a plan:* one - find_by_marker would never find it.
-        # Bypassing the lookup entirely (not just overriding its result)
-        # works for any existing issue, present or future, without this
-        # tool needing to learn a second marker kind.
+        # Bypasses find_by_marker's plan:* marker lookup entirely (not just
+        # overriding its result), for a plan whose tracking issue doesn't
+        # carry that marker at all - e.g. an issue created by hand, or
+        # tracked under a different marker kind entirely. Works for any
+        # existing issue, present or future, without this tool needing to
+        # learn every possible marker kind a parent issue might carry.
         parent_number = args.parent_issue
     else:
         marker = build_marker(labels.SYNC_MARKER_KIND_PLAN, args.plan)
@@ -272,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync_parser = sub.add_parser("sync", help="reconcile sources onto GitHub Issues")
-    sync_parser.add_argument("--sources", required=True, help="comma-separated: worktree,roadmap,track,plan")
+    sync_parser.add_argument("--sources", required=True, help="comma-separated: worktree,roadmap,plan")
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--plan-classifications", type=Path, default=None)
     sync_parser.set_defaults(func=_cmd_sync)
@@ -300,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
     decompose_parser.add_argument(
         "--parent-issue", type=int, default=None,
         help="target this issue number directly, bypassing plan: marker lookup "
-             "(e.g. for a track-tracked plan carrying a track: marker instead)",
+             "(e.g. for a plan whose tracking issue doesn't carry the plan: "
+             "marker find_by_marker looks for)",
     )
     decompose_parser.add_argument(
         "--start-from-task", type=int, default=1,

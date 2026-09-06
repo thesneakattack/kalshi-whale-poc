@@ -37,7 +37,7 @@ def test_find_by_marker_returns_none_when_no_results():
     runner.queue(json.dumps([]))
     client = GithubClient(REPO, runner=runner)
 
-    result = client.find_by_marker("<!-- autotrade-sync: track:A -->")
+    result = client.find_by_marker("<!-- autotrade-sync: roadmap:A -->")
 
     assert result is None
     assert runner.calls[0][:3] == ["gh", "issue", "list"]
@@ -580,7 +580,7 @@ def test_create_issue_with_parent_and_milestone_adds_both_flags():
 
 def test_create_issue_without_parent_or_milestone_omits_both_flags():
     """Backward-compatibility guard: every existing call site (worktree/
-    roadmap/track/plan item creation) never passes these - must produce
+    roadmap/plan item creation) never passes these - must produce
     the exact same args as before this change."""
     runner = FakeRunner()
     runner.queue("https://github.com/thesneakattack/kalshi-whale-poc/issues/50\n")

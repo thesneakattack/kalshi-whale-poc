@@ -276,10 +276,10 @@ def _sync_project_status(
     matching every other mutating operation in this module.
 
     item.done is checked BEFORE item.status_label, not the other way
-    around: sources_tracks.py always sets status_label=STATUS_CLAIMABLE
-    regardless of done (unlike sources_roadmap.py/sources_plan.py, which
-    correctly flip it) - mapping via status_label alone would land a
-    just-finished track on "Next" instead of "Done"."""
+    around: a source isn't guaranteed to flip status_label to reflect
+    done=True (sources_roadmap.py/sources_plan.py do; a source need not) -
+    mapping via status_label alone would land a just-finished item on
+    "Next" instead of "Done"."""
     if dry_run:
         return
     status = (

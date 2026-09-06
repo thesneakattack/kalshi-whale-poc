@@ -2,28 +2,104 @@ from tools.kanban_sync import labels
 from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
 
 
-def test_list_plan_candidates_excludes_board_file_and_referenced_plans(tmp_path):
-    (tmp_path / "2026-08-26-active-tracks-board.md").write_text("board")
-    (tmp_path / "2026-08-26-subscription-churn-investigation.md").write_text("x")
+def test_list_plan_candidates_excludes_readme(tmp_path):
+    (tmp_path / "README.md").write_text("index")
     (tmp_path / "2026-08-25-frontend-modularization.md").write_text("x")
-    board_text = (
-        "Investigation plan: `docs/superpowers/plans/"
-        "2026-08-26-subscription-churn-investigation.md`"
-    )
 
-    result = list_plan_candidates(tmp_path, board_text)
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-08-25-frontend-modularization.md"]
+
+
+def test_list_plan_candidates_excludes_active_tracks_board_itself(tmp_path):
+    """Not moved by this change (a later migration step retires it), but it
+    self-declares "not a plan in its own right"
+    (docs/superpowers/lanes/step1-plans-classification.md) and must never
+    surface as a candidate needing done/in-progress/not-started
+    classification."""
+    (tmp_path / "2026-08-26-active-tracks-board.md").write_text("board")
+    (tmp_path / "2026-08-25-frontend-modularization.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
 
     assert result == ["2026-08-25-frontend-modularization.md"]
 
 
 def test_list_plan_candidates_returns_sorted_list(tmp_path):
-    (tmp_path / "2026-08-26-active-tracks-board.md").write_text("board")
     (tmp_path / "b-plan.md").write_text("x")
     (tmp_path / "a-plan.md").write_text("x")
 
-    result = list_plan_candidates(tmp_path, "")
+    result = list_plan_candidates(tmp_path)
 
     assert result == ["a-plan.md", "b-plan.md"]
+
+
+def test_list_plan_candidates_excludes_review_companion_with_existing_parent(tmp_path):
+    (tmp_path / "2026-09-03-x-implementation.md").write_text("plan")
+    (tmp_path / "2026-09-03-x-implementation-review.md").write_text("review")
+    (tmp_path / "2026-09-03-x-implementation-self-review.md").write_text("self-review")
+    (tmp_path / "2026-09-03-x-implementation-consolidation.md").write_text("consolidation")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-09-03-x-implementation.md"]
+
+
+def test_list_plan_candidates_excludes_compound_companion_suffixes_with_existing_parent(tmp_path):
+    """Real filenames from docs/superpowers/plans/ - the companion suffix
+    family is much wider than four bare words, and includes a qualifier
+    (pr-/catchup-/plan-) stacked in front of the base review/consolidation
+    word."""
+    (tmp_path / "2026-09-03-y-implementation.md").write_text("plan")
+    (tmp_path / "2026-09-03-y-implementation-pr-review.md").write_text("x")
+    (tmp_path / "2026-09-03-y-implementation-pr-self-review.md").write_text("x")
+    (tmp_path / "2026-09-03-y-implementation-pr-consolidation.md").write_text("x")
+    (tmp_path / "2026-09-03-y-implementation-plan-review.md").write_text("x")
+    (tmp_path / "2026-08-25-w.md").write_text("x")
+    (tmp_path / "2026-08-25-w-catchup-consolidation.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-08-25-w.md", "2026-09-03-y-implementation.md"]
+
+
+def test_list_plan_candidates_excludes_recheck_and_round_suffixes_with_existing_parent(tmp_path):
+    (tmp_path / "2026-09-03-v.md").write_text("plan")
+    (tmp_path / "2026-09-03-v-recheck.md").write_text("x")
+    (tmp_path / "2026-09-03-v-recheck-2.md").write_text("x")
+    (tmp_path / "2026-09-03-v-self-review-round2.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-09-03-v.md"]
+
+
+def test_list_plan_candidates_keeps_companion_shaped_file_when_no_parent_exists(tmp_path):
+    """A suffix match alone isn't enough - docs/superpowers/lanes/step1-
+    plans-classification.md documents a real file of exactly this shape
+    (...-persistence-layer-task8-candidate-ledger-self-review.md) that has
+    no filename-obvious parent and is correctly left as its own candidate
+    for the judgment-assisted kanban-board-sync skill to assign by hand."""
+    (tmp_path / "2026-09-03-orphan-self-review.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-09-03-orphan-self-review.md"]
+
+
+def test_list_plan_candidates_keeps_file_that_is_companion_shaped_only_in_content(tmp_path):
+    """A real, documented gap (docs/superpowers/lanes/step1-plans-
+    classification.md's finding G2): a file that IS a review companion by
+    content can carry a suffix this mechanical filename check doesn't
+    recognize (e.g. "-freshness-check"). That's the judgment-assisted
+    kanban-board-sync skill's job, not this function's - see this module's
+    own docstring."""
+    (tmp_path / "2026-08-25-z.md").write_text("x")
+    (tmp_path / "2026-09-03-z-freshness-check.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-08-25-z.md", "2026-09-03-z-freshness-check.md"]
 
 
 def test_build_plan_items_emits_done_item_for_done_classification():
