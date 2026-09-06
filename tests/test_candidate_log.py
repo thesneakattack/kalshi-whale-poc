@@ -926,3 +926,115 @@ def test_population_gate_summary_async_yields_to_the_event_loop():
     assert threading.get_ident() not in read_thread_ids, (
         "the SQL ran on the test's own (main) thread, not aiosqlite's worker thread"
     )
+
+
+# --- gate_summary_async (issue #605) ---------------------------------------
+#
+# gate_summary() was called directly and synchronously from GET /api/
+# candidate-log/summary, with no offload of any kind - unlike population_
+# gate_summary() (issue #410, above), which got both an in-SQL GROUP BY
+# rewrite AND an aiosqlite-native async sibling. gate_summary()'s own
+# rejected_candidates table was believed small enough (62K rows,
+# docs/event-loop-blocking-routes-census-2026-09-03.md) to leave inline -
+# that census entry is now stale (258,526 rows measured live 2026-09-06,
+# ~4.2x growth in 3 days) and corrected in the same document as this fix.
+# A live py-spy-equivalent stack capture (issue #605) caught the event loop
+# genuinely blocked inside gate_summary() at candidate_log.py:456 (the old
+# Python GROUP BY loop) during a real, naturally-recurring stall.
+#
+# Same fix shape as issue #410, same reason: this function is entirely
+# SQL-bound once the GROUP BY moves into SQL (measured live against the
+# real 258,526-row table: 0.53-0.56s Python-loop vs 0.28-0.29s SQL GROUP
+# BY, ~48% cheaper, byte-identical output), so aiosqlite is the right
+# transport - a thread offload would only move where the cost lands, not
+# reduce it, and this repo already tried and abandoned that exact tradeoff
+# once for population_gate_summary().
+
+
+def test_gate_summary_async_matches_the_sync_version_exactly():
+    """The two paths answer the same question from the same rows, so any
+    divergence is a bug by definition - they share _GATE_SUMMARY_SQL and
+    _summarize_gate_rows precisely so this can be asserted. Covers the
+    same edge cases the sync gate_summary() tests above already do
+    (unresolved rows, no-side rows, missing unit_cost, ties) by construction,
+    since both paths run the identical query against the identical table."""
+    for i in range(6):
+        side = "yes" if i < 4 else "no"
+        cl.record_rejection(f"TICK-{i}", "whale_follow", "entry_threshold", 0.5, 0.6, side=side, unit_cost=0.4)
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    cl.record_rejection("TICK-X", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    cl.record_rejection("TICK-Y", "market_native", "max_spread", None, 0.05, now=1000.0, unit_cost=None)
+
+    sync_result = cl.gate_summary()
+    async_result = asyncio.run(cl.gate_summary_async())
+
+    assert async_result == sync_result
+    assert async_result != []
+    assert any(g["hypothetical_win_rate"] is not None for g in async_result)
+
+
+def test_gate_summary_async_self_heals_a_missing_schema(tmp_path, monkeypatch):
+    """_connect() re-runs its DDL on every call, so the sync read path has
+    always repaired a missing table rather than raising. The async path must
+    keep that property via _ensure_schema_aio - without it, "no data yet"
+    becomes a hard error (the exact collapse _aio_db.connection_for()'s
+    schema_init parameter exists to prevent)."""
+    fresh = tmp_path / "nonexistent" / "candidate_log.db"
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cl, "DB_PATH", fresh)
+
+    assert asyncio.run(cl.gate_summary_async()) == []
+
+
+def test_gate_summary_async_yields_to_the_event_loop():
+    """The whole point of this fix: the read must yield to the loop rather
+    than blocking it for its full duration. A concurrently-scheduled
+    coroutine must get to run WHILE the read is in flight - same
+    corrected-F2 shape as test_population_gate_summary_async_yields_to_the_
+    event_loop above (snapshot progress the instant the read call returns,
+    before the ticker task is itself awaited)."""
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, now=1000.0)
+    progressed = []
+    progress_at_read_return = []
+    read_thread_ids = []
+
+    import threading
+    from services.diagnostics import _aio_db as aio_db_module
+
+    original_connection_for = aio_db_module.connection_for
+
+    async def _spy_connection_for(db_path, schema_init=None):
+        conn = await original_connection_for(db_path, schema_init=schema_init)
+        original_sync_fetchall = conn._execute_fetchall
+
+        def _spy_sync_fetchall(sql, parameters):
+            read_thread_ids.append(threading.get_ident())
+            return original_sync_fetchall(sql, parameters)
+
+        conn._execute_fetchall = _spy_sync_fetchall
+        return conn
+
+    async def _exercise():
+        async def _ticker():
+            for _ in range(50):
+                await asyncio.sleep(0)
+                progressed.append(1)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cl._aio_db, "connection_for", _spy_connection_for)
+            ticker = asyncio.create_task(_ticker())
+            result = await cl.gate_summary_async()
+        progress_at_read_return.append(len(progressed))
+        await ticker
+        return result
+
+    result = asyncio.run(_exercise())
+    assert result != []
+    assert progress_at_read_return[0] > 0, (
+        "the ticker made zero progress before the read returned - "
+        "the async read never actually yielded control to the loop"
+    )
+    assert read_thread_ids, "execute_fetchall spy never recorded a call - test is broken"
+    assert threading.get_ident() not in read_thread_ids, (
+        "the SQL ran on the test's own (main) thread, not aiosqlite's worker thread"
+    )
