@@ -192,6 +192,231 @@ _POPULATION_GATE_SQL = """
 """
 
 
+# population_gate_summary_banded()'s bands - issue #616 D1 (docs/superpowers/
+# specs/2026-08-26-economic-strategy-remediation-design.md). Reproduces
+# docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md's
+# own E4 results table exactly ([0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,.95)
+# [.95,1.01) - e.g. that table's whale_watcher.min_contracts/0.00-0.20 row is
+# n=601,757, win rate 9.9%, mean_unit_cost 0.074, EV/contract +0.0252) -
+# VERIFIED, not copied blind from that document's own framing. That research
+# doc's prose calls these "the same six bands CLAUDE.md's HARD COMMANDMENT
+# table uses" - checked directly against `git log -S'HARD COMMANDMENT' --
+# CLAUDE.md` and against candidate_log.py's/record_rejection's own existing
+# docstrings (both cite the real table's numbers) rather than trusted, and
+# that attribution is WRONG: CLAUDE.md's HARD COMMANDMENT table (introduced
+# commit 3193843; retired alongside the 70%/70% target in 78e5aaf, purged
+# from the file entirely in 385623c - grep the CURRENT CLAUDE.md for "HARD
+# COMMANDMENT" and it returns nothing) used a coarser FOUR-band scheme with
+# different boundaries: 0.50-0.65 / 0.65-0.80 / 0.80-0.95 / >=0.95 - no band
+# at all below 0.50, and none of these six 0.2-wide boundaries. The six bands
+# below are still the right ones for THIS function (they are what E4 actually
+# measured, and issue #616's decision record's own "-0.073 to -0.049 per
+# contract in the 0.60-0.95 band" citation is exactly this scheme's 0.60-0.80
+# and 0.80-0.95 bands) - only the "same as HARD COMMANDMENT" attribution in
+# the research doc is a misattribution, not the bands themselves.
+DEFAULT_BANDS: tuple[tuple[float, float], ...] = (
+    (0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 0.95), (0.95, 1.01),
+)
+
+
+def _band_case_sql(bands) -> tuple[str, list]:
+    """Builds a parameterized SQL CASE expression that buckets `unit_cost`
+    into the caller's half-open [low, high) bands, first-matching-WHEN-wins -
+    the same semantics as a sequential if/elif, so `bands` must be sorted
+    ascending and non-overlapping (validated below rather than trusted: a
+    mis-ordered list would silently misclassify every row past the first
+    inversion instead of erroring).
+
+    A unit_cost that clears every band (or is negative - nothing upstream
+    enforces unit_cost's [0,1] range at write time) falls into an explicit
+    'out_of_range' bucket via ELSE, rather than SQLite's default CASE
+    behaviour of NULL for "no WHEN matched" - a NULL group would otherwise
+    silently drop those rows from a naive read of this function's output
+    instead of surfacing them (CLAUDE.md's data-plane HARD RULE: "a dropped
+    message, skipped candidate, or DB hole is a defect").
+
+    Returns (case_sql, params) - params is a flat list of bound values in
+    the exact order their `?` placeholders appear in case_sql, meant to
+    prefix the query's own parameter list (this expression is the first
+    thing SQLite binds placeholders for, since it sits in the SELECT list
+    before the WHERE clause)."""
+    prev_high = None
+    parts: list[str] = []
+    params: list = []
+    for low, high in bands:
+        if not (low < high):
+            raise ValueError(f"invalid band, low must be < high: ({low}, {high})")
+        if prev_high is not None and low < prev_high:
+            raise ValueError(f"bands must be sorted ascending and non-overlapping: {bands}")
+        prev_high = high
+        parts.append("WHEN unit_cost >= ? AND unit_cost < ? THEN ?")
+        params.extend([low, high, f"{low:.2f}-{high:.2f}"])
+    case_sql = "CASE " + " ".join(parts) + " ELSE 'out_of_range' END"
+    return case_sql, params
+
+
+def _population_gate_banded_query(bands) -> tuple[str, list]:
+    """Builds the GROUP BY query for population_gate_summary_banded() and its
+    async sibling. Built per call rather than a module constant like
+    _POPULATION_GATE_SQL, because `bands` is a caller-supplied parameter, not
+    a fixed shape - DEFAULT_BANDS above is what every real caller passes
+    today.
+
+    Same SQL-side-aggregation discipline as _POPULATION_GATE_SQL, and for
+    the same reason: issue #616's decision record explicitly warns this
+    function "must not add another unindexed scan of rejected_candidates/
+    rejection_events" - the exact shape issue #601/#617 just fixed
+    elsewhere in this file. Grouping by (strategy, gate_name, unit_cost_band)
+    still starts from the same (strategy, gate_name) prefix
+    idx_rejection_events_gate already indexes, so this adds no new
+    index-shape risk over the existing unbanded query.
+
+    win/n are plain unweighted COUNT(*)/SUM(*) - not SUM(sample_weight) -
+    deliberately: this module's own "SAMPLING" docstring section already
+    establishes that a ratio (here, wins/n) over a uniform sample is
+    unbiased without weighting, and that the statistical-precision gate
+    (here, n itself) must reflect the REAL observed sample count, never a
+    scaled-up population estimate, or it becomes LESS protective for
+    exactly the gate (min_contracts) that most needs it."""
+    case_sql, band_params = _band_case_sql(bands)
+    sql = f"""
+        SELECT strategy, gate_name, {case_sql} AS unit_cost_band,
+               COUNT(*) AS n,
+               SUM(CASE WHEN result = side THEN 1 ELSE 0 END) AS wins,
+               SUM(unit_cost) AS unit_cost_total
+        FROM rejection_events
+        WHERE unit_cost IS NOT NULL AND resolved = 1 AND side IN ('yes', 'no')
+        GROUP BY strategy, gate_name, unit_cost_band
+    """
+    return sql, band_params
+
+
+def _summarize_population_rows_banded(rows, min_samples: int, band_bounds: dict) -> list[dict]:
+    """The pure-Python half of population_gate_summary_banded(), shared
+    verbatim by the sync and async paths - same reason _summarize_population_
+    rows() above is shared: the two transports can never drift into
+    reporting different numbers from the same rows.
+
+    n is the single sample-size denominator for this function (unlike
+    _summarize_population_rows() above, which tracks rejected_count/
+    resolved_count/sided_total separately) because _population_gate_banded_
+    query()'s WHERE clause already restricts to resolved+sided+known-
+    unit_cost rows before GROUP BY ever runs - there is no broader
+    "rejected but not yet resolved" count left to report at this
+    granularity. mean_unit_cost is reported whenever n > 0 regardless of the
+    min_samples gate (mirroring avg_unit_cost's own always-shown behaviour
+    in gate_summary()/population_gate_summary() above) - only win_rate and
+    ev_per_contract, the two quantities whose noise genuinely misleads at
+    low n, go to None below min_samples.
+
+    DIMENSIONAL ANALYSIS (CLAUDE.md's HARD RULE, 2026-08-31): a Kalshi binary
+    contract pays exactly $1 if it resolves your side, $0 otherwise, so
+    expected value per contract in dollars is P(win) x $1 - unit_cost x $1 -
+    both terms unitless fractions of $1 (the same "breakeven accuracy IS the
+    entry price" identity the now-retired HARD COMMANDMENT table stated -
+    see DEFAULT_BANDS' own comment above for why that table isn't otherwise
+    authoritative for this function's bands). CRITICAL: this MUST use the
+    raw 0-1 fraction (wins/n), never the `win_rate` OUTPUT field below, which
+    is deliberately rescaled to 0-100 to match population_gate_summary()'s
+    own hypothetical_win_rate convention (percent). Subtracting a 0-1
+    mean_unit_cost from a 0-100 win_rate would silently be off by ~100x -
+    exactly the class of scale-confusion bug CLAUDE.md's "A displayed value
+    must match its label" section already names two real precedents for
+    (the no-side 1-price inversion, `equity - starting_bankroll` mislabeled
+    as unrealized P&L)."""
+    out = []
+    for strategy, gate_name, unit_cost_band, n, wins, unit_cost_total in rows:
+        bounds = band_bounds.get(unit_cost_band)
+        g = {
+            "strategy": strategy, "gate_name": gate_name,
+            "unit_cost_band": unit_cost_band,
+            "band_low": bounds[0] if bounds else None,
+            "band_high": bounds[1] if bounds else None,
+            "n": n,
+            "min_samples": min_samples,
+        }
+        mean_unit_cost = (unit_cost_total / n) if n > 0 else None
+        g["mean_unit_cost"] = round(mean_unit_cost, 3) if mean_unit_cost is not None else None
+        if n < min_samples:
+            g["status"] = "insufficient"
+            g["win_rate"] = None
+            g["ev_per_contract"] = None
+        else:
+            g["status"] = "ready"
+            win_rate_frac = wins / n
+            g["win_rate"] = round(100 * win_rate_frac, 1)
+            # win_rate_frac (raw, 0-1) - mean_unit_cost (raw, 0-1), NOT
+            # g["win_rate"] (0-100) - see this function's own docstring.
+            g["ev_per_contract"] = round(win_rate_frac - mean_unit_cost, 4)
+        out.append(g)
+    out.sort(key=lambda g: (
+        g["strategy"], g["gate_name"],
+        g["band_low"] if g["band_low"] is not None else float("inf"),
+    ))
+    return out
+
+
+def population_gate_summary_banded(bands=DEFAULT_BANDS, min_samples: int = 30) -> list[dict]:
+    """Banded extension of population_gate_summary() above - issue #616 D1.
+    Answers "what would a gate's rejected candidates have done, broken out
+    by how expensive they were" instead of one hypothetical_win_rate
+    averaged across every unit_cost a gate ever rejected, which hides the
+    real 0.60-0.95-band negative-EV pattern docs/superpowers/research/
+    2026-08-26-economic-gate-marginal-contribution.md's E4 analysis found
+    underneath that aggregate (see e.g. this repo's own ROADMAP.md/CLAUDE.md
+    "0.60-0.95 unit-cost band negative-EV" open-gaps line).
+
+    Grouped by (strategy, gate_name, unit_cost_band) - the population is
+    filtered to resolved, sided, unit_cost-known rows only (see
+    _population_gate_banded_query()'s own docstring for why that's SQL-side,
+    not a Python-side scan), so n IS the win_rate/ev_per_contract sample
+    count directly, unlike the unbanded function's separate resolved_count/
+    sided_total split.
+
+    Same "insufficient" sample-size-gating convention as
+    population_gate_summary() above: a (gate, band) with n below min_samples
+    reports status "insufficient" and win_rate/ev_per_contract as None
+    rather than a number computed from too few samples.
+
+    Read-only diagnostic - explicitly NOT used here to retune entry_threshold/
+    min_contracts/etc (issue #616 item 1's own stated non-scope); nothing in
+    this function enables trading or weakens a gate.
+
+    Flushes capture_writer's rejection_events buffer first, same reasoning
+    and same bound (_FLUSH_BATCH) as population_gate_summary()'s own
+    identical flush above."""
+    capture_writer.flush_now("rejection_events")
+    sql, params = _population_gate_banded_query(bands)
+    band_bounds = {f"{low:.2f}-{high:.2f}": (low, high) for low, high in bands}
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return _summarize_population_rows_banded(rows, min_samples, band_bounds)
+
+
+async def population_gate_summary_banded_async(bands=DEFAULT_BANDS, min_samples: int = 30) -> list[dict]:
+    """Async sibling of population_gate_summary_banded() above, for callers
+    already on the event loop (services/analytics/routes.py's GET
+    /api/candidate-log/summary) - same reason population_gate_summary_async()
+    exists for the unbanded function (issue #410): this query is entirely
+    SQL-bound (same GROUP BY shape, same index prefix, as the unbanded
+    query, just with one more grouping column), so a tick_executor worker
+    thread would have nothing to usefully own, and the sync version above
+    must not be deleted for the same reason population_gate_summary()'s own
+    docstring gives (services/research/research.py's run_and_store() reaches
+    a sync function from a context with no running event loop).
+
+    capture_writer.flush_now() goes through asyncio.to_thread rather than
+    running inline - same reasoning as population_gate_summary_async()'s own
+    identical call: it is a blocking SQLite WRITE, never safe to run
+    directly on the event loop even though it is usually a bounded no-op."""
+    await asyncio.to_thread(capture_writer.flush_now, "rejection_events")
+    sql, params = _population_gate_banded_query(bands)
+    band_bounds = {f"{low:.2f}-{high:.2f}": (low, high) for low, high in bands}
+    conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+    rows = await conn.execute_fetchall(sql, params)
+    return _summarize_population_rows_banded(rows, min_samples, band_bounds)
+
+
 async def _ensure_schema_aio(conn) -> None:
     """The async mirror of _connect()'s own DDL, passed to
     _aio_db.connection_for() as its schema_init hook. Same shape, same

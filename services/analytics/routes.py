@@ -48,6 +48,36 @@ _POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/
 # coordinated, not independently chosen.
 _population_gates_cache: dict = {"cached_at": None, "value": None}
 
+# population_gates_banded (issue #616 D1, docs/superpowers/specs/2026-08-26-
+# economic-strategy-remediation-design.md) - a SEPARATE cache entry and TTL
+# from population_gates above, not folded into the same _POPULATION_GATES_
+# CACHE_TTL_SEC/_population_gates_cache pair. Measured live (2026-09-06, PR
+# body has the full numbers) against a bench/copy_dbs.py backup-API copy of
+# the real, then-31.8M-row rejection_events table: the unbanded
+# _POPULATION_GATE_SQL cost 34.96s in that run (up from the 18.2-22.5s
+# candidate_log.py's own docstring measured against 28.7M rows - same
+# unbounded-growth trend issue #532 already names) and the new banded query
+# cost 66.8-71.7s in the SAME run, ~2x - EXPLAIN QUERY PLAN confirms it
+# still drives the same `SCAN rejection_events USING INDEX
+# idx_rejection_events_gate` the unbanded query uses (no new unindexed scan,
+# satisfying issue #616's decision record's explicit constraint), the extra
+# cost is a bigger per-row CASE evaluation plus a second GROUP BY dimension
+# (`USE TEMP B-TREE FOR GROUP BY`) over the same scanned range.
+# _POPULATION_GATES_CACHE_TTL_SEC's own 30s would mean almost every poll
+# misses this cache and pays the full ~70s cost anyway - worse than no cache
+# (still off the event loop via aiosqlite, but every miss serializes behind
+# _aio_db's one worker thread for this file, queuing any other request
+# against candidate_log.db behind it). 300s keeps this diagnostic
+# reasonably fresh - it is a total-sample gate like the unbanded one
+# (nothing here is timelier than what it extends) - while keeping the ~70s
+# worst case rare rather than routine. Deliberately NOT changing
+# _POPULATION_GATES_CACHE_TTL_SEC itself (CLAUDE.md's data-plane HARD RULE:
+# don't retune an existing dial "because it should help" without its own
+# measured bottleneck) - this is a new dial for a new query, not a retune
+# of the old one.
+_POPULATION_GATES_BANDED_CACHE_TTL_SEC = 300
+_population_gates_banded_cache: dict = {"cached_at": None, "value": None}
+
 
 class DeclineSuggestionBody(BaseModel):
     id: str
