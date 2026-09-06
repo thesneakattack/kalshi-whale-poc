@@ -18,7 +18,6 @@ its issue closes.
 ## Still open — David's call
 
 - `main` branch protection is **off**, not merely unreadable: `branches/main` reports `protected: false`, `enforcement_level: off`; the repo is private on a Free plan and the 2026-08-25 required-status-check gate no longer exists (#615, live-verified). Interim practice is decided (read `commits/<sha>/status` for all six contexts before every merge; `mergeStateStatus: CLEAN` is not evidence). Restoring server-side enforcement needs GitHub Pro (paid) **or** making the repo public (a trading system's config/history) · pick one, or accept the interim practice as permanent · you · 2026-09-05
-- `config/settings.yaml`'s working tree carries `whale_watcher_kalshi.min_contracts.KXBTC15M: 2500 → 2000` alongside your two recorded edits (`auto_exit_enabled: false`, `max_daily_loss_pct: 0`); `docs/next-action.md` records the two, not the third, and nothing in git explains it · confirm it is yours (then it stays uncommitted with the others) or say so if it is not · you · 2026-09-05
 
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
