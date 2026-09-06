@@ -1,11 +1,61 @@
 # Next action
 
-**FLEET PAUSED 2026-09-06. Resume target: 13:25 local** (David: "resume
-work in 3 hours and 50min", said at 09:36). Coordinator wakeup is
-chained in ~1h legs to reach it — **if a wakeup fires before 13:25,
-re-schedule the remainder and go straight back to idle; do not resume
-early.** All 4 peers checkpointed and idle. **On resume, read §"Next
-action on resume" — that is the single next action.**
+**FLEET RESUMED 2026-09-06 ~14:00, all 4 peers working.** (Resumed ~35min
+late: the pause was chained in 1h legs because `ScheduleWakeup` caps at
+3600s, and **the chain died silently after leg 1 with no error** — see
+memory `chained-wakeups-silently-die`. For any future multi-hour pause:
+write the absolute target time into this file first, and check `date`
+against it on every wake rather than trusting the chain.)
+
+**In flight right now — do not duplicate any of these:**
+- `0d` — `#532` purge. **Was on backup verification, NOT yet executing**
+  as of last report; will report before anything destructive.
+- `c4` — PR #640's independent adversarial review (dispatched to a fresh
+  memory-less agent, raw output to be posted as its own PR comment).
+- `49` — migration step 1 slice: 147 open issues → lane table (5 parallel
+  batches, then its own review cycle).
+- `ea` — health watch + migration step 1 slice: 79 specs + 97 research
+  docs → lane table.
+- coordinator — migration step 1 slice: 62 plan files → lane table
+  (dispatched); PR #640 self-review posted; `phase:spec` label added.
+
+**Visualization deliverable — DONE** (David asked for a diagram of the
+workflow architecture + anti-drift overview):
+https://claude.ai/code/artifact/f7e8fdc9-4fbf-4eab-b38e-4b19b601f737
+Covers the 9 lanes as a data-flow spine on the runtime substrate, the
+Lane→Initiative→Task hierarchy, `concern:hotpath` crossing lanes with
+the 7-PR evidence, the 5 anti-drift rules, the migration gate, and the
+review record including both failures. Republish the same scratchpad
+file path to update it in place.
+
+**Measured finding — effect confirmed, MECHANISM NOT ESTABLISHED.** A
+large-tier backup (`POST /api/backup/run?tier=large`, ~169s) coincided
+with `last_tick_duration_sec` freezing at 90.61s, recovering to 1.87-3.2s
+after. Completeness signals stayed at zero throughout (no drops, queue
+depth 0) — transient cost, not data loss.
+
+**The first explanation was wrong and is ruled out.** Both `0d` and `ea`
+initially attributed it to `sqlite3.backup()` being "synchronous and
+blocking by design" (`backup.py:199-200`, a real quote). But that call
+is already correctly isolated: `backup.py:285`/`:333` both
+`await asyncio.to_thread(...)` (`:275` says so explicitly), the manual
+route does the same (`routes.py:61`), and `_maybe_run_large_backup` is a
+`_SCHEDULER_TRIGGERS` entry (`main.py:771`) running in `_scheduler_loop`
+— **not** in the trading tick (`main.py:990-991`, P8 Task 36). Zero
+drops independently corroborate the event loop was never blocked.
+
+**Leading hypothesis, unconfirmed:** SQLite lock contention — the backup
+holds `candidate_log.db` while the tick's entry gates write to that same
+file via `tick_executor`, so the tick waits on the lock while the loop
+stays healthy. Falsifiable test: does the stall track entry-gate writes
+specifically, or occur on ticks with no `candidate_log` write?
+
+**Direct consequence for `#532`:** if that hypothesis holds, the purge
+will do this harder and longer — a 31.4M-row DELETE holds write locks
+far longer than a read-side backup. `0d` was told to expect tick stalls,
+to treat nonzero completeness counters (not slow ticks) as the stop
+signal, and to prefer batched/chunked deletes if `prune_gate()` supports
+them, since smaller transactions release locks between batches.
 
 > **`#532`'s purge — UNBLOCKED, runs on the resume signal. `0d` owns it.**
 > Sequence worth preserving, because the gate worked exactly as
