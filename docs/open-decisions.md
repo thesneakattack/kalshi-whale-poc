@@ -18,6 +18,7 @@ its issue closes.
 ## Still open — David's call
 
 - `main` branch protection is **off**, not merely unreadable: `branches/main` reports `protected: false`, `enforcement_level: off`; the repo is private on a Free plan and the 2026-08-25 required-status-check gate no longer exists (#615, live-verified). Interim practice is decided (read `commits/<sha>/status` for all six contexts before every merge; `mergeStateStatus: CLEAN` is not evidence). Restoring server-side enforcement needs GitHub Pro (paid) **or** making the repo public (a trading system's config/history) · pick one, or accept the interim practice as permanent · you · 2026-09-05
+- `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 strategy-economics remediation) is docs-only, explicitly self-gated: "not approved for execution... explicit human review... not a Claude-side call" · sitting untouched 9+ days, surfaced by tonight's 2026-09-06 docs/plans audit · decide execute-or-park explicitly (silent dormancy isn't a decision) · you · 2026-09-06
 
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
