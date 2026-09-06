@@ -67,15 +67,19 @@ Cross-checked which of the census's 18 sources have been touched by any commit s
 | File | Touched since census? | What changed |
 |---|---|---|
 | `services/quality/routes.py` | Yes | **Fixed** — PR #552, 7 calls now `asyncio.to_thread` |
-| `services/analytics/routes.py` | Yes (`e530ff0`, `6a0584c`, `2eed9a7`, `3ad2431`, `2617b17`) | Issue #410 track only (`population_gate_summary`, calibration report) — explicitly a *different* issue's scope per the census's own text; not a #530 dispatch fix |
-| all other 16 sources | No | Unchanged since the adversarially-reviewed census |
+| `services/analytics/routes.py` | Yes (`e530ff0`) | Issue #410 track only (`population_gate_summary`) — explicitly a *different* issue's scope per the census's own text; not a #530 dispatch fix |
+| `services/whale_calibration/routes.py` | Yes (`6a0584c`, `2eed9a7`, `3ad2431`, `2617b17`) | Issue #410 track (calibration report). **Correction, post-adversarial-review**: this document's first draft misattributed these four commits to `services/analytics/routes.py` — checked with `git show --stat` on each SHA, all four actually touch `services/whale_calibration/routes.py` (`2617b17` touches both files). The census counted this file as 5 BLOCKING / 1 SAFE (`report` already dispatched); `apply` is now also dispatched, via `_build_report_async()` (`await signal_log.resolved_signals_with_factors_async()` + `await asyncio.to_thread(...)`) — same #410-track reclassification pattern as `population_gate_summary`, not a #530 dispatch fix either. `enable`, `disable`, `status`, `history` remain plain synchronous, undispatched — **4 of the file's original 5 BLOCKING routes still stand**. |
+| all other 15 sources | No | Unchanged since the adversarially-reviewed census |
 
-So exactly **one** of the census's 63 BLOCKING instances (`services/quality/routes.py`,
-which the census counted as "1" row but 7 individually-dispatched calls) has been
-fixed under this issue's track since 2026-09-03. The other ~62 are unchanged in code
-shape. This document re-measures the two the issue asks about by name
+So **two** of the census's 63 BLOCKING rows (`services/quality/routes.py`'s one row
+covering 7 calls, and `services/whale_calibration/routes.py`'s `apply` route) have
+been resolved since 2026-09-03 — one under this issue's own track (PR #552), one
+under issue #410's track (a different issue reclassifying an already-dispatched-shape
+route, the same pattern the census itself already used for `population_gate_summary`).
+The other ~61 are unchanged in code shape, per direct `git log` verification file by
+file. This document re-measures the two the issue asks about by name
 (`/api/quality/summary` explicitly, `services/observability/routes.py` as one of the
-two originally-cited instances) rather than all 62, for the same reason the census
+two originally-cited instances) rather than all 61, for the same reason the census
 itself gave for not blanket-fixing everything: "assuming they're all costly would be
 exactly the kind of guess CLAUDE.md's data-plane HARD RULE says not to make."
 
@@ -184,13 +188,14 @@ get_observability_history`/`get_observability_summary`
 asyncio.to_thread(...)`/`tick_executor`/equivalent. Confirmed by direct read of both
 files, current state (this session), not from the census's prior citation alone.
 
-## Verdict on the census's remaining ~62 BLOCKING instances
+## Verdict on the census's remaining ~61 BLOCKING instances
 
 Not re-measured in this pass, for the reason stated above (no code change since the
-adversarially-reviewed census; re-measuring unchanged code adds nothing per-instance
-that the census doesn't already have). The census's own priority-ranking table
-(cost × call-frequency, using live nginx access-log frequency data) remains the
-correct triage input — restated here for continuity rather than re-derived:
+adversarially-reviewed census for these specific instances; re-measuring unchanged
+code adds nothing per-instance that the census doesn't already have). The census's own
+priority-ranking table (cost × call-frequency, using live nginx access-log frequency
+data) remains the correct triage input — restated here for continuity rather than
+re-derived:
 
 1. `GET /api/quality/summary` — **now fixed** (this document's contribution).
 2. `GET /api/candidate-log/summary` — reclassified to issue #410's track (dispatched
@@ -203,10 +208,22 @@ correct triage input — restated here for continuity rather than re-derived:
    left in the #530 track specifically (as opposed to #410's or #510's tracks).
 5. `GET /api/state` — cheap today (0.06-0.52s) despite 3 undispatched calls; fix on
    principle per the census, not on current measured cost.
-6. ~15 dashboard-batch endpoints and the remaining ~55+ instances — the census's own
+6. `services/whale_calibration/routes.py`'s `apply` route — also reclassified to
+   issue #410's track since the census (see "Enumeration is still current" above);
+   `enable`/`disable`/`status`/`history` on that same file remain BLOCKING and
+   unaddressed by either track.
+7. ~15 dashboard-batch endpoints and the remaining ~55+ instances — the census's own
    words stand: "nothing in this document measured them... assuming they're all
    costly would be exactly the kind of guess CLAUDE.md's data-plane HARD RULE says not
    to make." Unchanged by this pass.
+
+**Provenance note**: item 6 above was missed in this document's first draft — a
+commit-attribution error (four SHAs credited to `services/analytics/routes.py`
+instead of `services/whale_calibration/routes.py`) caused it to fall silently inside
+an "unchanged" bucket. Caught by independent adversarial review re-deriving the
+attribution with `git show --stat` per SHA rather than trusting the first pass's
+table; corrected here rather than left standing. Full detail:
+`docs/superpowers/research/2026-09-05-issue-530-sync-dispatch-sweep-adversarial-review.md`.
 
 ## Scope notes — what is and isn't this issue's track
 
@@ -244,7 +261,7 @@ correct triage input — restated here for continuity rather than re-derived:
 
 Re-run the 88-handler mechanical enumeration (already done, twice, with adversarial
 correction, 2 days ago — see "Headline finding" above for why redoing it would be
-wasted/duplicative effort, not extra rigor). Measure any of the ~62 still-unfixed,
+wasted/duplicative effort, not extra rigor). Measure any of the ~61 still-unfixed,
 unchanged-since-census BLOCKING instances beyond the two this issue names by name.
 Design or implement a fix for `services/observability/routes.py` — that is a
 follow-on decision (dispatch off-loop vs. bound/paginate the `hours` window, per the
