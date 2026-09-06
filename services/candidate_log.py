@@ -488,6 +488,25 @@ async def population_gate_summary_banded_async(bands=DEFAULT_BANDS, min_samples:
 # Sec 3.4, reapplied here rather than re-learned): a ~70s worst-case query
 # stamped with the instant it was REQUESTED would burn up to ~23% of this
 # cache's own 300s TTL before the entry was even written.
+#
+# Disclosed tradeoff beyond "don't pay the cost twice" (PR #631's own
+# adversarial review, 2026-09-06): services/diagnostics/_aio_db.py's
+# connection_for() caches exactly one aiosqlite.Connection per (event loop,
+# db_path), and aiosqlite gives each Connection one dedicated worker
+# thread - so every concurrent async reader of candidate_log.db serializes
+# onto that single thread (the same effect _aio_db.py's own docstring
+# already names as the cause of GET /api/quality/summary's measured 20.4s
+# wall time from the existing, smaller checks). A cache-MISS on this
+# 300s-TTL value therefore does not just avoid a redundant ~70s cost to the
+# caller that misses - for that ~70s it also blocks every OTHER concurrent
+# reader of this same DB file, not only this function's own callers. Not a
+# blocker: this stays read-only diagnostics off the trading hot path,
+# bounded to roughly 1-in-many-polls given the 300s TTL, and is the same
+# category of pre-existing tradeoff this file already accepts elsewhere -
+# but it is a distinct cost from cache-duplication, not covered by the
+# "don't pay twice" reasoning above, and is recorded here rather than left
+# implicit per the data-plane HARD RULE's "never trade one property for
+# another silently."
 _POPULATION_GATES_BANDED_CACHE_TTL_SEC = 300
 _population_gates_banded_cache: dict = {"cached_at": None, "value": None}
 
