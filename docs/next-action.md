@@ -83,15 +83,24 @@ signature if it recurs. Live app healthy, DB integrity confirmed.
   a would-be silent duplicate-function merge; `main`'s version is a strict
   superset, not just equivalent). One genuine nugget salvaged faithfully as
   **PR #623** (a corrected code-comment cross-reference, mechanical).
-  **Now on `#585` → `#530`** (David-approved sequencing): `#585` first —
-  two callers running `signal_log.resolved_signals_with_factors`
-  synchronously ON the event loop for 5.4s/13.8s, more severe than `#150`
-  since it blocks everything on the loop, not just a thread-pool worker;
-  possibly the real explanation for tonight's stall pattern — cross-
-  referencing exact stall timestamps against these two call sites first.
-  Then `#530`'s broader sweep, via parallel dispatched subagents rather
-  than sequentially. `#586` (shutdown-only hang, lower frequency) delegated
-  to `ea` in parallel.
+  **`#585` DONE, merged and deployed live** (PR #624 `backtest/routes.py`
+  ~5.4s, PR #625 `main.py`'s `_maybe_run_auto_apply` ~13.8s, both full
+  self-review/adversarial/consolidation cycles as real PR comments,
+  confirmed live via `WatchFiles` at `394e41c`). First, cross-referenced
+  against tonight's `#605` stall timestamps — **clean negative result**:
+  neither call site fired during the stall window (verified: zero access-
+  log traffic for one; the other's 6h-interval gate wasn't due for hours).
+  `#605`'s actual mechanism stays unexplained; `#585` closes on its own
+  independent merits, not as a root-cause claim. **Real finding along the
+  way**: `_maybe_run_auto_apply` was called generically alongside 8 other
+  sync triggers with no `await` anywhere — a naive `async def` conversion
+  alone would have silently killed the whole calibration/auto-apply
+  feature; fixed via an `iscoroutine()` branch in the scheduler loop
+  instead. One residual filed as **#626** (a smaller ~1.1s un-offloaded
+  cost, out of scope for #585). **Now on `#530`**'s broader sweep, running
+  as a background docs-only research agent, same pattern as `#150`'s
+  benchmark. `#586` (shutdown-only hang, lower frequency) delegated to
+  `ea` in parallel — PR #627 open, CI running, review cycle in progress.
 - **`ea`** (was `bd`) — standing watch, broadened to general app health
   (`/api/quality/summary`, `/api/health/faults`, `/api/observability/
   summary`, `/api/health/storage`) plus `#579`/`#580`. Currently clean;
