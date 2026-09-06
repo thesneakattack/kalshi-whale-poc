@@ -1,11 +1,11 @@
 # Next action
 
-**FLEET PAUSED 2026-09-06 (second pause). Resume target: ~13:21 local**
-(David: "continue work in 3 hours 55min exactly", said at ~09:26).
-Coordinator wakeup is chained in ~1h increments to reach that; if a
-wakeup fires before 13:21, re-schedule the remainder rather than
-resuming early. All 4 peers checkpointed and idle. **On resume, read
-§"Next action on resume" — that is the single next action.**
+**FLEET PAUSED 2026-09-06. Resume target: 13:25 local** (David: "resume
+work in 3 hours and 50min", said at 09:36). Coordinator wakeup is
+chained in ~1h legs to reach it — **if a wakeup fires before 13:25,
+re-schedule the remainder and go straight back to idle; do not resume
+early.** All 4 peers checkpointed and idle. **On resume, read §"Next
+action on resume" — that is the single next action.**
 
 > **`#532`'s purge — UNBLOCKED, runs on the resume signal. `0d` owns it.**
 > Sequence worth preserving, because the gate worked exactly as
