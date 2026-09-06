@@ -18,7 +18,17 @@ async def get_backtest_entry_threshold():
     # services/backtest/backtest.py - Gap 2 of docs/config-tuning-data-gaps-
     # 2026-08-10.md, stateless replay against every already-logged resolved
     # signal. Always safe to call - pure read, no enable flag.
-    rows = signal_log.resolved_signals_with_factors()
+    #
+    # Issue #585: this is an `async def` route, so the fetch must go through
+    # the async sibling (issue #410's resolved_signals_with_factors_async(),
+    # aiosqlite + asyncio.to_thread for the json.loads pass) rather than the
+    # sync function directly - measured live at ~5.4s blocking the event
+    # loop before this fix, on the same 30s History-tab batch the
+    # calibration-report route (services/whale_calibration/routes.py) also
+    # serves. Same query, same output (tests/test_signal_log.py's
+    # test_resolved_signals_with_factors_async_matches_the_sync_version_
+    # exactly asserts byte-for-byte equality), so this is a drop-in swap.
+    rows = await signal_log.resolved_signals_with_factors_async()
     current_threshold = config_store.get()["strategy"]["entry_threshold"]
     return {"current_threshold": current_threshold, "sweep": backtest.entry_threshold_sweep(rows)}
 
