@@ -17,13 +17,48 @@ event loop but must not share services/tick_executor.py's dedicated
 2-worker pool - issue #510 rejected sharing that pool for a slow
 diagnostic call once already, PR #409, because it starved trading-critical
 writes for 5+ hours; asyncio.to_thread uses the loop's default executor,
-which tick_executor never touches). Not converted to an aiosqlite-native
-path like issue #410/#585's signal_log.resolved_signals_with_factors_async:
-that mechanism exists for a call with a real second-stage CPU cost
-(post-query json.loads over every row) that must NOT also be pushed to a
-thread; history()/summary() have no such split - they are a single bounded
-SELECT each with no additional CPU-heavy pass over the result - so
-to_thread is the fit here, not a new module-level aiosqlite connection.
+which tick_executor never touches).
+
+Correction (adversarial review of this PR, 2026-09-06): an earlier draft
+of this note inverted its own cited precedent. signal_log.py's
+resolved_signals_with_factors_async (issue #410/#585) keeps BOTH halves
+of its work off the event loop - aiosqlite for the SQL AND
+asyncio.to_thread for its own per-row json.loads pass
+(materialize_signals_with_factors, signal_log.py:891) - because
+materialize_signals_with_factors' own docstring measured that second half
+at 75.3% of total cost and calls converting only the SQL to aiosqlite "a
+REGRESSION rather than a fix": it would move 25% of the work off a worker
+thread and leave the CPU-heavy 75% on the loop. The rule is "must not run
+ON the event loop," not "must not be pushed TO a thread" - this module's
+first draft stated the opposite. history() has exactly the same second
+stage signal_log's does: its own per-row json.loads over up to
+_MAX_HISTORY_LIMIT (5000) rows (observability.py:118-121, ~7ms measured
+at the cap against empty labels). summary()'s only post-query step is a
+single round() per metric row, not per sample - materially smaller, with
+no comparable split. Given that, a single asyncio.to_thread around each
+whole call is not merely adequate but the STRONGER choice for history():
+it moves both the SQL and the json.loads pass off the loop in one hop,
+where a hypothetical aiosqlite-only conversion of just the SELECT would
+leave history()'s json.loads pass on the loop - exactly the regression
+signal_log's docstring warns against. Not converted to an aiosqlite-based
+module-level connection for that reason, not because no second stage
+existed.
+
+Tradeoff stated explicitly, not left implicit (data-plane HARD RULE):
+asyncio.to_thread uses the loop's shared default executor (confirmed
+20-worker ceiling in this container, cpu_count 16, min(32, n+4) - same
+figure signal_log.py's own docstring recorded for the same executor). A
+cancelled/disconnected request does not stop the dispatched call once
+started; its worker thread runs to completion holding one of those 20
+slots regardless. _MAX_WINDOW_HOURS caps a single call's window at 90
+days but nothing throttles how many concurrent history/summary calls are
+in flight. This executor is shared with diagnostics/quality/research/
+backup route work and loop_watchdog's fault write (signal_log.py's own
+enumeration) - acceptable for the same reason PR #552/#624/#625 already
+accepted it: no sustained trading-hot-path work uses this executor (that
+work has its own dedicated pools - tick_executor, _scoring_pool.py,
+_candidate_retry_pool.py), so a burst of slow diagnostic calls degrades
+other diagnostic-route latency, never the trading path.
 """
 import asyncio
 import re
