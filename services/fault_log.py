@@ -48,6 +48,8 @@ import time
 import traceback
 from pathlib import Path
 
+from services import db
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "fault_log.db"
 
 # Cap on stored traceback text - enough to locate the failure, bounded so a
@@ -121,6 +123,16 @@ def _connect():
         # free, mechanical index addition is worth taking now rather than
         # waiting for it to become one.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_faults_first ON faults (first_seen)")
+        # Issue #605: first_traceback is frozen by design (kept for the
+        # FIRST occurrence, see module docstring) - correct for a real
+        # exception, wrong for loop_watchdog's stall row, whose fixed
+        # message dedupes every occurrence into one row even though each
+        # stall can be blocked on different code. last_traceback tracks the
+        # newest capture the same way count/last_seen already do, without
+        # touching first_traceback's existing frozen-first semantics.
+        # Guarded ALTER (see this module's own docstring for why: an
+        # unguarded ADD COLUMN broke services/game_state.py in production).
+        db.add_column_if_missing(conn, "faults", "last_traceback", "TEXT")
         _ensure_null_exc_type_dedup_index(conn)
         with conn:
             yield conn
@@ -222,10 +234,14 @@ def _merge_duplicate_null_exc_type_rows(conn: sqlite3.Connection) -> None:
     row (lowest id, matching how `_write`'s own ON CONFLICT already treats
     every field it doesn't explicitly recompute - first insert wins) is kept
     and updated with count=SUM(count) and last_seen=MAX(last_seen) across the
-    whole group; the rest are dropped. first_traceback, context, and severity
-    are left exactly as the kept row already had them - unchanged, not
-    reselected - matching `_write`'s own ON CONFLICT, which never updates
-    those fields on a repeat either. Real exception rows (exc_type NOT NULL,
+    whole group; the rest are dropped. first_traceback, last_traceback,
+    context, and severity are left exactly as the kept row already had them -
+    unchanged, not reselected. This is a one-time historical cleanup for
+    rows written before either fix existed, so it doesn't need to reproduce
+    `_write`'s own ON CONFLICT behavior for last_traceback (which does update
+    it on every repeat, issue #605) - there is no newer capture among the
+    merged duplicates to prefer, only old rows predating both fixes. Real
+    exception rows (exc_type NOT NULL,
     already deduped correctly by the table constraint) and already-unique
     exc_type-NULL rows (HAVING COUNT(*) > 1 excludes them) are untouched."""
     conn.execute(
@@ -332,7 +348,23 @@ def _write(component: str, operation: str, severity: str, exc_type: str | None,
     with _connect() as conn:
         # ON CONFLICT keeps the FIRST traceback (the one with the original
         # stack) and bumps the count - a repeat adds evidence of frequency,
-        # not another copy of the same stack.
+        # not another copy of the same stack. last_traceback (issue #605) is
+        # the one exception: it tracks the newest tb on every call, same as
+        # count/last_seen already do - added because loop_watchdog's stall
+        # row dedupes every occurrence into one fixed-message row even
+        # though each stall can be blocked on different code, so freezing
+        # only the first capture forever threw away every later, possibly
+        # more useful one. Harmless for a real exception's repeat (record()
+        # passes a freshly formatted tb each time too - usually identical
+        # text for a deterministic bug, but now genuinely available either
+        # way instead of always discarded).
+        #
+        # COALESCE(excluded.last_traceback, faults.last_traceback), not a
+        # bare assignment: loop_watchdog can genuinely have nothing to report for
+        # one occurrence (a stall too short for its capture-arm timer to
+        # have fired, tb=None) - that must not blank out a previous GENUINE
+        # capture. A missing capture is silence, not new information
+        # overwriting old information.
         #
         # Two ON CONFLICT targets, chained (issue #543): the table's own
         # UNIQUE constraint never fires when exc_type IS NULL (record_fault()
@@ -345,16 +377,18 @@ def _write(component: str, operation: str, severity: str, exc_type: str | None,
         conn.execute(
             """
             INSERT INTO faults (component, operation, severity, exc_type, message,
-                                first_traceback, context, count, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                first_traceback, last_traceback, context, count, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT (component, operation, exc_type, message) DO UPDATE SET
                 count = count + 1,
-                last_seen = excluded.last_seen
+                last_seen = excluded.last_seen,
+                last_traceback = COALESCE(excluded.last_traceback, faults.last_traceback)
             ON CONFLICT (component, operation, message) WHERE exc_type IS NULL DO UPDATE SET
                 count = count + 1,
-                last_seen = excluded.last_seen
+                last_seen = excluded.last_seen,
+                last_traceback = COALESCE(excluded.last_traceback, faults.last_traceback)
             """,
-            (component, operation, severity, exc_type, message, tb, context, now, now),
+            (component, operation, severity, exc_type, message, tb, tb, context, now, now),
         )
     return True
 

@@ -81,7 +81,28 @@ def connect(db_path: Path, *, tables: tuple[str, ...] = (), busy_timeout_ms: int
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
     """Shared replacement for the AST-identical per-module copies the
     architecture audit's §9.2 found - takes conn as a parameter, shares no
-    state, so it doesn't need its caller to route through connect() above."""
+    state, so it doesn't need its caller to route through connect() above.
+
+    The PRAGMA table_info (read) then ALTER TABLE ADD COLUMN (write) below
+    are not atomic across connections: SQLite has no `ADD COLUMN IF NOT
+    EXISTS` (verified directly against the running 3.46.1 - it's a syntax
+    error), so two threads/connections can both see the column missing
+    before either commits its ALTER. The loser's own ALTER then raises
+    `duplicate column name: <column>` - a real OperationalError, not a
+    silent no-op, which every caller's own broad `except Exception` (this
+    codebase's fault_log.py included) swallows as a dropped write, not a
+    surfaced one (found via issue #605's fault_log.py change, whose caller
+    genuinely runs from concurrent OS threads - same race shape
+    services/fault_log.py's own _ensure_null_exc_type_dedup_index already
+    solved once for its CREATE UNIQUE INDEX, see that function's
+    docstring). Catching exactly that message and treating it as success is
+    correct, not a swallowed bug: by the time it's raised, the column
+    genuinely exists (added by whichever connection won the race), which is
+    the exact postcondition this function promises."""
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        except sqlite3.OperationalError as exc:
+            if f"duplicate column name: {column}" not in str(exc):
+                raise
