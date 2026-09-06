@@ -96,6 +96,79 @@ async def _spec_for(ticker: str) -> dict:
     return spec
 
 
+def _resolve_windows(settled: list[tuple[str, bool]]) -> int:
+    """Runs settlement_edge.resolve_window() for every ticker this tick
+    found settled, on the tick executor's worker pool rather than the
+    calling event loop (event-loop-blocking fix, issue #605 - a partial
+    fix: #605's other two contributors, candidate_log.gate_summary() and a
+    jsonable_encoder recursion stall filed as #634, are tracked and fixed
+    separately).
+
+    THE BUG: resolve_window() is a single, indexed SQLite UPDATE against
+    window_observations (WHERE ticker = ? AND settled_yes IS NULL, uses
+    idx_se_window - confirmed cheap via EXPLAIN QUERY PLAN, not a table
+    scan). settlement_edge.flush()'s executemany INSERT writes the SAME
+    table and already runs on a tick_executor worker thread (this module's
+    own _record_settlement_observations below, and main.py's
+    _flush_secondary_capture_stores_async). SQLite is single-writer, so
+    before this fix - when this function's own for loop called
+    resolve_window() directly, synchronously, once per settled ticker (up
+    to unresolved_tickers()'s own limit=40) - a resolve_window() call
+    contending with an in-flight flush() could genuinely block waiting on
+    the file lock for up to busy_timeout (5000ms, services/db.py connect()'s
+    default), directly on the event loop, with resolve_window()'s own
+    `except sqlite3.Error: return 0` swallowing that outcome with no
+    exception ever raised or logged - matching #605's "zero exceptions"
+    symptom exactly. A live loop_watchdog stack capture caught this exact
+    call chain blocked (main.py trading_loop -> this module's
+    _resolve_settlement_windows -> settlement_edge.resolve_window ->
+    services/db.py connect()); more than one contended ticker in the same
+    pass stacks sequential waits into the observed ~9-10s stalls.
+
+    WHY tick_executor.run() AND NOT asyncio.to_thread(): this is the
+    established, already-load-tested precedent for this exact call, not a
+    new choice - services/settlement_resolver.py's _resolve_one_sync
+    already routes this same settlement_edge.resolve_window() call (among
+    four other resolvers) through tick_executor.run() for the
+    settled-lifecycle-event path. bench/bench_tick_executor_contention.py's
+    "settlement" workload already models up to 50 sequential
+    tick-executor-routed resolver calls per pass (heavier than a bare
+    resolve_window() call, since _resolve_one_sync does five writes), and
+    its calibrated results (bench/out/results_calibrated.log) show
+    single-digit-to-double-digit-ms p95 queueing delay for that workload
+    under realistic load (S1/S2/S3), with pool utilization well under 1.0;
+    the #579/#580 "shared pool starves decision-critical work" hypothesis
+    was investigated directly and falsified (docs/next-action.md - the real
+    fix was #601). Sharing tick_executor also keeps this module's
+    worker-thread footprint at the existing, already-measured 2 workers
+    rather than adding load to asyncio.to_thread's separately-sized default
+    executor. Note, verified directly rather than assumed: sharing the pool
+    does NOT itself force mutual exclusion between flush() and
+    resolve_window() - ThreadPoolExecutor(max_workers=2) starts two
+    submitted callables within a fraction of a millisecond of each other
+    (confirmed with a local probe), so both can still run as genuinely
+    concurrent OS threads when both workers are free. What sharing the pool
+    does is bound their total concurrent SQLite writers to at most 2 (down
+    from "one on a tick_executor worker plus one unbounded on the event
+    loop, today") and move both off the event loop - the actual mechanism
+    that fixes #605, not an incidental serialization side-effect.
+
+    Batched as ONE tick_executor.run() call per tick, not one submission
+    per ticker: matches this file's own _record_settlement_observations and
+    main.py's _flush_trade_capture_async / _flush_secondary_capture_stores_
+    async / _resolve_and_record_settlements_async, all of which offload
+    their tick's whole block of synchronous work as a single pool
+    submission. Per-ticker failure isolation is unaffected by batching:
+    resolve_window() already catches sqlite3.Error internally and returns 0
+    rather than raising, so one contended/failing ticker already cannot
+    take down the others in this same batched call - unchanged from
+    before."""
+    resolved_rows = 0
+    for ticker, settled_yes in settled:
+        resolved_rows += settlement_edge.resolve_window(ticker, settled_yes)
+    return resolved_rows
+
+
 async def _resolve_settlement_windows(client: KalshiPublicGateway) -> None:
     """Fill in outcomes for observed settlement windows, driven by
     settlement_edge's own pending list rather than the discovery watchlist.
@@ -109,7 +182,12 @@ async def _resolve_settlement_windows(client: KalshiPublicGateway) -> None:
     watched - but it cannot be the only path.
 
     One batched call (get_markets_by_tickers, 50/request) against a list
-    that is normally empty and at most a handful long."""
+    that is normally empty and at most a handful long. The per-ticker
+    resolution writes themselves are scheduled via tick_executor.run() (see
+    _resolve_windows' own docstring, issue #605) rather than run directly
+    here - this coroutine's own for loop used to call
+    settlement_edge.resolve_window() synchronously, which is what blocked
+    the event loop."""
     tickers = settlement_edge.unresolved_tickers()
     if not tickers:
         return
@@ -117,10 +195,13 @@ async def _resolve_settlement_windows(client: KalshiPublicGateway) -> None:
         markets = await client.get_markets_by_tickers(tickers)
     except Exception:
         return  # transient - the same rows are still pending next tick
+    settled = []
     for ticker, market in markets.items():
         result = (market.get("result") or "").strip().lower()
         if result in ("yes", "no"):
-            settlement_edge.resolve_window(ticker, result == "yes")
+            settled.append((ticker, result == "yes"))
+    if settled:
+        await tick_executor.run(lambda: _resolve_windows(settled))
 
 
 async def _record_settlement_observations(index_id: str | None) -> None:
