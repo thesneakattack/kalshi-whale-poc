@@ -7,17 +7,29 @@ wakeup fires before 13:21, re-schedule the remainder rather than
 resuming early. All 4 peers checkpointed and idle. **On resume, read
 §"Next action on resume" — that is the single next action.**
 
-> **BLOCKED, NEEDS DAVID DIRECTLY — `#532`'s purge.** David authorized it
-> to the coordinator ("the purge is allowed to run"). `0d` **correctly
-> declined to execute on a coordinator relay** — it had stated twice
-> that for this one action a relay would never suffice regardless of how
-> accurate, per the `#578` precedent, and it held that line when handed
-> a message shaped like authority. That is the gate working; it was not
-> pushed and must not be. **David must say it in `0d`'s own session**
-> (its terminal window), not here. `0d`'s protocol is prepped and
-> correct; it starts immediately on his direct word. Do not run it from
-> any other session — a peer declining and another session doing it
-> instead is exactly the laundering pattern.
+> **`#532`'s purge — UNBLOCKED, runs on the resume signal. `0d` owns it.**
+> Sequence worth preserving, because the gate worked exactly as
+> designed: David authorized it to the coordinator ("the purge is
+> allowed to run"); `0d` **declined the coordinator relay** — it had
+> stated twice that for this one action no relay would ever suffice
+> however accurate, per the `#578` precedent, and it held that line
+> against a message shaped like authority. It was not pushed, not
+> re-relayed, and not run from another session. David then instructed
+> `0d` **directly in its own conversation**, which satisfied the bar.
+>
+> **The distinction that matters on resume:** David's direct word is the
+> *authorization*; the coordinator's resume ping is only an *operational
+> timing signal*. Pinging `0d` to resume is not granting anything.
+>
+> `0d`'s protocol, already agreed and unchanged: re-verify the backup is
+> current → re-verify the scoping predicate live immediately before
+> touching anything (**stop and report if the count has drifted
+> materially from 31,429,358**) → execute via `prune_gate()` only, never
+> ad hoc SQL → before/after counts + "every other gate whole" invariant
+> + `integrity_check` + health check through the **real nginx-proxy
+> path** (the docker healthcheck lies) → post the full before/after
+> durably to `#532` → idle. Any step that looks wrong: stop, report,
+> leave it stopped.
 
 **Coordinator:** `autotrade-36` (chain: `1f`→`48`→`01`→`05`→`36`, one
 continuous session). Verify identity by direct reply before trusting a
@@ -148,9 +160,13 @@ open by design.
 5. Unblocked side work if capacity allows: `#634` (pin the
    `jsonable_encoder` route), `#639`.
 
-**Do not** start migration before step 1's tables are reviewed. **Do
-not** run or re-relay `#532`'s purge — see the blocked note at the top;
-it needs David in `0d`'s own session.
+**Do not** start migration before step 1's tables are reviewed.
+
+**`#532`'s purge is `0d`'s to run on the resume ping** (authorized by
+David directly in `0d`'s own session — see the note at the top). Ping it
+to resume like any other peer; do not re-authorize, do not supervise the
+SQL, do not run any part of it from another session. Expect its
+before/after report on `#532`.
 
 ### `feat/candlestick-volatility` — DECIDED 2026-09-06, closed out
 
