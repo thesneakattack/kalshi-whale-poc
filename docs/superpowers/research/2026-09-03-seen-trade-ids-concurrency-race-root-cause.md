@@ -1,5 +1,23 @@
 # Research: root cause of the `_seen_trade_ids`/`_seen_order` concurrency hazard (issue #546)
 
+> **Postscript (2026-09-06, recovery note — everything below this block is the
+> original 2026-09-03 text, unmodified):** the fix this document recommends has
+> since shipped — `services/whalewatchers/kalshi_trade_tape.py` now carries
+> `self._seen_lock = threading.Lock()` (§7's Option A: the lock guards the
+> check-then-act "already seen?" gate and the mark as one atomic transaction in
+> `_process_trades_sync`'s per-trade loop, via a `_mark_seen`/`_mark_seen_locked`
+> split, with the race reproduced and regression-tested in
+> `tests/test_kalshi_trade_tape_seen_lock_race.py`; the lock's `__init__` comment
+> cites issue #546 and this investigation's findings). Statements below that the
+> hazard is unfixed — "zero locking exists anywhere in the file" and the like —
+> were true when written and describe the pre-fix code; the file's line-number
+> citations likewise refer to the pre-fix source as of 2026-09-03 and no longer
+> match the current file. This document is the permanent root-cause record for
+> issue #546. It was recovered 2026-09-06, verbatim, from the orphaned branch
+> `fix/seen-trade-ids-concurrency-race-investigation` (commits `5a608d1`,
+> `8013260`) by the branch-audit action plan — the investigation completed and
+> was self-reviewed on 2026-09-03, but its branch never merged.
+
 2026-09-03, ~22:00-22:30 UTC. Assigned directly by autotrade-ce (coordinator) after
 adversarial review of a separate document (the trade-resolve solution comparison,
 PR #547) surfaced this as a must-fix finding (F6) and it was filed as its own issue,
