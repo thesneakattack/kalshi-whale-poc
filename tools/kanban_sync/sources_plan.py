@@ -1,10 +1,16 @@
-"""Numbered plan docs not already represented by a track (spec §5's last
-row). Candidate listing is mechanical (which files exist, and which of
-them active-tracks-board.md already references); classifying a candidate
-as done/in-progress/not-started is a judgment call the on-demand
-kanban-board-sync skill makes by reading git log/CLAUDE.md/ROADMAP.md, not
-something this module infers from the plan doc's own checkboxes -
-measured unreliable in spec §5.
+"""Numbered plan docs not yet represented as a plan candidate: every
+`docs/superpowers/plans/*.md` file except `README.md` (the index, never a
+candidate), the tracks board itself (`2026-08-26-active-tracks-board.md` -
+self-declares "not a plan in its own right"; scheduled for `docs/archive/`
+by a later migration step, not moved by this change, so it still needs
+excluding here), and a "companion" doc - a review/self-review/adversarial-
+review/consolidation artifact for another plan in the same directory,
+detected mechanically by filename suffix plus the existence of the parent
+file that suffix implies (see `_is_companion`). Candidate listing is
+mechanical; classifying a candidate as done/in-progress/not-started is a
+judgment call the on-demand kanban-board-sync skill makes by reading git
+log/CLAUDE.md/ROADMAP.md, not something this module infers from the plan
+doc's own checkboxes - measured unreliable in spec §5.
 
 This status always describes whether the plan's CODE has shipped, never
 whether the plan DOCUMENT exists (CLAUDE.md's "nothing advances on one
@@ -20,14 +26,52 @@ from pathlib import Path
 from tools.kanban_sync import labels
 from tools.kanban_sync.models import SyncItem
 
-_PLAN_DOC_REF_RE = re.compile(r"docs/superpowers/plans/([\w.-]+\.md)")
-_EXCLUDED_FILENAMES = frozenset({"2026-08-26-active-tracks-board.md"})
+# Companion suffix family: -review, -self-review, -adversarial-review,
+# -consolidation, -recheck, each optionally prefixed by one qualifier
+# (pr-/catchup-/plan-) and optionally followed by a round/attempt marker
+# (-round2, -2). Calibrated against every real filename currently in
+# docs/superpowers/plans/, cross-checked against
+# docs/superpowers/lanes/step1-plans-classification.md's independently-built
+# classification table - not invented from the four suffix names alone
+# (that table's own finding G2 is that a fixed 4-suffix list already missed
+# a real companion, ...-frontend-modularization-freshness-check.md). This is
+# deliberately a pattern over a small closed vocabulary of review-family
+# words, not a literal list of exact suffix strings, and is still expected
+# to miss a same-directory companion whose filename doesn't carry one of
+# these words - that gap is the judgment-assisted kanban-board-sync skill's
+# job, not this function's.
+_COMPANION_SUFFIX_RE = re.compile(
+    r"-(?:pr-|catchup-|plan-)?(?:adversarial-review|self-review|review|consolidation|recheck)"
+    r"(?:-round\d+)?(?:-\d+)?$"
+)
+
+_EXCLUDED_FILENAMES = frozenset({"README.md", "2026-08-26-active-tracks-board.md"})
 
 
-def list_plan_candidates(plans_dir: Path, active_tracks_board_text: str) -> list[str]:
-    referenced = set(_PLAN_DOC_REF_RE.findall(active_tracks_board_text))
+def _is_companion(filename: str, all_plans: set[str]) -> bool:
+    """True when `filename` is a companion doc: its own suffix matches the
+    review/consolidation family AND stripping that suffix off yields
+    another real file in `all_plans` (the parent it's a companion of). Both
+    conditions are required - a suffix match alone isn't enough: see
+    `...-persistence-layer-task8-candidate-ledger-self-review.md` in the
+    classification table above, which matches the suffix pattern but has no
+    filename-obvious parent, so it correctly stays a candidate here (it was
+    a design-assigned exception in the classification table, not something
+    a mechanical filename check can determine)."""
+    stem = filename.removesuffix(".md")
+    match = _COMPANION_SUFFIX_RE.search(stem)
+    if not match:
+        return False
+    parent = stem[: match.start()] + ".md"
+    return parent in all_plans
+
+
+def list_plan_candidates(plans_dir: Path) -> list[str]:
     all_plans = {p.name for p in plans_dir.glob("*.md")}
-    return sorted(all_plans - referenced - _EXCLUDED_FILENAMES)
+    return sorted(
+        name for name in all_plans
+        if name not in _EXCLUDED_FILENAMES and not _is_companion(name, all_plans)
+    )
 
 
 def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:

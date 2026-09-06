@@ -214,8 +214,8 @@ even more body
 
 def test_decompose_plan_start_from_task_skips_earlier_tasks():
     """Retroactively decomposing an in-flight plan (spec: an already-
-    partially-executed plan like a track's canonical doc) must not create
-    misleadingly-open sub-issues for tasks already known to be done."""
+    partially-executed plan doc) must not create misleadingly-open
+    sub-issues for tasks already known to be done."""
     client = _FakeDecomposeClient()
 
     result = decompose_plan(

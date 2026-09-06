@@ -10,8 +10,8 @@ def test_build_marker_format():
 
 
 def test_parse_marker_round_trips_with_build_marker():
-    marker = build_marker("track", "A")
-    assert parse_marker(marker) == ("track", "A")
+    marker = build_marker("roadmap", "A")
+    assert parse_marker(marker) == ("roadmap", "A")
 
 
 def test_parse_marker_returns_none_when_absent():

@@ -25,7 +25,7 @@ def test_type_labels_include_repo_local_tracking_extension():
 def test_sync_marker_kinds_are_lowercase_single_words():
     for kind in (
         labels.SYNC_MARKER_KIND_WORKTREE, labels.SYNC_MARKER_KIND_ROADMAP,
-        labels.SYNC_MARKER_KIND_TRACK, labels.SYNC_MARKER_KIND_PLAN,
+        labels.SYNC_MARKER_KIND_PLAN,
     ):
         assert kind == kind.lower()
         assert " " not in kind

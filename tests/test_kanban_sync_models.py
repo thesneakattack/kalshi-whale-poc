@@ -4,7 +4,7 @@ from tools.kanban_sync.models import SyncItem, SyncReport
 
 def test_sync_item_defaults():
     item = SyncItem(
-        kind="track", key="A", title="Track A",
+        kind=labels.SYNC_MARKER_KIND_WORKTREE, key="feat/x", title="Worktree: feat/x",
         status_label=labels.STATUS_CLAIMABLE, type_label=labels.TYPE_TRACKING,
         context_body="## Context\nx", acceptance_criteria=("x",),
     )
@@ -15,7 +15,7 @@ def test_sync_item_defaults():
 
 def test_sync_item_is_frozen():
     item = SyncItem(
-        kind="track", key="A", title="Track A",
+        kind=labels.SYNC_MARKER_KIND_WORKTREE, key="feat/x", title="Worktree: feat/x",
         status_label=labels.STATUS_CLAIMABLE, type_label=labels.TYPE_TRACKING,
         context_body="x", acceptance_criteria=("x",),
     )
