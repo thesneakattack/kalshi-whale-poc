@@ -1,16 +1,32 @@
 # Branch & PR audit — 2026-09-05/06
 
 Saved for a fresh Fable-tier session to review and turn into an action plan.
-Not yet acted on — this is the investigation output only, no cleanup has been
-executed. Published artifact (same content, easier to read):
+Published artifact (same content, easier to read):
 https://claude.ai/code/artifact/b6b27d62-7887-4be2-85f1-d363d84660c7
+
+**STATUS (2026-09-05, landed as a PR instead of staying orphaned): this
+audit's action plan has already been executed.** See
+`docs/next-action.md`'s "`autotrade-1d` mystery RESOLVED" note for the full
+account — Fable-assessed, spot-checked (8/27 superseded-branch claims
+independently re-verified), then executed: local branches 82→16, both
+section-4 orphans dispositioned, PR #603 merged as the #601 benchmark
+record, and more. Not duplicated here. One gap that execution pass's
+ancestry-based sweeps structurally couldn't catch (they check `git
+merge-base --is-ancestor`, which is false for a squashed/rewritten branch)
+was the 3 section-3 "confirmed superseded but not an ancestor" branches
+that were still on `origin` even after local cleanup:
+`docs/persistence-layer-db-migration-research`,
+`feat/persistence-layer-unified-connect`, `fix/db-foundation-must-fix-tests`.
+Those three are now deleted from `origin` as well (this PR). The rest of
+this document is preserved as-written, as the investigation record.
 
 Scope: every one of the 82 local branches and 19 remote branches in this repo
 was checked against `origin/main` and against what `docs/next-action.md` /
 `docs/open-decisions.md` already say, as of 2026-09-05/06 (checked by
 `autotrade-1d`). Requested by David; a permission/context request was sent to
 the tonight coordinator (`autotrade-36`) but no reply had landed by the time
-this was saved — **the actions below are not yet approved.**
+this was saved, so the actions below were not yet approved as of this
+snapshot — **since resolved; see the STATUS note above.**
 
 ## Headline
 
