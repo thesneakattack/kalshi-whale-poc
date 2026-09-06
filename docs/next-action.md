@@ -19,9 +19,11 @@ decision (stays unmerged), `feat/frontend-realtime-push` deleted + issue
 #398 closed, the orphaned PR #505 adversarial review recovered and posted
 as a PR comment (branch deleted), the stale #448 record corrected on the
 issue and in `open-decisions.md`, PR #603 merged as the durable #601
-benchmark record, and the orphaned #546 root-cause research doc is being
-recovered as its own docs PR (background agent, lean review cycle). The
-audit's methodology lesson is in Standing lessons below.
+benchmark record, and the orphaned #546 root-cause research doc **DONE**:
+PR #633 merged (own full review cycle, GO at both stage and PR level from
+fresh memory-less agents), pulled into primary at `3fb800b`, both source
+branches deleted local+remote. The audit's methodology lesson is in
+Standing lessons below.
 
 **Safety, check every session start:** `auto_exit_enabled: false` and
 `risk.max_daily_loss_pct: 0` in `config/settings.yaml`, both uncommitted
@@ -110,12 +112,27 @@ confirmed repeatedly throughout the night.
   burst at ~9.3-9.6s just under the 10s handler timeout; timeouts fire
   with ZERO exceptions (rules out plain SQLite busy-wait); `#585`'s call
   sites ruled out by timestamp; hot-path instrumentation must have its
-  cost measured before shipping.
-- **`ea`** (was `bd`) — standing watch, resumed. **`#627`/`#586`: one step
-  from merge** — self-review posted, a real GO-verdict adversarial review
-  landed (the reviewer wasn't dead, just took ~2.6h; `ea` corrected its own
-  earlier "confirmed dead" call plainly), CI green. Told to write the
-  consolidation and merge on GO with per-context CI reads.
+  cost measured before shipping. **Instrument step DONE: PR #632 open** —
+  root-caused the capture mechanism itself as structurally broken
+  (`_capture_stall_traceback()` read `sys._current_frames()` after the
+  block already ended, plus `fault_log`'s frozen-first-traceback dedup —
+  both coordinator-supplied leads confirmed real). Fixed via
+  `faulthandler.dump_traceback_later` on a genuine separate OS thread,
+  cost-measured (~99us/rearm, ~0.1% of a tick). Found + fixed a real
+  latent race in `db.add_column_if_missing` along the way (own regression
+  test). CI all green. **Self-review posted; adversarial review +
+  consolidation still pending — not merge-ready per the PR's own body.**
+  Coordinator pinged `c4` to confirm status before touching it, awaiting
+  reply. This does not yet root-cause or fix #605's actual stall — it
+  makes the next real occurrence observable for the first time; still
+  need to catch one live and read `last_traceback`.
+- **`ea`** (was `bd`) — standing watch, resumed. **`#627`/`#586` DONE,
+  MERGED, deployed live** (`3db93d2`, confirmed ancestor of primary's
+  current HEAD `3fb800b`) — self-review, real GO-verdict adversarial
+  review (the reviewer wasn't dead, just took ~2.6h; `ea` corrected its
+  own earlier "confirmed dead" call plainly), consolidation, CI green,
+  merged. Full async-SQLite arc (`#585`→`#530`→`#586`→`#629`) is now
+  entirely closed and live.
 
 `ef` (original app-health watch owner) confirmed gone, not renamed.
 
