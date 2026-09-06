@@ -1,9 +1,23 @@
 # Next action
 
-**FLEET PAUSED 2026-09-06 (second pause of the session).** David called
-it. All 4 peers checkpointed and idle; coordinator (`autotrade-36`)
-suspended. **On resume, read §"Next action on resume" at the bottom —
-that is the single next action.**
+**FLEET PAUSED 2026-09-06 (second pause). Resume target: ~13:21 local**
+(David: "continue work in 3 hours 55min exactly", said at ~09:26).
+Coordinator wakeup is chained in ~1h increments to reach that; if a
+wakeup fires before 13:21, re-schedule the remainder rather than
+resuming early. All 4 peers checkpointed and idle. **On resume, read
+§"Next action on resume" — that is the single next action.**
+
+> **BLOCKED, NEEDS DAVID DIRECTLY — `#532`'s purge.** David authorized it
+> to the coordinator ("the purge is allowed to run"). `0d` **correctly
+> declined to execute on a coordinator relay** — it had stated twice
+> that for this one action a relay would never suffice regardless of how
+> accurate, per the `#578` precedent, and it held that line when handed
+> a message shaped like authority. That is the gate working; it was not
+> pushed and must not be. **David must say it in `0d`'s own session**
+> (its terminal window), not here. `0d`'s protocol is prepped and
+> correct; it starts immediately on his direct word. Do not run it from
+> any other session — a peer declining and another session doing it
+> instead is exactly the laundering pattern.
 
 **Coordinator:** `autotrade-36` (chain: `1f`→`48`→`01`→`05`→`36`, one
 continuous session). Verify identity by direct reply before trusting a
@@ -135,7 +149,28 @@ open by design.
    `jsonable_encoder` route), `#639`.
 
 **Do not** start migration before step 1's tables are reviewed. **Do
-not** greenlight `#532`'s purge — that needs David directly.
+not** run or re-relay `#532`'s purge — see the blocked note at the top;
+it needs David in `0d`'s own session.
+
+### `feat/candlestick-volatility` — DECIDED 2026-09-06, closed out
+
+David delegated this call ("you should decide"). Decision: **keep the
+branch as a reference implementation, do not rebase, re-implement
+against current `main` when prioritized.** Tracked as **#641** with a
+forcing trigger so it can't drift (#611 needing a real volatility
+measure, or the Lane 4 population pass — whichever first).
+
+Worth recording *why* the first read was wrong: from the branch-audit
+summary it looked like a stale 5-commit scrap. Reading the actual
+content showed 13 commits, ~1,055 lines, a complete tested feature
+including a commit that deliberately rewrote its own tests off mocks
+onto real seeded data. The reason not to land it isn't quality — it's
+that it predates three completed migrations it would regress (its own
+`_connect()` vs `services/db.py`'s `register_schema`; a new background
+REST scan during REST/event-loop stabilization; unmeasured prompt load
+on `market_analyst_agent`, which sits on the whale-scoring hot path).
+Same lesson as the branch audit's own: **decide from content, never
+from a summary of content.**
 
 ---
 
