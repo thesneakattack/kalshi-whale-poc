@@ -37,24 +37,47 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
    throughout; see #61 (Kalshi-misunderstanding retrospective → Lane 1, not
    Lane 4) and #65 (regime analytics → Lane 4 by package, not by "research"
    framing) for the clearest worked examples.
-3. **First ruling on repo-structure/hygiene work, RETRACTED the same session.**
-   An initial cross-session message said "cross-cutting hygiene work → Lane 9."
-   That was wrong and was retracted before being applied past a draft stage:
-   Lane 9 is `tools/`, `.claude/`, `.github/workflows/`, `.woodpecker/`,
-   `scripts/`, `tests/`, `bench/`, `ui_samples/`, non-Kalshi top-level docs, and
-   this lane system's own upkeep — nothing about `services/`. An issue moving
-   or refactoring application code is application work regardless of whether
-   its title uses the word "hygiene," and per §3 a multi-lane initiative with
-   independent tasks splits at the boundary rather than defaulting to Lane 9.
+3. **First ruling on repo-structure/hygiene work, RETRACTED the same
+   session — and the retraction's own cited mechanism was ALSO wrong, corrected
+   in a second message.** An initial cross-session message said "cross-cutting
+   hygiene work → Lane 9." That was wrong: Lane 9 is `tools/`, `.claude/`,
+   `.github/workflows/`, `.woodpecker/`, `scripts/`, `tests/`, `bench/`,
+   `ui_samples/`, non-Kalshi top-level docs, and this lane system's own
+   upkeep — nothing about `services/`. The retraction that followed cited
+   "§3: an initiative that grows to touch a second lane splits at the
+   boundary" as the correct mechanism instead — **that sentence does not
+   exist anywhere in the merged design doc**; it was misremembered from a
+   draft that got revised out before merge. The design's real §5 text says
+   the opposite: no silent split — a multi-lane initiative gets **one
+   primary lane** (the one its own Goal/subject text names, or clause (d)'s
+   first-stated-purpose tiebreak when none is named), with cross-lane tasks
+   getting ordinary `depends-on` sub-issue links, not a per-task split into
+   separate rows.
    **Net effect on this table:** #56 (moves `paper_broker.py`/
-   `strategy_engine.py` into `services/position/` et al.) is flagged RULE-GAP,
-   not Lane 9 — it is a `services/`-code reorg bundled as one un-split issue,
-   the same shape as the plans-slice's own G3
-   (`backend-services-modularization`). #491 and #496 (DRY-fix task bundles
-   spanning unrelated files in different lanes) and #530 (a repo-wide sweep
-   with no anchor file) were briefly drafted as Lane 9 under the retracted
-   ruling and are corrected back to RULE-GAP here, matching what the
-   originating subagents found *before* the retracted ruling reached them.
+   `strategy_engine.py`/`config_store.py` into their concern folders), #491,
+   and #496 (DRY-fix/hygiene task bundles spanning unrelated files in
+   different lanes, with #491 and #496 literally two of the same
+   `2026-09-03-tier1-backend-hygiene.md` plan's own sub-tasks) stay flagged
+   **RULE-GAP** — but not because no mechanism exists (clause (d) does
+   mechanically produce an answer here, via first-listed-item ordering) and
+   not because "the issue would need a GitHub-side split it doesn't have"
+   (that framing was this table's own error, downstream of the retraction's
+   fabricated quote, and is withdrawn). The real reason: clause (d)'s
+   ordering-based answer is an accident of which task/file happened to be
+   listed first, not a considered judgment about the initiative's actual
+   subject — and this table's independent #56 finding plus the sibling
+   plans-slice table's independently-derived G3
+   (`backend-services-modularization`) and G4 (`tier1-backend-hygiene`,
+   the exact parent plan of #491/#496) landing on the same non-answer from
+   two separate classification passes is now cross-table-confirmed evidence
+   of a genuine design gap — "one bundled initiative, several
+   inseparable application-code lanes, no named subject, clause (d)
+   technically answers but only by accident" — worth reporting as design
+   feedback rather than either table forcing clause (d)'s literal output
+   into a confident row. #530 (a repo-wide sweep with no anchor file at
+   all — no candidates exist for clause (d) to order in the first place) is
+   a different, simpler shape and was never dependent on the fabricated
+   quote; it stays RULE-GAP on its original reasoning, unchanged.
    Every other Lane 9 row in this table was independently verified against
    real source (grep, direct file reads) to sit inside Lane 9's own literal
    package list or be a genuine tooling/CI/process-governance subject (audit
@@ -96,7 +119,7 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
 | 53 | Sports-category legal risk — no category-level awareness | 3 | | Names no code module (feature doesn't exist yet); the ask is a trading-risk policy gate, matching Lane 3's charter |
 | 54 | Entry gates select worse subset than pool (pricing/edge gap) | 4 | | Title/history frame this as entry-gate (Lane 3), but the issue's own current, actionable scope is the banded-EV diagnostic on `candidate_log.py` (D1) — Lane 4 |
 | 55 | Move analytics/advisory computation out of live tick loop | 4 | hotpath | `main.py`'s tick loop is unowned; tagged by what's being moved off it (analytics/advisory computation → Lane 4). Sync-on-event-loop defect |
-| 56 | Move stable flat files into their concern's folders | RULE-GAP | | Application-code reorg (`paper_broker.py`→Lane 3, `strategy_engine.py`→Lane 3, `config_store.py` et al.→Lane 7), not tooling/process governance — the coordinator's corrected ruling (2026-09-06) says this splits per destination lane, but the issue is filed as one bundled, un-split unit; same shape as the plans-slice's own G3 (`backend-services-modularization`). No single-lane answer without a GitHub-side split, which is out of step-1 scope. |
+| 56 | Move stable flat files into their concern's folders | RULE-GAP | | Application-code reorg (`paper_broker.py`/`strategy_engine.py`→Lane 3, `config_store.py` et al.→Lane 7), not tooling/process governance. Clause (d) mechanically picks Lane 3 (first-listed destination), but that's an ordering artifact, not a considered subject — the issue names no single primary. Same non-answer as the plans-slice's independently-derived G3 (`backend-services-modularization`); cross-table-confirmed design gap, not forced to a row here. |
 | 57 | Flatten the config surface | 7 | | Subject is the config schema/surface itself, matching Lane 7's charter directly |
 | 58 | Separate frontend from backend completely | 8 | | |
 | 59 | Per-module data-consumption audit + report | 9 | | Goal names no single technical domain — repo-wide audit/report deliverable, matching Lane 9's process-governance charter |
@@ -193,12 +216,12 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
 | 481 | T9 — Cleanup, strict guards, docs sync | 8 | | Includes a ROADMAP/CLAUDE.md docs-sync step, but that's reporting the frontend initiative's own completion, not a separate concern |
 | 489 | Stack-capture stall attribution in `loop_watchdog.py` | 5 | hotpath | Touches `services/loop_watchdog.py` + `fault_log.py` (both Lane 5); dispatches the fault write via `asyncio.to_thread` so the new diagnostic can't itself block the loop |
 | 490 | De-poll History-tab loaders + Terminal-tab `/api/quality/summary` | 8 | | Modifies only `frontend/src/js/main.js` and `polling-and-websocket.js` — the backend route named in the title is untouched |
-| 491 | Task 3: Three safety-adjacent DRY fixes | RULE-GAP | | Bundles three independently-scoped sub-fixes with no marked primary: 3a `advisory_engine.generate_recommendations()` call sites in `main.py`'s auto-apply loop + `analytics/market_analyst_orchestrator.py` (Lane 4), 3b `RiskManager.check_daily_loss`'s zero-bankroll guard in `risk_manager.py` (Lane 3), 3c canonical DDL constants shared across `capture_writer.py` (5), `series_watcher.py` (1), `candidate_log.py` (4). Clause (d) is the nearest mechanism but is scoped to one file's own docstring sentence order, not a plan's task-enumeration order across 3 unrelated files in 3 lanes — no rule decides this |
+| 491 | Task 3: Three safety-adjacent DRY fixes | RULE-GAP | | Bundles three independently-scoped sub-fixes with no marked primary: 3a `advisory_engine.generate_recommendations()` call sites in `main.py`'s auto-apply loop + `analytics/market_analyst_orchestrator.py` (Lane 4), 3b `RiskManager.check_daily_loss`'s zero-bankroll guard in `risk_manager.py` (Lane 3), 3c canonical DDL constants shared across `capture_writer.py` (5), `series_watcher.py` (1), `candidate_log.py` (4). Clause (d) mechanically picks Lane 4 (first-listed sub-fix), but that's an ordering artifact, not a considered subject — this is a literal sub-task of `2026-09-03-tier1-backend-hygiene.md`, the same plan the plans-slice's G4 independently flagged for this identical non-answer |
 | 492 | `record_snapshot_from_ticker` off the event loop | 1 | hotpath | Edits `services/whale_stream/whale_stream_handlers.py`'s ticker handler to dispatch a sync DB write off-loop |
 | 493 | `config_store.update()` stops destroying comments | 7 | | |
 | 494 | One `paginate()` dependency + TTL cache for population-gate reads | 5 | | Spans 8 route files across Lanes 1/2/4/6, but the task's flagship new artifact is `services/pagination.py` (Lane 5 per §3); route call sites are cross-lane dependents |
 | 495 | `event_live_data` throttle; `bump_generation()` coarsened | 5 | | `main.py`'s `_build_state_body` + `services/app_state.py`'s `bump_generation` — runtime-infra state-serving/caching |
-| 496 | Task 8: `alerting.py`'s 3 discarded task handles; `http_client.py`'s timeout/limits | RULE-GAP | | Two co-equal, unrelated fixes joined by a semicolon in the title with no marked primary: `services/alerting/alerting.py` (Lane 6) and `services/http_client.py` (Lane 5, explicit in Lane 5's list). Clause (d)'s ordering tiebreak is defined over one file's own docstring text, not a task title bundling two structurally unrelated files in two lanes — no rule decides this |
+| 496 | Task 8: `alerting.py`'s 3 discarded task handles; `http_client.py`'s timeout/limits | RULE-GAP | | Two co-equal, unrelated fixes joined by a semicolon in the title with no marked primary: `services/alerting/alerting.py` (Lane 6) and `services/http_client.py` (Lane 5, explicit in Lane 5's list). Clause (d) mechanically picks Lane 6 (first-listed fix), but that's an ordering artifact, not a considered subject — another literal sub-task of `2026-09-03-tier1-backend-hygiene.md`, same non-answer as #491 and the plans-slice's G4 |
 | 497 | Full regression suite + live validation | 9 | | "Not a code task" — runs `pytest tests/`, `import main`, frontend build, and live before/after re-measurement across the *whole* tier1-backend-hygiene plan (a heterogeneous 8-task bundle spanning Lanes 1/3/5/6/7/8 with no single primary subject, unlike #458's narrowly-scoped equivalent) — matches Lane 9's `tests/` scope by the generic default, not overridden here |
 | 513 | uvicorn --reload watcher burns CPU polling 47k files (worktrees) | 9 | | Dev-container/`ddev` file-watcher + worktree-hygiene finding; no `services/` package applies |
 | 525 | Order-dependent test failures (lifecycle-resolver tests) | 9 | | Pytest test-isolation/state-leak defect across `tests/*.py`; root app-side cause not yet known, but the finding and fix target are `tests/` |
@@ -274,11 +297,11 @@ touches were confirmed already-async and left untagged rather than assumed).
 |---|---|
 | #49 | No deployment-infra module exists anywhere in the codebase for any straddler clause to read a purpose from; clause (b)'s shared-plumbing analogy needs an actual module and has none here. |
 | #51 | Two flags, two owning modules, two lanes (2 and 4), no marked primary — clause (d)'s ordering tiebreak only resolves two purposes *within one module's own docstring*, not two flags owned by different modules. |
-| #56 | `services/`-code reorg (`paper_broker.py`/`strategy_engine.py`→Lane 3, `config_store.py`→Lane 7) bundled as one un-split issue. Per the corrected shared ruling this splits per destination lane, but no GitHub-side split exists yet — same shape as the plans-slice's own G3. |
+| #56 | `services/`-code reorg (`paper_broker.py`/`strategy_engine.py`→Lane 3, `config_store.py`→Lane 7) bundled as one un-split issue, no named primary. Clause (d) mechanically answers Lane 3 (first-listed), but that's an ordering artifact — same non-answer as the plans-slice's own G3. |
 | #69 | Pure branding/naming decision with no file, module, or docstring to anchor any clause. |
 | #412 | Two hypothesized root-cause mechanisms (Lane 1 WS reconnect vs. Lane 1/3 REST latency) for an explicitly not-yet-diagnosed symptom; the issue's own "Next action" is to determine which is real. Clause (d) needs a *settled* purpose stated out of order, not an open question. |
-| #491 | Three independently-scoped DRY sub-fixes spanning Lanes 3/4/5 with no marked primary; clause (d)'s tiebreak doesn't reach across three unrelated files in three lanes. |
-| #496 | Two unrelated fixes (Lane 5, Lane 6) joined by a title semicolon with no marked primary; same shortfall as #491. |
+| #491 | Three independently-scoped DRY sub-fixes (Lanes 4/3/5) with no marked primary, a literal sub-task of the plan the plans-slice's G4 already flagged for this shape. Clause (d) mechanically answers Lane 4 (first-listed), an ordering artifact, not a considered pick. |
+| #496 | Two unrelated fixes (Lane 6, Lane 5) joined by a title semicolon with no marked primary, another sub-task of the same G4 plan. Clause (d) mechanically answers Lane 6 (first-listed) — same non-answer as #491. |
 | #530 | Explicitly repo-wide, not-yet-run sweep; its two cited examples are disclaimed in the issue's own text as accidental, not the real scope — no anchor file exists for any clause. |
 | #634 | Stack trace is pure framework internals with zero application frames; the one named candidate route is explicitly disclaimed as an untested hypothesis. A genuine information gap, not a two-candidate judgment call. |
 
@@ -306,17 +329,23 @@ carry RULE-GAP; the rest were decided by the base rule, a straddler clause, or
 
 ### Note for the coordinator's own plans-slice table
 
-Two of this table's RULE-GAP rows (#56, and by extension #491/#496's shape)
-are the same defect class as the plans-slice's own G3
-(`2026-08-27-backend-services-modularization.md`, "no lane owns repo
-structure") and G4 (`2026-09-03-tier1-backend-hygiene.md`, "clause (d)
-resolves it by audit-list ordering, i.e. by accident") — both landed on
-`main` under the now-retracted Lane-9 framing's predecessor reasoning (Lane 5
-via clause (d), not Lane 9, so they were not directly affected by the
-retraction, but the same underlying gap is visible in both tables). Worth a
-joint look before step 2 sizes any Lane 9 or Lane 5 labeling batch, since both
-tables independently found the design has no mechanism for "one bundled
-initiative, several inseparable application-code lanes, no named primary."
+**Cross-table-confirmed design gap, not just a note.** #56, #491, and #496
+here are the identical shape as the plans-slice's own G3
+(`2026-08-27-backend-services-modularization.md`) and G4
+(`2026-09-03-tier1-backend-hygiene.md` — the exact parent plan #491/#496 are
+sub-tasks of): one bundled initiative touching application code across
+several lanes, no single named subject, and clause (d) *mechanically*
+produces an answer via first-listed-item ordering — but that answer is an
+accident of enumeration order, not a considered judgment. The plans-slice
+table used that mechanical answer (Lane 5, flagged RULE-GAP as a caveat on
+the number); this table declined to assign a number at all for the same
+underlying reason. Both are defensible readings of the same real gap in the
+design — confirmed independently, from two separately-dispatched
+classification passes reading the design doc fresh, not from one table
+copying the other. Worth reporting as design feedback for a future revision
+(the design has no stated mechanism for "bundled multi-lane application-code
+initiative, no named subject, clause (d) answers only by accident") rather
+than either table forcing a fix now.
 
 Self-review is its own companion document:
 `docs/superpowers/lanes/step1-issues-classification-self-review.md`.

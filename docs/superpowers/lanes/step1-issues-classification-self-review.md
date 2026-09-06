@@ -99,3 +99,34 @@ the committed version, and every flagged uncertainty is stated rather than
 silently resolved. **Not yet a GO for step 2** — that requires the
 independent adversarial review and consolidation this document is not a
 substitute for.
+
+## Addendum (2026-09-06, same session, before adversarial review landed)
+
+The claim above — "the retracted ruling left no trace" — was too strong.
+A second cross-session message corrected the *first* retraction itself: the
+mechanism it cited ("§3: an initiative that grows to touch a second lane
+splits at the boundary") does not exist anywhere in the merged design doc —
+it was misremembered from a revised-out draft. This table's #56/#491/#496
+rows had already been reverted to RULE-GAP by that point (the right verdict,
+independently reachable from #56's own body without any ruling at all), but
+their *stated reasoning* cited the fabricated "splits per destination lane /
+no GitHub-side split exists" framing, which was itself a trace of the bad
+mechanism, just not of the bad *lane number* (Lane 9). Both the main table
+and this document undersold that distinction on the first pass.
+
+Fixed directly in `step1-issues-classification.md` (same PR, no new commit
+history rewrite): #56/#491/#496's row reasoning and the RULE-GAP register now
+state the correct mechanism — clause (d) *does* mechanically produce an
+answer via first-listed-item ordering, but that answer is an accident of
+enumeration order, not a considered subject, and is now framed as a
+cross-table-confirmed design gap (matching the plans-slice's independently-
+derived G3 and G4 finding the identical non-answer) rather than an
+unresolvable rule silence. #530 was never affected — it has no clause-(d)
+candidates to order in the first place, a different and simpler shape.
+
+This is a narrow, scoped correction to already-flagged rows' *reasoning*, not
+a change of verdict on any row and not a new claim the adversarial review
+hasn't seen yet (the review was dispatched after the first retraction but
+before this second one landed, so its own findings — once they arrive — will
+be checked against this corrected version, not the version it was launched
+against).
