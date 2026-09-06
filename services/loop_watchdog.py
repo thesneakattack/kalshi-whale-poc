@@ -5,6 +5,7 @@ SQLite blocks the WS consumer" hypothesis, now falsifiable at runtime
 (root-cause report C1)."""
 import asyncio
 import faulthandler
+import os
 import tempfile
 import threading
 import time
@@ -108,27 +109,37 @@ def start(*, sample_interval_sec: float = 0.1,
     ~99us each - about 0.1% of one 0.1s tick period, run once per healthy
     tick alongside work this loop already does every cycle.
 
-    Known, accepted limitation, not silently glossed over: the watchdog
-    thread's write to dump_file and this coroutine's read of it are not
-    mutually locked. In the extremely narrow window where the capture-arm
-    timer fires at the exact moment a stall is also ending, a read could
-    observe a partial write. The result is, at worst, a truncated capture -
-    still strictly better than the previous mechanism's capture, which was
-    wrong 100% of the time, never merely sometimes incomplete."""
+    Reads dump_file via raw os.pread/os.ftruncate on its file descriptor,
+    never through the buffered TextIOWrapper's own .seek()/.read()/
+    .truncate() - independent adversarial review of this fix found that
+    approach can SEGFAULT THE WHOLE PROCESS under contention (reproduced
+    directly, both locally and in the actual production container):
+    faulthandler's internal watchdog thread writes to the fd directly (it
+    must be signal-safe, so it bypasses Python's buffering entirely), and
+    unsynchronized concurrent access to the *buffered* object's internal
+    state from a second thread corrupts it - a torn read was the assumed
+    worst case, a crash is the actual one. pread()/ftruncate() operate
+    directly on the fd with no buffered Python-level state to corrupt.
+    ftruncate() alone does not reset the fd's own write offset (verified
+    directly - a second dump after truncate(0) without an explicit
+    lseek(0) writes at the stale offset, producing null-byte-padded
+    garbage ahead of the real content), so lseek is required alongside it,
+    not implied by it."""
     dump_file = tempfile.TemporaryFile(mode="w+")
+    _dump_fd = dump_file.fileno()
+    _MAX_DUMP_READ_BYTES = 1 << 20  # generous: this app's live thread count is nowhere near enough to fill 1MB
 
     def _rearm() -> None:
         faulthandler.cancel_dump_traceback_later()
         faulthandler.dump_traceback_later(capture_arm_sec, file=dump_file)
 
     def _read_and_reset_capture() -> str | None:
-        dump_file.seek(0)
-        raw = dump_file.read()
+        raw = os.pread(_dump_fd, _MAX_DUMP_READ_BYTES, 0)
         if not raw:
             return None
-        dump_file.seek(0)
-        dump_file.truncate()
-        return _extract_main_thread_stack(raw)
+        os.ftruncate(_dump_fd, 0)
+        os.lseek(_dump_fd, 0, os.SEEK_SET)
+        return _extract_main_thread_stack(raw.decode(errors="replace"))
 
     async def _tick() -> None:
         global _stall_max_ms, _stall_count, _samples

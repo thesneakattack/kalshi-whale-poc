@@ -1,8 +1,14 @@
 import asyncio
+import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 from services import loop_watchdog
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_extract_main_thread_stack_finds_the_main_threads_block():
@@ -117,6 +123,62 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
     )
 
 
+def test_read_and_reset_capture_resets_the_file_offset_not_just_its_content(monkeypatch):
+    """Deterministic regression test for a specific bug found while fixing
+    PR #632's independent-adversarial-review finding: os.ftruncate(fd, 0)
+    resets a file's CONTENT but not its WRITE OFFSET (verified directly,
+    not assumed, via a standalone repro before writing this fix). Without
+    an explicit os.lseek(fd, 0, os.SEEK_SET) alongside it, a later dump
+    writes at the stale offset, extending the file with a zero-filled hole
+    ahead of the real content rather than producing a clean capture at
+    offset 0.
+
+    An earlier version of this test asserted on the RETURNED string (no
+    NUL bytes) - that passed even with the bug, because
+    _extract_main_thread_stack's marker search starts AT the found "Thread
+    0x..." header and naturally discards whatever leading garbage precedes
+    it, masking the defect. Checking os.lseek's own return value (the
+    resulting offset) at the moment _read_and_reset_capture calls it is the
+    test that actually fails without it - querying the fd afterward doesn't
+    work, since _tick()'s finally block closes it once the task is
+    cancelled and awaited."""
+    monkeypatch.setattr(loop_watchdog.fault_log, "record_fault", lambda *a, **kw: True)
+
+    resulting_offsets: list[int] = []
+    real_lseek = os.lseek
+
+    def _tracking_lseek(fd, pos, how):
+        result = real_lseek(fd, pos, how)
+        if pos == 0 and how == os.SEEK_SET:
+            resulting_offsets.append(result)
+        return result
+
+    monkeypatch.setattr(loop_watchdog.os, "lseek", _tracking_lseek)
+
+    def _blocker():
+        time.sleep(0.2)
+
+    async def run():
+        task = loop_watchdog.start(sample_interval_sec=0.01, capture_arm_sec=0.05)
+        await asyncio.sleep(0.05)
+        _blocker()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    loop_watchdog.reset_window()
+    asyncio.run(run())
+
+    assert resulting_offsets, "expected _read_and_reset_capture's lseek(fd, 0, SEEK_SET) to run at least once"
+    assert all(offset == 0 for offset in resulting_offsets), (
+        f"expected the fd's write offset reset to 0 after every capture, got {resulting_offsets} - "
+        "ftruncate(fd, 0) alone does not reset the offset, only the content"
+    )
+
+
 def test_stall_shorter_than_the_capture_arm_records_no_fabricated_traceback(monkeypatch):
     """The old mechanism always produced a (garbage) string, never honestly
     reporting 'no genuine capture available'. A stall the metrics threshold
@@ -145,3 +207,55 @@ def test_stall_shorter_than_the_capture_arm_records_no_fabricated_traceback(monk
     assert calls, "expected the metrics threshold to still flag this as a stall"
     _, kwargs = calls[0]
     assert not kwargs.get("tb"), f"expected no fabricated capture below the arm threshold, got: {kwargs.get('tb')!r}"
+
+
+def test_capture_survives_high_frequency_rearming_without_crashing():
+    """Independent adversarial review of this fix (PR #632) found the
+    original _read_and_reset_capture (dump_file.seek()/.read()/.truncate()
+    through the buffered TextIOWrapper) can SEGFAULT THE WHOLE PROCESS
+    under contention, not merely tear a read: faulthandler's internal
+    watchdog thread writes to the file's raw fd directly (it must be
+    signal-safe, so it bypasses Python's buffered wrapper entirely), while
+    _tick() accesses the same buffered object from a different thread -
+    unsynchronized concurrent access to that buffered object's internal
+    state corrupts it. Reproduced directly by the review in both a local
+    environment and the actual production container's Python 3.13.15, not
+    assumed.
+
+    A real crash kills whatever process it happens in - it can't be caught
+    as a Python exception inside this test process, so this runs the real
+    start()/_tick() code path in a SUBPROCESS under far more aggressive
+    timing than production (1ms sample/capture-arm intervals vs prod's
+    100ms/500ms) for a bounded few seconds, and asserts the subprocess is
+    still alive at the end - a segfault shows up as a negative/139
+    returncode, not a Python traceback."""
+    script = """
+import asyncio
+import time
+
+from services import loop_watchdog
+
+async def hammer():
+    task = loop_watchdog.start(sample_interval_sec=0.001, capture_arm_sec=0.001)
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        time.sleep(0.002)  # force frequent short stalls while the capture-arm timer refires at high frequency
+        await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+asyncio.run(hammer())
+print("SURVIVED", flush=True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=_REPO_ROOT,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"subprocess crashed (returncode={result.returncode} - negative means "
+        f"killed by a signal, e.g. -11 is SIGSEGV): stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "SURVIVED" in result.stdout
