@@ -758,6 +758,101 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
     )
 
 
+# issue #616 D1's own spec (docs/superpowers/specs/2026-08-26-economic-
+# strategy-remediation-design.md) asks check_gate_cost_bands to flag any
+# (gate, band) with "n >= min_samples and ev_per_contract meaningfully
+# negative" without saying what "meaningfully" means numerically - this is
+# that threshold, calibrated against the real numbers docs/superpowers/
+# research/2026-08-26-economic-gate-marginal-contribution.md's E4 analysis
+# found (not picked arbitrarily): the two big-n (383,955 and 299,264),
+# high-confidence rows issue #616's own decision record cites by name are
+# whale_watcher.min_contracts' 0.60-0.80 (-0.0728/contract) and 0.80-0.95
+# (-0.0491/contract) bands. -0.02 sits comfortably below both (they clear
+# it by 2.5x-3.6x, so this is not a hairline threshold tuned to just catch
+# them) while still excluding the smallest real negative value E4 found,
+# whale_follow.entry_threshold's 0.40-0.60 band at -0.0015/contract (n=156)
+# - a value E4's own prose calls essentially flat, not part of the
+# negative-EV pattern - which -0.02 correctly leaves unflagged. -0.02 does
+# still flag whale_follow.entry_threshold's smaller-n (53) 0.60-0.80 band
+# (-0.0392/contract) from the same table; left flagged deliberately rather
+# than raised to exclude it, since this check is a read-only surface-for-
+# human-review diagnostic (issue #616 item 1's own explicit non-scope: NOT
+# used here to retune entry_threshold/min_contracts/etc), so a bordering
+# false positive at n=53 costs a human a second look, not a bad trade.
+_NEGATIVE_EV_THRESHOLD = -0.02
+
+
+async def check_gate_cost_bands(min_samples: int = 30) -> Check:
+    """issue #616 D1: population_gate_summary()'s one hypothetical_win_rate
+    per gate, averaged across every unit_cost that gate ever rejected, hides
+    the real 0.60-0.95-band negative-EV pattern docs/superpowers/research/
+    2026-08-26-economic-gate-marginal-contribution.md's E4 analysis found
+    underneath that aggregate. This is the runtime detection-for-recurrence
+    half of D1 (the other half is the population_gates_banded field itself,
+    services/candidate_log.py's population_gate_summary_banded()) - folded
+    into run_offline()/GET /api/quality/summary alongside series_funnel/
+    selectivity_curve, same registration shape as every other check in this
+    file: read cfg/since_ts/now if the check needs them (this one doesn't -
+    see below), compute, return one Check.
+
+    No cfg/since_ts parameter, unlike most checks in this file - same
+    reasoning population_gate_summary()'s own docstring already gives for
+    why IT takes no since_ts: this is a total-sample gate over rejection_
+    events' whole history, not a recency-scoped read, so there is no
+    window to bound it by.
+
+    Calls the CACHED wrapper (services.candidate_log.population_gate_
+    summary_banded_cached_async), not the raw async function directly -
+    load-bearing, not a style choice: the raw query measures ~2x the
+    already-expensive unbanded query's cost (see that wrapper's own
+    module-level comment in services/candidate_log.py for the full
+    measured numbers and the query-plan verification behind them). Calling
+    it uncached here would mean this diagnostic and services/analytics/
+    routes.py's GET /api/candidate-log/summary route could each separately
+    pay that cost within the same short window - this app's own "Start
+    investigations here" step 1 (GET /api/quality/summary, which reaches
+    this check via run_offline()) must stay cheap to poll, not become a
+    second ~70s tax.
+
+    Read-only diagnostic, same restraint as population_gate_summary_
+    banded()'s own docstring: this never retunes entry_threshold/
+    min_contracts/etc itself (issue #616 item 1's explicit non-scope) -
+    flagging is for a human to review, not for this function to act on."""
+    from services import candidate_log
+
+    banded = await candidate_log.population_gate_summary_banded_cached_async(min_samples=min_samples)
+    if not banded:
+        return Check(
+            "gate_cost_bands", _UNKNOWN,
+            "no (gate, band) rows with a known unit_cost, resolved outcome, and side yet - "
+            "population_gate_summary_banded has nothing to report",
+            detail={"threshold": _NEGATIVE_EV_THRESHOLD, "min_samples": min_samples},
+        )
+    flagged = [
+        g for g in banded
+        if g["status"] == "ready" and g["ev_per_contract"] is not None
+        and g["ev_per_contract"] <= _NEGATIVE_EV_THRESHOLD
+    ]
+    if flagged:
+        return Check(
+            "gate_cost_bands", _WARN,
+            f"{len(flagged)}/{len(banded)} (gate, band) combo(s) at n>={min_samples} show "
+            f"ev_per_contract <= {_NEGATIVE_EV_THRESHOLD}/contract - see issue #616 D1 / "
+            "the economic-gate-marginal-contribution E4 research this threshold is calibrated from",
+            detail={
+                "threshold": _NEGATIVE_EV_THRESHOLD, "min_samples": min_samples,
+                "flagged_count": len(flagged), "total_bands": len(banded),
+            },
+            evidence=flagged,
+        )
+    return Check(
+        "gate_cost_bands", _OK,
+        f"no (gate, band) combo at n>={min_samples} shows meaningfully negative EV "
+        f"(threshold {_NEGATIVE_EV_THRESHOLD}/contract) across {len(banded)} band(s)",
+        detail={"threshold": _NEGATIVE_EV_THRESHOLD, "min_samples": min_samples, "total_bands": len(banded)},
+    )
+
+
 async def run_offline(cfg: dict, since_ts: float | None = None, now: float | None = None) -> dict:
     """Every check that reads only local stores - no network, safe to call
     on any tick. check_coverage is deliberately excluded (it makes real API
@@ -802,6 +897,7 @@ async def run_offline(cfg: dict, since_ts: float | None = None, now: float | Non
         await performance_by_epoch(since_ts, now),
         await selectivity_curve(since_ts=since_ts, now=now),
         await check_confidence_input_coverage(cfg, since_ts, now),
+        await check_gate_cost_bands(),
     ]
     # One per watched series (services/series_watcher.watched_series) - the
     # accuracy-vs-realised-win-rate reconciliation, which is per-series by

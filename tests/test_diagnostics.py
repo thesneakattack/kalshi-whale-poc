@@ -12,6 +12,8 @@ import time
 
 import pytest
 
+from services import candidate_log as cl_module
+from services import capture_writer as cw_module
 from services.config import config_performance as cp_module
 from services.diagnostics import diagnostics
 from services.market_catalog import market_catalog as mc_module
@@ -31,6 +33,25 @@ def dbs(tmp_path, monkeypatch):
     # run_offline now includes one series_funnel check per watched series
     # (services/series_watcher.py), which opens its own store.
     monkeypatch.setattr(sw_module, "DB_PATH", tmp_path / "series_watcher.db")
+    # run_offline now also includes check_gate_cost_bands (issue #616 D1),
+    # which reads services/candidate_log.py's rejection_events table -
+    # same redirect-DB_PATH-plus-capture_writer-store-plumbing shape
+    # tests/test_candidate_log.py's own _redirect_db fixture already
+    # establishes (record_rejection()/its reads route through
+    # capture_writer, not a direct connect()+INSERT), applied here rather
+    # than assumed unnecessary because this module's own writes are never
+    # invoked - reads alone still open a connection via candidate_log.
+    # DB_PATH, and leaving it unpatched would hit the REAL, live,
+    # multi-GB data/candidate_log.db this repo's own CLAUDE.md says a test
+    # run must never touch.
+    candidate_log_db = tmp_path / "candidate_log.db"
+    monkeypatch.setattr(cl_module, "DB_PATH", candidate_log_db)
+    monkeypatch.setattr(cw_module, "_STORE_PATHS", {
+        "rejected_candidates": candidate_log_db, "rejection_events": candidate_log_db,
+    })
+    monkeypatch.setattr(cw_module, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
+    monkeypatch.setattr(cw_module, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
+    monkeypatch.setattr(cw_module, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
     return tmp_path
 
 
@@ -39,6 +60,22 @@ def _reset_aio_db_cache():
     yield
     from services.diagnostics import _aio_db
     asyncio.run(_aio_db.reset())
+
+
+@pytest.fixture(autouse=True)
+def _reset_population_gates_banded_cache():
+    """check_gate_cost_bands (issue #616 D1) reads through services.
+    candidate_log.population_gate_summary_banded_cached_async()'s own
+    module-level cache (300s TTL). Without this reset, an earlier test's
+    result (an empty list against that test's own now-torn-down tmp_path
+    DB, or a real result from a later test that seeds rows) would leak into
+    the next test that calls run_offline() within the same wall-clock 300s
+    window - every test in one pytest run happens within that window, so
+    this is not a hypothetical. Same reasoning and same shape as tests/
+    test_analytics_routes.py's own _reset_population_gates_cache fixture."""
+    cl_module._population_gates_banded_cache = {"cached_at": None, "value": None}
+    yield
+    cl_module._population_gates_banded_cache = {"cached_at": None, "value": None}
 
 
 def _cfg(**over):
@@ -294,6 +331,13 @@ def test_run_offline_reports_worst_status_across_checks(dbs):
         "threshold_integrity", "price_band_adherence", "runway_at_entry",
         "config_bounds", "performance_by_epoch", "selectivity_curve",
         "confidence_input_coverage",
+        # issue #616 D1 - reads no candidate_log rows in this test (the
+        # `dbs` fixture's candidate_log.db is empty), so this reports
+        # "unknown", which is tolerated (see run_offline()'s own worst-
+        # status loop: only "fail"/"warn" move `worst` off "ok", "unknown"
+        # never does - the same tolerance confidence_input_coverage's own
+        # below-threshold "unknown" case already relies on).
+        "gate_cost_bands",
         # One per services/series_watcher.watched_series entry - the
         # accuracy-vs-realised-win-rate reconciliation, per-series by
         # construction (a blended figure across every series answers
@@ -456,3 +500,129 @@ def test_confidence_input_coverage_unknown_below_the_resolved_floor(dbs):
     cfg = _cfg(confidence_calibration={"enabled": True, "min_resolved_signals": 50})
     c = asyncio.run(diagnostics.check_confidence_input_coverage(cfg))
     assert c.status == "unknown"
+
+
+# ---- gate_cost_bands (issue #616 D1) ----
+#
+# "max_unit_cost"/"entry_threshold" below, never "min_contracts" - the one
+# gate name candidate_log.record_rejection() Bernoulli-samples at 1%
+# (issue #532, _MIN_CONTRACTS_SAMPLE_RATE) before it ever reaches
+# rejection_events. Using it here would make ~99% of these tests' rows
+# silently vanish and turn a fixed small n into a flaky one - the exact
+# trap tests/test_candidate_log.py's own banded tests already avoid by
+# using "whale_watcher"/"max_unit_cost" and "whale_follow"/
+# "entry_threshold" throughout, mirrored here for the same reason.
+
+
+def test_check_gate_cost_bands_unknown_when_no_data(dbs):
+    c = asyncio.run(diagnostics.check_gate_cost_bands())
+    assert c.status == "unknown"
+
+
+def test_check_gate_cost_bands_ok_when_no_band_is_meaningfully_negative(dbs):
+    """A cheap, high-win-rate band (unit_cost 0.1, mostly wins) has strongly
+    POSITIVE ev_per_contract - same shape as E4's own real 0.00-0.20
+    min_contracts row (+0.0252/contract) - and must not be flagged."""
+    for i in range(5):
+        side = "yes" if i < 4 else "no"  # 4/5 win -> ev = 0.8 - 0.1 = +0.7
+        cl_module.record_rejection(
+            f"TICK-{i}", "whale_watcher", "max_unit_cost", 10, 20,
+            side=side, unit_cost=0.1, now=1000.0 + i,
+        )
+        cl_module.resolve_from_market_results({f"TICK-{i}": "yes"})
+    c = asyncio.run(diagnostics.check_gate_cost_bands(min_samples=5))
+    assert c.status == "ok"
+    assert "flagged_count" not in c.detail
+
+
+def test_check_gate_cost_bands_flags_a_band_with_meaningfully_negative_ev_at_sufficient_n(dbs):
+    """Mirrors E4's real min_contracts 0.60-0.80 finding (-0.0728/contract,
+    n=383,955) at unit test scale: unit_cost 0.7, win rate low enough that
+    ev_per_contract clears _NEGATIVE_EV_THRESHOLD (-0.02) by a wide margin,
+    at n >= min_samples."""
+    for i in range(10):
+        side = "yes" if i < 5 else "no"  # 5/10 win -> ev = 0.5 - 0.7 = -0.2
+        cl_module.record_rejection(
+            f"TICK-{i}", "whale_watcher", "max_unit_cost", 10, 20,
+            side=side, unit_cost=0.7, now=1000.0 + i,
+        )
+        cl_module.resolve_from_market_results({f"TICK-{i}": "yes"})
+    c = asyncio.run(diagnostics.check_gate_cost_bands(min_samples=10))
+    assert c.status == "warn"
+    assert c.detail["flagged_count"] == 1
+    assert c.evidence[0]["gate_name"] == "max_unit_cost"
+    assert c.evidence[0]["unit_cost_band"] == "0.60-0.80"
+    assert c.evidence[0]["ev_per_contract"] == pytest.approx(-0.2)
+
+
+def test_check_gate_cost_bands_does_not_flag_a_negative_band_below_min_samples(dbs):
+    """Same negative-EV shape as the test above (unit_cost 0.7, 50% win
+    rate -> -0.2/contract) but only 3 rows against a min_samples=10 floor -
+    status must be "insufficient", never surfaced as a flagged finding,
+    same honesty convention every other sample-size-gated check in this
+    module already follows (a check that cannot be computed reliably
+    reports it, never a number/flag earned from too few samples)."""
+    for i in range(3):
+        side = "yes" if i < 1 else "no"
+        cl_module.record_rejection(
+            f"TICK-{i}", "whale_watcher", "max_unit_cost", 10, 20,
+            side=side, unit_cost=0.7, now=1000.0 + i,
+        )
+        cl_module.resolve_from_market_results({f"TICK-{i}": "yes"})
+    c = asyncio.run(diagnostics.check_gate_cost_bands(min_samples=10))
+    assert c.status == "ok"
+    assert "flagged_count" not in c.detail
+
+
+def test_check_gate_cost_bands_does_not_flag_a_barely_negative_band(dbs):
+    """E4's own -0.0015/contract entry_threshold 0.40-0.60 row is exactly
+    what this threshold is calibrated to exclude (see _NEGATIVE_EV_
+    THRESHOLD's own comment) - reproduced here at unit scale: unit_cost
+    0.505, 50% win rate, so ev_per_contract = 0.5 - 0.505 = -0.005 - a hair
+    below zero, nowhere near _NEGATIVE_EV_THRESHOLD (-0.02)."""
+    for i in range(10):
+        side = "yes" if i < 5 else "no"  # 5/10 win -> ev = 0.5 - 0.505 = -0.005
+        cl_module.record_rejection(
+            f"TICK-{i}", "whale_follow", "entry_threshold", 10, 20,
+            side=side, unit_cost=0.505, now=1000.0 + i,
+        )
+        cl_module.resolve_from_market_results({f"TICK-{i}": "yes"})
+    c = asyncio.run(diagnostics.check_gate_cost_bands(min_samples=10))
+    assert c.status == "ok"
+    assert "flagged_count" not in c.detail
+
+
+def test_check_gate_cost_bands_uses_the_shared_cached_getter_not_the_raw_query(dbs, monkeypatch):
+    """The whole reason population_gate_summary_banded_cached_async's cache
+    lives in services/candidate_log.py, shared between this check and
+    services/analytics/routes.py's route, rather than each consumer paying
+    its own: a GET /api/quality/summary poll (which reaches this check via
+    run_offline()) and a GET /api/candidate-log/summary poll must never
+    each separately pay the banded query's real ~2x-unbanded cost inside
+    the same TTL window. Proven at the mechanism level, not assumed from
+    the code merely looking right: monkeypatch the RAW, uncached
+    population_gate_summary_banded_async and confirm a call from this
+    check followed by a call from the route's own path reach it only ONCE."""
+    from services.analytics import routes as analytics_routes
+
+    calls = []
+
+    async def _spy_banded_async(bands, min_samples):
+        calls.append(1)
+        return []
+
+    async def _noop_unbanded_async(min_samples):
+        return []
+
+    analytics_routes._population_gates_cache = {"cached_at": None, "value": None}
+    monkeypatch.setattr(cl_module, "population_gate_summary_banded_async", _spy_banded_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [])
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _noop_unbanded_async)
+
+    asyncio.run(diagnostics.check_gate_cost_bands())
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert len(calls) == 1, (
+        "the route's poll must reuse the check's already-cached banded result, "
+        "not pay the ~70s query a second time within the same TTL window"
+    )

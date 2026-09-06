@@ -48,6 +48,20 @@ _POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/
 # coordinated, not independently chosen.
 _population_gates_cache: dict = {"cached_at": None, "value": None}
 
+# population_gates_banded (issue #616 D1, docs/superpowers/specs/2026-08-26-
+# economic-strategy-remediation-design.md) does NOT get its own cache dict
+# here - it shares services.candidate_log.population_gate_summary_banded_
+# cached_async()'s cache instead (see that function's own module-level
+# comment in services/candidate_log.py for the full measured-cost
+# reasoning and its own, separate, longer TTL). Kept there rather than
+# here for two checked reasons: services/diagnostics/diagnostics.py's
+# check_gate_cost_bands needs the identical cached value so a GET
+# /api/quality/summary poll and a GET /api/candidate-log/summary poll never
+# both pay this query's real ~70s cost inside the same TTL window; and
+# diagnostics.diagnostics cannot import this routes module to reach a cache
+# kept here without a real import cycle (this module already imports
+# services.app_state, which imports services.diagnostics.diagnostics).
+
 
 class DeclineSuggestionBody(BaseModel):
     id: str
@@ -163,9 +177,24 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         # but it no longer competes with trade decisions.
         _population_gates_cache["cached_at"] = time.time()
         _population_gates_cache["value"] = population_gates
+    # population_gates_banded (issue #616 D1) - the banded extension of
+    # population_gates above, grouped additionally by unit_cost_band (see
+    # docs/superpowers/research/2026-08-26-economic-gate-marginal-
+    # contribution.md's E4 analysis for what this surfaces: a gate's
+    # aggregate hypothetical_win_rate can hide a negative-EV band
+    # underneath it). Deliberately calls the CACHED wrapper, not
+    # population_gate_summary_banded_async() directly - see that wrapper's
+    # own module-level comment in services/candidate_log.py for the full
+    # measured-cost reasoning (~2x the unbanded query) and why its cache is
+    # a separate dict/TTL from _population_gates_cache above, not folded
+    # into it.
+    population_gates_banded = await candidate_log.population_gate_summary_banded_cached_async(
+        min_samples=min_population_samples
+    )
     return {
         "gates": candidate_log.gate_summary(),
         "population_gates": population_gates,
+        "population_gates_banded": population_gates_banded,
     }
 
 
