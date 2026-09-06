@@ -1,0 +1,31 @@
+## Self-review — Lane classification table (specs/ + research/, 176 files)
+
+Stage 1 of "nothing advances on one pass," applied to a checked-in classification table per `lanes-design.md` §6 step 1's own requirement ("these tables are themselves a reviewed artifact"). Target: the draft at `.../scratchpad/lanes-table-draft.md`, produced by a dispatched subagent under my direct instruction, redirected twice mid-task by messages I relayed from `autotrade-36`'s parallel classification work.
+
+### Structural verification — PASS, checked directly
+
+- `diff` of the table's 176 paths against the two original file-listing inputs: **empty** — every path present exactly once, none missing, none duplicated, none extra.
+- Companion inheritance spot-checked on one 4-file cluster (`worker-cpu-pin-and-loop-stalls`): all four rows share Lane 5 / `superseded`, consistent with the stated rule.
+- Lane 7 correctly empty (0 of 176 docs primarily about `services/config/`); Lane 4 correctly low (9 rows) rather than inflated by directory-matching every `research/` file — confirms the subject-beats-genre rule was actually applied, not just claimed.
+
+### Evidence spot-checks — 5 claims independently verified against primary sources, PASS
+
+- `event-scoped-me-gate` declined: `git log --grep` → `a975b3e Merge pull request #372 ... retire the event-scoped-me-gate plan - would regress shipped code`. Confirmed.
+- `weather-index-ingestion` declined: my own first grep attempt (case-sensitive `weather-index`) returned nothing — a false alarm from my own tooling, not a table defect. Case-insensitive recheck found `docs/open-decisions.md:39`, and issue #331's actual decision comment: *"Decision (2026-09-05, delegated design pass): declined for now — not planned. Resolves the weather-index line in docs/open-decisions.md."* Confirmed; noting my own near-miss so a future reviewer doesn't repeat it.
+- PR #297 (`advisory-evidence-provenance-214`) confirmed merged via `git log`.
+- PRs #414/#420/#424 (cited for the `worker-cpu-pin-and-loop-stalls` cluster) all confirmed as real merge commits.
+- The UNDECIDED row's own four-way split claim, re-checked against `2026-08-27-backend-services-modularization-design.md`'s actual §1 text: confirmed genuinely structured as four co-equal groups with no stated primary — the UNDECIDED treatment is correct, not a shortcut.
+
+### Findings
+
+**F1 — LOW, cosmetic, fix directly.** The UNDECIDED row's Reason text ends "...so `active` regardless of which lane(s) eventually claim it" — a leftover conclusion from the pre-remap 4-bucket vocabulary, never updated when the Status cell itself was correctly remapped to `never-started`. The cell value is right (no `services/reset/` or reorganized files exist yet — confirmed via the row's own cited `ls services/` check); only the prose is stale. Fix: reword to match the cell (e.g. "...so `never-started` regardless of which lane(s) eventually claim it").
+
+**F2 — MEDIUM, unresolved, hand off to adversarial review.** The `stalled`/`never-started` boundary was refined *after* this draft's remap (removing "or written-only" from `stalled`; the corrected test is "was any real deliverable — even partial — ever produced from this document?"). Seven rows carry the pre-refinement judgment and need re-derivation under the corrected test, not a self-review guess: `application-wide-rest-vs-ws-inventory.md`, `economic-strategy-remediation-design.md`, `frontend-modularization-design.md`, `kanban-board-sync-design.md` (currently `superseded` — worth rechecking it isn't actually this boundary too), `claudesuperpower-plugin-pilot-design.md`, `session-tooling-friction-log.md`, `test-coverage-audit-handoff.md`, `followups-from-3-plan-implementation.md`, and the UNDECIDED row. Self-review is the wrong layer to resolve genuine boundary ambiguity on a definition that changed after the work was done — that's exactly what the independent pass is for.
+
+**F3 — MEDIUM, unresolved, hand off to adversarial review.** The three-part "deliverable" test used to derive most Status values (cited by a later-stage doc / implemented in code / self-concludes no further action needed) is, by `autotrade-36`'s own explicit correction, *not* an independently-checkable prior methodology — it was misattributed to "an inventory agent's" work that in fact only produced a rolled-up count, never the per-doc test itself. It is `36`'s own reconstruction from memory, unreviewed. Treat it as a hypothesis, not settled input: the adversarial review must judge whether it actually produces correct classifications on a real sample, not assume it's valid because it sounds reasonable.
+
+**F4 — MEDIUM, unresolved, hand off to adversarial review.** 146 of 176 rows (83%) landed in `superseded` — heavily lopsided, and `36` has independently flagged the likely cause: the convention may be reading "superseded" broadly as "this doc's content shipped, so the doc itself is now historical," when the design's own definition is narrower — "retired because a *different* piece of work overtook it, decline-shaped but not a decline decision." Under the narrow reading, a design whose *own* proposal shipped as *its own* successful output is `done`, not `superseded` — `superseded` should be reserved for cases like `event-scoped-me-gate` (this plan specifically won't run; the goal continues via different, later work). Required: sample 5-10 of the 146 against the narrow definition and report how many survive it. This is likely to move a large fraction of the table's status column and is the single highest-value thing the adversarial pass can do.
+
+### Verdict: self-review does not clear this draft for consolidation as-is
+
+F1 is a same-pass fix (apply now, trivial). **F2, F3, and F4 are not self-review's call to make** — they involve either a definition that changed after the work was done (F2), an admittedly-unvalidated methodology (F3), or a distributional red flag serious enough to need independent re-sampling against primary sources (F4). Passing all four to the adversarial review as its explicit required scope, not proceeding to consolidation until that pass reports back on all four.
