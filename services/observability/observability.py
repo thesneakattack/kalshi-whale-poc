@@ -66,14 +66,16 @@ def _connect():
 
     db.connect() also sets busy_timeout to 5000ms explicitly; that is
     sqlite3's existing implicit default made visible (D3), not a new
-    number. Event-loop exposure is unchanged by this migration and is not
-    fixed by it: history() and summary() are still called with no dispatch
+    number. Event-loop exposure was unchanged by this migration and was
+    not fixed by it: history() and summary() were called with no dispatch
     from services/observability/routes.py's async handlers - tracked as
     item 2 of issue #530, measured 0.79-1.02s at the route's default
     hours=24 and ~7.66s at hours=720 (docs/task5-observability-gate1-
-    preflight-2026-09-03.md). A migrated _connect() blocks for at least as
-    long as before plus close()'s own cost; making that worse would be a
-    defect, fixing it is out of this plan's scope."""
+    preflight-2026-09-03.md). That gap is now closed (issue #629,
+    2026-09-06): routes.py wraps both calls in asyncio.to_thread, so a
+    _connect() call from either route now runs on a worker thread, not
+    the event loop - see routes.py's own module docstring and this
+    package's README.md for the measured before/after."""
     with db.connect(DB_PATH, tables=("metric_samples",)) as conn:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_metric_samples_metric_time "
