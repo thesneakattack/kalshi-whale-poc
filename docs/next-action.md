@@ -72,8 +72,12 @@ confirmed this is fine as-is.
        `#629`. Measured 791ms over 258,525 rows (4x growth since the
        3-day-old event-loop-blocking census called it "no fix needed" —
        that census line is now stale, being corrected as part of the fix
-       PR). **Fix authorized and in progress** (compare `to_thread` vs.
-       indexing, full TDD+review cycle).
+       PR). **Checkpointed as draft PR #636** (`fix/605-candidate-log-
+       gate-summary-unbounded-scan`, commit `c1a3b95`): SQL-side `GROUP
+       BY` instead of a Python loop, ~48% cheaper, byte-identical output
+       verified, 70 tests passing. **Not done**: route-dispatch fix,
+       census-doc correction, and the review cycle are explicitly left
+       open per c4's own checkpoint comment — do not treat as merge-ready.
     3. **The actual trading-hot-path bug, fully mechanism-proven**:
        `settlement_edge.py`'s `flush()` (on `tick_executor`'s dedicated
        thread) and `_resolve_settlement_windows()`'s sequential,
@@ -85,17 +89,20 @@ confirmed this is fine as-is.
        loop pass fully explains the ~9.3-9.6s bursts with zero exceptions,
        no timeout knob touched. **One fix (move `resolve_window` off the
        loop) resolves both the blocking and the stacking-wait problem.**
-       Open engineering question c4 was verifying at pause time: route the
-       fix through `tick_executor`'s existing pool (coordinator's lean —
-       correctly classifies this as trading-critical like `flush()`, and
-       eliminates the SQLite-lock race entirely rather than just moving
-       it) vs. `asyncio.to_thread`'s separate pool (matches `#552`/`#585`/
-       `#629`'s exact precedent, leaves the two writers racing on SQLite's
-       own lock, still safe) — contingent on checking `tick_executor`'s
-       actual pool capacity first, no knob change without measuring.
-  - **Told to checkpoint (commit+push, PR comment even if incomplete) and
-    go idle for the pause** — do not resume `#634` investigation, do not
-    start new work.
+       **Checkpointed as draft PR #637** (`fix/605-settlement-edge-
+       resolve-window-async`, commit `09bec13`): routed through
+       `tick_executor` (found existing precedent in
+       `settlement_resolver.py`, pool confirmed `max_workers=2`) — c4
+       self-corrected an overclaim here: sharing the pool does NOT
+       mutually-serialize the two writers, it bounds them to 2 concurrent;
+       the real fix mechanism is "off the loop + bounded," not mutual
+       exclusion — await-chain verified, TDD done, 77 tests passing.
+       **Not done**: review cycle (self/adversarial/consolidation) and CI
+       confirmation explicitly not started — do not treat as merge-ready.
+  - Both checkpoints independently verified by c4 itself (not just
+    trusted from the dispatched subagents' self-reports). `#634`
+    stayed filed-and-untouched as instructed. **c4 confirmed idle,
+    nothing running underneath it, standing by for the pause-end ping.**
 - **`ea`** — `#627`/`#586` done, merged, live (`3db93d2`). Full
   `#585`→`#530`→`#586`→`#629` chain entirely closed. Standing watch stood
   down for the pause.
