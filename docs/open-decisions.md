@@ -22,7 +22,6 @@ its issue closes.
 
 - `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 strategy-economics remediation) is docs-only, explicitly self-gated: "not approved for execution... explicit human review... not a Claude-side call" · sitting untouched 9+ days, surfaced by tonight's 2026-09-06 docs/plans audit · decide execute-or-park explicitly (silent dormancy isn't a decision) · you · 2026-09-06
 
-- `candidate_log.db` **VACUUM after the #532 purge**: 31,429,358 rows were deleted 2026-09-06, but the file stays ~6.4GB with **97.2% of pages now on the freelist** — roughly 6.2GB reclaimable, currently just reusable free space rather than returned disk. `0d` deliberately did not run it, matching #578's precedent: VACUUM rewrites the entire file and is a materially higher-blast-radius operation than the purge was, on a live DB the trading loop writes to. · decide reclaim-vs-leave (and if reclaim, whether it waits for a quiet window / a fresh backup first) · you · 2026-09-06
 
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
