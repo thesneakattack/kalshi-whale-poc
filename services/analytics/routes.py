@@ -49,34 +49,18 @@ _POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/
 _population_gates_cache: dict = {"cached_at": None, "value": None}
 
 # population_gates_banded (issue #616 D1, docs/superpowers/specs/2026-08-26-
-# economic-strategy-remediation-design.md) - a SEPARATE cache entry and TTL
-# from population_gates above, not folded into the same _POPULATION_GATES_
-# CACHE_TTL_SEC/_population_gates_cache pair. Measured live (2026-09-06, PR
-# body has the full numbers) against a bench/copy_dbs.py backup-API copy of
-# the real, then-31.8M-row rejection_events table: the unbanded
-# _POPULATION_GATE_SQL cost 34.96s in that run (up from the 18.2-22.5s
-# candidate_log.py's own docstring measured against 28.7M rows - same
-# unbounded-growth trend issue #532 already names) and the new banded query
-# cost 66.8-71.7s in the SAME run, ~2x - EXPLAIN QUERY PLAN confirms it
-# still drives the same `SCAN rejection_events USING INDEX
-# idx_rejection_events_gate` the unbanded query uses (no new unindexed scan,
-# satisfying issue #616's decision record's explicit constraint), the extra
-# cost is a bigger per-row CASE evaluation plus a second GROUP BY dimension
-# (`USE TEMP B-TREE FOR GROUP BY`) over the same scanned range.
-# _POPULATION_GATES_CACHE_TTL_SEC's own 30s would mean almost every poll
-# misses this cache and pays the full ~70s cost anyway - worse than no cache
-# (still off the event loop via aiosqlite, but every miss serializes behind
-# _aio_db's one worker thread for this file, queuing any other request
-# against candidate_log.db behind it). 300s keeps this diagnostic
-# reasonably fresh - it is a total-sample gate like the unbanded one
-# (nothing here is timelier than what it extends) - while keeping the ~70s
-# worst case rare rather than routine. Deliberately NOT changing
-# _POPULATION_GATES_CACHE_TTL_SEC itself (CLAUDE.md's data-plane HARD RULE:
-# don't retune an existing dial "because it should help" without its own
-# measured bottleneck) - this is a new dial for a new query, not a retune
-# of the old one.
-_POPULATION_GATES_BANDED_CACHE_TTL_SEC = 300
-_population_gates_banded_cache: dict = {"cached_at": None, "value": None}
+# economic-strategy-remediation-design.md) does NOT get its own cache dict
+# here - it shares services.candidate_log.population_gate_summary_banded_
+# cached_async()'s cache instead (see that function's own module-level
+# comment in services/candidate_log.py for the full measured-cost
+# reasoning and its own, separate, longer TTL). Kept there rather than
+# here for two checked reasons: services/diagnostics/diagnostics.py's
+# check_gate_cost_bands needs the identical cached value so a GET
+# /api/quality/summary poll and a GET /api/candidate-log/summary poll never
+# both pay this query's real ~70s cost inside the same TTL window; and
+# diagnostics.diagnostics cannot import this routes module to reach a cache
+# kept here without a real import cycle (this module already imports
+# services.app_state, which imports services.diagnostics.diagnostics).
 
 
 class DeclineSuggestionBody(BaseModel):
@@ -193,9 +177,24 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         # but it no longer competes with trade decisions.
         _population_gates_cache["cached_at"] = time.time()
         _population_gates_cache["value"] = population_gates
+    # population_gates_banded (issue #616 D1) - the banded extension of
+    # population_gates above, grouped additionally by unit_cost_band (see
+    # docs/superpowers/research/2026-08-26-economic-gate-marginal-
+    # contribution.md's E4 analysis for what this surfaces: a gate's
+    # aggregate hypothetical_win_rate can hide a negative-EV band
+    # underneath it). Deliberately calls the CACHED wrapper, not
+    # population_gate_summary_banded_async() directly - see that wrapper's
+    # own module-level comment in services/candidate_log.py for the full
+    # measured-cost reasoning (~2x the unbanded query) and why its cache is
+    # a separate dict/TTL from _population_gates_cache above, not folded
+    # into it.
+    population_gates_banded = await candidate_log.population_gate_summary_banded_cached_async(
+        min_samples=min_population_samples
+    )
     return {
         "gates": candidate_log.gate_summary(),
         "population_gates": population_gates,
+        "population_gates_banded": population_gates_banded,
     }
 
 

@@ -15,8 +15,17 @@ import asyncio
 
 import pytest
 
+from services import candidate_log
 from services import tick_executor
 from services.analytics import routes as analytics_routes
+
+
+async def _noop_async(min_samples):
+    """Stub for candidate_log.population_gate_summary_async, for tests
+    below that only care about the BANDED field's cache behavior and would
+    otherwise reach the real DB_PATH (never monkeypatched in this file) via
+    the unbanded call each get_candidate_log_summary() call also makes."""
+    return [{"stub": "pop"}]
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +35,19 @@ def _reset_population_gates_cache():
     summary. Without this reset, one test's cached (mocked) population_gates
     result could leak into the next test that calls this route within the
     30s TTL, since _population_gates_cache is a plain module attribute that
-    persists across test functions in the same pytest process."""
+    persists across test functions in the same pytest process.
+
+    Also resets services.candidate_log._population_gates_banded_cache
+    (issue #616 D1) - the banded field's cache is a SEPARATE module
+    attribute, deliberately not folded into _population_gates_cache above
+    (see that constant's own comment in services/candidate_log.py), but it
+    is exactly as persistent across test functions and needs the same
+    reset for the same reason."""
     analytics_routes._population_gates_cache = {"cached_at": None, "value": None}
+    candidate_log._population_gates_banded_cache = {"cached_at": None, "value": None}
     yield
     analytics_routes._population_gates_cache = {"cached_at": None, "value": None}
+    candidate_log._population_gates_banded_cache = {"cached_at": None, "value": None}
 
 
 def test_candidate_log_summary_never_routes_population_gates_through_tick_executor(monkeypatch):
@@ -60,6 +78,7 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
     call depth, submits work to this one ThreadPoolExecutor instance."""
     submitted = []
     async_calls = []
+    banded_async_calls = []
     original_submit = tick_executor._executor.submit
 
     def _spy_submit(fn, *args, **kwargs):
@@ -70,15 +89,28 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
         async_calls.append(min_samples)
         return [{"stub": "pop"}]
 
+    async def _stub_banded_async(bands, min_samples):
+        banded_async_calls.append(min_samples)
+        return [{"stub": "pop_banded"}]
+
     monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _stub_banded_async)
 
     result = asyncio.run(analytics_routes.get_candidate_log_summary())
 
     assert submitted == [], "population_gates must not submit any work to tick_executor's pool any more"
     assert async_calls == [30], "the async aiosqlite path should have been called once, with min_samples"
-    assert result == {"gates": [{"stub": "gates"}], "population_gates": [{"stub": "pop"}]}
+    assert banded_async_calls == [30], (
+        "the banded async aiosqlite path should have been called once, with min_samples, "
+        "same as the unbanded one - never via tick_executor either"
+    )
+    assert result == {
+        "gates": [{"stub": "gates"}],
+        "population_gates": [{"stub": "pop"}],
+        "population_gates_banded": [{"stub": "pop_banded"}],
+    }
 
 
 def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch):
@@ -94,8 +126,12 @@ def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch
         calls.append(1)
         return [{"stub": "pop"}]
 
+    async def _stub_banded_async(bands, min_samples):
+        return [{"stub": "pop_banded"}]
+
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _stub_banded_async)
 
     asyncio.run(analytics_routes.get_candidate_log_summary())
     asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -113,11 +149,16 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
         calls.append(1)
         return [{"stub": "pop"}]
 
+    async def _stub_banded_async(bands, min_samples):
+        return [{"stub": "pop_banded"}]
+
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _stub_banded_async)
 
     fake_now = [1_000_000.0]
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
+    monkeypatch.setattr(analytics_routes.candidate_log.time, "time", lambda: fake_now[0])
 
     asyncio.run(analytics_routes.get_candidate_log_summary())
     fake_now[0] += analytics_routes._POPULATION_GATES_CACHE_TTL_SEC + 1
@@ -152,9 +193,14 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
         fake_now[0] += query_duration_sec  # the query itself takes 20s
         return [{"stub": "pop"}]
 
+    async def _stub_banded_async(bands, min_samples):
+        return [{"stub": "pop_banded"}]
+
     monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _slow_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _stub_banded_async)
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
+    monkeypatch.setattr(analytics_routes.candidate_log.time, "time", lambda: fake_now[0])
 
     # Poll 1 fires at t=0, completes at t=20.
     asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -172,3 +218,155 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
         "a poll landing in the frontend's real [30, 36)s window must hit the cache; "
         "stamping cached_at at request-receipt made every scheduled poll a miss"
     )
+
+
+# --- population_gates_banded's own, DECOUPLED cache (issue #616 D1) -------
+#
+# services.candidate_log.population_gate_summary_banded_cached_async() owns
+# this cache (see its own module-level comment in services/candidate_log.py
+# for the full measured-cost reasoning and why it lives there rather than
+# alongside _population_gates_cache above). These tests exercise it through
+# the route, same as the population_gates tests above, plus one test that
+# proves the two caches' TTLs are genuinely independent of each other -
+# the actual defect this task fixes (the prior WIP commit wired the banded
+# field with no cache of its own at all, meaning every poll paid its full
+# ~2x-unbanded cost).
+
+
+def test_candidate_log_summary_population_gates_banded_is_cached_within_its_own_ttl(monkeypatch):
+    calls = []
+
+    async def _spy_banded_async(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "pop_banded"}]
+
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _noop_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _spy_banded_async)
+
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert len(calls) == 1, "second call within TTL should reuse the cached population_gates_banded result"
+
+
+def test_candidate_log_summary_population_gates_banded_recomputes_after_its_own_ttl_expires(monkeypatch):
+    calls = []
+
+    async def _spy_banded_async(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "pop_banded"}]
+
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _noop_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _spy_banded_async)
+
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr(analytics_routes.candidate_log.time, "time", lambda: fake_now[0])
+
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+    fake_now[0] += candidate_log._POPULATION_GATES_BANDED_CACHE_TTL_SEC + 1
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert len(calls) == 2, "a call after the banded cache's own TTL has elapsed should recompute"
+
+
+def test_candidate_log_summary_population_gates_banded_cache_is_stamped_at_completion_not_request_receipt(monkeypatch):
+    """Same issue #410 lesson as the unbanded field's own version of this
+    test above, reapplied here rather than re-learned: a ~70s worst-case
+    banded query stamped with the request-receipt instant would burn a real
+    fraction of its own 300s TTL before the cache entry was even written."""
+    calls = []
+    fake_now = [1_000_000.0]
+    query_duration_sec = 70.0
+
+    async def _slow_banded_async(bands, min_samples):
+        calls.append(1)
+        fake_now[0] += query_duration_sec
+        return [{"stub": "pop_banded"}]
+
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _noop_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _slow_banded_async)
+    monkeypatch.setattr(analytics_routes.candidate_log.time, "time", lambda: fake_now[0])
+
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+    assert calls == [1]
+    assert candidate_log._population_gates_banded_cache["cached_at"] == 1_000_000.0 + query_duration_sec, (
+        "cached_at must be the completion instant, not the request-receipt instant"
+    )
+
+    # A poll landing 290s after the first FIRED - inside the 300s TTL
+    # measured from completion (70s + 220s = 290s of cache age < 300s).
+    fake_now[0] = 1_000_000.0 + 290.0
+    asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert len(calls) == 1, "a poll inside the completion-stamped TTL window must hit the cache"
+
+
+def test_candidate_log_summary_population_gates_and_banded_caches_have_independent_ttls(monkeypatch):
+    """The actual decoupling proof this task exists to establish: population_
+    gates' 30s cache and population_gates_banded's 300s cache expire
+    independently of each other, never coupled through a shared dict or a
+    shared TTL. Directly seeds each cache's own `cached_at` (rather than
+    driving both through many real-time-feeling polls) so each direction is
+    isolated and the arithmetic is checkable by inspection:
+
+    Direction A (banded HIT while unbanded MISSES): unbanded's own
+    cached_at is old enough to have crossed ITS 30s TTL; banded's own
+    cached_at is the SAME age but that age is still under ITS 300s TTL.
+    Direction B (the reverse: unbanded HIT while banded MISSES): unbanded's
+    own cached_at is recent (under 30s old); banded's own cached_at is
+    independently old enough to have crossed ITS 300s TTL. This is only
+    possible at all if the two caches are genuinely separate objects with
+    separate TTL constants - a shared cache/TTL could never produce a hit
+    on one field and a miss on the other from the same poll."""
+    assert analytics_routes._POPULATION_GATES_CACHE_TTL_SEC == 30
+    assert candidate_log._POPULATION_GATES_BANDED_CACHE_TTL_SEC == 300
+
+    unbanded_calls = []
+    banded_calls = []
+
+    async def _spy_async(min_samples):
+        unbanded_calls.append(1)
+        return [{"stub": "pop_fresh"}]
+
+    async def _spy_banded_async(bands, min_samples):
+        banded_calls.append(1)
+        return [{"stub": "pop_banded_fresh"}]
+
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_banded_async", _spy_banded_async)
+
+    # Direction A: same cache age (35s) for both - past unbanded's 30s TTL,
+    # short of banded's 300s TTL.
+    fake_now = [1000.0]
+    monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
+    monkeypatch.setattr(analytics_routes.candidate_log.time, "time", lambda: fake_now[0])
+    analytics_routes._population_gates_cache = {"cached_at": 965.0, "value": [{"stub": "pop_stale"}]}
+    candidate_log._population_gates_banded_cache = {"cached_at": 965.0, "value": [{"stub": "pop_banded_cached"}]}
+
+    result = asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert unbanded_calls == [1], "unbanded (35s old, > 30s TTL) must recompute"
+    assert banded_calls == [], "banded (35s old, < 300s TTL) must stay cache-hit"
+    assert result["population_gates"] == [{"stub": "pop_fresh"}]
+    assert result["population_gates_banded"] == [{"stub": "pop_banded_cached"}], (
+        "banded must still return the value seeded in ITS OWN cache, untouched by "
+        "the unbanded field's cache miss in the same request"
+    )
+
+    # Direction B: unbanded's cache is recent (20s old, < 30s TTL); banded's
+    # is independently old (400s, > 300s TTL) - only possible with two
+    # genuinely separate cache dicts/TTLs.
+    fake_now[0] = 2000.0
+    analytics_routes._population_gates_cache = {"cached_at": 1980.0, "value": [{"stub": "pop_still_cached"}]}
+    candidate_log._population_gates_banded_cache = {"cached_at": 1600.0, "value": [{"stub": "pop_banded_stale"}]}
+
+    result = asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert unbanded_calls == [1], "unbanded (20s old, < 30s TTL) must stay cache-hit - no second call"
+    assert banded_calls == [1], "banded (400s old, > 300s TTL) must recompute"
+    assert result["population_gates"] == [{"stub": "pop_still_cached"}]
+    assert result["population_gates_banded"] == [{"stub": "pop_banded_fresh"}]

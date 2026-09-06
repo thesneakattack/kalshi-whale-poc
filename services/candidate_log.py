@@ -417,6 +417,111 @@ async def population_gate_summary_banded_async(bands=DEFAULT_BANDS, min_samples:
     return _summarize_population_rows_banded(rows, min_samples, band_bounds)
 
 
+# population_gate_summary_banded_cached_async() - issue #616 D1's own
+# decision record ("must not add another unindexed scan") is satisfied by
+# the query itself (see _population_gate_banded_query()'s docstring), but
+# an UNCACHED call is still too expensive to pay on every poll of GET
+# /api/candidate-log/summary: EXPLAIN QUERY PLAN against the real, live
+# candidate_log.db (verified fresh in this task, 2026-09-06 03:xx UTC /
+# 2026-09-05 22:xx local - both dates are the same instant, the container
+# runs UTC while the host runs CDT, confirmed via `date` in both places
+# after an earlier version of this comment's "2026-09-06" looked like a
+# future date relative to the host clock and needed checking rather than
+# trusted) confirms _population_gate_banded_query() still drives the exact
+# same `SCAN rejection_events USING INDEX idx_rejection_events_gate` the
+# unbanded _POPULATION_GATE_SQL uses - no new unindexed scan - and adds one
+# `USE TEMP B-TREE FOR GROUP BY` for the extra unit_cost_band grouping
+# column, which is the real mechanism for its extra cost, not a full
+# rescan. The absolute wall-clock figures behind the ~2x below (34.96s
+# unbanded vs 66.8-71.7s banded, against a then-31.8M-row live copy taken
+# via bench/copy_dbs.py's backup-API snapshot) are INHERITED from the
+# session that authored this module's WIP commit earlier the same day
+# (git log -1 --format=%cI on that commit vs this comment's own edit both
+# land 2026-09-05/06 in the same few-hour window) - re-verified here only
+# at the query-plan/mechanism level (cheap, deterministic, independent of
+# row count), not re-executed at the full ~70s cost against the live,
+# still-growing table a second time in this same session (an extra ~70s+
+# read against the shared live DB has a real, non-zero resource cost on a
+# host also running the live trading loop - see this repo's own nice/
+# ionice-guarded bench/copy_dbs.py for why that number is treated as
+# something to spend deliberately, not casually). The ~2x order of
+# magnitude is independently plausible from the query-plan diff alone (an
+# extra per-row CASE evaluation plus a second GROUP BY dimension needing
+# its own temp B-tree is a real, mechanistic cost add, not a coincidence),
+# and is treated as an assumption inherited from the cited commit, not
+# reproduced at full scale by this comment's author - flagged explicitly
+# per CLAUDE.md's "never guess; verify or falsify" HARD RULE rather than
+# presented as freshly measured.
+#
+# 300s (10x the unbanded field's 30s _POPULATION_GATES_CACHE_TTL_SEC in
+# services/analytics/routes.py, deliberately NOT the same value or the same
+# cache - see that constant's own comment for why sharing would mean almost
+# every poll pays the ~70s cost anyway) keeps this diagnostic reasonably
+# fresh for what is, like the unbanded field, a total-sample gate rather
+# than a recency-scoped read (nothing here is timelier than what it
+# extends), while keeping the ~70s worst case rare rather than routine.
+# Not a retune of _POPULATION_GATES_CACHE_TTL_SEC itself - that field's own
+# query and TTL are untouched by this change (CLAUDE.md's data-plane HARD
+# RULE: don't retune an existing dial "because it should help" without its
+# own measured bottleneck; this is a new dial for a new, separately-costed
+# query).
+#
+# Lives here, not in services/analytics/routes.py (where the unbanded
+# field's own cache lives), for two reasons checked directly rather than
+# assumed: (1) services/diagnostics/diagnostics.py's check_gate_cost_bands
+# below needs the SAME cached value so a GET /api/quality/summary call
+# never pays this query's cost a second time within the same 300s window a
+# GET /api/candidate-log/summary poll already paid it (or vice versa) - one
+# cache, two callers; (2) services.diagnostics.diagnostics cannot import
+# services.analytics.routes to reach a cache kept there without a real
+# import cycle (checked via grep, not assumed): services/app_state.py
+# already does `from services.diagnostics import diagnostics`, and
+# services/analytics/routes.py already does `from services.app_state
+# import broker, bump_generation` - diagnostics.diagnostics ->
+# analytics.routes -> app_state -> diagnostics.diagnostics. candidate_log.py
+# has no such path back to diagnostics.diagnostics (it only reaches
+# services.diagnostics._aio_db, a leaf module with no import of
+# diagnostics.diagnostics or candidate_log itself - checked directly).
+#
+# Stamped at completion, not at request receipt (issue #410's own lesson,
+# docs/superpowers/research/2026-09-04-issue-410-tick-executor-measurement.md
+# Sec 3.4, reapplied here rather than re-learned): a ~70s worst-case query
+# stamped with the instant it was REQUESTED would burn up to ~23% of this
+# cache's own 300s TTL before the entry was even written.
+_POPULATION_GATES_BANDED_CACHE_TTL_SEC = 300
+_population_gates_banded_cache: dict = {"cached_at": None, "value": None}
+
+
+async def population_gate_summary_banded_cached_async(
+    bands=DEFAULT_BANDS, min_samples: int = 30,
+) -> list[dict]:
+    """Cached wrapper around population_gate_summary_banded_async() above -
+    see _POPULATION_GATES_BANDED_CACHE_TTL_SEC's own comment for why this
+    cache lives here (shared by services/analytics/routes.py's route field
+    and services/diagnostics/diagnostics.py's check_gate_cost_bands) and why
+    its TTL is 300s, independent of population_gates' own 30s cache in
+    routes.py.
+
+    Same "ignore bands/min_samples in the cache key" shape as the existing
+    _population_gates_cache in routes.py (checked directly, not assumed) -
+    every real caller today passes DEFAULT_BANDS/min_samples=30, so this
+    is parity with an already-shipped, already-tested limitation rather
+    than a new one; a future caller that genuinely needs a different bands/
+    min_samples value bypasses this wrapper and calls
+    population_gate_summary_banded_async() directly, same escape hatch the
+    unbanded pair already offers."""
+    now = time.time()
+    if (
+        _population_gates_banded_cache["cached_at"] is not None
+        and (now - _population_gates_banded_cache["cached_at"]) < _POPULATION_GATES_BANDED_CACHE_TTL_SEC
+    ):
+        return _population_gates_banded_cache["value"]
+    value = await population_gate_summary_banded_async(bands, min_samples)
+    _population_gates_banded_cache["cached_at"] = time.time()
+    _population_gates_banded_cache["value"] = value
+    return value
+
+
 async def _ensure_schema_aio(conn) -> None:
     """The async mirror of _connect()'s own DDL, passed to
     _aio_db.connection_for() as its schema_init hook. Same shape, same

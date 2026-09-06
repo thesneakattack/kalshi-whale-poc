@@ -23,6 +23,13 @@ def _redirect_db(tmp_path, monkeypatch):
     monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
     monkeypatch.setattr(cw, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
     monkeypatch.setattr(cw, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
+    # population_gate_summary_banded_cached_async's cache (issue #616 D1) is
+    # a plain module attribute, same cross-test-leak shape as every other
+    # module-global this fixture already resets above - without this, a
+    # cached (empty, from a torn-down tmp_path DB) result from one test
+    # could leak into the next test's own assertions within the same 300s
+    # TTL, since every test in one pytest run happens within that window.
+    monkeypatch.setattr(cl, "_population_gates_banded_cache", {"cached_at": None, "value": None})
 
 
 def test_record_rejection_creates_unresolved_row():
@@ -1101,6 +1108,93 @@ def test_population_gate_summary_banded_async_self_heals_a_missing_schema(tmp_pa
     fresh.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cl, "DB_PATH", fresh)
     assert asyncio.run(cl.population_gate_summary_banded_async(min_samples=0)) == []
+
+
+# --- population_gate_summary_banded_cached_async's own cache -------------
+#
+# Module-owned (not services/analytics/routes.py, where the UNBANDED
+# field's own cache lives) so services/diagnostics/diagnostics.py's
+# check_gate_cost_bands can share it - see this function's own module-level
+# comment for the full reasoning and the measured ~2x cost behind the 300s
+# TTL. These tests exercise the cache mechanism directly against the raw
+# uncached function, same shape as tests/test_analytics_routes.py's own
+# population_gates cache tests (which exercise the UNBANDED field's cache,
+# one layer up, through the route).
+
+
+def test_population_gate_summary_banded_cached_async_hits_cache_within_ttl(monkeypatch):
+    calls = []
+
+    async def _spy(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+
+    assert len(calls) == 1, "second call within TTL should reuse the cached result"
+
+
+def test_population_gate_summary_banded_cached_async_recomputes_after_ttl_expires(monkeypatch):
+    calls = []
+
+    async def _spy(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr(cl.time, "time", lambda: fake_now[0])
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    fake_now[0] += cl._POPULATION_GATES_BANDED_CACHE_TTL_SEC + 1
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+
+    assert len(calls) == 2, "a call after the TTL has elapsed should recompute, not reuse the stale cache"
+
+
+def test_population_gate_summary_banded_cached_async_stamps_cache_at_completion_not_request_receipt(monkeypatch):
+    """Same issue #410 lesson services/analytics/routes.py's own population_
+    gates cache already applies, reapplied here rather than re-learned: a
+    query stamped with the request-receipt instant burns cache lifetime it
+    never actually had - worse here in relative terms once the query
+    approaches its measured ~70s worst case against this cache's own 300s
+    TTL (up to ~23%) than it was for the unbanded field's 30s TTL."""
+    fake_now = [1_000_000.0]
+    query_duration_sec = 70.0
+
+    async def _slow(bands, min_samples):
+        fake_now[0] += query_duration_sec
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _slow)
+    monkeypatch.setattr(cl.time, "time", lambda: fake_now[0])
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    assert cl._population_gates_banded_cache["cached_at"] == 1_000_000.0 + query_duration_sec, (
+        "cached_at must be the completion instant, not the request-receipt instant"
+    )
+
+
+def test_population_gate_summary_banded_cached_async_passes_through_bands_and_min_samples(monkeypatch):
+    """The cache wrapper must not silently drop the caller's bands/
+    min_samples on a cache MISS - only the cache KEY ignores them (see the
+    wrapper's own docstring for why that parity with the unbanded field's
+    cache is intentional, not an oversight)."""
+    received = []
+
+    async def _spy(bands, min_samples):
+        received.append((bands, min_samples))
+        return []
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+    custom_bands = [(0.0, 1.01)]
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async(bands=custom_bands, min_samples=7))
+
+    assert received == [(custom_bands, 7)]
 
 
 def test_default_bands_are_the_six_bands_the_e4_prototype_actually_used():
