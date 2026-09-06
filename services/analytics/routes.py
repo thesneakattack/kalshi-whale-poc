@@ -124,9 +124,25 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # climbing - that is issue #532 (rejection_events' unbounded growth),
     # untouched here and the actual root cause.
     #
-    # gate_summary() reads the much smaller (62K-row), deduped
-    # rejected_candidates table - not implicated by that trace, so left
-    # inline rather than offloaded speculatively.
+    # gate_summary() USED to read the much smaller (62K-row), deduped
+    # rejected_candidates table and was left inline here on the belief it
+    # wasn't implicated by the py-spy trace above - corrected 2026-09-06
+    # (issue #605): rejected_candidates has grown to 258,526 rows (~4.2x in
+    # 3 days, see docs/event-loop-blocking-routes-census-2026-09-03.md's own
+    # dated correction), and a live stack capture caught the event loop
+    # genuinely blocked inside gate_summary()'s old Python GROUP BY loop.
+    # Fixed the same way issue #410 fixed population_gate_summary() above -
+    # the GROUP BY now runs in SQL (services/candidate_log.py's
+    # _GATE_SUMMARY_SQL), and this route calls the aiosqlite-native
+    # gate_summary_async() sibling instead of the blocking sync gate_summary()
+    # (which is kept, unchanged in signature, for its several other sync
+    # callers - main.py's trading_loop, services/advisory/routes.py,
+    # services/analytics/market_analyst_orchestrator.py,
+    # services/research/research.py - none of which this fix touches).
+    # No TTL cache added here unlike population_gates: gate_summary_async()
+    # measured 0.28-0.29s live against the real 258,526-row table (vs.
+    # population_gate_summary_async()'s 15-22s), cheap enough to compute on
+    # every poll without one.
     #
     # 30s TTL cache on top of the offload above (2026-09-03, Task 6b of
     # docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) - moving
@@ -164,7 +180,7 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         _population_gates_cache["cached_at"] = time.time()
         _population_gates_cache["value"] = population_gates
     return {
-        "gates": candidate_log.gate_summary(),
+        "gates": await candidate_log.gate_summary_async(),
         "population_gates": population_gates,
     }
 

@@ -19,6 +19,15 @@ from services import tick_executor
 from services.analytics import routes as analytics_routes
 
 
+async def _stub_gate_summary_async():
+    """Shared async stand-in for candidate_log.gate_summary_async(), used
+    everywhere a test needs the "gates" half of the response populated
+    cheaply without touching a real DB - same role the old sync
+    `lambda: [{"stub": "gates"}]` played before issue #605 moved this
+    route off the blocking sync gate_summary()."""
+    return [{"stub": "gates"}]
+
+
 @pytest.fixture(autouse=True)
 def _reset_population_gates_cache():
     """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
@@ -71,7 +80,7 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
         return [{"stub": "pop"}]
 
     monkeypatch.setattr(tick_executor._executor, "submit", _spy_submit)
-    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary_async", _stub_gate_summary_async)
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_async)
 
     result = asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -94,7 +103,7 @@ def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch
         calls.append(1)
         return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary_async", _stub_gate_summary_async)
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     asyncio.run(analytics_routes.get_candidate_log_summary())
@@ -113,7 +122,7 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
         calls.append(1)
         return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary_async", _stub_gate_summary_async)
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _spy_async)
 
     fake_now = [1_000_000.0]
@@ -152,7 +161,7 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
         fake_now[0] += query_duration_sec  # the query itself takes 20s
         return [{"stub": "pop"}]
 
-    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", lambda: [{"stub": "gates"}])
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary_async", _stub_gate_summary_async)
     monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _slow_async)
     monkeypatch.setattr(analytics_routes.time, "time", lambda: fake_now[0])
 
@@ -172,3 +181,43 @@ def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receip
         "a poll landing in the frontend's real [30, 36)s window must hit the cache; "
         "stamping cached_at at request-receipt made every scheduled poll a miss"
     )
+
+
+def test_candidate_log_summary_never_calls_the_blocking_sync_gate_summary(monkeypatch):
+    """Issue #605: gate_summary() (services/candidate_log.py) used to be
+    called directly and synchronously from this route - a bare unindexed
+    SELECT over rejected_candidates (258,526 rows measured live 2026-09-06,
+    ~4.2x growth in 3 days since this route's own comment last measured it
+    at 62K and left it inline deliberately) followed by a Python GROUP BY
+    loop, with no offload of any kind. A live stack capture caught the
+    event loop genuinely blocked inside that loop during a real,
+    naturally-recurring stall.
+
+    Fixed the same way issue #410 fixed population_gate_summary() above:
+    gate_summary_async() is the aiosqlite-native sibling this route must
+    call instead. Guards at the call itself (monkeypatching the sync
+    gate_summary to raise) rather than only asserting the new function's
+    presence - a future refactor that silently reintroduces the direct
+    sync call fails here instead of quietly reblocking the event loop."""
+    def _blocking_sync_gate_summary():
+        raise AssertionError(
+            "route must not call the blocking sync gate_summary() - use gate_summary_async()"
+        )
+
+    async_calls = []
+
+    async def _spy_gate_async():
+        async_calls.append(1)
+        return [{"stub": "gates"}]
+
+    async def _stub_population_async(min_samples):
+        return [{"stub": "pop"}]
+
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary", _blocking_sync_gate_summary)
+    monkeypatch.setattr(analytics_routes.candidate_log, "gate_summary_async", _spy_gate_async)
+    monkeypatch.setattr(analytics_routes.candidate_log, "population_gate_summary_async", _stub_population_async)
+
+    result = asyncio.run(analytics_routes.get_candidate_log_summary())
+
+    assert async_calls == [1], "gate_summary_async() should have been awaited exactly once"
+    assert result == {"gates": [{"stub": "gates"}], "population_gates": [{"stub": "pop"}]}
