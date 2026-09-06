@@ -274,6 +274,38 @@ extend to `data/*.db` files, safety gates, or anything CLAUDE.md's
 "Safety invariants" section protects — those protections are a separate
 axis and still stand.
 
+**0b. Prefer pre-built solutions over hand-rolling** (David, 2026-09-06,
+reinforcing CLAUDE.md's existing "prefer proven tooling over handspun"
+rule specifically for this initiative). Before building any new custom
+mechanism, check whether an existing tool already does the job:
+- **GitHub Projects (v2)** — native custom fields + board/grouped views
+  could represent lanes directly (group-by a `Lane` field) without a
+  bespoke tracker; `tools/kanban_sync/project_status.py` already syncs a
+  Project Status field, so this may be an extension, not a new build.
+- **GitHub Milestones/Labels** — `tools/kanban_sync/labels.py` already
+  defines a `phase:*` label vocabulary; a parallel `lane:*` label set is
+  cheap and immediately queryable (`gh issue list --label lane:kalshi-
+  ingestion`) with zero new infra.
+- **`tools/kanban_sync` itself** — the existing plan/issue/worktree sync
+  tool is the natural home for lane-awareness, not a parallel system;
+  extend `sources_plan.py`/`sources_worktree.py` rather than duplicating
+  their job.
+- **Mermaid** — Artifacts and GitHub markdown both render Mermaid
+  natively; the required architecture diagram (step 7) needs no custom
+  rendering.
+- **GitHub Projects' own board/roadmap view** may already answer "let me
+  see what's in each lane right now" better than a bespoke dashboard —
+  weigh this against a custom Artifact before building one; do both only
+  if a live interactive view genuinely earns its keep over the free
+  native option.
+- For branch-age/staleness triage: check if Woodpecker (already the CI
+  system here) or a simple scheduled `gh` query covers it before writing
+  new automation.
+This doesn't forbid custom work where nothing pre-built fits — it means
+the design pass and Fable's adversarial review should each explicitly
+name what was considered and why a custom build won or lost, not skip
+straight to hand-rolling.
+
 **1. Design pass (coordinator does this directly, not delegated):** draft
 the lane taxonomy + a naming hierarchy for the levels *within* a lane
 (currently informally "lane → track → plan/branch → task", but the
