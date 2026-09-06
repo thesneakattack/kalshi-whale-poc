@@ -40,11 +40,40 @@ file was touched.
   RULE-GAP G1):
   - `done` — every task's deliverable verifiably present in source / merged, or
     explicitly closed as infeasible.
-  - `active` — partly shipped **and** carries an open tracking issue or a live
-    line in `docs/open-decisions.md`.
-  - `stalled` — partly shipped or written-only, no open tracker, no movement.
+  - `active` — partly shipped **and genuine recent movement** on the
+    initiative — a merge, a commit, a substantive tracker update — within
+    roughly the last 2 weeks. **Corrected 2026-09-06**, after `ea`'s
+    adversarial review of the sibling specs/research table found the
+    original test ("carries an open tracking issue," full stop) makes
+    `active` nearly meaningless: almost anything ever proposed has *some*
+    open issue somewhere, regardless of whether anyone has touched it in
+    months. The ~2-week window is a stated, considered, revisable
+    judgment call (modeled loosely on the design's own 7-day branch-
+    staleness convention, roughly doubled for plan-level cadence), not
+    derived precision. The movement signal is about the *initiative*, not
+    narrowly the cited issue's own comment thread — those can diverge (a
+    quiet issue next to a recently-merged PR is still `active`).
+    **Re-verified against this corrected definition, 2026-09-06:** all 4
+    rows below hold — `realtime-data-plane-remediation` (PR #418 merged
+    2026-09-01, 5 days before this check, despite issue #134 itself being
+    10 days stale — the PR is the real signal), `economic-strategy-
+    remediation` (issue #616 updated 2026-09-05, 1 day), `whale-
+    confidence-scoring-remediation-implementation` (issue #320 updated
+    2026-09-01, 5 days, with described live follow-up work in
+    `open-decisions.md`), `tier0-live-incident-remediation` (issue #448
+    updated 2026-09-06, same day). No row changed status under the
+    corrected rule.
+  - `stalled` — some real artifact exists (partial code, or a doc
+    consumed by one but not all of the next pipeline stage) but no
+    genuine recent movement, whether or not a tracker is technically
+    still open.
   - `never-started` — zero deliverables exist in the tree.
   - `declined` — a recorded decision not to do it.
+  - `superseded` — decline-shaped but not a decline decision: a
+    *different* piece of work overtook this one (the goal continues
+    elsewhere; this specific document/plan won't run as written). Not to
+    be confused with `done` (this document's own proposal shipped
+    successfully — no other work replaced it, it simply completed).
   - Companion rows carry the status of **the review artifact itself** (all are
     committed, with a recorded verdict), not of their parent plan. Counts are
     reported separately below so the two never blend.
