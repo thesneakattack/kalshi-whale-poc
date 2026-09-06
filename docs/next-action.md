@@ -104,8 +104,18 @@ confirmed this is fine as-is.
     stayed filed-and-untouched as instructed. **c4 confirmed idle,
     nothing running underneath it, standing by for the pause-end ping.**
 - **`ea`** — `#627`/`#586` done, merged, live (`3db93d2`). Full
-  `#585`→`#530`→`#586`→`#629` chain entirely closed. Standing watch stood
-  down for the pause.
+  `#585`→`#530`→`#586`→`#629` chain entirely closed. **Real live outage
+  caught and fixed on resume from the pause (2026-09-06):** app fully
+  unresponsive (zombied uvicorn worker, no successor spawned; misleading
+  docker healthcheck said OK) — verified real via the nginx-proxy path,
+  not loopback. Root cause: leftover `#586`-investigation repro scripts
+  left running unattended in the shared fastapi container (3rd
+  occurrence of this failure class — memory
+  `fastapi-container-high-cpu-observed-2026-09-03` broadened
+  accordingly, it's not just pytest loops). Fixed via `docker restart` of
+  just that container, fully verified recovered (both paths 200, defect
+  signals clean, safety state unaffected throughout). Back on standing
+  watch.
 
 ---
 
