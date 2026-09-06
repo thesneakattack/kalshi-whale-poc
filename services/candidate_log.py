@@ -778,6 +778,49 @@ def resolve_from_market_results(market_results: dict) -> int:
     return resolved_count
 
 
+# One definition, executed by both gate_summary() and gate_summary_async()
+# below - same reasoning as _POPULATION_GATE_SQL (issue #410): a shared SQL
+# string means the sync and async paths cannot drift into answering the
+# same question differently.
+#
+# Issue #605: this used to be a bare `SELECT strategy, gate_name, side,
+# result, resolved, unit_cost FROM rejected_candidates` (no WHERE, no
+# LIMIT - a full SCAN, confirmed live via EXPLAIN QUERY PLAN) fetched
+# whole into Python and grouped by a hand-rolled dict loop. That was
+# survivable when the census doc (docs/event-loop-blocking-routes-census-
+# 2026-09-03.md) measured this table at ~62K rows and left it inline
+# deliberately - it has since grown to 258,526 rows (measured live
+# 2026-09-06, ~4.2x in 3 days; a live stack capture caught the event loop
+# genuinely blocked inside the old Python loop at this module's own
+# candidate_log.py:456), and gate_summary() was called directly and
+# synchronously from GET /api/candidate-log/summary with no offload of any
+# kind - the census entry is corrected in the same commit as this fix.
+#
+# Moving the GROUP BY into SQL (measured live against the real 258,526-row
+# table, 3 runs each): 0.53-0.56s for the old Python-loop shape vs.
+# 0.28-0.29s for this query, ~48% cheaper, byte-identical output (verified
+# by direct comparison, not assumed from the SQL alone). rejected_candidates
+# has no sample_weight column - issue #532's Bernoulli sampling only ever
+# applies to rejection_events (this module's own "SAMPLING" docstring
+# section is explicit the deduped table is never sampled, for any gate) -
+# so rejected_count/resolved_count are a plain COUNT(*)/conditional
+# COUNT(*) here, unlike _POPULATION_GATE_SQL's SUM(sample_weight).
+_GATE_SUMMARY_SQL = """
+    SELECT strategy, gate_name,
+           COUNT(*) AS rejected_count,
+           SUM(CASE WHEN resolved THEN 1 ELSE 0 END) AS resolved_count,
+           SUM(CASE WHEN resolved AND result = 'yes' THEN 1 ELSE 0 END) AS yes_count,
+           SUM(CASE WHEN resolved AND result = 'no' THEN 1 ELSE 0 END) AS no_count,
+           SUM(CASE WHEN resolved AND side IN ('yes', 'no') THEN 1 ELSE 0 END) AS sided_total,
+           SUM(CASE WHEN resolved AND side IN ('yes', 'no') AND result = side
+               THEN 1 ELSE 0 END) AS sided_wins,
+           SUM(unit_cost) AS unit_cost_total,
+           COUNT(unit_cost) AS unit_cost_n
+    FROM rejected_candidates
+    GROUP BY strategy, gate_name
+"""
+
+
 def gate_summary() -> list[dict]:
     """One row per (strategy, gate_name) - the direct answer to "what would
     have happened to the candidates this gate rejected." hypothetical_win_rate
@@ -793,42 +836,72 @@ def gate_summary() -> list[dict]:
     Flushes capture_writer's rejected_candidates buffer first (P3 Task 17,
     2026-08-27) - record_rejection() no longer writes this table
     synchronously, so without this a caller could read a stale/incomplete
-    view for up to ~1s after the most recent rejection."""
+    view for up to ~1s after the most recent rejection.
+
+    Aggregates via SQL GROUP BY, not a per-row Python loop (issue #605,
+    2026-09-06 - see _GATE_SUMMARY_SQL's own comment for the measurement).
+    Kept as the sync entry point deliberately: main.py's trading_loop,
+    services/advisory/routes.py, services/analytics/market_analyst_
+    orchestrator.py and services/research/research.py all call this
+    directly from a mix of sync and async contexts that this fix does not
+    change - see gate_summary_async() below for the one caller
+    (GET /api/candidate-log/summary) that needed the event loop kept
+    free instead."""
     capture_writer.flush_now("rejected_candidates")
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT strategy, gate_name, side, result, resolved, unit_cost FROM rejected_candidates",
-        ).fetchall()
-    grouped: dict[tuple, dict] = {}
-    for strategy, gate_name, side, result, resolved, unit_cost in rows:
-        key = (strategy, gate_name)
-        g = grouped.setdefault(key, {
-            "strategy": strategy, "gate_name": gate_name,
-            "rejected_count": 0, "resolved_count": 0,
-            "yes_count": 0, "no_count": 0,
-            "_sided_total": 0, "_sided_wins": 0,
-            "_unit_cost_total": 0.0, "_unit_cost_n": 0,
-        })
-        g["rejected_count"] += 1
-        if unit_cost is not None:
-            g["_unit_cost_total"] += unit_cost
-            g["_unit_cost_n"] += 1
-        if resolved:
-            g["resolved_count"] += 1
-            if result == "yes":
-                g["yes_count"] += 1
-            elif result == "no":
-                g["no_count"] += 1
-            if side in ("yes", "no"):
-                g["_sided_total"] += 1
-                if result == side:
-                    g["_sided_wins"] += 1
+        rows = conn.execute(_GATE_SUMMARY_SQL).fetchall()
+    return _summarize_gate_rows(rows)
+
+
+async def gate_summary_async() -> list[dict]:
+    """Async sibling of gate_summary() above, for the one caller that is
+    already on the event loop and cannot afford to block it: services/
+    analytics/routes.py's GET /api/candidate-log/summary (issue #605). Same
+    query, same output, same contract - only the transport differs, exactly
+    mirroring population_gate_summary_async()'s own relationship to
+    population_gate_summary() (issue #410).
+
+    aiosqlite rather than tick_executor for the same reason issue #410
+    settled on it: this function is entirely SQL-bound once the GROUP BY
+    lives in SQL (0.28-0.29s of SQL, negligible Python - the query returns
+    at most a few dozen grouped rows, never the underlying row count), so a
+    worker thread would have nothing to usefully own - it would only move
+    where the cost lands, not reduce it.
+
+    The sync version above is NOT deprecated by this one and must not be
+    deleted - every other caller of gate_summary() keeps calling the sync
+    version unchanged, several from contexts (main.py's trading_loop,
+    services/research/research.py's already-to_thread-offloaded
+    run_and_store()) where awaiting anything is not available or not
+    warranted at today's measured cost.
+
+    capture_writer.flush_now() goes through asyncio.to_thread rather than
+    running inline, same reasoning as population_gate_summary_async's own
+    comment: it is a blocking SQLite WRITE, and a write on a contended file
+    is never safe to do on the event loop directly."""
+    await asyncio.to_thread(capture_writer.flush_now, "rejected_candidates")
+    conn = await _aio_db.connection_for(DB_PATH, schema_init=_ensure_schema_aio)
+    rows = await conn.execute_fetchall(_GATE_SUMMARY_SQL)
+    return _summarize_gate_rows(rows)
+
+
+def _summarize_gate_rows(rows) -> list[dict]:
+    """Pure-Python half of gate_summary(), shared verbatim by the sync and
+    async paths so the two can never drift into reporting different numbers
+    from the same rows - same reasoning as _summarize_population_rows().
+    Costs near-zero in practice: the SQL already reduced N rows to one row
+    per (strategy, gate_name) before anything reaches here.
+
+    Takes plain sqlite3 tuples OR aiosqlite.Row objects - both are
+    sequences, so the unpacking below is identical for either."""
     out = []
-    for g in grouped.values():
-        sided_total = g.pop("_sided_total")
-        sided_wins = g.pop("_sided_wins")
-        unit_cost_n = g.pop("_unit_cost_n")
-        unit_cost_total = g.pop("_unit_cost_total")
+    for strategy, gate_name, rejected_count, resolved_count, yes_count, no_count, \
+            sided_total, sided_wins, unit_cost_total, unit_cost_n in rows:
+        g = {
+            "strategy": strategy, "gate_name": gate_name,
+            "rejected_count": rejected_count, "resolved_count": resolved_count,
+            "yes_count": yes_count, "no_count": no_count,
+        }
         g["hypothetical_win_rate"] = round(100 * sided_wins / sided_total, 1) if sided_total > 0 else None
         g["hypothetical_win_rate_n"] = sided_total
         g["avg_unit_cost"] = round(unit_cost_total / unit_cost_n, 3) if unit_cost_n > 0 else None

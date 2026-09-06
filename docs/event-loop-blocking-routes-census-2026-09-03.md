@@ -95,6 +95,26 @@ belongs in issue #410's track, not this one:**
   been measured yet" — it now has been, by this document, with a real number). Cross-referencing
   #410 rather than treating this as a new finding under #530's undispatched-call framing.
 
+  **CORRECTED 2026-09-06 (issue #605): the "small (62K-row) table... not an oversight, no fix
+  needed" verdict above is now stale and was wrong for this function specifically.**
+  `rejected_candidates` has grown to **258,526 rows** (measured live, read-only,
+  2026-09-06) — ~4.2x the 62K this paragraph measured 3 days earlier, and the growth did not
+  plateau the way this paragraph's "small table" framing assumed. A live stack capture (issue
+  #605, via the loop_watchdog fix in PR #632) caught the event loop genuinely blocked inside
+  `gate_summary()`'s own Python `GROUP BY` loop at `candidate_log.py:456` during a real,
+  naturally-recurring stall — the exact function this paragraph cleared. Fixed in PR #636 the
+  same way issue #410 fixed `population_gate_summary()` two paragraphs above: the `GROUP BY`
+  now runs in SQL (`services/candidate_log.py`'s `_GATE_SUMMARY_SQL`), and the route calls a new
+  `gate_summary_async()` aiosqlite-native sibling instead of the blocking sync `gate_summary()`.
+  Benchmarked live against the real 258,526-row table before choosing that fix: the old
+  Python-loop shape measured 0.53-0.56s, `asyncio.to_thread`-wrapped-only would have kept that
+  same per-call cost while only moving where it blocks, and the SQL `GROUP BY` measured
+  0.28-0.29s (~48% cheaper) with byte-identical output, verified by direct comparison. This
+  paragraph's original 24.44s/0.59s route-level numbers are unaffected by this correction — they
+  were, and remain, `population_gate_summary()`'s cost, not `gate_summary()`'s; this correction
+  is narrowly about the "not an oversight, no fix needed" verdict this document gave
+  `gate_summary()` itself.
+
 **One table, three separate sightings — not three unrelated findings.** `rejection_events`
 (22.6M rows) is the table behind PR #512's 34.1s `count_range()` finding, this document's own
 24-31s `population_gate_summary()` scan, and (per this session's own earlier Task 3 migration
