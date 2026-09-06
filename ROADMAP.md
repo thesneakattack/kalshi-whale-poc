@@ -246,7 +246,15 @@ which can run in parallel right now.
       today (`kalshi.categories` is a volume/topic filter, not a risk one).
       Before real trading is ever enabled: a real answer on category
       selection is needed — see
-      `docs/prediction-market-strategy-alignment-plan.md` Part 6.
+      `docs/archive-2026-08-27/prediction-market-strategy-alignment-plan.md`
+      Part 6. **Addendum (2026-09-06):** Kalshi's real per-series
+      `additional_prohibitions` field (who's specifically restricted from
+      trading a given contract — league employees, players, people with
+      material non-public information, etc.) is a genuinely different kind
+      of restriction than the multi-state legal dispute this item already
+      tracks, and has never been cross-referenced against it. Confirmed
+      still unconsumed anywhere in the codebase as of 2026-08-27. Source:
+      `docs/archive-2026-08-27/next-steps-2026-08-15.md`.
 - [x] `pip-audit` found 20 known vulnerabilities across 5 pinned deps.
       Shipped 2026-08-23: `fastapi` 0.115.0→0.134.0, `pydantic`→2.13.4,
       `cryptography` 43.0.3→50.0.0, `python-dotenv`→1.2.2, dev-only
@@ -374,7 +382,7 @@ which can run in parallel right now.
       folder** — `paper_broker.py` → `services/position/`,
       `strategy_engine.py` → `services/position_management/`,
       `config_store.py` et al. → `services/config/`, etc. Queued
-      2026-08-22 (`docs/next-session-pickup-2026-08-22.md`) but never
+      2026-08-22 (`docs/archive-2026-08-27/next-session-pickup-2026-08-22.md`) but never
       actually added here until this 2026-08-23 review found the gap —
       still genuinely open, all three still sit flat in `services/` as of
       this check. Deliberately not done in-line with other modularization
@@ -438,7 +446,7 @@ which can run in parallel right now.
       input → hoisted once). The fourth (`market_history.snapshots`'
       unread `spread`/`volume_24h`/`time_to_close_sec` columns) was
       investigated and deliberately left as-is — disclosed forward capture
-      per `docs/advisory-engine-plan.md` §9, not dead-code waste; the real
+      per `docs/archive-2026-08-27/advisory-engine-plan.md` §9, not dead-code waste; the real
       gap is no consumer was ever built for it.
 - [ ] **Use all available *relevant* data before trimming the rest.**
       Direct instruction (2026-08-24, two-phase: read back what's already
@@ -475,11 +483,11 @@ which can run in parallel right now.
       assembly deserve its own module; does server-side rendering change
       anything for the better) not yet answered.
 - [ ] Two deferred next-steps from
-      `docs/todo-2026-08-14-heuristics-audit-and-exit-tuning.md`: a
+      `docs/archive-2026-08-27/todo-2026-08-14-heuristics-audit-and-exit-tuning.md`: a
       time-til-close exit factor, and folding mutually-exclusive-pair order
       flow into sentiment analysis (detection + entry-gating already ship;
       only the sentiment-merge half is deferred).
-- [ ] Wash-trading detection (`docs/platform-deep-scan-findings-2026-08-10.md`
+- [ ] Wash-trading detection (`docs/archive-2026-08-27/platform-deep-scan-findings-2026-08-10.md`
       Finding 5) — the one of 7 cited strategy/risk gaps never built.
 - [ ] Regime-aware **live entry gating** — `services/regime_analytics.py`
       stays advisory-only by design (real plumbing complexity, deliberately
@@ -686,6 +694,48 @@ which can run in parallel right now.
       live, in-the-moment human approval per the plan's own Task 11 text,
       not routine follow-up work. Everything else already touches only
       `tools/`, git, and the filesystem.
+
+- [ ] **Danger Zone frontend UI was never built for the backend that's
+      shipped it since 2026-08-16.** `services/reset_log.py` +
+      `GET /api/reset/preview`/`GET /api/reset/history` +
+      `range_start`/`range_end` on `POST /api/reset` (commit `f4021fd`)
+      support time-range-scoped clearing with a dry-run preview and a real
+      audit trail — the Danger Zone panel in `static/index.html` still
+      only offers an all-or-nothing per-domain checkbox + "Reset Selected"
+      button, no range picker, no preview step, no reset-history display.
+      Confirmed still true 2026-08-27
+      (`docs/archive-2026-08-27/position-management-findings-2026-08-17.md`;
+      also documented in the now-deleted `docs/diagnostic-findings-2026-08-17.md`,
+      see `git log` for that file's content).
+- [ ] **`market_history.volatility()` still uses only the snapshot-delta
+      proxy, never the real candlestick data this app already captures.**
+      `services/market_watch/event_metadata.py` persists real OHLC/price-
+      timeseries payloads for crypto events (shipped in response to
+      `docs/archive-2026-08-27/position-management-findings-2026-08-17.md`'s
+      finding), but nothing derives volatility from them — the snapshot-delta
+      proxy measured to be structurally `0.0` for ~78% of markets (same doc)
+      is still the only input to `strategy.auto_exit_*`'s vol-scaling factor.
+- [ ] **`position_netting.normal_volatility` (currently `0.02`) has never
+      been traced/retuned against the real formula it feeds
+      (`services/position/position_netting.py` line ~268)** — the sibling
+      finding for `auto_exit_normal_volatility` was fixed 2026-08-17 (moved
+      `0.1 → 0.002` against measured data); this config field's own formula
+      was explicitly left untraced at the time ("changing it blind would be
+      guessing. Trace that formula, then re-measure") and never revisited.
+- [ ] Config-driven multi-strategy framework
+      (`docs/archive-2026-08-27/kalshi-whale-provider-and-strategy-porting-plan.md`
+      Part 2) — `signal_sources.py`/`signal_aggregation.py`/`strategy_gates.py`/
+      `configurable_strategy.py`, letting a new strategy be a
+      `custom_strategies.*` config block instead of a bespoke Python
+      module. Confirmed fully unbuilt as of 2026-08-27. Large, speculative
+      (no concrete strategy is currently blocked on it) — low priority,
+      revisit only if a genuine second-strategy need shows up.
+- [ ] Per-category watchlist cap — Sports and Crypto currently share one
+      global `kalshi.watchlist_size`/`top_series_per_category`. Real gap
+      per direct request ("make that highly configurable"), but
+      contingent: only worth building once watchlist growth reproduces
+      the 2026-08-17 blowout again, and `tick_phase_timings` (shipped
+      since) now makes that easy to confirm before investing in the fix.
 
 ## Shipped
 

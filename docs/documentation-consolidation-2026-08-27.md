@@ -1,5 +1,7 @@
 # Documentation consolidation — 2026-08-27
 
+**Executed 2026-09-06 — see PR #TBD.**
+
 One-time investigation, requested directly: consolidate the loose, ad hoc
 `docs/*.md` files that accumulated at the top level of `docs/` — session
 pickups, findings docs, research write-ups, plans — none of which have ever
