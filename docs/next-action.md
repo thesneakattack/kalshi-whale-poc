@@ -1,8 +1,9 @@
 # Next action
 
-**Coordinator:** `autotrade-36`, one continuous session since `1f`. Fleet
-resumed and active as of 2026-09-06 ~14:00. Verify identity by direct
-reply before trusting a name, in either direction.
+**Coordinator:** `autotrade-36`, one continuous session since `1f`.
+**FLEET CHECKPOINTED AND PAUSED (David's call)** — all 4 peers confirmed
+idle with clean worktrees. Verify identity by direct reply before
+trusting a name, in either direction.
 
 ---
 
@@ -70,7 +71,7 @@ after review caught an overstatement.
 
 ---
 
-## Planning lanes — David's initiative — design MERGED, migration mid-step-1
+## Planning lanes — David's initiative — design MERGED, step 1 DONE, step 3 in review
 
 **Design is on `main`** (PR #640, `8f4976a`) — 9 package-bounded lanes,
 Lane > Initiative > Task, `concern:*` labels for cross-cutting
@@ -79,7 +80,7 @@ record in the diff, including both rejections. **Visualization
 deliverable done and published:**
 https://claude.ai/code/artifact/f7e8fdc9-4fbf-4eab-b38e-4b19b601f737
 
-**Migration step 1 (classification tables) — 2 of 3 slices done, 1 in final review:**
+**Migration step 1 (classification tables) — ALL 3 slices done and on `main`:**
 
 - **Issues (147 → lane+concern)** — `49`, **DONE, merged**
   (`docs/superpowers/lanes/step1-issues-classification.md`, PR #643).
@@ -102,18 +103,23 @@ https://claude.ai/code/artifact/f7e8fdc9-4fbf-4eab-b38e-4b19b601f737
   the real successor work `#289`-`#293` is open — the goal is `active`,
   the document is superseded); `economic-strategy-effectiveness-
   investigation` corrected to `active` (`#76` open, E8/E9 never built).
-- **Specs (79) + research (97) → lane+status** — `ea`, **IN FINAL
-  REVIEW**. Self-review done (176/176 structural, 5 evidence claims
-  verified, one leftover-wording fix applied). Independent adversarial
-  review dispatched and running, specifically scoped to: (1) whether the
-  "deliverable" 3-part test holds up (it's the coordinator's own
-  unvalidated reconstruction, not an inherited methodology — no citable
-  source exists for the original inventory beyond a rolled-up count in
-  git history, said plainly rather than oversold), (2) whether 146/176
-  rows landing in `superseded` is correct or too broad against the
-  narrow definition, (3) independent re-derivation of the 9 rows
-  affected by the tightened `stalled`/`never-started` boundary.
-  **Report pending — do not treat this table as final until that lands.**
+- **Specs (79) + research (97) → lane+status** — `ea`, **DONE, merged**
+  (`docs/superpowers/lanes/step1-specs-research-classification.md`, PR
+  #644, `0fc33df`). Went through a full document-level NO-GO→revision
+  cycle (the "deliverable" 3-part test's first application put 146/176
+  rows in `superseded`; only 3 survived the narrow definition on
+  independent recheck — most were actually `done` or `active`, a
+  genuinely large correction, not a rounding error) **plus** a
+  PR-level NO-GO→revision cycle (a real completeness gap: the
+  planning-lanes design docs merged mid-review and needed their own
+  Lane 9 entries — the system had not yet classified itself). Final
+  distribution: 118 done / 43 active / 5 declined / 5 superseded / 4
+  stalled / 1 never-started, plus 1 genuinely lane-UNDECIDED row
+  (`backend-services-modularization-design.md`, a 4-way co-equal split
+  left unresolved rather than forced — a **legitimate, disclosed
+  divergence** from the sibling plans-table row for the same initiative,
+  which forced a clause-(d) answer with a RULE-GAP flag; both treatments
+  are honest, this was not reconciled and doesn't need to be).
 
 **Shared status vocabulary, now stable across all three tables** (took
 three rounds to get right — see Standing lessons):
@@ -122,17 +128,26 @@ three rounds to get right — see Standing lessons):
 (zero artifacts ever produced) / `declined` / `superseded` (decline-
 shaped but not a decline decision — different work overtook it).
 
-**Migration step 3 (fix `kanban_sync`'s Track touchpoints) — assigned to
-`49`, independent of step 1 finishing** (it's about the tool, not the
-classification content). Full touchpoint list is in the merged design's
-§6 step 3 — read it directly, it's more complete than any summary,
-including two real citation errors caught across two review rounds
-(`__main__.py`'s two separate `read_text()` call sites, not one; the
-sync-line SKILL.md citation was wrong — it's `checkpoint/SKILL.md:69-70`,
-not `kanban-board-sync/SKILL.md:69`). Also asked `49` to add the
-`LANES`/`CONCERNS` constants to `labels.py` and create the `lane:*`/
-`concern:hotpath` label *definitions* (pure infrastructure, zero risk —
-not applying labels to any issue yet, that's step 2).
+**Migration step 3 (fix `kanban_sync`'s Track touchpoints) — DONE,
+merging now.** `49` dispatched a full TDD implementation (own worktree,
+self-review + adversarial review + consolidation as PR comments), ran
+its own separate PR-stage verification on top (live-tested
+`list_plan_candidates`: 38 candidates, 63−38=25 matching the plans
+table's independently-derived companion count), then a fresh PR-stage
+adversarial pass — GO, one disclosed non-blocking finding (`ROADMAP.md
+:66`, `quality_coordination.py:71`, the execution-program doc's `:995`
+are deliberately deferred to the actual file-move step, since they're
+prose references to the board file, not code that imports/depends on
+the retired module — they don't hit an import-time crash, confirmed
+real for later, not a gap now). CI green throughout. Authorized to
+merge on resume from this pause.
+
+**On resume:** confirm PR #645 merged, then add the `LANES`/`CONCERNS`
+constants to `labels.py` and create the `lane:*`/`concern:hotpath` label
+*definitions* (pure infrastructure, zero risk, sequenced after #645 to
+avoid a `labels.py` conflict — not applying labels to any issue yet,
+that's step 2, which needs the full classification content now that all
+three tables exist).
 
 **Hard gates, unchanged from the design, still binding:**
 1. Step 1's tables are reviewed artifacts, not accepted on completion —
@@ -149,21 +164,36 @@ step 4 (move files in lane-sized batches), step 5 (retire
 
 ---
 
-## Peer status
+## Peer status — all 4 CHECKPOINTED AND IDLE (paused)
 
-- **`49`** — issues table done/merged; now on step 3 (`kanban_sync`
-  fixes) + label infrastructure prep.
-- **`ea`** — specs/research table in final adversarial review; standing
-  watch continues in parallel (last full health read: nominal,
-  `trading_enabled: false` unchanged).
-- **`0d`** — `#532` fully closed. Idle, available for new work.
-- **`c4`** — last known: dispatched PR #640's adversarial review (GO,
-  merged). Idle since, available for new work — reconfirm directly
-  before assuming, don't infer from this line.
+- **`49`** — issues table (PR #643) merged; step 3 (PR #645) open,
+  CI green, one adversarial-review pass left paused mid-flight, will
+  record its result on the PR but not merge until pinged.
+- **`ea`** — specs+research table (PR #644) merged. Watch stood down.
+  Found and fixed the real config-safety incident's *observation*
+  wasn't hers — that was `c4` — but confirm on resume: last full health
+  read was nominal before the pause (`trading_enabled: false`, kill
+  switch unchanged).
+- **`0d`** — `#532` fully closed, worktree clean. Idle.
+- **`c4`** — flagged the safety-config anomaly that led to the incident
+  fix above. Confirmed clean, idle.
 
 ---
 
 ## Standing lessons from this stretch (apply, don't re-litigate)
+
+- **A real safety-invariant violation can hide behind a clean `git
+  status`.** A bare `git checkout <branch>` for read-only inspection
+  (not just a commit-bound one) can silently drop `config/settings.yaml`
+  's uncommitted safety overrides. Memory:
+  `bare-checkout-can-drop-uncommitted-safety-config`. Grep the actual
+  values, don't trust a clean diff as proof they survived.
+- **A conditional authorization is scoped to the condition, not to
+  whenever the result happens to land.** "Merge on GO if it comes back
+  while you're waiting" does not carry forward to "merge on GO whenever
+  it eventually lands after you've already paused" — `49` correctly
+  held rather than assumed, twice tonight from two different angles
+  (this one, and `0d`'s resume-ping-isn't-authorization earlier).
 
 - **An unverified "fix" is worse than an honest open gap** — it reads as
   settled when it isn't. This exact shape happened three times in one
