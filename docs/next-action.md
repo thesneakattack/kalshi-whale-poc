@@ -71,9 +71,19 @@ confirmed repeatedly throughout the night.
   summary` already fixed elsewhere and `observability/routes.py` still
   live-reproduced (~7s stall) — ~61 other catalogued instances deliberately
   left untouched for later, not chased all in one night.
-  **Now on `#629`** (`observability/routes.py` fix, the one instance with
-  real evidence): **PR #630 open, CI fully green, self-review posted,
-  adversarial review + consolidation still in progress** — not merged yet.
+  **`#629` DONE, merged and deployed live** (PR #630, `e584c60`, confirmed
+  via `WatchFiles`). Measured on a real-scale ~3M-row DB copy: the `/api/
+  state` concurrency stall went from near-total starvation (1 sample
+  through during a 5.95s call) to 300 samples through at ~1.3ms max during
+  a 6.22s call — same magnitude fix as the already-closed `quality/
+  summary` bug. Adversarial review caught the fix's own justification
+  comment inverting an earlier lesson (code was always correct, only the
+  written rationale was wrong) — corrected before merge, independently
+  re-verified. This closes the full `#585` → `#530` → `#629` chain
+  end-to-end, all three fixes deployed live (`#624`, `#625`, `#630`). One
+  more harmless instance noted for the ~61-item backlog
+  (`tools/kalshi_rate_limit_probe.py:303`, one-shot CLI, not touched).
+  Free for next assignment.
 - **`ea`** (was `bd`) — standing watch, broadened to general app health
   plus `#579`/`#580`, still clean. Also driving **`#586`** via a dispatched
   subagent (kept its own context on the watch, didn't switch off it):
