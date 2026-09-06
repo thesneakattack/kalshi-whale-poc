@@ -83,6 +83,7 @@ whole module exists to eliminate for Connection objects specifically
 import asyncio
 import atexit
 import contextlib
+import logging
 import sqlite3
 import threading
 from pathlib import Path
@@ -90,8 +91,28 @@ from typing import Awaitable, Callable
 
 import aiosqlite
 
+from services import fault_log
+
+logger = logging.getLogger(__name__)
+
 _connections: dict[tuple[asyncio.AbstractEventLoop, Path], aiosqlite.Connection] = {}
 _locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+# Issue #586: bound how long _close_all_at_process_exit() will wait for any
+# one connection's close() before giving up on it. 60.0s is deliberately
+# generous, not tight - it exists to convert an INFINITE hang (a dead worker
+# thread, see that function's docstring) into a finite one, not to police
+# ordinary close latency. Sized against this module's own real callers'
+# measured worst case, not guessed: PR #581 measured candidate_log.db's
+# population_gate_summary() GROUP BY at 18.2-22.5s warm and 39.0s cold, and a
+# forceful (non-graceful) shutdown could in principle catch that query still
+# in flight, in which case a healthy, still-alive worker thread legitimately
+# needs the whole 39s+ to drain its queue before close() can complete - well
+# under 60s. A stuck/dead worker thread, by contrast, never completes no
+# matter how long this waits, so any finite bound already fixes the actual
+# bug; 60.0s just keeps it from also punishing the one known legitimately-
+# slow case identified in this codebase today.
+_CLOSE_ALL_TIMEOUT_SEC = 60.0
 
 
 def _key(db_path: Path) -> tuple[asyncio.AbstractEventLoop, Path]:
@@ -129,37 +150,134 @@ def _close_all_at_process_exit() -> None:
     aiosqlite 0.22.1 connections are not loop-bound (see module docstring):
     _execute builds its future on the CALLING loop, so a connection opened
     under a long-since-finished loop still closes cleanly here.
+
+    Issue #586 - bounded close (added 2026-09-05): a connection's aiosqlite
+    worker thread can die from an uncaught RuntimeError if ITS OWN loop
+    closes while a query is still in flight (task cancelled, then that
+    loop closed, while the worker thread is still executing the query
+    underneath - cancelling the awaiting coroutine does not stop the
+    thread). Reproduced directly, not assumed: once that thread finishes
+    the stale query, `_connection_worker_thread` (aiosqlite/core.py) tries
+    `future.get_loop().call_soon_threadsafe(set_result, ...)` on the now-
+    closed loop, which raises `RuntimeError: Event loop is closed`; its own
+    `except BaseException` handler then tries to report THAT failure the
+    same way - `future.get_loop().call_soon_threadsafe(set_exception, ...)`
+    - against the identical closed loop, which raises the same
+    RuntimeError again, this time with nothing left to catch it, so it
+    escapes `_connection_worker_thread` uncaught and the thread dies.
+    Once that thread is dead, `await conn.close()` from a later, fresh loop
+    (exactly what this function does) hangs forever: `close()`'s own close
+    request sits queued behind nothing, since nothing is left alive to
+    dequeue it.
+
+    The issue's own suggested fix - wrap each `conn.close()` in a bounded
+    `asyncio.wait_for(...)` - does NOT work, verified directly rather than
+    applied blind: `Connection.close()` performs TWO sequential awaits (the
+    close-execute call, then - inside its own `finally:` - a second await
+    on the future `self.stop()` returns). A single `Task.cancel()` (which
+    is all `wait_for`'s one-shot deadline ever issues) only interrupts
+    whichever of those two is in flight at the moment it fires; landing on
+    the first just pushes the coroutine into its finally block's SECOND,
+    un-cancelled await, which then hangs exactly as before if the worker
+    thread is dead - `wait_for` raises `TimeoutError` around the whole
+    thing but the underlying task keeps running, stuck, and the process
+    still cannot exit. A repro of exactly this (cancel the awaiting task,
+    close its loop, then `asyncio.wait_for(conn.close(), timeout=2.0)` from
+    a fresh loop) still hung past 15s in verification for this fix.
+
+    The fix instead: run every connection's close() as its own task, wait
+    on the whole batch with ONE bounded `asyncio.wait(..., timeout=...)`
+    (which, unlike `wait_for`, does not cancel stragglers when its timeout
+    elapses - it just stops waiting), and log-and-abandon whichever tasks
+    are still pending afterward. Managed with a manually created event loop
+    (`asyncio.new_event_loop()` / `run_until_complete()` / `close()`)
+    rather than the `asyncio.run()` helper used before: `asyncio.run()`'s
+    own finalization (`_cancel_all_tasks`, asyncio/runners.py) cancels
+    every task still registered on its loop and then `gather()`s them with
+    NO timeout of its own - if we left an abandoned, stuck task behind for
+    it to find, this would reintroduce the identical unbounded hang one
+    layer up. Verified instead (not assumed) that a plain `loop.close()`
+    with a permanently-pending task left behind returns in under 1ms and
+    only produces a harmless "Task was destroyed but it is pending!"
+    warning at garbage-collection time - `close()` does not join, cancel,
+    or wait for anything.
+
+    A stuck close never slows or changes a clean, non-stuck shutdown: with
+    every connection's close() run concurrently, `asyncio.wait()` returns
+    as soon as they ALL finish, not after the timeout - the timeout only
+    matters for a genuinely stuck one.
     """
     if not _connections:
         return
 
-    async def _close_all() -> None:
-        for conn in list(_connections.values()):
-            with contextlib.suppress(Exception):
-                await conn.close()
-        _connections.clear()
-        _locks.clear()
+    async def _close_one(db_path: Path, conn: aiosqlite.Connection) -> None:
+        # Errors are swallowed here exactly as the pre-#586 code swallowed
+        # them (this loop is tearing the process down; there is no
+        # meaningful way to surface a per-connection close failure other
+        # than the timeout-abandonment path below, which does log).
+        with contextlib.suppress(Exception):
+            await conn.close()
 
+    async def _close_all() -> None:
+        items = list(_connections.items())  # [((loop, db_path), conn), ...]
+        tasks = {
+            asyncio.ensure_future(_close_one(db_path, conn)): db_path
+            for (_loop, db_path), conn in items
+        }
+        # Read live, not frozen as a default-parameter expression - see
+        # services/diagnostics/routes.py's _bounded() for why a module
+        # attribute a test might monkeypatch (e.g. to shrink this in a
+        # regression test) must be read inside the function body.
+        timeout = _CLOSE_ALL_TIMEOUT_SEC
+        _done, pending = await asyncio.wait(tasks.keys(), timeout=timeout)
+        for task in pending:
+            db_path = tasks[task]
+            message = (
+                f"aio_db: close() for {db_path} did not finish within "
+                f"{timeout:.0f}s at process exit (#586) - its worker "
+                f"thread is stuck or has died; abandoning rather than "
+                f"hanging shutdown"
+            )
+            logger.warning(message)
+            # fault_log.record_fault() never raises (see its own module
+            # docstring) - safe to call unconditionally from this exit
+            # hook without risking masking the abandonment itself.
+            fault_log.record_fault(
+                "aio_db", "close_all_at_process_exit", message, severity="warn",
+            )
+
+    loop = None
     try:
-        asyncio.run(_close_all())
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(_close_all())
     except Exception:
-        # asyncio.run(_close_all()) failed - fall back to a loop-free close
-        # so this doesn't reproduce C1's hang. If left unclosed here, every
-        # cached connection keeps its non-daemon worker thread alive and
-        # threading._shutdown() joins it forever (see this function's own
-        # docstring above) - a raised exception here is NOT the benign
-        # "leaked thread" cost an earlier version of this comment claimed;
-        # it IS the hang. Connection.stop() (aiosqlite/core.py) needs no
-        # running event loop: it wraps the future creation in its own
-        # try/except and puts the stop sentinel on the connection's plain
-        # SimpleQueue regardless, so the worker thread still exits even
-        # though we can't cleanly await close() here. Reproduced/verified,
-        # not assumed (PR adversarial review finding F1, 2026-09-01): a
-        # forced asyncio.run failure hangs (EXIT=124) without this fallback
-        # and exits cleanly (EXIT=0) with it.
+        # loop creation or _close_all() itself failed outright (not one
+        # connection's close() merely timing out - that path above already
+        # degrades per-connection without raising) - fall back to a
+        # loop-free close so this doesn't reproduce C1's hang. If left
+        # unclosed here, every cached connection keeps its non-daemon
+        # worker thread alive and threading._shutdown() joins it forever
+        # (see this function's own docstring above) - a raised exception
+        # here is NOT the benign "leaked thread" cost an earlier version of
+        # this comment claimed; it IS the hang. Connection.stop()
+        # (aiosqlite/core.py) needs no running event loop: it wraps the
+        # future creation in its own try/except and puts the stop sentinel
+        # on the connection's plain SimpleQueue regardless, so the worker
+        # thread still exits even though we can't cleanly await close()
+        # here. Reproduced/verified, not assumed (PR adversarial review
+        # finding F1, 2026-09-01): a forced asyncio.run failure hangs
+        # (EXIT=124) without this fallback and exits cleanly (EXIT=0) with
+        # it.
         for conn in list(_connections.values()):
             with contextlib.suppress(Exception):
                 conn.stop()
+    finally:
+        # Deliberately NOT asyncio.run()'s own cancel-and-gather shutdown
+        # sequence - see the docstring above for why that would reintroduce
+        # an unbounded hang on anything _close_all() already gave up on.
+        if loop is not None:
+            with contextlib.suppress(Exception):
+                loop.close()
         _connections.clear()
         _locks.clear()
 
