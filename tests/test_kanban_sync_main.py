@@ -288,7 +288,7 @@ def test_cmd_sync_runs_close_completed_plan_parents_even_when_plan_not_in_source
     `items` or on --plan-classifications (unlike build_plan_items' judgment-
     assisted plan-doc classification, which does stay gated on "plan" in
     sources). Gating it on "plan" meant the routine `/checkpoint`-wired
-    invocation (--sources worktree,roadmap,track, per this module's own
+    invocation (--sources worktree,roadmap, per this module's own
     docstring) never ran it, so a plan whose sub-issues all finished would
     sit open indefinitely unless someone separately ran the judgment-heavy
     --sources plan path too."""
@@ -388,7 +388,7 @@ def test_cmd_sync_runs_stale_roadmap_check_with_only_roadmap_keys_when_roadmap_i
     calls = []
     _patch_sync_pipeline(
         monkeypatch,
-        items=[_sync_item("roadmap", "a"), _sync_item("roadmap", "b"), _sync_item("track", "t")],
+        items=[_sync_item("roadmap", "a"), _sync_item("roadmap", "b"), _sync_item("plan", "t")],
         live_branches=None,
     )
     monkeypatch.setattr(
@@ -396,20 +396,20 @@ def test_cmd_sync_runs_stale_roadmap_check_with_only_roadmap_keys_when_roadmap_i
         lambda current_keys, client, dry_run: calls.append(current_keys) or _FakeReport(),
     )
 
-    cli._cmd_sync(argparse.Namespace(sources="roadmap,track", dry_run=False, plan_classifications=None))
+    cli._cmd_sync(argparse.Namespace(sources="roadmap,plan", dry_run=False, plan_classifications=None))
 
     assert calls == [{"a", "b"}]
 
 
 def test_cmd_sync_skips_stale_roadmap_check_when_roadmap_not_in_sources(monkeypatch):
     calls = []
-    _patch_sync_pipeline(monkeypatch, items=[_sync_item("track", "t")], live_branches=None)
+    _patch_sync_pipeline(monkeypatch, items=[_sync_item("plan", "t")], live_branches=None)
     monkeypatch.setattr(
         cli, "close_stale_roadmap_issues",
         lambda current_keys, client, dry_run: calls.append(current_keys) or _FakeReport(),
     )
 
-    cli._cmd_sync(argparse.Namespace(sources="track", dry_run=False, plan_classifications=None))
+    cli._cmd_sync(argparse.Namespace(sources="plan", dry_run=False, plan_classifications=None))
 
     assert calls == []
 

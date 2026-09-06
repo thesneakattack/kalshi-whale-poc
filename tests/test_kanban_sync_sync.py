@@ -67,7 +67,8 @@ class FakeGithubClient:
         return self.sub_issues_summary.get(issue_number, (0, 0))
 
 
-def _item(kind="track", key="A", *, title="Track A", status=labels.STATUS_CLAIMABLE,
+def _item(kind=labels.SYNC_MARKER_KIND_ROADMAP, key="A", *, title="Roadmap A",
+          status=labels.STATUS_CLAIMABLE,
           done=False, depends_on=(), phase=None, type_label=labels.TYPE_TRACKING):
     return SyncItem(
         kind=kind, key=key, title=title, status_label=status,
@@ -83,7 +84,7 @@ def test_sync_pass_one_creates_new_issue_for_new_item():
     _, report = sync_pass_one([_item()], client, dry_run=False)
 
     assert len(client.issues) == 1
-    assert report.created and "Track A" in report.created[0]
+    assert report.created and "Roadmap A" in report.created[0]
 
 
 def test_sync_pass_one_is_idempotent_no_duplicate_on_second_run():
@@ -226,17 +227,17 @@ def test_sync_pass_one_maps_status_blocked_to_waiting():
 
 
 def test_sync_pass_one_sets_project_status_to_done_when_item_becomes_done_and_issue_closes():
-    """item.done is checked BEFORE item.status_label - necessary because
-    sources_tracks.py always sets status_label=STATUS_CLAIMABLE regardless
-    of done (unlike sources_roadmap.py/sources_plan.py). Mapping via
-    status_label alone would land a just-finished track on "Next" instead
-    of "Done"."""
+    """item.done is checked BEFORE item.status_label - necessary for a
+    source whose status_label doesn't reliably flip to done on its own (a
+    source could leave status_label=STATUS_CLAIMABLE even once done=True).
+    Mapping via status_label alone would land a just-finished item on "Next"
+    instead of "Done"."""
     client = FakeGithubClient()
     sync_pass_one([_item(status=labels.STATUS_CLAIMABLE, done=False)], client, dry_run=False)
     (number,) = client.issues.keys()
 
-    # done=True but status_label still STATUS_CLAIMABLE, matching
-    # sources_tracks.py's real (if odd) behavior.
+    # done=True but status_label still STATUS_CLAIMABLE - exercising the
+    # done-checked-before-status_label ordering described above.
     sync_pass_one([_item(status=labels.STATUS_CLAIMABLE, done=True)], client, dry_run=False)
 
     assert client.project_status[number] == project_status.STATUS_DONE
@@ -360,34 +361,43 @@ def test_sync_pass_one_still_reconciles_status_once_a_claim_has_expired():
 
 def test_reconcile_sets_depends_on_label_using_real_issue_number():
     client = FakeGithubClient()
-    track_a = _item(kind="track", key="A", title="Track A")
-    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
+    roadmap_a = _item(kind=labels.SYNC_MARKER_KIND_ROADMAP, key="A", title="Roadmap A")
+    roadmap_c = _item(
+        kind=labels.SYNC_MARKER_KIND_ROADMAP, key="C", title="Roadmap C",
+        depends_on=((labels.SYNC_MARKER_KIND_ROADMAP, "A"),),
+    )
 
-    reconcile([track_a, track_c], client)
+    reconcile([roadmap_a, roadmap_c], client)
 
-    c_number = [n for n, i in client.issues.items() if i["title"] == "Track C"][0]
-    a_number = [n for n, i in client.issues.items() if i["title"] == "Track A"][0]
+    c_number = [n for n, i in client.issues.items() if i["title"] == "Roadmap C"][0]
+    a_number = [n for n, i in client.issues.items() if i["title"] == "Roadmap A"][0]
     assert f"depends-on:#{a_number}" in client.issues[c_number]["labels"]
 
 
 def test_reconcile_second_run_does_not_re_add_existing_depends_on_label():
     client = FakeGithubClient()
-    track_a = _item(kind="track", key="A", title="Track A")
-    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
-    reconcile([track_a, track_c], client)
+    roadmap_a = _item(kind=labels.SYNC_MARKER_KIND_ROADMAP, key="A", title="Roadmap A")
+    roadmap_c = _item(
+        kind=labels.SYNC_MARKER_KIND_ROADMAP, key="C", title="Roadmap C",
+        depends_on=((labels.SYNC_MARKER_KIND_ROADMAP, "A"),),
+    )
+    reconcile([roadmap_a, roadmap_c], client)
 
-    reconcile([track_a, track_c], client)  # second run, same input
+    reconcile([roadmap_a, roadmap_c], client)  # second run, same input
 
-    c_number = [n for n, i in client.issues.items() if i["title"] == "Track C"][0]
+    c_number = [n for n, i in client.issues.items() if i["title"] == "Roadmap C"][0]
     depends_labels = [l for l in client.issues[c_number]["labels"] if l.startswith("depends-on:#")]
     assert len(depends_labels) == 1  # not duplicated
 
 
 def test_reconcile_skips_depends_on_for_dependency_not_yet_created():
     client = FakeGithubClient()
-    track_c = _item(kind="track", key="C", title="Track C", depends_on=(("track", "A"),))
+    roadmap_c = _item(
+        kind=labels.SYNC_MARKER_KIND_ROADMAP, key="C", title="Roadmap C",
+        depends_on=((labels.SYNC_MARKER_KIND_ROADMAP, "A"),),
+    )
 
-    report = reconcile([track_c], client)  # Track A never in this run's item list
+    report = reconcile([roadmap_c], client)  # Roadmap A never in this run's item list
 
     (number,) = client.issues.keys()
     assert not [l for l in client.issues[number]["labels"] if l.startswith("depends-on:#")]
@@ -425,7 +435,10 @@ def test_close_stale_worktree_issues_leaves_issue_open_when_branch_still_live():
 
 def test_close_stale_worktree_issues_ignores_issue_whose_marker_kind_is_not_worktree():
     client = FakeGithubClient()
-    sync_pass_one([_item(kind="track", key="A", title="Track A")], client, dry_run=False)
+    sync_pass_one(
+        [_item(kind=labels.SYNC_MARKER_KIND_ROADMAP, key="A", title="Roadmap A")],
+        client, dry_run=False,
+    )
 
     report = close_stale_worktree_issues(live_branches=set(), client=client, dry_run=False)
 
@@ -625,13 +638,13 @@ def test_mismatch_comment_for_plan_kind_names_the_classification():
 
 
 def test_mismatch_comment_for_non_plan_kind_uses_generic_message():
-    track_item = SyncItem(
+    non_plan_item = SyncItem(
         kind=labels.SYNC_MARKER_KIND_WORKTREE, key="feat/x",
         title="feat/x", status_label=labels.STATUS_CLAIMABLE,
         type_label=labels.TYPE_TRACKING, context_body="",
         acceptance_criteria=(),
     )
-    comment = _mismatch_comment(track_item)
+    comment = _mismatch_comment(non_plan_item)
     assert "still open" in comment and "reclassify" not in comment
 
 
@@ -756,7 +769,7 @@ def test_backfill_closed_status_sets_done_for_every_closed_issue():
     convention - no need to read the current Status first."""
     client = FakeGithubClient()
     sync_pass_one([_item(done=True)], client, dry_run=False)  # never existed + done -> no issue created
-    sync_pass_one([_item(key="B", title="Track B", done=False)], client, dry_run=False)
+    sync_pass_one([_item(key="B", title="Roadmap B", done=False)], client, dry_run=False)
     (number,) = client.issues.keys()
     client.close_issue(number)  # simulate one of the 3 close paths that skipped Status
 

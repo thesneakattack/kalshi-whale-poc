@@ -66,7 +66,7 @@ description: This skill should be used at natural breakpoints in a long working 
    in this step is earned by its own run history, not assumed
    (`CLAUDE.md`'s Toolchain section, 2026-08-30).
    ```bash
-   python -m tools.kanban_sync sync --sources worktree,roadmap,track   # mechanical board sync (plan-doc classification is /kanban-board-sync)
+   python -m tools.kanban_sync sync --sources worktree,roadmap   # mechanical board sync (plan-doc classification is /kanban-board-sync)
    python -m tools.quality_coordination                                # AQC: stale branches/worktrees, plans with unfinished tasks; ~16 s, read-only
    python -m tools.quality_ratchet &                                   # observation series over tools.quality_audit findings; fire and forget
    ```

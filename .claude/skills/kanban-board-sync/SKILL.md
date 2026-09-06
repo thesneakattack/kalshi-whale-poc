@@ -1,6 +1,6 @@
 ---
 name: kanban-board-sync
-description: This skill should be used when the user asks to "sync the kanban board", "sync issues", "update the board", "refresh the kanban board", or wants worktrees/ROADMAP.md/active-tracks-board.md/plan docs reflected onto the real GitHub Issues board. Runs tools/kanban_sync end to end, including the judgment-assisted plan-doc classification step a plain CLI invocation can't do on its own.
+description: This skill should be used when the user asks to "sync the kanban board", "sync issues", "update the board", "refresh the kanban board", or wants worktrees/ROADMAP.md/plan docs reflected onto the real GitHub Issues board. Runs tools/kanban_sync end to end, including the judgment-assisted plan-doc classification step a plain CLI invocation can't do on its own.
 ---
 
 # Kanban board sync
@@ -28,12 +28,15 @@ board into a record of who ran last (2026-08-28).
 
 2. Mechanical sources, dry run first, then for real:
    ```bash
-   python -m tools.kanban_sync sync --sources worktree,roadmap,track --dry-run
+   python -m tools.kanban_sync sync --sources worktree,roadmap --dry-run
    ```
    Sane counts are a few dozen items, not hundreds.
 
-3. `python -m tools.kanban_sync plan-candidates` — plan docs not already
-   referenced by `active-tracks-board.md`.
+3. `python -m tools.kanban_sync plan-candidates` — plan docs not already a
+   tracked candidate, excluding the plans-index (`README.md`) and any
+   review/self-review/adversarial-review/consolidation companion doc whose
+   parent plan file is also present (detected mechanically by filename
+   suffix, `tools/kanban_sync/sources_plan.py`'s own docstring).
 
 4. Classify each candidate (`done` / `in-progress` / `not-started`) into a JSON
    file, e.g. `/tmp/kanban-plan-classifications.json`
