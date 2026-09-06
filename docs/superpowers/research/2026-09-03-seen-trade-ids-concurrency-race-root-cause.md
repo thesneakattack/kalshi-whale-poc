@@ -12,7 +12,12 @@
 > hazard is unfixed — "zero locking exists anywhere in the file" and the like —
 > were true when written and describe the pre-fix code; the file's line-number
 > citations likewise refer to the pre-fix source as of 2026-09-03 and no longer
-> match the current file. This document is the permanent root-cause record for
+> match the current file. One further drift (adversarial-review finding, 2026-09-06):
+> §2/§3's "both call paths dispatch to the same pool" described the wiring as of
+> 2026-09-03 — issue #563 has since split the candidate-retry path onto its own
+> `services/whalewatchers/_candidate_retry_pool.py`, which does not reopen the
+> race (the `_seen_lock` guards the data itself, pool-topology-independent).
+> This document is the permanent root-cause record for
 > issue #546. It was recovered 2026-09-06, verbatim, from the orphaned branch
 > `fix/seen-trade-ids-concurrency-race-investigation` (commits `5a608d1`,
 > `8013260`) by the branch-audit action plan — the investigation completed and
