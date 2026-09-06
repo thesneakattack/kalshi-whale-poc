@@ -3,11 +3,16 @@ connection cache services/diagnostics/diagnostics.py and
 services/series_watcher.py's read-only functions share.
 """
 import asyncio
+import subprocess
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
 from services.diagnostics import _aio_db
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_connection_for_returns_a_usable_connection(tmp_path):
@@ -234,3 +239,47 @@ def test_locks_are_scoped_per_loop_not_shared_across_loops(tmp_path):
     asyncio.run(_touch())
     assert len(_aio_db._locks) == 2  # two asyncio.run() calls, two loops, two lock entries
     asyncio.run(_aio_db.reset())
+
+
+def test_close_all_at_process_exit_bounds_a_dead_workers_close(tmp_path):
+    # Issue #586: if a query is still in flight on a connection's dedicated
+    # aiosqlite worker thread when THAT connection's own event loop closes,
+    # the thread crashes trying to report back to the now-closed loop (see
+    # tests/support/aio_db_hang_repro.py's docstring for the exact
+    # mechanism, reproduced directly - not assumed - against aiosqlite
+    # 0.22.1). Once that thread is dead, `_close_all_at_process_exit()`'s
+    # own `await conn.close()` from a later, fresh loop used to hang
+    # forever - this is a subprocess, not an in-process call, specifically
+    # so a real regression here fails this ONE test in bounded time via
+    # subprocess.run's own timeout instead of hanging the entire suite.
+    #
+    # Before the #586 fix this subprocess never terminated within any
+    # reasonable bound (the underlying `await conn.close()` hangs forever,
+    # not merely past some multi-second threshold) - reproduced directly
+    # against the pre-fix implementation, not assumed, while writing this
+    # test. `timeout=15` here is generous overhead above the 2.0s bound the
+    # child passes to `_close_all_at_process_exit()` itself (2.5s to let
+    # the worker thread crash, plus process startup) - it is not the
+    # assertion that matters; `returncode == 0` and the measured elapsed
+    # time below are.
+    db_path = tmp_path / "hang.db"
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.support.aio_db_hang_repro", str(db_path), "2.0"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, (
+        f"reproduction subprocess failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "PASS" in result.stderr, result.stderr
+    # The subprocess's own close-timeout bound was 2.0s; it must have
+    # actually been bounded there (not merely finished before the outer
+    # 15s subprocess.run timeout by coincidence) - parse the elapsed time
+    # it printed and check it landed near the 2.0s bound, not e.g. at 0s
+    # (which would mean the hang scenario was never actually set up) nor
+    # unbounded.
+    elapsed_line = [line for line in result.stderr.splitlines() if line.startswith("PASS")][0]
+    elapsed = float(elapsed_line.split("elapsed=")[1])
+    assert 1.5 < elapsed < 10.0, f"expected abandonment near the 2.0s bound, got {elapsed:.3f}s"
