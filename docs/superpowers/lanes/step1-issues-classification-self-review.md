@@ -17,6 +17,16 @@ follows in its own document.
   sequence (no #543-#545, no #601) were checked against the master list and
   are real absences (those numbers are simply not open issues right now, most
   likely already closed by merged fixes), not omissions from the batching.
+  **Correction (found by the independent adversarial review, not by this
+  check):** this diff was accurate against the master list *at the moment it
+  was run*, but that list had already gone stale by commit time — #532
+  closed and #642 opened, both in the ~19-minute drafting window before the
+  first commit, and both landed on GitHub after this check ran. The diff
+  methodology wasn't wrong; a one-time snapshot of a live, actively-changing
+  issue tracker just isn't sufficient when drafting spans real wall-clock
+  time. Fixed in the main table (see its own "Correction" section). The
+  general lesson — re-run the freshness check immediately before commit, not
+  only at the start — is noted there for step 6's larger tables.
 - **Every RULE-GAP row was re-derived from the live issue body**
   (`gh issue view <N> --json body`), not accepted on the originating
   subagent's characterization alone: #49, #51, #56, #69, #412, #491, #496,

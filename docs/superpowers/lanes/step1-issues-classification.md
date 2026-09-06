@@ -10,11 +10,18 @@ rule, §6 step 1. Cross-referenced against
 plans-slice table) for shared vocabulary per the coordinator's cross-session
 rulings (below).
 
-Scope: all 147 currently-open GitHub issues (`gh issue list --state open`,
-verified exact match against a `--jq '.[].number'` re-query — no title-embedded
-newline corruption, no gap, no duplicate). No issue was labeled, closed, or
-edited on GitHub. No file was moved. This table's own row order is issue
-number ascending, not lane order.
+Scope: all 147 currently-open GitHub issues as of a re-verified snapshot
+(`gh issue list --state open`, `--jq '.[].number'`). **Correction (caught by
+adversarial review, not by this table's own original count check):** the
+first committed version's 147-number set had drifted from live GitHub state
+by one substitution — it carried #532, closed 2026-09-06T19:20:59Z (11
+minutes before that commit), and was missing #642, opened
+2026-09-06T19:13:03Z (also before that commit) — both changes landed on
+GitHub while this table was being drafted and were missed by a diff that
+should have caught them. Fixed here: #532 removed, #642 added with its own
+lane row. No issue was labeled, closed, or edited on GitHub by this session.
+No file was moved. This table's own row order is issue number ascending, not
+lane order.
 
 Work split across 5 independently-dispatched subagents, each re-reading the
 design doc directly from source (not this session's summary of it, to avoid
@@ -228,7 +235,6 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
 | 527 | loop_watchdog's stall sampler runs on the loop it monitors | 5 | hotpath | `services/loop_watchdog.py` |
 | 528 | `_process_stream_ticker`'s market-match is a linear scan, unthrottled | 1 | hotpath | `services/whale_stream/whale_stream_handlers.py`; sync CPU on every message with no yield point |
 | 530 | Systematic sweep: async routes calling sync DB with no dispatch | RULE-GAP | hotpath | Issue's own scope is explicitly repo-wide ("every route file... system-wide") and its two cited examples (`reset/routes.py`, `observability/routes.py`, both Lane 6) are explicitly disclaimed as accidental discoveries, not the named subject — the sweep hasn't been run yet, so no anchor file exists for any straddler clause to read a purpose from. Not forced to Lane 6 off the two current examples since the issue's own text says that isn't yet the real scope |
-| 532 | `rejection_events` at 22.6M rows — shared root cause | 4 | | All three cited findings (`count_range()`, `population_gate_summary()`, leaking `_connect()`) are `candidate_log.py`/`candidate_log.db` — Lane 4 |
 | 539 | capture_writer lock-fault rate on raw_trades ~2.1x baseline | 5 | | `services/capture_writer.py`, explicit in Lane 5 |
 | 542 | trade-handler tail: 13-19s stall from awaited REST resolve in single consumer | 1 | hotpath | Root mechanism is `services/kalshi/websocket.py:1156`'s single sequential `_consume_from` loop (Lane 1), named first/most prominently in the issue's own "Mechanism" section; `_resolve_unknown_markets` (Lane 2) is a declared cross-lane dependent |
 | 546 | `kalshi_trade_tape.py` dedupe-ring race (WS stream vs candidate-retry, shared `_scoring_pool`) | 2 | | Race condition in an unlocked in-memory set/deque across two thread-pool workers — a concurrency/correctness defect, not sync-on-event-loop or blocking I/O (both callers already off the event loop) |
@@ -258,6 +264,7 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
 | 634 | Event-loop stall: FastAPI `jsonable_encoder` recursion, route unidentified | RULE-GAP | hotpath | Captured stack trace is pure FastAPI/Starlette framework internals with "no application-level frames"; the one named candidate (`GET /api/state`, in `main.py`) is explicitly disclaimed as "an untested hypothesis, not a finding." No confirmed file exists for any straddler clause to read a purpose from — a genuine information gap, not a judgment call between two known candidates |
 | 639 | `candidate_log.gate_summary()` called synchronously from other async/hot-path contexts | 4 | hotpath | Multi-file (`advisory/routes.py`, `analytics/market_analyst_orchestrator.py`, `main.py`'s auto-apply loop), but every call site resolves to Lane 4 |
 | 641 | `feat/candlestick-volatility`: re-implement against main, don't rebase | 4 | | Issue self-declares "Lane: 4 (analytics/advisory/research)" with Lane 1/Lane 2 as cross-lane dependents |
+| 642 | Trading tick stalls ~90s during large-tier backup — effect measured, mechanism unestablished | 6 | hotpath | Issue self-declares "Lane: 6 (observability/safety infra — backup subsystem)" with Lane 5 (`tick_executor`) and Lane 1 (the trading loop's tick) as declared cross-lane dependents, plus `concern:hotpath` self-declared — same tick-stall class as #605/#627. Added post-merge-race: #642 was opened 2026-09-06T19:13:03Z (before this table's original commit) while #532 closed 2026-09-06T19:20:59Z (also before it) — both membership changes were missed by the original count check and caught by adversarial review, not by this table's own verification |
 
 ---
 
@@ -265,14 +272,17 @@ consulted" list, preserved in the per-row reasoning below where non-obvious.
 
 ### Counts per lane (138 lane-bearing rows + 9 RULE-GAP)
 
+Recomputed mechanically from the table's own rows (a small script, not a hand
+count) after the #532/#642 correction below.
+
 | Lane | Name | Count |
 |---|---|---|
 | 1 | Kalshi & index data ingestion | **28** |
 | 2 | Whale signal detection & calibration | **13** |
 | 3 | Strategy, risk & execution | **17** |
-| 4 | Analytics, advisory & research | **11** |
+| 4 | Analytics, advisory & research | **10** |
 | 5 | Runtime infrastructure | **12** |
-| 6 | Observability, quality & safety infra | **8** |
+| 6 | Observability, quality & safety infra | **9** |
 | 7 | Config & control plane | **4** |
 | 8 | Frontend & dashboard | **22** |
 | 9 | Tooling, CI & process governance | **23** |
@@ -284,12 +294,36 @@ Lane 8's count is dominated by the frontend-modularization plan's per-task
 issues (#464-#481, #490), and Lane 9's by CI/tooling/test-infra findings and
 the plugin-pilot's per-plugin tasks (#321-#328). Lane 7 has the fewest (4).
 
-### `concern:hotpath` — 16 of 147 issues (10.9%)
+### `concern:hotpath` — 17 of 147 issues (11.6%)
 
 #55, #75, #245, #412, #416, #455, #489, #492, #527, #528, #530, #542, #605,
-#626, #634, #639. Every row's own reasoning states explicitly why the tag was
-or was not applied where the call was non-obvious (several REST/scheduler
-touches were confirmed already-async and left untagged rather than assumed).
+#626, #634, #639, #642. Every row's own reasoning states explicitly why the
+tag was or was not applied where the call was non-obvious (several
+REST/scheduler touches were confirmed already-async and left untagged rather
+than assumed).
+
+### Correction: #532 → #642 membership swap (found by adversarial review)
+
+The first committed version of this table (`76cac11`) carried #532 and
+omitted #642. Both were caught, not by this table's own original count check,
+but by the independent adversarial review re-running `gh issue list` fresh
+and diffing byte-for-byte against the table's issue-number set:
+- **#532** (`rejection_events at 22.6M rows`) closed 2026-09-06T19:20:59Z,
+  `stateReason: COMPLETED` — 11 minutes before the table's first commit
+  (`19:32:23Z`). Removed from the table.
+- **#642** (`Trading tick stalls ~90s during large-tier backup`) opened
+  2026-09-06T19:13:03Z — before both the design doc's PR #640 merge and this
+  table's first commit. Added, classified from its own self-declared lane
+  (see its row, above).
+
+The total staying at exactly 147 both before and after this fix is a
+coincidence (one closed, one opened, in the same drafting window) — it
+masked the membership error rather than validating the original count. The
+original claim "147/147, exact match, no gap/duplicate" was true of *a*
+147-number set, just not the live one by the time the commit landed. Lesson
+for step 6 (the much larger plans/research/specs tables): a freshness check
+against a fast-moving live issue tracker needs to be re-run right before
+commit, not once at the start of a multi-hour classification pass.
 
 ### RULE-GAP rows: **9**
 
