@@ -17,8 +17,12 @@ existed with zero test coverage before this incident, which is exactly how
 a resource leak with this specific a cadence went unnoticed.
 """
 import asyncio
+import threading
+
+import pytest
 
 import services.whale_stream.index_stream_handlers as ish
+from services import settlement_edge, tick_executor
 
 
 async def _async_return(value):
@@ -193,3 +197,120 @@ def test_record_settlement_observations_schedules_flush_via_tick_executor_when_t
 
     assert len(scheduled) == 1
     assert tick_executor_calls[0] is settlement_edge.flush
+
+
+class _MarketsClient:
+    def __init__(self, markets: dict):
+        self._markets = markets
+
+    async def get_markets_by_tickers(self, tickers):
+        return self._markets
+
+
+def test_resolve_settlement_windows_routes_resolve_window_via_tick_executor(monkeypatch):
+    """Issue #605 (partial fix - the other two contributors, candidate_log.
+    gate_summary() and a jsonable_encoder recursion stall filed as #634, are
+    tracked and fixed separately): a live loop_watchdog stack capture caught
+    the event loop genuinely blocked at settlement_edge.resolve_window()'s
+    synchronous SQLite UPDATE, called directly from this function's own for
+    loop with no yield point. resolve_window() writes window_observations,
+    the same table settlement_edge.flush()'s executemany INSERT writes -
+    and flush() already runs on a tick_executor worker thread (this
+    module's own _record_settlement_observations, main.py's
+    _flush_secondary_capture_stores_async). SQLite is single-writer, so a
+    resolve_window() call contending with an in-flight flush() could
+    genuinely wait on the file lock for up to busy_timeout (5000ms,
+    services/db.py connect()'s default) - and resolve_window()'s own
+    `except sqlite3.Error: return 0` means that wait, if it ever expired,
+    would raise nothing and log nothing, matching #605's "zero exceptions"
+    symptom exactly. resolve_window() must now be scheduled via
+    tick_executor.run(), never called directly on this coroutine's own
+    frame."""
+    monkeypatch.setattr(settlement_edge, "unresolved_tickers",
+                        lambda: ["TICK-YES", "TICK-NO", "TICK-PENDING", "TICK-MISSING"])
+
+    resolve_calls = []
+
+    def fake_resolve_window(ticker, settled_yes):
+        resolve_calls.append((ticker, settled_yes))
+        return 1
+
+    monkeypatch.setattr(settlement_edge, "resolve_window", fake_resolve_window)
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+
+    client = _MarketsClient({
+        "TICK-YES": {"result": "yes"},
+        "TICK-NO": {"result": "no"},
+        "TICK-PENDING": {"result": ""},
+        # TICK-MISSING deliberately absent from the batch response - the
+        # existing (unchanged) behavior is to just skip it, same as today.
+    })
+
+    asyncio.run(ish._resolve_settlement_windows(client))
+
+    assert len(tick_executor_calls) == 1, (
+        "resolve_window() must be scheduled via exactly one tick_executor.run() "
+        "call per tick, not called inline on the event loop"
+    )
+    assert sorted(resolve_calls) == sorted([("TICK-YES", True), ("TICK-NO", False)])
+
+
+def test_resolve_settlement_windows_skips_tick_executor_when_nothing_settled(monkeypatch):
+    """No settled ticker this pass (the common case - unresolved_tickers()
+    is normally empty or all-pending) must not submit an empty no-op to the
+    tick executor's already-shared 2-worker pool."""
+    monkeypatch.setattr(settlement_edge, "unresolved_tickers", lambda: ["TICK-PENDING"])
+    monkeypatch.setattr(settlement_edge, "resolve_window",
+                        lambda *a, **k: pytest.fail("resolve_window should not be called - nothing settled"))
+
+    tick_executor_calls = []
+
+    async def fake_tick_executor_run(fn):
+        tick_executor_calls.append(fn)
+        return fn()
+
+    monkeypatch.setattr(tick_executor, "run", fake_tick_executor_run)
+
+    client = _MarketsClient({"TICK-PENDING": {"result": ""}})
+
+    asyncio.run(ish._resolve_settlement_windows(client))
+
+    assert tick_executor_calls == []
+
+
+def test_resolve_settlement_windows_resolve_window_runs_off_the_event_loop_thread(monkeypatch):
+    """Call-shape proof with the REAL tick_executor.run() wired in (not
+    monkeypatched) - a timing-based test that asserts a specific stall
+    duration would be flaky under CI's own variable load, so this instead
+    proves the actual DB write happens on a tick_executor worker thread,
+    never on the event loop's own (this test's calling) thread. Modeled on
+    tests/test_tick_executor.py's own
+    test_run_executes_off_the_calling_loop_thread and
+    tests/test_whalewatchers_scoring_pool.py's
+    test_run_executes_on_a_worker_thread_not_the_event_loop."""
+    monkeypatch.setattr(settlement_edge, "unresolved_tickers", lambda: ["TICK-YES"])
+
+    call_thread_ids = []
+
+    def fake_resolve_window(ticker, settled_yes):
+        call_thread_ids.append(threading.get_ident())
+        return 1
+
+    monkeypatch.setattr(settlement_edge, "resolve_window", fake_resolve_window)
+
+    client = _MarketsClient({"TICK-YES": {"result": "yes"}})
+    main_thread_id = threading.get_ident()
+
+    asyncio.run(ish._resolve_settlement_windows(client))
+
+    assert call_thread_ids, "resolve_window was never called"
+    assert main_thread_id not in call_thread_ids, (
+        "resolve_window ran on the event-loop/main thread, not a tick_executor worker thread"
+    )

@@ -23,6 +23,13 @@ def _redirect_db(tmp_path, monkeypatch):
     monkeypatch.setattr(cw, "_buffers", {"rejected_candidates": {}, "rejection_events": []})
     monkeypatch.setattr(cw, "_last_flush_at", {"rejected_candidates": 0.0, "rejection_events": 0.0})
     monkeypatch.setattr(cw, "_dropped_counts", {"rejected_candidates": 0, "rejection_events": 0})
+    # population_gate_summary_banded_cached_async's cache (issue #616 D1) is
+    # a plain module attribute, same cross-test-leak shape as every other
+    # module-global this fixture already resets above - without this, a
+    # cached (empty, from a torn-down tmp_path DB) result from one test
+    # could leak into the next test's own assertions within the same 300s
+    # TTL, since every test in one pytest run happens within that window.
+    monkeypatch.setattr(cl, "_population_gates_banded_cache", {"cached_at": None, "value": None})
 
 
 def test_record_rejection_creates_unresolved_row():
@@ -1037,4 +1044,283 @@ def test_gate_summary_async_yields_to_the_event_loop():
     assert read_thread_ids, "execute_fetchall spy never recorded a call - test is broken"
     assert threading.get_ident() not in read_thread_ids, (
         "the SQL ran on the test's own (main) thread, not aiosqlite's worker thread"
+    )
+
+
+# --- population_gate_summary_banded (issue #616 D1) ------------------------
+#
+# docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md's
+# D1: population_gate_summary() above averages hypothetical_win_rate/
+# avg_unit_cost across every unit_cost a gate ever rejected, hiding the real
+# 0.60-0.95-band negative-EV pattern docs/superpowers/research/2026-08-26-
+# economic-gate-marginal-contribution.md's E4 analysis found underneath the
+# aggregate. These bucket by unit_cost band first, same SQL-side-aggregation
+# discipline as _POPULATION_GATE_SQL (issue #616's decision record explicitly
+# warns against re-adding an unindexed Python-side scan of this table, the
+# same shape issue #601/#617 just fixed elsewhere in this file).
+
+
+def test_population_gate_summary_banded_places_a_boundary_value_in_the_upper_band():
+    """DEFAULT_BANDS are half-open [low, high) - a unit_cost exactly ON a
+    boundary belongs to the band it OPENS, not the one it closes. Verified
+    against every real boundary the design names: 0.2, 0.6, 0.95, plus 1.0
+    (the top of the valid unit_cost range) landing in the top band."""
+    boundary_ticks = [
+        ("TICK-A", 0.2, "0.20-0.40"),
+        ("TICK-B", 0.6, "0.60-0.80"),
+        ("TICK-C", 0.95, "0.95-1.01"),
+        ("TICK-D", 1.0, "0.95-1.01"),
+    ]
+    for i, (ticker, unit_cost, _) in enumerate(boundary_ticks):
+        cl.record_rejection(
+            ticker, "whale_watcher", "max_unit_cost", 10, 20,
+            side="yes", unit_cost=unit_cost, now=1000.0 + i,
+        )
+        cl.resolve_from_market_results({ticker: "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=0)
+    by_band_n = {g["unit_cost_band"]: g["n"] for g in banded}
+    assert by_band_n.get("0.20-0.40") == 1  # TICK-A (0.2)
+    assert by_band_n.get("0.60-0.80") == 1  # TICK-B (0.6)
+    assert by_band_n.get("0.95-1.01") == 2  # TICK-C (0.95) + TICK-D (1.0)
+    assert "0.00-0.20" not in by_band_n
+    assert "0.40-0.60" not in by_band_n
+    assert "0.80-0.95" not in by_band_n
+
+
+def test_population_gate_summary_banded_places_a_just_below_boundary_value_in_the_lower_band():
+    for i, (ticker, unit_cost) in enumerate([
+        ("TICK-A", 0.1999), ("TICK-B", 0.5999), ("TICK-C", 0.9499),
+    ]):
+        cl.record_rejection(
+            ticker, "whale_watcher", "max_unit_cost", 10, 20,
+            side="yes", unit_cost=unit_cost, now=1000.0 + i,
+        )
+        cl.resolve_from_market_results({ticker: "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=0)
+    by_band_n = {g["unit_cost_band"]: g["n"] for g in banded}
+    assert by_band_n.get("0.00-0.20") == 1
+    assert by_band_n.get("0.40-0.60") == 1
+    assert by_band_n.get("0.80-0.95") == 1
+
+
+def test_population_gate_summary_banded_flags_out_of_range_unit_cost_instead_of_dropping_it():
+    """Completeness (CLAUDE.md's data-plane HARD RULE): a unit_cost outside
+    every configured band must still show up somewhere, not vanish into an
+    unlabeled SQL NULL GROUP BY bucket."""
+    cl.record_rejection(
+        "TICK-A", "whale_watcher", "max_unit_cost", 10, 20,
+        side="yes", unit_cost=1.5, now=1000.0,
+    )
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=0)
+    assert len(banded) == 1
+    assert banded[0]["unit_cost_band"] == "out_of_range"
+    assert banded[0]["n"] == 1
+
+
+def test_population_gate_summary_banded_excludes_rows_without_unit_cost():
+    cl.record_rejection("TICK-A", "market_native", "max_spread", 0.08, 0.05, side="yes", now=1000.0)
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    assert cl.population_gate_summary_banded(min_samples=0) == []
+
+
+def test_population_gate_summary_banded_reports_insufficient_below_min_samples():
+    cl.record_rejection(
+        "TICK-A", "whale_follow", "entry_threshold", 0.5, 0.6,
+        side="yes", unit_cost=0.3, now=1000.0,
+    )
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=5)
+    assert len(banded) == 1
+    assert banded[0]["status"] == "insufficient"
+    assert banded[0]["win_rate"] is None
+    assert banded[0]["ev_per_contract"] is None
+    assert banded[0]["n"] == 1
+
+
+def test_population_gate_summary_banded_ready_once_min_samples_met():
+    for i in range(5):
+        side = "yes" if i < 4 else "no"
+        cl.record_rejection(
+            f"TICK-{i}", "whale_follow", "entry_threshold", 0.5, 0.6,
+            side=side, unit_cost=0.3, now=1000.0 + i,
+        )
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=5)
+    assert len(banded) == 1
+    assert banded[0]["status"] == "ready"
+    assert banded[0]["n"] == 5
+    assert banded[0]["win_rate"] == pytest.approx(80.0)  # 4/5 sided-matched
+
+
+def test_population_gate_summary_banded_computes_ev_per_contract_from_the_raw_fraction():
+    """ev_per_contract = win_rate_frac - mean_unit_cost must use the RAW 0-1
+    win-rate fraction (wins/n), never the `win_rate` OUTPUT field (which is
+    deliberately rescaled to 0-100 to match population_gate_summary()'s own
+    hypothetical_win_rate convention) - dimensional-analysis HARD RULE:
+    subtracting a 0-1 unit_cost from a 0-100 percentage would silently be
+    off by ~100x, exactly CLAUDE.md's "displayed value must match its
+    label" trap (the no-side 1-price-inversion bug's own shape)."""
+    for i in range(4):
+        side = "yes" if i < 3 else "no"
+        cl.record_rejection(
+            f"TICK-{i}", "whale_watcher", "max_unit_cost", 10, 20,
+            side=side, unit_cost=0.7, now=1000.0 + i,
+        )
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    banded = cl.population_gate_summary_banded(min_samples=0)
+    assert len(banded) == 1
+    g = banded[0]
+    assert g["win_rate"] == pytest.approx(75.0)          # 3/4, percentage scale
+    assert g["mean_unit_cost"] == pytest.approx(0.7)      # 0-1 scale
+    assert g["ev_per_contract"] == pytest.approx(0.75 - 0.7)  # 0.05, NOT 75 - 0.7 (=74.3)
+
+
+def test_population_gate_summary_banded_accepts_custom_bands():
+    cl.record_rejection(
+        "TICK-A", "whale_watcher", "max_unit_cost", 10, 20,
+        side="yes", unit_cost=0.5, now=1000.0,
+    )
+    cl.resolve_from_market_results({"TICK-A": "yes"})
+    banded = cl.population_gate_summary_banded(bands=[(0.0, 1.01)], min_samples=0)
+    assert len(banded) == 1
+    assert banded[0]["unit_cost_band"] == "0.00-1.01"
+    assert banded[0]["band_low"] == pytest.approx(0.0)
+    assert banded[0]["band_high"] == pytest.approx(1.01)
+
+
+def test_population_gate_summary_banded_rejects_unsorted_or_overlapping_bands():
+    with pytest.raises(ValueError):
+        cl.population_gate_summary_banded(bands=[(0.5, 1.0), (0.0, 0.6)], min_samples=0)
+
+
+def test_population_gate_summary_banded_async_matches_the_sync_version_exactly():
+    """Same contract as population_gate_summary_async's own equivalence
+    test above: the two paths must answer identically from identical rows,
+    since services/analytics/routes.py's route handler is only safe to call
+    the async variant from (never the sync one, on the event loop)."""
+    for i in range(6):
+        side = "yes" if i < 4 else "no"
+        cl.record_rejection(
+            f"TICK-{i}", "whale_follow", "entry_threshold", 0.5, 0.6,
+            side=side, unit_cost=0.4, now=1000.0 + i,
+        )
+        cl.resolve_from_market_results({f"TICK-{i}": "yes"})
+    cl.record_rejection("TICK-X", "market_native", "max_spread", 0.08, 0.05, now=2000.0)
+
+    sync_result = cl.population_gate_summary_banded(min_samples=5)
+    async_result = asyncio.run(cl.population_gate_summary_banded_async(min_samples=5))
+
+    assert async_result == sync_result
+    assert any(g["status"] == "ready" for g in async_result)
+
+
+def test_population_gate_summary_banded_async_self_heals_a_missing_schema(tmp_path, monkeypatch):
+    fresh = tmp_path / "nonexistent" / "candidate_log.db"
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cl, "DB_PATH", fresh)
+    assert asyncio.run(cl.population_gate_summary_banded_async(min_samples=0)) == []
+
+
+# --- population_gate_summary_banded_cached_async's own cache -------------
+#
+# Module-owned (not services/analytics/routes.py, where the UNBANDED
+# field's own cache lives) so services/diagnostics/diagnostics.py's
+# check_gate_cost_bands can share it - see this function's own module-level
+# comment for the full reasoning and the measured ~2x cost behind the 300s
+# TTL. These tests exercise the cache mechanism directly against the raw
+# uncached function, same shape as tests/test_analytics_routes.py's own
+# population_gates cache tests (which exercise the UNBANDED field's cache,
+# one layer up, through the route).
+
+
+def test_population_gate_summary_banded_cached_async_hits_cache_within_ttl(monkeypatch):
+    calls = []
+
+    async def _spy(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+
+    assert len(calls) == 1, "second call within TTL should reuse the cached result"
+
+
+def test_population_gate_summary_banded_cached_async_recomputes_after_ttl_expires(monkeypatch):
+    calls = []
+
+    async def _spy(bands, min_samples):
+        calls.append(1)
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr(cl.time, "time", lambda: fake_now[0])
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    fake_now[0] += cl._POPULATION_GATES_BANDED_CACHE_TTL_SEC + 1
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+
+    assert len(calls) == 2, "a call after the TTL has elapsed should recompute, not reuse the stale cache"
+
+
+def test_population_gate_summary_banded_cached_async_stamps_cache_at_completion_not_request_receipt(monkeypatch):
+    """Same issue #410 lesson services/analytics/routes.py's own population_
+    gates cache already applies, reapplied here rather than re-learned: a
+    query stamped with the request-receipt instant burns cache lifetime it
+    never actually had - worse here in relative terms once the query
+    approaches its measured ~70s worst case against this cache's own 300s
+    TTL (up to ~23%) than it was for the unbanded field's 30s TTL."""
+    fake_now = [1_000_000.0]
+    query_duration_sec = 70.0
+
+    async def _slow(bands, min_samples):
+        fake_now[0] += query_duration_sec
+        return [{"stub": "banded"}]
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _slow)
+    monkeypatch.setattr(cl.time, "time", lambda: fake_now[0])
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async())
+    assert cl._population_gates_banded_cache["cached_at"] == 1_000_000.0 + query_duration_sec, (
+        "cached_at must be the completion instant, not the request-receipt instant"
+    )
+
+
+def test_population_gate_summary_banded_cached_async_passes_through_bands_and_min_samples(monkeypatch):
+    """The cache wrapper must not silently drop the caller's bands/
+    min_samples on a cache MISS - only the cache KEY ignores them (see the
+    wrapper's own docstring for why that parity with the unbanded field's
+    cache is intentional, not an oversight)."""
+    received = []
+
+    async def _spy(bands, min_samples):
+        received.append((bands, min_samples))
+        return []
+
+    monkeypatch.setattr(cl, "population_gate_summary_banded_async", _spy)
+    custom_bands = [(0.0, 1.01)]
+
+    asyncio.run(cl.population_gate_summary_banded_cached_async(bands=custom_bands, min_samples=7))
+
+    assert received == [(custom_bands, 7)]
+
+
+def test_default_bands_are_the_six_bands_the_e4_prototype_actually_used():
+    """DEFAULT_BANDS must reproduce docs/superpowers/research/2026-08-26-
+    economic-gate-marginal-contribution.md's own E4 results table exactly
+    ([0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,.95) [.95,1.01)) - this is the
+    analysis D1 is built on. NOT the same bands as CLAUDE.md's (now-retired)
+    HARD COMMANDMENT table, despite that research doc's own prose claiming
+    otherwise: `git log -S'HARD COMMANDMENT' -- CLAUDE.md` shows that table
+    (introduced commit 3193843, retired in 78e5aaf/385623c - the live
+    CLAUDE.md has no HARD COMMANDMENT section at all) used a coarser
+    FOUR-band scheme (0.50-0.65, 0.65-0.80, 0.80-0.95, >=0.95) with no band
+    below 0.50 - a materially different shape. See DEFAULT_BANDS' own
+    comment in services/candidate_log.py for the full citation trail."""
+    assert cl.DEFAULT_BANDS == (
+        (0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 0.95), (0.95, 1.01),
     )

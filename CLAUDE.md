@@ -76,7 +76,7 @@ Any arithmetic, unit conversion, or numeric derivation gets a `dimensional-analy
 
 - `docs/next-action.md` holds the single next action and is printed in every session banner; "continue" means do that one thing. Rewrite it at the end of a session; never leave it describing finished work.
 - `git log`/`blame`/`diff` are the only maintained history since the 2026-08-07 cutover. `ROADMAP.md` is the living to-do (check items off in place; `/close-roadmap-item`). `docs/open-decisions.md` is the single list of parked decisions, printed every session — act on a line or ask about it; never write a new plan for something already on it.
-- Frozen, not maintained: `docs/status-archive-2026-08-26.html` (the pre-git narrative), `docs/roadmap-archive-2026-08-09.md`.
+- Frozen, not maintained: `docs/status-archive-2026-08-26.html` (the pre-git narrative), `docs/roadmap-archive-2026-08-09.md`, `docs/roadmap-archive-2026-08-16.md`, `docs/roadmap-archive-2026-08-23.md`.
 
 ## Dev workflow — ddev, not bare uvicorn
 
