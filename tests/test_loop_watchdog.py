@@ -1,7 +1,36 @@
 import asyncio
+import threading
 import time
 
 from services import loop_watchdog
+
+
+def test_extract_main_thread_stack_finds_the_main_threads_block():
+    """faulthandler.dump_traceback_later's output interleaves every live
+    thread's stack, most-recent-call-first, separated by a blank line, each
+    headed 'Thread 0x<16-hex-digit ident> (most recent call first):' - a
+    leading 'Timeout (...)!' line precedes the first block. Verified
+    directly against real faulthandler output before writing this (not
+    assumed): the ident is zero-padded to 16 lowercase hex digits, which
+    doesn't match Python's own hex()'s unpadded output for the same int."""
+    main_id = threading.main_thread().ident
+    dump = (
+        "Timeout (0:00:00.300000)!\n"
+        f"Thread 0x{0xdeadbeef:016x} (most recent call first):\n"
+        '  File "<string>", line 7 in bg\n'
+        "\n"
+        f"Thread 0x{main_id:016x} (most recent call first):\n"
+        '  File "app.py", line 42 in blocked_call\n'
+        '  File "main.py", line 11 in <module>\n'
+    )
+    block = loop_watchdog._extract_main_thread_stack(dump)
+    assert "blocked_call" in block
+    assert "bg" not in block, "must not include a background thread's frames"
+
+
+def test_extract_main_thread_stack_returns_none_when_marker_absent():
+    assert loop_watchdog._extract_main_thread_stack("") is None
+    assert loop_watchdog._extract_main_thread_stack("no thread blocks here") is None
 
 
 def test_watchdog_reports_a_real_stall():
@@ -33,7 +62,17 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
     capture the main thread's stack on the stall path itself and record it
     via fault_log's existing traceback slot, off the event loop so the
     diagnostic write can never become a new instance of the #210 blocking-
-    sqlite-on-the-loop bug class this app has already fixed once elsewhere."""
+    sqlite-on-the-loop bug class this app has already fixed once elsewhere.
+
+    Issue #605 found the original capture mechanism (sys._current_frames
+    called from inside _tick() itself, after asyncio.sleep() returns) can
+    never see the actual blocking frame: by the time _tick() resumes, the
+    block has already ended and control has already returned to the loop -
+    sys._current_frames() at that point can only ever show _tick()'s own
+    resumption frame, not whatever blocked it. This test's assertion below
+    (the blocking function's own name appears in the captured text) is the
+    one the old mechanism could never pass - it could only ever assert
+    non-empty, not correct."""
     calls = []
 
     def _fake_record_fault(*args, **kwargs):
@@ -47,10 +86,13 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
 
     monkeypatch.setattr(loop_watchdog.fault_log, "record_fault", _fake_record_fault)
 
-    async def run():
-        task = loop_watchdog.start(sample_interval_sec=0.01)
-        await asyncio.sleep(0.05)
+    def _blocking_call_the_capture_must_see():
         time.sleep(0.2)  # blocks the loop - forces a real stall, same as the existing test above
+
+    async def run():
+        task = loop_watchdog.start(sample_interval_sec=0.01, capture_arm_sec=0.05)
+        await asyncio.sleep(0.05)
+        _blocking_call_the_capture_must_see()
         await asyncio.sleep(0.05)
         task.cancel()
         try:
@@ -67,4 +109,39 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
     assert args[1] == "stall"
     assert not on_loop, "the fault_log write must run off the event loop (asyncio.to_thread)"
     assert kwargs.get("severity") == "warn"
-    assert kwargs.get("tb"), "expected a non-empty captured stack string"
+    tb = kwargs.get("tb")
+    assert tb, "expected a non-empty captured stack string"
+    assert "_blocking_call_the_capture_must_see" in tb, (
+        "the capture must show the ACTUAL blocking frame, not the watchdog's own - "
+        f"got: {tb!r}"
+    )
+
+
+def test_stall_shorter_than_the_capture_arm_records_no_fabricated_traceback(monkeypatch):
+    """The old mechanism always produced a (garbage) string, never honestly
+    reporting 'no genuine capture available'. A stall the metrics threshold
+    (0.05s) flags but that ends before the capture-arm timer (set here well
+    above the forced block) ever fires must not fabricate a traceback -
+    accuracy over always having *something* to show (CLAUDE.md: 'a value
+    means exactly what its label says')."""
+    calls = []
+    monkeypatch.setattr(loop_watchdog.fault_log, "record_fault",
+                         lambda *a, **kw: calls.append((a, kw)) or True)
+
+    async def run():
+        task = loop_watchdog.start(sample_interval_sec=0.01, capture_arm_sec=5.0)
+        await asyncio.sleep(0.05)
+        time.sleep(0.15)  # above the 0.05s metrics threshold, well below the 5.0s capture arm
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    loop_watchdog.reset_window()
+    asyncio.run(run())
+
+    assert calls, "expected the metrics threshold to still flag this as a stall"
+    _, kwargs = calls[0]
+    assert not kwargs.get("tb"), f"expected no fabricated capture below the arm threshold, got: {kwargs.get('tb')!r}"

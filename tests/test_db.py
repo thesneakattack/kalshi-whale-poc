@@ -155,6 +155,60 @@ def test_add_column_if_missing_adds_once(tmp_path, monkeypatch):
         assert "extra" in cols
 
 
+def test_add_column_if_missing_survives_a_concurrent_racer(tmp_path, monkeypatch):
+    """PRAGMA table_info (read) then ALTER TABLE ADD COLUMN (write) is not
+    atomic across connections: two threads can both see the column missing
+    before either commits its ALTER, and the loser's own ALTER then raises
+    'duplicate column name' - a real OperationalError, not a benign no-op,
+    caught by every caller's own broad `except Exception` and silently
+    dropping that caller's whole write (found via services/fault_log.py's
+    issue #605 fix, whose record_fault() is genuinely called from concurrent
+    OS threads - same shape services/fault_log.py's own
+    _ensure_null_exc_type_dedup_index already had to solve once for its
+    CREATE UNIQUE INDEX race, see that function's docstring)."""
+    import threading
+
+    _fresh_registry(monkeypatch)
+    db_path = tmp_path / "race.db"
+    db.register_schema("t", lambda conn: conn.execute(
+        "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)"
+    ))
+    # Single seed connection first, deliberately (matches services/
+    # fault_log.py's test_concurrent_first_writes_after_upgrade_do_not_
+    # lose_a_call): converting a database to WAL mode needs exclusive
+    # access, and a database that's never been opened once hitting 8-way
+    # concurrency on its very first connection is a different, already-
+    # tracked bug (issue #549), out of scope here - this test isolates the
+    # one race add_column_if_missing is actually responsible for.
+    with db.connect(db_path, tables=("t",)):
+        pass
+
+    n_threads = 8
+    barrier = threading.Barrier(n_threads)
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+
+    def _add_column():
+        barrier.wait()  # force every thread to race the same missing-column check together
+        try:
+            with db.connect(db_path, tables=("t",)) as conn:
+                db.add_column_if_missing(conn, "t", "extra", "REAL")
+        except BaseException as exc:  # noqa: BLE001 - the race under test raises sqlite3.OperationalError
+            with errors_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_add_column) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"a concurrent add_column_if_missing call raised instead of no-op'ing: {errors}"
+    with db.connect(db_path, tables=("t",)) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(t)")}
+        assert "extra" in cols
+
+
 def test_connect_creates_nested_parent_directory(tmp_path, monkeypatch):
     """The prototype's mkdir(parents=True) - a tmp_path-based test can hand
     connect() a not-yet-existing nested directory; exist_ok=True alone

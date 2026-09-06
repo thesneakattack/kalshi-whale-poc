@@ -356,6 +356,92 @@ def test_record_fault_stores_an_explicit_traceback():
     assert row["first_traceback"] == "Traceback (most recent call last):\n  fake stack\n"
 
 
+def test_last_traceback_reflects_the_most_recent_capture_while_first_stays_frozen():
+    """Issue #605: loop_watchdog's stall message is a fixed string by
+    design (module docstring), so every stall dedupes into the SAME row -
+    and first_traceback freezes on the very first capture forever (see
+    test_the_first_traceback_is_kept_not_the_latest above). For a real
+    exception that's correct (repeats share the same origin); for a stall,
+    each occurrence can be blocked on different code, so freezing the only
+    captured stack at whichever one happened first throws away every
+    later, possibly more useful, capture. last_traceback is the fix: it
+    updates on every call, same as count/last_seen already do."""
+    fl.record_fault("loop_watchdog", "stall", "event loop stall detected", tb="stack A")
+    row = fl.recent(component="loop_watchdog")[0]
+    assert row["first_traceback"] == "stack A"
+    assert row["last_traceback"] == "stack A"
+
+    fl.record_fault("loop_watchdog", "stall", "event loop stall detected", tb="stack B")
+    row = fl.recent(component="loop_watchdog")[0]
+    assert row["count"] == 2
+    assert row["first_traceback"] == "stack A", "first_traceback must stay frozen, unchanged from before"
+    assert row["last_traceback"] == "stack B", "last_traceback must reflect the newest capture"
+
+
+def test_last_traceback_is_preserved_when_a_later_call_has_no_capture():
+    """loop_watchdog's fix (issue #605) can genuinely have nothing to
+    report for a given stall (too short for the capture-arm timer to have
+    fired) and passes tb=None for that occurrence - that must not clobber
+    a previous GENUINE capture with nothing. A missing capture is silence,
+    not new information overwriting old information."""
+    fl.record_fault("loop_watchdog", "stall", "event loop stall detected", tb="real stack")
+    fl.record_fault("loop_watchdog", "stall", "event loop stall detected", tb=None)
+    row = fl.recent(component="loop_watchdog")[0]
+    assert row["count"] == 2
+    assert row["last_traceback"] == "real stack", "a None capture must not overwrite a prior real one"
+
+
+def test_last_traceback_also_updates_for_real_exceptions():
+    """_write() is shared by record() and record_fault() - the schema
+    change must not special-case one caller. A repeat exception's fresh
+    traceback (usually identical to the first for a deterministic bug, but
+    not guaranteed) is now genuinely available too, not just discarded."""
+    fl.record("m", "op", _boom("first"), now=100.0)
+    fl.record("m", "op", _boom("first"), now=200.0)
+    row = fl.recent()[0]
+    assert row["first_traceback"] == row["last_traceback"], (
+        "same exception type/message/call site both times, so the two captured "
+        "tracebacks are expected to be identical text - this asserts the column "
+        "is actually populated for record(), not that it must differ from first_traceback"
+    )
+    assert row["last_traceback"] is not None
+
+
+def test_last_traceback_column_is_added_to_a_pre_existing_table_without_it(monkeypatch, tmp_path):
+    """Guarded ALTER, per this module's own docstring warning about
+    services/game_state.py shipping an unguarded schema change once
+    already: a fault_log.db written before this column existed must not
+    raise on its first _connect() after the upgrade."""
+    db_path = tmp_path / "legacy_fault_log.db"
+    monkeypatch.setattr(fl, "DB_PATH", db_path)
+
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        """
+        CREATE TABLE faults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            component TEXT NOT NULL, operation TEXT NOT NULL, severity TEXT NOT NULL,
+            exc_type TEXT, message TEXT, first_traceback TEXT, context TEXT,
+            count INTEGER NOT NULL DEFAULT 1, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            UNIQUE (component, operation, exc_type, message)
+        )
+        """
+    )
+    seed.execute(
+        "INSERT INTO faults (component, operation, severity, exc_type, message, "
+        "first_traceback, count, first_seen, last_seen) VALUES (?,?,?,?,?,?,1,?,?)",
+        ("old", "op", "warn", None, "pre-existing row", "old-stack", time.time(), time.time()),
+    )
+    seed.commit()
+    seed.close()
+
+    assert fl.record_fault("new", "op", "a fresh row", tb="new-stack") is True
+    rows = {r["component"]: r for r in fl.recent(limit=10)}
+    assert rows["old"]["first_traceback"] == "old-stack"
+    assert rows["old"]["last_traceback"] is None, "pre-existing row has no last_traceback yet - NULL, not an error"
+    assert rows["new"]["last_traceback"] == "new-stack"
+
+
 # --- issue #543: NULL exc_type defeats the UNIQUE constraint -----------
 
 def test_record_fault_with_the_same_message_dedupes_into_one_row():
