@@ -122,10 +122,33 @@ confirmed repeatedly throughout the night.
   latent race in `db.add_column_if_missing` along the way (own regression
   test). CI all green. **Self-review posted; adversarial review +
   consolidation still pending — not merge-ready per the PR's own body.**
-  Coordinator pinged `c4` to confirm status before touching it, awaiting
-  reply. This does not yet root-cause or fix #605's actual stall — it
-  makes the next real occurrence observable for the first time; still
-  need to catch one live and read `last_traceback`.
+  **PR #632 MERGED + deployed (`19e5baf`).** Adversarial review earned its
+  keep immediately: `c4`'s own self-review had called the unlocked
+  faulthandler-thread/`_tick()` read-write "at worst a truncated capture"
+  — the reviewer reproduced an actual SIGSEGV from that exact pattern (raw
+  fd write racing a buffered Python file object) on both local and the
+  real prod container's Python 3.13.15. Fixed via raw
+  `os.pread`/`os.ftruncate`/`os.lseek` (no buffered object) plus a second
+  deterministic bug found alongside (`os.ftruncate` not resetting write
+  offset, RED/GREEN-tested) — second commit `f21cf3c`, consolidated,
+  merged. **Within ~1 minute of deploy, the new mechanism caught the real
+  #605 stall for the first time ever** — fault row `243600` (climbing,
+  17+ occurrences), `last_traceback` independently verified live via
+  `GET /api/health/faults?component=loop_watchdog`: genuine 6-level-deep
+  recursive `jsonable_encoder` calls (`fastapi/encoders.py:289`) from
+  `routing.py`'s `serialize_response` — a large/deeply-nested response
+  payload taking multiple seconds of pure synchronous recursion with zero
+  yield points. Matches the "zero exceptions" signature exactly (a slow
+  but successful serialization raises nothing) and is a completely
+  different mechanism from `#585`'s two (already-ruled-out) call sites.
+  **`c4` is now identifying the specific route** (leading candidate:
+  `/api/state`, embeds `market_titles`/`event_titles`/
+  `event_live_data`/`live_game_state` inline — size not yet confirmed)
+  and gathering more captures before proposing a fix, comparing competing
+  solution families (offload via `asyncio.to_thread`, a faster encoder,
+  or trimming/paginating the payload) per the data-plane HARD RULE. Old
+  179,037-occurrence garbage row is dead history now that the message
+  text changed and started a fresh row.
 - **`ea`** (was `bd`) — standing watch, resumed. **`#627`/`#586` DONE,
   MERGED, deployed live** (`3db93d2`, confirmed ancestor of primary's
   current HEAD `3fb800b`) — self-review, real GO-verdict adversarial
