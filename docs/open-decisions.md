@@ -25,7 +25,7 @@ its issue closes.
 
 ## Parked 2026-09-07 — two dated questions about the review tiering
 
-Review tiering shipped (PR #__PR__): depth follows consequence, decided by the
+Review tiering shipped (PR #664): depth follows consequence, decided by the
 paths a PR touches, `review-tier` decides it and counts the persisted
 artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
 "measure first, decide later" when asked directly (session `autotrade-d9`,
