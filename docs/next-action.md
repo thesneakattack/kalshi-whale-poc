@@ -460,6 +460,16 @@ verified, not relayed:**
    historical record of the plan actually executed against), not a
    merge of the stale branch — his call, not decided here.
 
+**Decided (David, 2026-09-07 ~06:25Z): narrow commit.** Done —
+`2d56b03` adds all 4 `step4-file-move-plan*.md` files, content verified
+byte-identical (checksum) to reviewed commit `b388fa1`, zero other
+changes, not a merge of the branch. The document is now durable,
+on-`main` history — `0d` can cite it directly for Lane 9 without
+reaching into the stray worktree. Judgment calls 2-4 remain open but
+undecided-not-blocking (David didn't ask to revisit them); the branch
+`docs/step4-file-move-plan` and its worktree are now safe to clean up
+whenever convenient, not urgent.
+
 ---
 
 ## Peer status (rewritten 2026-09-07 ~06:22Z by coordinator `36` — this file is the durable record, not chat memory)
