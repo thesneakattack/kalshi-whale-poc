@@ -70,8 +70,8 @@ connection fix, Task 7 = `GET /api/health/faults` event-loop fix, Task 8 = integ
 check, Task 9 = fd visibility) — no instance found where a number still points at what
 that number used to mean before the mid-draft insertion of Tasks 6–7 (i.e., no leftover
 reference calling the integrity check "Task 6" or fd-visibility "Task 7"). References to
-*other* plan documents' own "Task 5" (`docs/superpowers/plans/2026-09-01-event-loop-
-blocking-fix1.md`'s Task 5; "the precedent plan's own 'Task 5: live validation'") are
+*other* plan documents' own "Task 5" (`docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-blocking-fix1.md`'s
+Task 5; "the precedent plan's own 'Task 5: live validation'") are
 correctly disambiguated with an explicit "the precedent plan's own" qualifier and are not
 self-references. The "9 net new tests" arithmetic in Task 10 (Task 1 nets 1; 4 in Tasks
 2–5; 1 in Task 6; 1 in Task 7; 2 in Task 9 = 9) is internally consistent with the final

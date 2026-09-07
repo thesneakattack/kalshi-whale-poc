@@ -1,9 +1,9 @@
 """Kalshi contract-documentation scanner for the Quality Control Plane's
 static audit CLI (Kalshi Integration Phase A Task A3,
-docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md).
+docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md).
 
 Enforces the design spec's "Documentation provenance in code" rule
-(docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md):
+(docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md):
 every public adapter/normalizer operation under `services/kalshi/` must be
 covered by a code-adjacent, module-level `CONTRACT_DOCS` dict mapping the
 operation name to a tuple of `docs/kalshi/*` paths that actually exist on

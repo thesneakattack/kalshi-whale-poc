@@ -24,9 +24,9 @@ Read first:
 - .claude/skills/root-cause-debugging/SKILL.md
 - .claude/skills/observability-performance/SKILL.md
 - .claude/skills/kalshi-contract-review/SKILL.md
-- docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md
-- docs/superpowers/specs/2026-08-25-realtime-data-plane-investigation-design.md
-- docs/superpowers/plans/2026-08-25-realtime-data-plane-investigation.md
+- docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md
+- docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-investigation-design.md
+- docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-investigation.md
 - docs/kalshi/CHEATSHEET.md
 - relevant service CHEATSHEET.md files
 - current relevant CI definitions

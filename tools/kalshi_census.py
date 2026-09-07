@@ -1,5 +1,5 @@
 """Kalshi coupling/contract census - Kalshi Integration Phase A, Task A0
-(docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md).
+(docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md).
 
 Gives every later Phase A/C task a mechanical, reproducible blast radius
 for the migration instead of relying on memory or ad hoc grep: where the
@@ -7,7 +7,7 @@ official `kalshi_python_async` SDK is imported directly, where a raw Kalshi
 host string appears, where the current legacy wrapper classes
 (`KalshiClient`/`KalshiAccountClient`/`KalshiTradeWebSocketClient`) are
 imported/constructed/called, which known REST-vs-WS alias/deprecated
-fields (docs/superpowers/research/2026-08-24-kalshi-integration-audit.md's
+fields (docs/archive/lane-1-kalshi-ingestion/research/2026-08-24-kalshi-integration-audit.md's
 Finding D) are read directly by application code, which
 tests/fixtures/kalshi/*.json fixtures point at a real local doc, and a
 curated hot/cold classification for the entry points already known to sit
@@ -93,7 +93,7 @@ _LEGACY_WRAPPER_CLASS_NAMES = frozenset(_LEGACY_WRAPPER_MODULES.values()) - {"Ka
 _WRAPPER_METHOD_RECEIVER_NAMES = frozenset({"client", "account", "trade_stream", "index_stream"})
 
 # See module docstring: only the specific REST-vs-WS alias/deprecated field
-# names docs/superpowers/research/2026-08-24-kalshi-integration-audit.md's
+# names docs/archive/lane-1-kalshi-ingestion/research/2026-08-24-kalshi-integration-audit.md's
 # Finding D named as real, already-buggy splits.
 _KNOWN_FIELD_NAMES = frozenset({
     "taker_side", "taker_outcome_side", "taker_book_side",

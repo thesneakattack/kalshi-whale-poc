@@ -2,7 +2,7 @@
 Builds/refreshes docs/kalshi/upstream-manifest.json from docs/kalshi/
 llms.txt's real index plus current on-disk mirror content, and generates
 docs/kalshi/README.md from the manifest - Kalshi Integration Phase A Task
-A2 (docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md).
+A2 (docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md).
 
 Reverses the direction tools/kalshi_docs_drift.py used to own: README.md
 used to be parsed as machine input for the manifest (a real, live-found

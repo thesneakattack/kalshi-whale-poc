@@ -138,7 +138,7 @@ the CURRENT (un-fixed) source, not Tier 0's planned end state.
 4. **`record_snapshot_from_ticker` off the event loop** — the caller
    (`_process_stream_ticker`) schedules the write via `tick_executor.run()`
    + `asyncio.create_task()`, the exact idiom PR #414
-   (`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix1.md`) used
+   (`docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-blocking-fix1.md`) used
    for four sibling functions; the function itself is unchanged (still a
    valid direct synchronous call for its own 3 existing tests).
 5. **`config_store.update()` stops destroying comments and does not
@@ -1594,7 +1594,7 @@ string executes, never the table shape, index list, or any query.
   Tier 0's eventual diff there.
 
 **Interfaces — a deliberate deviation from PR #414's exact pattern, stated
-explicitly:** PR #414 (`docs/superpowers/plans/2026-09-01-event-loop-
+explicitly:** PR #414 (`docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-
 blocking-fix1.md`) converted 4 sibling functions
 (`ingestion.record_cfbenchmarks`/`record_pyth`, `settlement_edge.
 record_observation`, `game_state.record`, `series_watcher.record_book`)
@@ -1671,7 +1671,7 @@ current source.
 Add to `tests/test_whale_stream_stage_timing.py`, matching Tier 0's own
 precedent test's exact shape for this same file/function
 (`test_process_stream_ticker_schedules_flush_via_tick_executor_when_told`,
-confirmed via `docs/superpowers/plans/2026-09-01-event-loop-blocking-
+confirmed via `docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-blocking-
 fix1.md`'s own Step 7):
 
 ```python

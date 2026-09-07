@@ -1,5 +1,5 @@
 """Stage-by-stage timing and counters for the whale-trade pipeline
-(realtime data-plane investigation task I2, docs/superpowers/plans/
+(realtime data-plane investigation task I2, docs/archive/lane-1-kalshi-ingestion/plans/
 2026-08-25-realtime-data-plane-investigation.md).
 
 Answers "where does a trade message's time actually go" with measurements

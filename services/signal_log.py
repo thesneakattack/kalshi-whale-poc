@@ -18,7 +18,7 @@ ticker, the instant a market settles) and main.py's 30s/200-batch REST poll
 (mark_resolved, now the slower safety net for tickers this app wasn't
 watching at settlement time). Until then the REST poll was the ONLY caller
 in the app while the same settled event already resolved four other stores
-for the same ticker - see docs/superpowers/research/2026-08-25-realtime-
+for the same ticker - see docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-
 data-plane-known-findings.md H13. Both paths are idempotent (WHERE
 resolved = 0), so a row graded by either is never reopened or re-graded.
 """

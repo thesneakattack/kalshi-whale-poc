@@ -17,7 +17,7 @@ fetch:
   and `--check` re-verifies that hasn't silently drifted.
 
 **Update, 2026-08-24 (Kalshi Integration Phase A, Task A2 -
-docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md):** this
+docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md):** this
 module used to build the manifest itself by parsing docs/kalshi/README.md's
 "## Source Pages" section (a real, live-found parser bug from that era -
 see git history and tests/test_kalshi_docs_drift.py's

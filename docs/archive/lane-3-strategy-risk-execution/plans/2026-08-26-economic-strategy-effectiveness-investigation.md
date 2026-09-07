@@ -101,7 +101,7 @@ reused per execution-program §10's "do not rerun" instruction), 6 (inference, l
 
 **Method:** hourly `COUNT(*)` of KXBTC15M signals from `signal_log.db` across its full
 history (2026-08-12 to present), looking for troughs/regime shifts; cross-reference against
-`docs/superpowers/research/2026-08-25-realtime-root-cause-report.md` §4's capture-
+`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-root-cause-report.md` §4's capture-
 completeness figures.
 
 **Result (full table + interpretation):**

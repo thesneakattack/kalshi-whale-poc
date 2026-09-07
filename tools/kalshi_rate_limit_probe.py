@@ -1,5 +1,5 @@
 """Kalshi REST demand, endpoint-cost and batching probe (realtime data-plane
-investigation task I8, docs/superpowers/plans/2026-08-25-realtime-data-
+investigation task I8, docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-
 plane-investigation.md).
 
 Read-only, manual, bounded. Four independent probes, each of which degrades
