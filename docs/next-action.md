@@ -210,13 +210,25 @@ governing the whole migration.
   comment marker) plus correcting a mis-stated deliberate-gaps count
   (7 real, reported as 4). `ea`'s independent sweep found #658
   otherwise clean (no cross-lane back-citation gap). Not merged.
-- **`0d`** — Lane 1 (PR #657, OPEN, 2 comments as of last check): two
-  required fixes outstanding — (1) re-check for the Lane-2-style
-  occurrence-vs-presence bug (not yet confirmed either way), (2) a
-  confirmed-real cross-lane back-citation gap, 5 files/7 occurrences
-  citing Lanes 8/4/6 by old path (full list in methodology point 9
-  above; one hit independently verified directly against the PR's own
-  branch content). Not merged.
+- **`0d`** — Lane 1 (PR #657, OPEN, 2 comments as of last check, head
+  SHA `9f4e1ba` at last check): two required fixes outstanding, **not
+  yet confirmed applied as of this writeup** — if this session resumes
+  after compaction and hasn't heard back, check `gh pr view 657` fresh
+  rather than assume either is done:
+  1. Re-check for the Lane-2-style occurrence-vs-presence bug (not yet
+     confirmed either way).
+  2. **Confirmed-real cross-lane back-citation gap, 5 files/7
+     occurrences, exact list** (one hit — the first below — independently
+     verified directly against the PR's own branch content, not just
+     relayed):
+     - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`
+       → cites Lane 8's `2026-08-25-frontend-modularization.md` (1x)
+     - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-30-kalshi-category-data-completeness-implementation.md`
+       → cites Lane 4's `2026-08-27-backend-services-modularization.md` (1x)
+     - `docs/archive/lane-1-kalshi-ingestion/specs/...diagnostics-widening-plan-consolidation.md`,
+       `...plan-review.md`, `...pr420-adversarial-review.md` (3 files)
+       → all cite Lane 6's `2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
+       (2+2+1 = 5 occurrences)
 - **`ea`** — Lane 2 (PR #656): **MERGED** (`0fe413b`), fully closed out,
   nothing pending. Also ran the independent post-merge sweeps on #657/
   #658 above before compacting; said it will re-derive the file list
