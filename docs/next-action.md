@@ -128,6 +128,22 @@ reporting done) running in parallel with Lane 6 (disjoint file sets).
 **Full-repo de-wrapping sweep is now the standing citation-discovery
 method for Lanes 6/3/2/1/9**, not slug-substring or exact-string grep.
 
+**Second standing-methodology addition, from `c4`'s retroactive #651
+pass and its generalization sweep**: the original per-lane GitHub-issue
+citation check (Lane 4/5/8 all used it) only searched `type:plan-task`/
+`Plan:`-titled issues — missed **#54** (a general `type:feature` issue
+with a genuinely broken citation to a moved Lane 4 file). Generalized
+the check across **all 147 open issues** (not just plan-task/`Plan:`-
+titled) using the old-full-path-vs-bare-filename distinction (a bare
+filename mention, e.g. a plan-task citing its own parent plan by name,
+is correct and unaffected by the move — only a full
+`docs/superpowers/<dir>/<filename>` path is genuinely stale; a naive
+full-text search without this distinction buries real findings in false
+positives from legitimate self-citations). Found and fixed 2 more:
+**#621**, **#613** (both Lane 5). No further Lane 4/8 hits. **Standing
+method for Lane 6 onward: search all open issues, not just plan-task/
+`Plan:`-titled ones, and apply the full-path-vs-bare-filename filter.**
+
 **Known, accepted, temporary side effect, still holding:** each batch
 only fixes its own outgoing references; forward-references from
 not-yet-moved lanes into already-moved ones self-heal when their own
@@ -143,9 +159,10 @@ follow once step 4 finishes.
 
 - **`49`** — Lane 5 (#653) merged. Running the 14-file wrap-citation
   retroactive fix (Lane 4+8) and Lane 6's file-move in parallel now.
-- **`c4`** — confirmed #634's live deploy; now producing retroactive
+- **`c4`** — confirmed #634's live deploy; completed retroactive
   review-cycle artifacts for PR #651 (full cycle) and PR #652 (missing
-  adversarial-review comment + addendum).
+  comment + addendum), then generalized the #54 finding across all 147
+  open issues (see above). Available for next assignment.
 - **`0d`** — `#642` adversarial review still pending, status re-requested,
   no reply yet.
 - **`ea`** — standing watch. Resolved its own labeling-count concern
