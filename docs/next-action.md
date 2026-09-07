@@ -145,20 +145,25 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status
+## Peer status — fully parallelized on David's instruction (2026-09-07)
 
-- **`49`** — executing Lane 3. After it finishes, proceeds to **Lane 1**
-  next (not Lane 2 — see `ea`, below), Lane 9 last regardless.
-- **`c4`** — standing watch, available for verification asks.
-- **`0d`** — standing watch, available. Last task (Lane 4/8
-  stale-citation follow-up) closed clean: zero real remaining gaps.
-- **`ea`** — **reassigned off app-health monitoring onto Lane 2**
-  (David's direct instruction, 2026-09-07: focus the fleet on
-  completing the migration), running in parallel with 49's Lane 3
-  (disjoint file sets). No session is doing standing app-health watch
-  right now — a deliberate tradeoff for migration throughput, not an
-  oversight; the kill switch/`trading_enabled=false` invariants don't
-  depend on active monitoring to hold.
+Lanes 1, 2, and 3 now executing **simultaneously** (disjoint file sets,
+same pattern 49 proved safe running Lane 6 + the wrap-citation fix
+concurrently). Only Lane 9 remains after these three, and it stays
+blocked until all three are confirmed **merged** (not just done) —
+it contains the design doc governing the whole migration.
+
+- **`49`** — executing Lane 3. After it finishes: help `c4` verify
+  whichever of Lane 1/2/3 lands first, or hold — does NOT start Lane 9
+  until Lanes 1 and 2 are both confirmed merged.
+- **`0d`** — executing **Lane 1** (Kalshi & index ingestion).
+- **`ea`** — executing **Lane 2** (whale signal). Reassigned off
+  app-health standing watch to do this — no session is doing that watch
+  right now, a deliberate throughput tradeoff, not an oversight; the
+  kill switch/`trading_enabled=false` invariants don't depend on active
+  monitoring to hold.
+- **`c4`** — independent verification role continues for all three
+  in-flight lanes, same as it played for 4/5/6/8.
 
 ---
 
