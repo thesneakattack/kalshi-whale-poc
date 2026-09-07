@@ -257,7 +257,7 @@ milestone `type` specifically:
   `widget_status == "live"`) and strictly less informative (can't tell
   "not started" from "finished" the way the 3-state field can).
 - `winner` never appears — confirmed absent on every captured payload,
-  matching the census (`docs/superpowers/research/2026-08-30-kalshi-
+  matching the census (`docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-
   category-data-shape-audit.md` S4/D2: `esports_match` is 9,385/10,706 of
   the exchange-wide no-`winner` figure).
 - **No team-identity field of any kind appears in this payload**, checked

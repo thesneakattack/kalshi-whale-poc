@@ -590,7 +590,7 @@ section for the full evidence chain (census S3/S4 rows).
   `{"status": str|None, "winner": str|None}`. Consumed by Task 6's two call sites.
   `default_path_types_snapshot() -> dict` for observability (wired properly in Task 5's own
   test only; the `state`/`GET /api/observability/summary` plumbing follows the
-  `me_gate_snapshot()` precedent from `docs/superpowers/plans/2026-08-29-event-scoped-me-
+  `me_gate_snapshot()` precedent from `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-29-event-scoped-me-
   gate.md` Task 5 if a future task wires it in — not required for D2 to ship correctly,
   since `fault_log` already durably records every new type regardless).
 
