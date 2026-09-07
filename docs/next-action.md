@@ -132,6 +132,14 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    similar-topic matching**, when sweeping for stale citations — several
    false positives tonight were a different, not-yet-moved file that
    merely shared a date or subject with a real moved one.
+7. **A `git add` with a mixed list of renamed-and-modified paths can
+   error on one path and silently abort before staging the rest** — Lane
+   2 (PR #656) hit this: the commit "succeeded" but `--stat` showed only
+   the renames, 0 insertions, meaning every citation-fix edit had been
+   dropped. Stage renames and modified-content files in separate `git
+   add` calls, and check `git status`/`--stat` immediately after every
+   commit — don't trust a non-erroring `git commit` actually staged
+   everything intended.
 
 **Known, accepted, temporary side effect, still holding:** each batch
 only fixes its own outgoing references; forward-references from
