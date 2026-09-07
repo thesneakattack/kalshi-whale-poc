@@ -182,3 +182,62 @@ def review_tier(
         if name in labels.REVIEW_TIER_A_LABELS:
             reasons.append(f"label: {name}")
     return ("A" if reasons else "B"), reasons
+
+
+# A review artifact is recognised by the first line of its comment *starting*
+# with what it is - optional markdown noise, an optional qualifier, then the
+# word. Anchoring is the whole point: an unanchored search counted eight real
+# comments that only *talk about* a review ("Response to the independent
+# adversarial review's finding", "Fix-list recheck (adversarial review returned
+# NO-GO)"), and PR #632 reached its required three through one of them. That is
+# the body-narrative failure moving into a comment.
+#
+# Validated against tests/fixtures/review_artifact_first_lines.tsv - 265 real
+# first lines, 216 matched, all eight known false positives rejected, and every
+# heading form this repo actually posts kept, including the `**bold**` ones that
+# broke the stricter `^#+\s*(self-review|...)` form (which matched 170 and
+# failed the fully compliant PR #625).
+#
+# One real artifact is missed: `## Review outcome (independent adversarial
+# review, fresh Agent call)`. Accepted deliberately - it fails *closed* (the PR
+# reads FAIL and the author retitles the comment), and a pattern that defines
+# the expected heading is worth more than one that guesses every past form. The
+# rule text says what the first line must look like.
+REVIEW_ARTIFACT_FIRST_LINE = re.compile(
+    r"^[\s#*_>`]*"
+    r"(?:(?:independent|pr(?:[-\s](?:level|stage))?|dispatching[-\s]session|"
+    r"tier\s+b|final|lean|post[-\s]merge|stage\s+\d+|review[-\s]cycle)[\s,:—–-]+)*"
+    r"(self[-\s]?review|adversarial|consolidation)\b",
+    re.IGNORECASE,
+)
+
+
+def count_review_artifacts(comments: Sequence[str]) -> tuple[int, list[str]]:
+    """How many persisted review artifacts this PR carries.
+
+    Comments only, by design. A committed `-self-review.md` / `-consolidation.md`
+    document is a *stage* artifact for the planning pipeline; the PR-stage cycle
+    reviews the PR as submitted, so its artifacts are PR comments. Counting
+    review-named files in the diff would let a pipeline PR's earlier stages
+    satisfy its PR stage - this initiative's own branch carries seven such files
+    and would have passed with zero PR-stage comments, which is exactly the
+    "nothing is shared, reused, or 'already covered' across stages" that
+    CLAUDE.md forbids.
+
+    Only the first line of a comment is read, and it must *begin* with what it
+    is - a comment that narrates a review is not one (spec D2).
+
+    What this cannot do (spec D11): tell an independent Agent's comment from the
+    author's. Every comment in the measured window is by the same GitHub login.
+    Independence rests on the session's honesty, as the rule already does; this
+    catches absence, the failure that actually recurred four times.
+    """
+    matched: list[str] = []
+    for body in comments:
+        stripped = (body or "").strip()
+        if not stripped:
+            continue
+        first_line = stripped.splitlines()[0]
+        if REVIEW_ARTIFACT_FIRST_LINE.search(first_line):
+            matched.append(first_line)
+    return len(matched), matched

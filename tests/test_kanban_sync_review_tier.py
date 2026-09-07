@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tools.kanban_sync import labels, review_tier
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -240,3 +242,127 @@ def test_reasons_name_the_rule_and_the_path_that_fired_it():
     a reason has to be readable on its own."""
     _, reasons = review_tier.review_tier(["services/risk_manager.py"])
     assert reasons == ["path: services/risk_manager.py (under services/risk_manager.py)"]
+
+
+_FIXTURE = _REPO_ROOT / "tests" / "fixtures" / "review_artifact_first_lines.tsv"
+
+
+def _fixture_first_lines() -> list[str]:
+    lines = []
+    for raw in _FIXTURE.read_text().splitlines():
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        parts = raw.split("\t", 1)
+        lines.append(parts[1] if len(parts) > 1 else parts[0])
+    return lines
+
+
+def test_review_artifact_pattern_matches_this_repos_real_artifact_headings():
+    """The forms this repo actually posts, taken verbatim from merged PRs."""
+    for line in (
+        "## Self-review",
+        "## Consolidation",
+        "## Independent adversarial review",
+        "**Consolidation — GO**",
+        "**Self-review (lean, per PR #587)**",
+        "**Adversarial review** (independent Agent-tool call, no session memory)",
+        "## PR-stage adversarial review (fresh Agent, no session memory)",
+        "## Dispatching-session self-review (lean)",
+        "Tier B self-review",
+    ):
+        assert review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
+
+
+def test_review_artifact_pattern_rejects_comments_that_merely_mention_a_review():
+    """The false-positive direction, and the dangerous one: a comment that
+    *talks about* a review would otherwise count as one, moving the narration
+    from the PR body into a comment's first line and defeating the whole gate.
+    Every line here is verbatim from a merged PR (the 2026-09-07 adversarial
+    review found eight; PR #632, a Tier A PR, reached its required three only
+    through the second of them)."""
+    for line in (
+        "## Fix-list recheck (adversarial review returned NO-GO)",
+        "**Response to the independent adversarial review's finding** (commit `f21cf3c`)",
+        "## Clarifying the 1740-vs-1800 discrepancy the adversarial review flagged",
+        "## Correction to the self-review's own claim",
+        "## Addendum to self-review gap #2 (rate-limit disclosure)",
+        "**Status (df, pre-/compact checkpoint):** standing by, waiting on 71's "
+        "independent adversarial pass",
+        "Merging as the durable #601 benchmark record per tonight's action plan. "
+        "Consolidation GO is above",
+        "**Coordinator check against the three sign-off conditions.** This is not "
+        "the adversarial review",
+        "Re-triggering CI: required pr/* contexts never posted",
+        "## Checkpoint — fleet-wide pause (David, 3.5h), stopping here",
+        "## Production-scale equivalence check (read-only, no writes)",
+        "## INCOMPLETE — independent adversarial review terminated mid-pass",
+        "**PR review cycle complete** (self-review + adversarial review + "
+        "consolidation, per CLAUDE.md)",
+    ):
+        assert not review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
+
+
+def test_review_artifact_pattern_against_the_recorded_snapshot():
+    """Frozen data (tests/fixtures/review_artifact_first_lines.tsv): 265 real
+    comment first lines from the 200 most recently merged PRs as of 2026-09-07.
+
+    216 match. The 49 that do not are CI re-triggers, corrections, checkpoints,
+    rechecks, responses, and two `PR review cycle complete` summaries - one
+    comment claiming all three stages is not three artifacts. Exactly one real
+    artifact is missed (`## Review outcome (independent adversarial review,
+    fresh Agent call)`, PR #501), and that failure is *closed*: the PR reads
+    FAIL and the author gives the comment a conventional heading.
+
+    The plan measured 213 of 261 against a snapshot taken earlier the same day
+    with a per-PR fetch loop. This snapshot, taken in one `gh pr list
+    --json number,comments` call at execution time, is a strict superset: four
+    records added, none removed (#387 one consolidation, #329 a self-review and
+    a consolidation, #517 a commit note). Three of the four are real artifacts
+    and match; the fourth is not one and does not. The pattern itself is
+    unchanged - it still returns exactly 213 of 261 on the earlier file."""
+    lines = _fixture_first_lines()
+    matched = [ln for ln in lines if review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(ln)]
+    assert len(lines) == 265
+    assert len(matched) == 216
+
+
+def test_count_review_artifacts_uses_only_the_first_line_of_a_comment():
+    """A comment that *narrates* a review counts for nothing (spec D2): 12 of
+    the 24 unreviewed code PRs in the research narrated one in the body."""
+    comments = [
+        "## Self-review\n\nfindings: none",
+        "Merging now — the adversarial review found nothing worth blocking on.",
+    ]
+    count, matched = review_tier.count_review_artifacts(comments)
+    assert count == 1
+    assert matched == ["## Self-review"]
+
+
+def test_committed_review_documents_do_not_satisfy_the_pr_gate():
+    """The PR-stage cycle reviews the PR *as submitted*, so its artifacts are PR
+    comments. Counting review-named files in the diff would let a planning-
+    pipeline PR's earlier-stage documents satisfy its PR-stage requirement -
+    this very branch carries seven such files and would have printed PASS with
+    zero PR-stage comments, contradicting CLAUDE.md's "nothing is shared,
+    reused, or 'already covered' across stages"."""
+    files = [
+        "docs/archive/lane-9-tooling-ci-process-governance/research/x-self-review.md",
+        "docs/archive/lane-9-tooling-ci-process-governance/research/x-adversarial-review.md",
+        "docs/archive/lane-9-tooling-ci-process-governance/research/x-consolidation.md",
+    ]
+    # the signature takes comments only; files cannot contribute a count at all
+    assert review_tier.count_review_artifacts([])[0] == 0
+    with pytest.raises(TypeError):
+        review_tier.count_review_artifacts([], files)
+
+
+def test_count_review_artifacts_does_not_double_count_one_comment():
+    count, _ = review_tier.count_review_artifacts(
+        ["## Self-review and adversarial review and consolidation"]
+    )
+    assert count == 1
+
+
+def test_count_review_artifacts_ignores_an_empty_or_whitespace_comment():
+    count, _ = review_tier.count_review_artifacts(["", "   \n\n"])
+    assert count == 0

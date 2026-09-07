@@ -1,0 +1,268 @@
+# snapshot 2026-09-07: first line of every comment on the 200 most recently
+# merged PRs. Frozen test data for REVIEW_ARTIFACT_FIRST_LINE - regenerate
+# deliberately, never to make a test pass.
+662	## Self-review
+662	## Adversarial review — PR #662 (`docs/retire-plans-readme-step5`, head `fe26fd1f`)
+662	## Consolidation
+660	## Self-review — PR #660 (Lane 9: Tooling, CI & process governance)
+660	## Independent adversarial sweep (fresh, memory-less pass — read-only, no branch/file changes made)
+660	## Adversarial review — PR #660 (Lane 9: Tooling, CI & process governance)
+660	## Recheck against fix commit `7973e18` (independent, `autotrade-49`)
+660	## Consolidation — PR #660 (Lane 9: Tooling, CI & process governance)
+659	## Self-review
+659	## Adversarial review
+659	## Consolidation
+658	## Self-review
+658	## Adversarial review (independent agent, no memory of the authoring context) — VERDICT: GO-AFTER-FIXES
+658	## Consolidation
+657	## Self-review
+657	## Correction: PR body's citation-count arithmetic was wrong, re-derived by script
+657	## Fix-list recheck: occurrence-dedup + cross-lane back-citation gaps — both fixed (`c08ef9f`)
+657	## Independent adversarial sweep (fresh, memory-less pass — read-only, no branch/file changes made)
+657	## GitHub-issue-citation sweep for Lane 1 — independent verification (fresh pass, distinct scope from the file-citation sweep above)
+657	## Adversarial review — PR #657 (Lane 1 file move), head `c08ef9f`
+657	## Consolidation — PR #657 (Lane 1: Kalshi & index data ingestion)
+656	## Self-review — PR #656 (Lane 2 file move)
+656	## Adversarial review — PR #656 (Lane 2 file move)
+656	## Consolidation — PR #656 (Lane 2 file move)
+655	## Self-review (same author/context)
+655	## Adversarial review (independent agent, no memory of the authoring context)
+655	## Consolidation — reconciling self-review + adversarial review + fix-list recheck
+654	## Self-review
+654	## Adversarial review (independent agent, no memory of the authoring context)
+654	## Consolidation — reconciling self-review + adversarial review
+653	## Self-review (same author/context)
+653	## Adversarial review (fresh Agent call, no memory of the original work)
+653	## Consolidation
+652	## Self-review (same author/context)
+652	## Consolidation — GO
+652	## Adversarial review (fresh Agent call, no memory of this work, re-derived from primary sources)
+652	## Consolidation addendum — retroactive adversarial review complete
+651	## Self-review (retroactive — filling a real gap, not a formality)
+651	## Independent adversarial review (retroactive, fresh Agent call — no memory of the drafting session or the self-review)
+651	## Consolidation — GO (retroactive cycle complete)
+650	## Self-review (this session, same context that wrote the diff)
+650	## Adversarial review (fresh Agent-tool call, no memory of this session)
+650	## Consolidation — self-review + adversarial review
+650	## Dispatching-session self-review (PR-stage cycle)
+650	## Self-review — third finding (dispatching session's fresh PR-stage adversarial review)
+650	## Adversarial review — third finding's own fresh cycle (new Agent-tool call, no memory of any prior review on this PR)
+650	## Consolidation — third finding's own cycle (self-review + fresh independent adversarial review)
+650	## Final consolidation (dispatching session, after round 3's fix)
+647	## Self-review
+647	# Adversarial Review — PR #647 (fix/634-api-state-serialization-off-loop)
+647	## Consolidation
+646	## Self-review
+646	## Fix-list recheck (adversarial review returned NO-GO)
+645	## Consolidation — self-review + adversarial review
+645	## Dispatching-session self-review (PR-stage cycle, per CLAUDE.md's "nothing advances on one pass")
+645	## PR-stage adversarial review (fresh Agent, no memory of this PR's own review comments)
+645	## Consolidation — PR-stage cycle (dispatching session's self-review + fresh adversarial review)
+644	## PR-level self-review (lean, per PR #587)
+643	**Correction (commit d1e3ed2):** a coordinator cross-session message caught that the mechanism I'd cited to justify #56/#491/#496's RULE-GAP reasoning ("§5: an initiative that grows to touch a second lane splits at the boundary") doesn't exist in the merged design doc — it was a misremembered draft sentence, not something either of us should have trusted without checking. The real §5 rule is one primary lane (named subject, or clause (d)'s first-stated tiebreak), never a silent per-task split.
+643	## Adversarial review (independent, fresh Agent call — no memory of the drafting session)
+643	## Consolidation — self-review + adversarial review → GO
+643	One more note for the record, per a peer's framing: the #532/#642 finding is a different *kind* of defect than everything else tonight (retracted rulings, a fabricated quote, straddler-clause judgment calls) — it's not a reasoning error at all, it's live-state drift during drafting: an issue closed and another opened out from under a snapshot table mid-build, in a ~19-minute window. That's concrete, direct evidence for why a fast-moving tracker needs a freshness check re-run immediately before commit rather than once at the start of a multi-hour classification pass — worth carrying forward explicitly when step 6 sizes the much larger plans/research/specs tables, where drafting will span far longer than 19 minutes.
+640	**Self-review** (nothing-advances-on-one-pass, stage 1 — PR level)
+640	# Adversarial Review — PR #640 (planning-lanes design), PR-level gate
+640	**Consolidation** (nothing-advances-on-one-pass, stage 3 — PR level)
+638	**Self-review (lean, per CLAUDE.md's 2026-09-05 lean-execution allowance)**
+638	**Consolidation — GO**
+637	## Checkpoint — fleet-wide pause (David, 3.5h), stopping here
+637	## Self-review
+637	## Consolidation — GO
+637	## Adversarial review — original artifact, posted retroactively
+636	## Checkpoint — fleet-wide 3.5h pause called mid-implementation (2026-09-06)
+636	## Self-review (author, same context)
+636	## Adversarial review (fresh Agent, no memory of the authoring session)
+636	## Consolidation — GO
+635	**Self-review (lightweight, per CLAUDE.md's mechanical-cleanup exemption — this PR executes an already-approved decision, no new claim/design/logic):**
+633	**PR self-review (stage: PR-as-submitted, lean).** Checked: (1) diff is exactly 4 files under docs/superpowers/research/, zero code paths touched; (2) the two recovered files at commit 8ba2ef4 are byte-identical to orphaned-branch tip 8013260 (git diff run, empty) — commits 1096150/a92ac79 after that touch only the added postscript blockquote, never the original 2026-09-03 text; (3) postscript claims spot-verified against current source before writing (\_seen_lock at kalshi_trade_tape.py:273, \_mark_seen/\_mark_seen_locked split, test file exists, \_candidate_retry_pool.py:421 wiring for the #563 note); (4) no task-list items in body or commits (grep '\[ \]\|\[x\]' → 0); (5) no closing-shaped verb adjacent to a bare #N in any commit or the body — 'issue #546' style throughout, so nothing auto-closes; (6) review-cycle artifacts each exist as their own file (self-review from the original branch, adversarial review + consolidation added here). No unaddressed scope found. Verdict: internally consistent, ready for the PR-level adversarial pass (next comment).
+633	**PR consolidation (stage: PR-as-submitted, lean).** Reconciles the PR self-review (comment above) and the fresh-context PR adversarial review. Adversarial findings: (1) docs-only diff confirmed; (2) verbatim recovery confirmed byte-identical to orphaned tip 8013260, postscript-only edits after; (3) every postscript claim re-derived against current source (lock :273, split :283/:296, span :645-664, test file, #563 pool wiring :421); (4) zero auto-close keyword adjacency; (5) no overclaim — fix commit a6ef68b confirmed an ancestor of main, review artifacts internally consistent; (6) branch = exactly the 4 commits, all 6 required Woodpecker contexts SUCCESS. No disagreement between the two reviews. Non-blocking follow-ups adopted from the adversarial pass: after merge, actually delete BOTH branches — the recovery branch (local+remote) and the orphaned original fix/seen-trade-ids-concurrency-race-investigation (which, contrary to the recovery task's assumption, DOES have an origin counterpart; deleting it loses nothing since its full unique content lands here verbatim). **Verdict: GO — merge on independently-confirmed green CI.**
+632	**Self-review** (nothing-advances-on-one-pass stage 1)
+632	**Response to the independent adversarial review's finding** (commit \`f21cf3c\`)
+632	**Consolidation** (nothing-advances-on-one-pass, PR stage) - reconciling self-review + independent adversarial review into a final GO/no-go.
+631	## Self-review (author, same session)
+631	## Independent adversarial review (PR #631)
+631	## Consolidation: self-review + adversarial review + review-fix closeout — GO
+630	## Self-review (author, same context)
+630	## Adversarial review (independent context, no memory of the authoring session)
+630	## Consolidation
+627	## Self-review (stage 1 of the "nothing advances on one pass" cycle)
+627	## Adversarial review — INCOMPLETE, terminated by rate limit
+627	## Adversarial review (independent, stage 2 of the "nothing advances on one pass" cycle)
+627	## Consolidation — PR #627 (#586, `_aio_db` shutdown hang)
+625	**Self-review (lean, per PR #587)**
+625	**Adversarial review (independent, fresh Agent call, no shared context with the PR author's session)**
+625	**Consolidation — GO**
+624	**Self-review** (nothing-advances-on-one-pass stage 1, lean per PR #587)
+624	## Independent adversarial review (CLAUDE.md "nothing advances on one pass")
+624	**Consolidation** (nothing-advances-on-one-pass, PR stage) - reconciling self-review + independent adversarial review into one verdict.
+622	## Post-review correction: a factual claim that survived both review passes
+620	## Self-review
+620	## Consolidation — GO
+617	## Self-review (issue #601 / PR #603 Family-2 implementation)
+617	## Adversarial review (independent, fresh context, no memory of the implementing session)
+617	## Consolidation — self-review + adversarial review -> GO
+614	## Self-review
+614	## Consolidation — GO
+604	## Self-review
+604	## Consolidation — GO
+603	## Consolidation — #601 fix-family benchmark (self-review + adversarial review)
+603	Merging as the durable #601 benchmark record per tonight's action plan. Consolidation GO is above; CI read per-context: all 6 pr/* contexts green, 4/5 push/* green, the one pending (push/quality-architecture-audit, pipeline 1032) has been stuck for hours while its pr/* twin passed — treated as a stuck duplicate, not a missing signal.
+598	**Self-review**
+597	## Self-review (lean, per the 2026-09-05 lean-execution amendment)
+597	## Adversarial review (independent, no memory of authoring this PR)
+597	## Clarifying the 1740-vs-1800 discrepancy the adversarial review flagged
+597	## Follow-up resolved: benchmark artifact committed, not just relabeled
+597	## Consolidation: self-review + adversarial review + benchmark-artifact follow-up — GO
+596	**Self-review (lean, per CLAUDE.md's config-value exemption)**
+594	**Self-review (lean, per CLAUDE.md's nothing-advances-on-one-pass, lean-execution amendment PR #587)**
+594	## Independent adversarial review
+594	**Consolidation (lean, per CLAUDE.md's nothing-advances-on-one-pass, PR #587 amendment)**
+593	## Self-review
+593	## Consolidation — GO, merging
+588	## Self-review — same author/context, before independent review
+588	## Adversarial review — independent, memory-less pass against PR #588
+588	## Consolidation — reconciling the self-review, adversarial review, and fix-list revision
+583	## Self-review — same author/context, before spending independent effort
+583	## Adversarial review — round 1, verdict **NO-GO** (against `d184565`)
+583	## Consolidation — reconciling the artifact, self-review and adversarial review
+581	## Self-review (stage 1 of 3) — author, same context
+581	## Production-scale equivalence check (read-only, no writes)
+581	## Adversarial review (stage 2 of 3) — independent pass, no memory of authoring this PR
+581	## Correction to the self-review's own claim
+581	## Consolidation (stage 3 of 3) — post-restart remediation
+575	## Self-review — stage 1 of the "nothing advances on one pass" cycle
+575	## Adversarial review — INCOMPLETE, session terminated mid-pass
+575	## Consolidation — PR #575, `docs/MULTI_SESSION_CRASH_RECOVERY.md`
+575	## Adversarial review (independent pass, complete) — `docs/MULTI_SESSION_CRASH_RECOVERY.md` @ `4ae9534`
+575	## Fix-list recheck — all 16 items confirmed, not just claimed
+574	## Self-review — round 2 (commits `2a4d68c`, `8d2a827`)
+574	> **⚠️ SCOPE — amended 2026-09-04 after posting. This verdict does NOT cover the current head.**
+574	## Adversarial review — round 3, verdict **NO-GO** (against `eca65d0`)
+574	## Adversarial review — round 4, verdict **GO conditional** (against `c09b730`)
+574	## ⚠️ Session interruption notice — WSL restart imminent (2026-09-05 ~02:35 UTC)
+574	## INCOMPLETE — independent adversarial review terminated mid-pass, posting raw before a WSL restart
+574	**Status (df, pre-/compact checkpoint):** standing by, waiting on 71's independent adversarial pass at head `219a350`. No comment from it yet; CI green (`success`) at `219a350`. On GO: I'll post a lean self-review + lean consolidation (per #587) and merge — no further check-in needed. If you're picking this up after a compact/restart and 71 hasn't posted, dispatch a fresh independent pass; do not merge on CI-green alone (see this PR's own 5-defects-across-4-rounds history above).
+574	## Adversarial review — round 5, independent, against **`219a350`** (the current head)
+574	## Self-review — C1/C4 fix (`ec3a49d`)
+574	## Independent verification — incremental commit `ec3a49d` (C1/C4 fix): **GO-conditional**
+574	## Final consolidation — GO, merging
+572	## Adversarial review + consolidation — coordinator-direct, disclosed deviation
+571	## Self-review (layer 1 of 3) — author's own pass
+571	## Adversarial review + consolidation — coordinator-direct, disclosed deviation
+570	## Self-review (layer 1 of 3)
+570	## Adversarial review + consolidation — coordinator-direct, disclosed deviation
+569	## Self-review (layer 1 of 3) — author's own pass
+569	## Adversarial review + consolidation — coordinator-direct, disclosed deviation
+564	## Adversarial review (layer 2 of 3) — independent pass
+564	## Consolidation (layer 3 of 3) — GO
+562	Re-triggering CI: required pr/* contexts never posted (same webhook-delivery pattern documented in docs/woodpecker-ci.md today, PRs #544/#553/#559). Closing/reopening to force a fresh webhook rather than force-merging past it.
+561	## Self-review (layer 1 of 3) — author's own pass
+561	## Adversarial review (layer 2 of 3) — independent pass
+561	## Consolidation (layer 3 of 3) — GO
+559	## Self-review (layer 1 of 3) — author's own pass
+559	## Consolidation (layer 3 of 3) — GO
+559	## Adversarial review (layer 2 of 3) — independent, memory-less pass
+557	## Self-review (layer 1 of 3) — author's own pass
+557	## Adversarial review (layer 2 of 3) — independent pass
+557	## Consolidation (layer 3 of 3) — GO
+556	## Self-review (layer 1 of 3) — author's own pass
+556	## Adversarial review (layer 2 of 3) — independent, memory-less pass
+556	## Consolidation (layer 3 of 3) — GO
+554	## Adversarial review (layer 2 of 3) — independent pass
+554	## Self-review (layer 1 of 3) — author's own pass
+554	## Consolidation (layer 3 of 3) — GO
+553	## Self-review (layer 1 of 3) — I am the reviewer here, not the author
+553	## Consolidation (layer 3 of 3) — GO
+548	## Self-review (layer 1 of 3) — author's own pass
+545	## Self-review (layer 1 of 3) — author's own pass
+545	## Fix-list item resolved — but with a correction to the suggested approach
+544	Re-triggering CI: required ci/woodpecker/pr/* contexts never posted for this branch's commits (only push-event pipelines ran, e.g. #692/#696/#702) — closing/reopening to force a fresh pull_request webhook rather than bypassing branch protection.
+540	## Self-review (layer 1 of 3) — author's own pass
+529	## Review — VERDICT: Safe to merge as documentation
+526	## Self-review (author pass, before a7's adversarial review)
+526	## Adversarial review — VERDICT: Safe to merge
+526	## Disposition of the two minor findings above
+526	## Reconciling the 24x vs 230x benchmark discrepancy
+524	## Adversarial review record (reconstructed after the fact, 2026-09-03)
+523	## Disposition before merge
+522	## Adversarial review record (reconstructed after the fact, 2026-09-03)
+519	## Self-review of the PR as submitted (before the PR-level adversarial pass)
+519	## PR-level adversarial review (fresh agent, independent)
+518	## Adversarial review record (reconstructed after the fact, 2026-09-03)
+518	## Adversarial review — raw agent output (primary record)
+517	**Second commit (`53cc71a`): trimmed the superseded status block.**
+516	**Coordinator check against the three sign-off conditions attached to the API-shape decision (PR #505).** This is not the adversarial review — `autotrade-a3` is running that independently, and I've deliberately not sent them my conclusions. This covers only the conditions I attached, which I'm the right person to verify.
+516	## Cross-module `_connect()` test-caller finding — relevant to Task 9
+515	**Review scope, surfaced rather than decided silently.**
+515	**Adversarial review returned NO-GO. It was right, and it found exactly the doubt I flagged when opening this — fixed in `7aaacc2`.**
+511	**Adversarial review returned NO-GO on one Critical finding. It was right, the finding was mine, and it is now fixed in `4ba223b`.**
+511	Fix-list recheck cleared by `autotrade-3b` (independent, scoped to the fix rather than a second full pass): file present and usable, `next-action.md`'s reference resolves, `4ba223b` is 88 insertions to one new file with nothing else touched, and the stranding root cause independently confirmed (`git merge-base --is-ancestor 64669f4 origin/main` → false).
+505	## Coordinator sign-off on the API-shape decision — APPROVED (autotrade-1d, 2026-09-03 ~11:50Z)
+505	**Correction to my sign-off comment above (autotrade-1d):** the call-site census ("111/111 `with _connect() as conn:`, 0 bare-assignment, 0 `closing()`") covered **production call sites in the 26 in-scope modules only** — it did not include `tests/`. Checked after autotrade-73 flagged `tools/coordination_engine.py._connect()` as possibly dead code: it is not dead, it is called **only from tests** — 22 sites across `tests/test_coordination_engine.py` (17), `tests/test_quality_coordination_branch_domain.py` (4), `tests/test_quality_coordination_cli.py` (2), `tests/test_quality_coordination_cleanup_actions.py` (1) — every one bare-assignment (`conn = ce._connect()`). Its own production paths never call it (def at `:29`, zero in-file references).
+505	**Second correction (autotrade-1d) — my previous comment's "called only from tests" is wrong.** Found by autotrade-3b's PR-stage review Agent and re-verified by me directly:
+505	## PR-stage adversarial review (autotrade-3b) — findings against `c539acb`
+505	## PR-stage scoped recheck (autotrade-3b) — findings against `3a5bad8` fix batch
+505	**Recovered review artifact (posted 2026-09-06 by the coordinator, per docs/branch-audit-2026-09-05.md §4):** this PR-stage adversarial review was completed on 2026-09-03 but lived only on branch `review/pr-505-adversarial-review-autotrade-3b`, which never merged — leaving this merged PR with no review evidence in the repo itself (the exact failure mode the persist-reviews-as-comments convention exists for). Posted verbatim below; the branch is now deleted.
+501	## Review outcome (independent adversarial review, fresh Agent call)
+482	## Consolidation (nothing-advances-on-one-pass cycle, PR stage)
+436	## Self-review
+436	## Independent adversarial review
+436	## Consolidation
+423	## Self-review
+423	## Consolidation — GO
+418	CI confirmed green against main (all 5 push + pr contexts success). Checking off the last Test plan item and merging.
+414	**PR review cycle complete** (self-review + adversarial review + fix + scoped re-review, per CLAUDE.md's "nothing advances on one pass" HARD RULE).
+409	**PR review cycle complete** (self-review + adversarial review + consolidation, per CLAUDE.md's "nothing advances on one pass" HARD RULE).
+394	## Review-cycle consolidation (CLAUDE.md "nothing advances on one pass")
+390	## Self-review
+390	## Consolidation (self-review + adversarial review)
+388	## Self-review (PR #388, "nothing advances on one pass" — controller pass)
+388	## Consolidation (PR #388, "nothing advances on one pass" — final GO/no-go)
+387	## Consolidation — self-review + adversarial review (CLAUDE.md's "nothing advances on one pass")
+385	## Self-review (nothing-advances-on-one-pass, stage: PR)
+385	## Consolidation (nothing-advances-on-one-pass, PR stage)
+384	## Consolidation (self-review + adversarial review)
+383	## Live backfill result (executed, not simulated)
+383	## Self-review
+383	## Correction to the live backfill result above
+383	## Addendum to self-review gap #2 (rate-limit disclosure)
+383	## Consolidation
+374	# Self-review: PR #374 as submitted
+374	# Consolidation: PR #374 review cycle (2026-08-31)
+373	# Self-review: PR #373 as submitted
+373	# Consolidation: PR #373 review cycle
+372	# Self-review: retiring the event-scoped-me-gate plan (2026-08-31)
+372	# Consolidation: PR #372 review cycle
+371	# Self-review: pipeline-stage terminology fix (2026-08-31)
+371	# Consolidation: PR #371 review cycle
+340	# Self-review: PR #340 (2026-08-31)
+340	# Consolidation: PR #340 review cycle
+329	# Self-review: PR #329 as submitted (2026-08-31)
+329	# Consolidation: PR #329 review cycle
+314	# Self-review: PR #314 as submitted (2026-08-31)
+314	# Consolidation: PR #314 review cycle
+313	## Self-review
+313	## Independent adversarial review (PR #313)
+313	Follow-up: CI on the fix commit (`b300a51`) is now green — all 10 Woodpecker contexts `success` (`tests-pytest`, `tests-dependency-audit`, `quality-architecture-audit`, `quality-browser-e2e`, `kalshi-contract-fixtures`, push+pr variants). Confirmed via `gh api repos/thesneakattack/kalshi-whale-poc/commits/b300a5189dfc7e3ca4e0ae1c76e73c8e7f1f7f7e/status`.
+313	## Consolidation
+311	## Self-review
+311	## Adversarial review (independent Agent pass, no memory of the authoring conversation)
+311	## Consolidation
+307	## Self-review
+307	## Adversarial review (independent Agent pass, no memory of the PR authoring conversation)
+307	## Consolidation
+305	**Self-review** (same session, checking commit ef0a5e4 before the adversarial pass)
+305	**Adversarial review** (independent Agent-tool call, no memory of the authoring conversation, told to assume the diff is wrong until verified against primary sources)
+305	**Consolidation**
+304	**Self-review** (same session, checking commit f986bf6 against this repo's own conventions)
+304	**Adversarial review** (independent Agent-tool call, no memory of the authoring conversation, told to assume the PR is wrong until verified against primary sources — full transcript run against commit f986bf6)
+304	**Consolidation** (reconciling both reviews above into one verdict before merge)
+303	## Self-review
+303	## Adversarial review (independent Agent pass, no memory of the authoring conversation)
+303	## Consolidation
+303	## Consolidation
+300	Re-triggering CI - Woodpecker/tunnel infra was down (WSL crash), now recovered.
+299	Re-triggering CI - Woodpecker/tunnel infra was down (WSL crash), now recovered.
