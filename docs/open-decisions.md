@@ -47,6 +47,32 @@ artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
    full. Principle P4 as stated — outcomes are judged by defects per tier and
    size band, never by volume, and never by human hours (only David can supply
    that one) — holds either way.
+3. *Should the Tier A dependency scan go deeper than one level?* Found by PR
+   #664's own adversarial review and left open deliberately, because widening
+   it reclassifies an unmeasured set of PRs — a scope change, which CLAUDE.md's
+   recheck clause says needs its own cycle rather than a fix folded into one.
+   `lane3_direct_imports()` is depth-1 and Lane-3-only; re-running the same
+   `ast` scan over everything under `REVIEW_TIER_A_PATHS` finds 24 further
+   `services.*` modules imported by Tier A code that are themselves Tier B. The
+   ones that actually matter: `services/stats_power.py` (money/probability
+   arithmetic, the dimensional-analysis rule's own domain),
+   `services/diagnostics/_aio_db.py` (opens `paper_broker.DB_PATH` and
+   `signal_log.DB_PATH`; PR #627 changed it and classified Tier B),
+   `services/backup/backup.py` (retention `shutil.rmtree` over `data/backups/`;
+   PR #308), `services/candidate_ledger.py`, `services/ws_manager.py`,
+   `services/data_quarantine.py`, `services/latency_agg.py`,
+   `services/whale_pipeline_perf.py`. Test: has any Tier B PR since the merge
+   touched one of these in a way a Tier A review would have caught? Escalation
+   (`--tier A`) is the backstop meanwhile. Options are transitive closure,
+   depth-2, or naming these eight explicitly — measure the cost in reclassified
+   PRs before choosing, the way the first six were measured.
+
+**Follow-up, not a decision** (same review, N9): `services/kalshi/` is in
+`guard_workflow.py`'s `KALSHI_PATHS` but not `HOT_PATHS`, so the
+dimensional-analysis money nudge stopped firing on
+`services/kalshi/account_client.py` when the Phase A migration moved it. That
+gap predates PR #664 and changing when a guard fires did not belong in a PR
+about review process. One line in `HOT_PATHS` fixes it.
 
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
