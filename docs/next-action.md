@@ -104,11 +104,15 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    exact-string `git grep` — a citation wrapped across a line break in a
    comment/docstring is invisible to a same-line match. Found 14 files
    Lane 4/8's original sweeps missed (fixed via PR #654).
-2. **GitHub issue citation check spans all open issues**, not just
+2. **GitHub issue citation check spans ALL tracked issues, open AND
+   closed** (335 total, not just the 147 open ones), not just
    `type:plan-task`/`Plan:`-titled ones — a general `type:feature` issue
-   (#54) had a real broken citation the narrower search missed. Use the
-   full-path-vs-bare-filename filter (a bare filename citing its own
-   parent plan by name is correct and unaffected by a move; only a full
+   (#54) had a real broken citation the narrower search missed, and
+   Lane 3's sweep found 9 more hits among closed issues (2 closed
+   `Plan:` trackers plus one not even `type:plan-task`-labeled) that an
+   open-issues-only search would never see. Use the full-path-vs-
+   bare-filename filter (a bare filename citing its own parent plan by
+   name is correct and unaffected by a move; only a full
    `docs/superpowers/<dir>/<filename>` path is genuinely stale) or a
    naive full-text search buries real hits in false-positive noise.
 3. **A fix "found" in the working tree isn't real until it's in the
