@@ -72,8 +72,9 @@ def test_clear_all_wipes_every_snapshot():
     assert ch.history() == []
 
 
-# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
-# history-event-driven-design.md §2/§4.3 - loadCalibrationHistory, "event-
+# --- history-push trigger point (docs/archive/lane-8-frontend-dashboard/specs/
+# 2026-09-03-history-event-driven-design.md, moved there 2026-09-06,
+# planning-lanes migration, §2/§4.3 - loadCalibrationHistory, "event-
 # driven but slow") -----------------------------------------------------
 
 

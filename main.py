@@ -1509,8 +1509,9 @@ async def _index_feed_backfill_loop(gateway, *, interval_sec: float = 10.0) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Captured once, before anything that could call mark_history_changed()
-    # off this thread starts running (docs/superpowers/specs/2026-09-03-
-    # history-event-driven-design.md §4.3) - candidate_ledger.claim()/
+    # off this thread starts running (docs/archive/lane-8-frontend-dashboard/
+    # specs/2026-09-03-history-event-driven-design.md, moved there 2026-09-06,
+    # planning-lanes migration, §4.3) - candidate_ledger.claim()/
     # record_decision() run on a tick_executor worker thread and need this
     # reference to dispatch their history_updated broadcast via
     # asyncio.run_coroutine_threadsafe rather than asyncio.create_task,

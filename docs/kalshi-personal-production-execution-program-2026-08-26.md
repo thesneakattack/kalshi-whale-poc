@@ -799,8 +799,8 @@ stopped by direct user action before pushing to origin or opening a PR.
 Resumed same day once the immediate-queue fork point (§11) was reconciled
 in Program 1's favor already having happened: the branch was merged
 forward onto post-Program-1 `main`, and its status report got a dated
-addendum (`docs/superpowers/research/2026-08-26-economic-strategy-
-effectiveness-status-report.md`) recording that the report's own
+addendum (`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-status-report.md`,
+moved there 2026-09-06, planning-lanes migration) recording that the report's own
 Program-1-dependency caveat cannot yet be closed — only ~5.4 hours had
 elapsed since Program 1's merge, nowhere near the "several hundred
 entries" re-run trigger the report itself already specified. This is

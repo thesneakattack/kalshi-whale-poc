@@ -1052,8 +1052,10 @@ def test_gate_summary_async_yields_to_the_event_loop():
 # docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md's
 # D1: population_gate_summary() above averages hypothetical_win_rate/
 # avg_unit_cost across every unit_cost a gate ever rejected, hiding the real
-# 0.60-0.95-band negative-EV pattern docs/superpowers/research/2026-08-26-
-# economic-gate-marginal-contribution.md's E4 analysis found underneath the
+# 0.60-0.95-band negative-EV pattern
+# docs/archive/lane-4-analytics-advisory-research/research/
+# 2026-08-26-economic-gate-marginal-contribution.md's (moved there
+# 2026-09-06, planning-lanes migration) E4 analysis found underneath the
 # aggregate. These bucket by unit_cost band first, same SQL-side-aggregation
 # discipline as _POPULATION_GATE_SQL (issue #616's decision record explicitly
 # warns against re-adding an unindexed Python-side scan of this table, the
@@ -1310,8 +1312,10 @@ def test_population_gate_summary_banded_cached_async_passes_through_bands_and_mi
 
 
 def test_default_bands_are_the_six_bands_the_e4_prototype_actually_used():
-    """DEFAULT_BANDS must reproduce docs/superpowers/research/2026-08-26-
-    economic-gate-marginal-contribution.md's own E4 results table exactly
+    """DEFAULT_BANDS must reproduce
+    docs/archive/lane-4-analytics-advisory-research/research/
+    2026-08-26-economic-gate-marginal-contribution.md's (moved there
+    2026-09-06, planning-lanes migration) own E4 results table exactly
     ([0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,.95) [.95,1.01)) - this is the
     analysis D1 is built on. NOT the same bands as CLAUDE.md's (now-retired)
     HARD COMMANDMENT table, despite that research doc's own prose claiming

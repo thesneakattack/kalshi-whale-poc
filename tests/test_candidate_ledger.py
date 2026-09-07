@@ -115,8 +115,9 @@ def test_connect_sets_explicit_busy_timeout_pragma():
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
-# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
-# history-event-driven-design.md §2/§4.3) -----------------------------------
+# --- history-push trigger point (docs/archive/lane-8-frontend-dashboard/specs/
+# 2026-09-03-history-event-driven-design.md, moved there 2026-09-06,
+# planning-lanes migration, §2/§4.3) -----------------------------------
 
 
 def test_record_decision_notifies_history_push(monkeypatch):
