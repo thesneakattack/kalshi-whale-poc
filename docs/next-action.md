@@ -147,56 +147,62 @@ do here.
 
 ---
 
-## Planning lanes — 7 of 8 batches MERGED (4, 8, 5, 6, 2, 3, 1); only Lane 9 left
+## Planning lanes — ALL 8 BATCHES MERGED. Step 4 (file move) is complete.
 
-167 of 246 files moved (67.9%); Lane 9 (79 files, 32.1%) is the only
-one remaining. **`0d` assigned to execute it**, using `49`'s and `c4`'s
-already-completed prep (below) as a running start.
+**2026-09-07T10:49:49Z, `e413cf5`: PR #660 (Lane 9) merged — the last
+lane.** Coordinator independently verified end-to-end after the merge,
+not taken on any single report: `git ls-tree`/`find` against the
+pulled `main` confirms all 8 archive directories exist (Lanes 1, 2, 3,
+4, 5, 6, 8, 9 — Lane 7 has 0 files by design, no directory), zero loose
+files remain anywhere under `docs/superpowers/`, and
+`docs/superpowers/plans/` + `specs/` each hold exactly the one file
+deliberately excluded from the whole migration
+(`plans/README.md` — step 5's own "retire, not move" target — and the
+one `UNDECIDED` spec, `2026-08-27-backend-services-modularization-
+design.md`). This matches the original plan's own stated end-state
+exactly, verified against real files, not the plan doc's own claim.
 
-**On `main`:** design (PR #640), all 3 step-1 classification tables (PRs
-#643/#644 + a direct commit), step 3 `kanban_sync` retooling (PR #645),
-`LANES`/`CONCERNS` infrastructure + full step-2 labeling (PR #646).
-Batch order: **4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**. Lanes 4 (#651), 8
-(#652), 5 (#653), 6 (#655), 2 (#656), 3 (#658, MERGED
-2026-09-07T05:50:58Z, confirmed clean by `ea`'s independent sweep before
-merge), and now **1 (#657, `0d`) — MERGED 2026-09-07T06:18:21Z**
-(`96361be`, independently verified via `gh pr view 657
---json state,mergedAt` before accepting). Lane 1 went through the most
-thorough review cycle of the night: self-review, a fix-list recheck, an
-independent file-citation sweep (`49`), an independent issue-citation
-sweep (`c4`, 27 issues fixed), a dispatched adversarial-review agent
-(found 5 more real defects including the new mutual-deferral hazard,
-methodology point 11), and a final consolidation — 7 distinct PR
-comments total, all independently verified before the merge went ahead.
-**Only Lane 9 remains** — in progress, PR #660 (`0d`, 81 files, head
-`6337a87`), 2 comments as of the pause (self-review + `49`'s
-independent review, both clean on citations — first lane tonight with
-zero citation defects on the sweep dimension). `0d`'s own dispatched
-adversarial review (ran through the pause, no risk, read-only)
-completed NO-GO with fix list D1-D8: 4 real citation misses in its own
-sweep, plus independent corroboration of a genuine new finding class —
-**classification-completeness gaps, not citation-sweep gaps**: step1's
-tables are `.md`-only, so a handful of non-`.md` or top-level files
-were invisible to classification from the start. Confirmed directly:
-`docs/superpowers/research/2026-08-29-full-settings-table-generator.py`
-(dead code, orphaned from its Lane-4-archived companion, found
-independently by both `49` and `0d`'s adversarial agent — going to
-Lane 4's archive). **Correction (coordinator checked `main`'s working
-tree instead of PR #660's own branch — wrong ref, not staleness; own
-mistake, caught by `0d` and re-verified directly via `gh api
-contents?ref=docs/lane-9-file-move` before accepting):** only 3
-unclassified top-level files remain open, not 5 — the Kalshi/Lane-1-
-topic trio (`kalshi-integration-kickoff.md`, `kalshi-integration-
-bundle-readme.md`, `realtime-data-plane-investigation-kickoff.md`).
-`INVESTIGATION_PORTFOLIO.md` and the AQC kickoff file were already
-moved into Lane 9's own archive hours before the pause (`4bd988d`,
-"Lane 9 scope extension") — confirmed gone from the old path and the
-commit confirmed an ancestor of current HEAD. No step-5-style decision
-needed for either. Confirmed no other non-`.md` files exist anywhere in
-`docs/superpowers/{plans,specs,research}/` or already inside
-`docs/archive/` — isolated, not a systemic pattern. `0d` fixing D1-D3 +
-the 3 remaining classification gaps + PR body corrections, then
-consolidation. Not merged yet.
+**Batch order as executed: 4 → 8 → 5 → 6 → 3 → 2 → 1 → 9.** PRs #651,
+#652, #653, #655, #656, #658, #657, #660. Every batch went through a
+genuine self-review → independent adversarial review → consolidation
+cycle (comment counts independently verified via `gh pr view --json
+comments` before each merge, never inferred from a body's narrative);
+several caught real, previously-unknown defect classes along the way —
+see the 11 numbered methodology points and meta-lesson below, all
+earned the hard way across the night, not designed upfront. Lane 9
+(the last and largest, 85 files in the end — 81 of its own + 4 that
+actually belonged in Lanes 1/4, moved there instead of left behind) was
+the cleanest on the citation-sweep dimension (zero defects, first lane
+all night) but surfaced a genuinely new problem class: **classification
+completeness**, not citation accuracy — step1's tables were `.md`-only,
+so a handful of non-`.md`/top-level files were invisible to
+classification from the start (`docs/superpowers/research/2026-08-29-
+full-settings-table-generator.py`, found independently by two separate
+reviews; 3 Kalshi-topic kickoff files that belonged in Lane 1). All
+resolved before merge — full detail in the PR's own comment history if
+needed, not reproduced here now that it's closed.
+
+**One post-merge catch, already fixed:** issue #661 (filed by Lane 9's
+consolidation to track 31 file-site + 38 issue-site pre-existing
+cross-lane citation debt in already-merged lanes — found incidentally,
+explicitly not Lane 9's own defect, deliberately not bundled into an
+already-large PR) auto-closed itself the instant #660 merged — GitHub's
+auto-close keyword matching fired on incidental phrasing near the bare
+`#661` in the PR body, even though the intent was the opposite.
+Caught, reopened, and verified by `49`'s independent post-merge check
+within minutes; memory `github-auto-close-matches-incidental-phrasing`
+written. **#661 remains open, unfixed, not blocking anything** — a
+real but low-priority standalone cleanup item for whenever it's picked
+up, unrelated to the completed migration itself.
+
+**What's left of the whole multi-week initiative: Step 5 only**
+(retire `docs/superpowers/plans/README.md` — low-risk, was always
+described as following once step 4 finished, which it now has). Not
+started, not assigned, not blocking anything. David has not given a
+next instruction since the pause; don't self-assign Step 5 or anything
+else without a signal — report status and let him decide the next
+move, consistent with how the rest of tonight's judgment calls were
+handled.
 
 **Lane 1 update, 2026-09-07 (`ea`, independently verified against the
 pushed branch content, not taken on `0d`'s word alone):** `0d` fixed and
