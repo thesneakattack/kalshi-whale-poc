@@ -2,7 +2,8 @@
 
 Companion: `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
 (tasks E4, E5). Read
-`docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md` first — E4/E5
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md`
+(moved there 2026-09-06, planning-lanes migration) first — E4/E5
 below inherit its capture-health caveat (the post-2026-08-23 population this document
 analyzes sits inside an unremediated, not-capture-health-controlled realtime data plane).
 

@@ -124,8 +124,11 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     item here would only lose the second case: a plan classified in-progress
     when its tracking issue was first created, then later actually finished,
     would never get that issue auto-closed. Found live 2026-08-27 (issue #96,
-    docs/superpowers/plans/2026-08-27-backend-services-modularization.md) and
-    fixed here instead of by hand every time it recurs.
+    2026-08-27-backend-services-modularization.md - filename only, per this
+    module's own convention below: it moved to
+    docs/archive/lane-4-analytics-advisory-research/plans/ on 2026-09-06 and
+    a directory-path citation would already be stale) and fixed here instead
+    of by hand every time it recurs.
 
     context_body/acceptance_criteria cite the plan by filename only, never a
     directory path (2026-09-06, planning-lanes migration adversarial

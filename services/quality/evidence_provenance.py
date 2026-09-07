@@ -64,7 +64,9 @@ def findings() -> list[QualityFinding]:
             evidence={"count": d["count"], "field": d["field"]},
             remediation=(
                 "This defect degrades advisory/calibration recommendations computed while it is "
-                "open - see docs/superpowers/specs/2026-08-30-self-feeding-loop-provenance-design.md"
+                "open - see docs/archive/lane-4-analytics-advisory-research/specs/"
+                "2026-08-30-self-feeding-loop-provenance-design.md (moved there 2026-09-06, "
+                "planning-lanes migration)"
             ),
         )
         for d in current_completeness_state()["defects"]

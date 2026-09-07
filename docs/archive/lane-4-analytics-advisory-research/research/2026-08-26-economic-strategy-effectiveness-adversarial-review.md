@@ -5,8 +5,9 @@ MCP are both `BLOCKED_EXTERNAL` per `.claude/rules/tooling-plugins.md` (no insta
 authenticated backing CLI) and prior session experience respectively; per that memory and
 `.claude/rules/tooling-plugins.md`'s fail-open policy, this is done as a genuine internal
 adversarial pass, not skipped and not silently downgraded to a rubber stamp. Each finding
-from `docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md` and
-`docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md` is attacked
+from `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md` and
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-gate-marginal-contribution.md`
+(both moved there 2026-09-06, planning-lanes migration) is attacked
 directly: alternative explanation, what would falsify it, and — where cheap and safe to
 do — an actual falsification attempt run against real data rather than left as a rhetorical
 hedge.

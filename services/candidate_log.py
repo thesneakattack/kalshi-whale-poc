@@ -194,8 +194,10 @@ _POPULATION_GATE_SQL = """
 
 # population_gate_summary_banded()'s bands - issue #616 D1 (docs/superpowers/
 # specs/2026-08-26-economic-strategy-remediation-design.md). Reproduces
-# docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md's
-# own E4 results table exactly ([0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,.95)
+# docs/archive/lane-4-analytics-advisory-research/research/
+# 2026-08-26-economic-gate-marginal-contribution.md's (moved there
+# 2026-09-06, planning-lanes migration) own E4 results table exactly
+# ([0,.2) [.2,.4) [.4,.6) [.6,.8) [.8,.95)
 # [.95,1.01) - e.g. that table's whale_watcher.min_contracts/0.00-0.20 row is
 # n=601,757, win rate 9.9%, mean_unit_cost 0.074, EV/contract +0.0252) -
 # VERIFIED, not copied blind from that document's own framing. That research
@@ -361,8 +363,10 @@ def population_gate_summary_banded(bands=DEFAULT_BANDS, min_samples: int = 30) -
     Answers "what would a gate's rejected candidates have done, broken out
     by how expensive they were" instead of one hypothetical_win_rate
     averaged across every unit_cost a gate ever rejected, which hides the
-    real 0.60-0.95-band negative-EV pattern docs/superpowers/research/
-    2026-08-26-economic-gate-marginal-contribution.md's E4 analysis found
+    real 0.60-0.95-band negative-EV pattern
+    docs/archive/lane-4-analytics-advisory-research/research/
+    2026-08-26-economic-gate-marginal-contribution.md's (moved there
+    2026-09-06, planning-lanes migration) E4 analysis found
     underneath that aggregate (see e.g. this repo's own ROADMAP.md/CLAUDE.md
     "0.60-0.95 unit-cost band negative-EV" open-gaps line).
 
