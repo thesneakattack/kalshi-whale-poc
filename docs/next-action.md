@@ -1,20 +1,35 @@
 # Next action
 
 **Coordinator:** `autotrade-36`, one continuous session since `1f`.
-**Fleet PAUSED on David's instruction (2026-09-07 ~03:50)** — all 4
-peers confirmed holding, nothing mid-merge. Resume on his signal, not on
-a timer. Verify identity by direct reply before trusting a name, in
-either direction.
+**Fleet RESUMED (2026-09-07, David lifted the pause).** All 4 peers
+active again. Verify identity by direct reply before trusting a name,
+in either direction.
 
-**Update while paused: PR #654 is now genuinely one step from merge.**
-Its fix-list recheck finished (23/11 count corrected and independently
-re-verified a third time, all 16 wrap-vulnerable fixes corrected and
-re-checked intact, 3 distinct review comments confirmed, CI green on all
-6 required contexts) — but it is being **held anyway**, not merged, per
-explicit coordinator decision: David's pause instruction reads as "tell
-me, don't auto-merge on a condition maturing mid-pause." Merge it (or
-say to hold longer) is his call on resume. PR #655 (Lane 6) is still
-genuinely mid-review, held regardless.
+**PR #654: MERGED.** Fix-list recheck finished correctly (23/11 count
+verified, all 16 fixes re-checked intact, 3 review comments, CI green).
+PR #655 (Lane 6) still genuinely mid-review.
+
+**Coordinator error, corrected**: initially told `49`/`0d` that 5
+specific citations (routes.py:195, history/__init__.py:6,
+evidence_provenance.py:5, test_candidate_log.py:1055+1313, ROADMAP.md:275)
+were a "genuine gap, separate from #654's scope" — wrong. That check ran
+against local `main` *before* #654's merge landed; all 5 were already
+inside #654's own fix set (line-wrap-blind citations, exactly its
+scope) and are now fixed. Memory:
+`check-against-current-state-not-stale-local-during-concurrent-merge` —
+don't grep a stale local checkout to judge whether an in-flight PR
+covers a finding; check its diff directly or wait for the pull.
+
+**Still legitimately open, reassigned to `0d` against CURRENT main**:
+(1) whether `docs/superpowers/specs/2026-08-27-backend-services-
+modularization-design.md` (still at its original location, never moved
+with its parent plan which did move to Lane 4) was a deliberate
+different-lane classification or a genuine miss — check the step-1
+specs/research table; (2) a fresh, from-scratch sweep against current
+main for any remaining genuine Lane 4/8 stale citations (exact-filename-
+matched, not prefix/topic-matched — the earlier false-positive trap
+still applies) — no confirmed real Lane 8 hit exists yet, that side is
+still an open question, not a known gap.
 
 ---
 
@@ -167,26 +182,21 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status (all PAUSED, confirmed holding as of 2026-09-07 ~03:50)
+## Peer status (resumed 2026-09-07)
 
-- **`49`** — PR #654 mid fix-list recheck (not merge-ready, see above);
-  PR #655/Lane 6 in early dispatch (not merge-ready). Neither pushed
-  toward merge; holding both short of `gh pr merge`.
-- **`c4`** — clean, nothing mid-flight. Completed retroactive review-cycle
-  artifacts for PR #651/#652 and generalized the #54 finding across all
-  147 open issues (found + fixed #621, #613 too) before this pause.
-- **`0d`** — `#642`'s adversarial review was already posted (00:20:26Z,
-  well before this session resumed) — reframes the original ~90s stall
-  as likely just one instance of this app's already-documented 4-21/hr
-  unattributed stall pattern, not backup-caused; `tick_phase_timings`
-  named as the right tool if it recurs. **Coordinator error, corrected**:
-  asked `0d` for this status 3 times after it was already answered,
-  across a compaction boundary — memory:
-  `verify-status-before-reasking-peer-after-compaction`. Nothing further
-  needed on #642.
-- **`ea`** — clean, standing watch. Resolved its own labeling-count
-  concern earlier (9 unlabeled = 8 stable `RULE-GAP` cases + 1 brand-new
-  untriaged issue, not a stuck cohort).
+- **`49`** — merging PR #654; continuing PR #655/Lane 6's review cycle.
+- **`c4`** — resumed, synced, correctly deferring on #654/#655 (both
+  actively owned by 49). Standing by for next verification ask.
+- **`0d`** — assigned the Lane 4/8 stale-citation follow-up sweep (see
+  above). `#642`'s adversarial review was already posted (00:20:26Z) —
+  reframes the original ~90s stall as likely one instance of this app's
+  already-documented 4-21/hr unattributed stall pattern, not
+  backup-caused; `tick_phase_timings` named as the right tool if it
+  recurs. Nothing further needed on #642 itself.
+- **`ea`** — standing watch, resumed. Noted `last_tick_duration_sec:
+  7.45` (mildly above the usual ~2-3s) on one reading, correctly
+  withheld judgment pending a second data point rather than call it a
+  finding — pointed at `tick_phase_timings` if it turns out sustained.
 
 ---
 
