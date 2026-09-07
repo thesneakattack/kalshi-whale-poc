@@ -108,19 +108,24 @@ read exactly as §6 wrote it.
    is not under a Tier A prefix, so §3.2's counts are unchanged. The suffix
    list exists to stop a `README.md` inside a Tier A package from firing; an
    extensionless executable is not prose.
-4. **The Lane-3 import list in §3.1 is over-stated, and the plan says so.**
-   Re-derived at `a39d5f9` by scanning all 16 Lane 3 source files: the direct
-   `services.*` imports are `app_state`, `confidence_scoring`, `config`,
-   `config.config_bounds`, `config.config_store`, `exits`,
-   `kalshi.contracts.lifecycle`, `kalshi.interfaces`, `paper_broker`,
-   `position.account_positions`, `risk_manager`, `signal_log`,
-   `whale_calibration`. Of the five the spec lists as additions, four are
-   **already** Tier A through `LANES` (`signal_log.py` is Lane 2, `kalshi/*`
-   is Lane 1, `position/` is Lane 3); only `services/app_state.py` is
-   genuinely added by this rule. That is consistent with the spec's own "moves
-   0 further PRs" claim — the rule guards against future drift rather than
-   adding coverage today — but the list as worded reads as five new paths.
-   Task 2's test is the authority either way.
+4. **§3.1's Lane-3 import list was derived from an incomplete scan, and the
+   boundary is wider than the spec measured.** The spec's list (and this
+   plan's first draft) came from a regex over `from services.X` / `import
+   services.X`. Lane 3's dominant import form is neither:
+   `from services import a, b, c` at `services/strategy_engine.py:9`,
+   `services/exits/exit_engine.py:17`, `services/settlement_resolver.py:38-39`
+   and elsewhere. Re-derived with `ast` at `a39d5f9`: **27** direct
+   `services.*` imports, not 13. Four of the five paths §3.1 lists were
+   already Tier A through `LANES`, and **six were not Tier A at all** —
+   `fault_log.py`, `history_push.py`, `http_client.py`, `index_feed/`,
+   `market_analyst_agent/`, `market_lookup.py`. §3.2 even classes
+   `fault_log.py` as Tier B while `strategy_engine.py` calls it. All six are
+   added (Task 1, each decided on its merits), the scanner is `ast`-based
+   (Task 2), and the measured cost is **two PRs**: #614 and #498 move B → A.
+   Consequences: code-typed 70/14 instead of 68/16, unreviewed 24/6 instead of
+   23/7, and the Tier B fixture set is six PRs, not seven. **The spec carries
+   a dated correction** in §3.1 and §3.2 rather than being left to contradict
+   its own plan. Found by the 2026-09-07 adversarial review of this plan.
 5. **The `outcomes` report (spec §6.3 and principle P4) is not built** —
    David's scope decision, 2026-09-07, on the direct question "why all this
    work and not just an updated CLAUDE.md". What survives is the part the
@@ -135,6 +140,24 @@ read exactly as §6 wrote it.
    as a dated open decision (Task 9 step 3) rather than a CLAUDE.md line about
    a measure nothing computes. Spec §6.3 is written out in full, so building
    it later is a task, not a redesign.
+6. **`count_review_artifacts` counts comments only**, where spec §6.2 also
+   counted review-named files in the PR's diff. That clause would let a
+   planning-pipeline PR's earlier-stage documents satisfy its PR-stage
+   requirement: this initiative's own branch carries seven such files, so its
+   PR would have printed `PASS` with zero PR-stage comments — the "already
+   covered across stages" that CLAUDE.md forbids in the same rule. A committed
+   review document is a stage artifact; the PR stage reviews the PR as
+   submitted, so its artifacts are comments. Spec §6.2 carries the same dated
+   correction. Also from the adversarial review, which found the hole by
+   running the counter against this branch's own file list.
+7. **The artifact pattern is anchored**, where spec §6.2 specified the keyword
+   "anywhere in that line". Measured: the unanchored form counts eight real
+   comments that only *discuss* a review, and PR #632 — a Tier A PR — reached
+   its required three through one of them. Anchoring drops all eight, keeps
+   every heading form this repo posts, and costs one real artifact whose
+   heading was unconventional (it fails closed). The rule text now states the
+   required first-line form, so the pattern defines a convention instead of
+   guessing at history.
 
 ---
 
@@ -319,7 +342,20 @@ _REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
     "services/history/",
     # every module a Lane 3 module imports directly that no other rule covers
     # (review_tier.lane3_direct_imports() is the CI check that keeps this true).
+    # Derived with ast over all 16 Lane 3 sources, 2026-09-07: 27 direct
+    # services.* imports, of which these seven are covered by no other rule.
+    # fault_log is the data plane's own completeness evidence; http_client
+    # carries the REST backoff and rate limits; index_feed is Lane 1 ingestion
+    # (two of its files were already Tier A); market_analyst_agent and
+    # market_lookup feed exit and entry decisions; history_push pushes money
+    # figures to the dashboard.
     "services/app_state.py",
+    "services/fault_log.py",
+    "services/history_push.py",
+    "services/http_client.py",
+    "services/index_feed/",
+    "services/market_analyst_agent/",
+    "services/market_lookup.py",
     # the data-plane plumbing CLAUDE.md's six properties ride on, plus the
     # paths that gate accounts or discard live data.
     "main.py",
@@ -397,8 +433,14 @@ HOT_PATHS = (
 `services/kalshi_client.py`, `services/kalshi_account_client.py`, and
 `services/kalshi_trade_ws.py` were deleted by the `services/kalshi/` migration
 (Phase A, merged 2026-08-25); `services/kalshi/` already covers the code that
-replaced them, so the deny rule's coverage is unchanged. No test references the
-removed strings — `grep -rn 'kalshi_client' tests/` returns nothing.
+replaced them, so the deny rule's coverage is unchanged. No test reads the
+hook's tuples — `grep -rn 'KALSHI_PATHS\|HOT_PATHS\|MONEY_UI_PATHS' tests/` is
+empty. (`grep -rn 'kalshi_client' tests/` is **not** empty: ten hits in
+`test_run_tests_hook.py`, `test_quality_audit.py`, `test_kalshi_census.py`,
+`test_observability.py`, plus `tools/quality_audit/kalshi_boundary.py:66-68`
+and `.claude/hooks/run_tests.py:60`. All of those carry the deleted names as
+strings on purpose — legacy-import detection and test-name maps — and none is
+affected by this edit. Leave them alone.)
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -469,11 +511,31 @@ def test_lane3_direct_imports_finds_a_dotted_module_and_a_package(tmp_path):
     }
 
 
+def test_lane3_direct_imports_finds_the_bare_from_services_form(tmp_path):
+    """The form Lane 3 actually uses, and the one a `from services\\.` regex
+    cannot see: `from services import a, b, c` at services/strategy_engine.py:9,
+    services/exits/exit_engine.py:17, services/settlement_resolver.py:38-39.
+    Six real Lane 3 dependencies stayed invisible to this check until the
+    2026-09-07 adversarial review found it."""
+    (tmp_path / "services").mkdir(parents=True)
+    (tmp_path / "services" / "fault_log.py").write_text("")
+    (tmp_path / "services" / "market_lookup.py").write_text("")
+    (tmp_path / "services" / "strategy_engine.py").write_text(
+        "from services import fault_log, market_lookup\n"
+    )
+    assert review_tier.lane3_direct_imports(tmp_path) == {
+        "services/fault_log.py", "services/market_lookup.py",
+    }
+
+
 def test_lane3_direct_imports_ignores_a_commented_out_import(tmp_path):
+    """Parsing rather than pattern-matching also removes a whole class of false
+    positive the regex had: a docstring line beginning `from services.x`."""
     (tmp_path / "services").mkdir(parents=True)
     (tmp_path / "services" / "app_state.py").write_text("")
     (tmp_path / "services" / "strategy_engine.py").write_text(
-        "# from services.app_state import STATE\n"
+        '# from services.app_state import STATE\n'
+        '"""from services.app_state import STATE"""\n'
     )
     assert review_tier.lane3_direct_imports(tmp_path) == set()
 
@@ -490,13 +552,16 @@ def test_every_lane3_direct_import_is_covered_by_review_tier_a_paths():
     assert not uncovered, f"Lane 3 imports these, but they are not Tier A: {uncovered}"
 
 
-def test_lane3_direct_imports_on_the_real_repo_finds_app_state():
-    """A liveness check on the scan itself: if the regex or the LANES[3]
-    resolution breaks, the coverage test above passes vacuously on an empty
-    set. services/strategy_engine.py imports app_state today."""
+def test_lane3_direct_imports_on_the_real_repo_is_not_vacuous():
+    """A liveness check on the scan itself: if the parse or the LANES[3]
+    resolution breaks, the coverage test above passes on an empty set and
+    reports nothing. The ast scan finds 27 targets at a39d5f9; the floor is set
+    below that so a real removal does not fail CI, but well above the 13 the
+    superseded regex found."""
     targets = review_tier.lane3_direct_imports(_REPO_ROOT)
     assert "services/app_state.py" in targets
-    assert len(targets) >= 10
+    assert "services/fault_log.py" in targets      # only visible via `from services import`
+    assert len(targets) >= 25
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -518,16 +583,12 @@ labels.py; only the rules live here.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from tools.kanban_sync import labels
-
-_LANE3_IMPORT_RE = re.compile(
-    r"^\s*(?:from\s+services\.([A-Za-z0-9_.]+)|import\s+services\.([A-Za-z0-9_.]+))",
-    re.M,
-)
 
 
 def _resolve_import_target(repo_root: Path, dotted: str) -> str | None:
@@ -542,6 +603,31 @@ def _resolve_import_target(repo_root: Path, dotted: str) -> str | None:
     return None
 
 
+def _imported_dotted_names(tree: ast.Module) -> Iterator[str]:
+    """The three forms that appear in this repo, all of which must be caught:
+
+        from services import fault_log, market_lookup     # the dominant form
+        from services.position import account_positions
+        import services.app_state
+
+    Parsed rather than pattern-matched. A regex over `from services\\.` sees
+    only the second and third, which is how six real Lane 3 dependencies stayed
+    invisible until 2026-09-07 - `services/strategy_engine.py:9` alone imports
+    six modules in the first form.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module == "services":
+                for alias in node.names:
+                    yield alias.name
+            elif node.module.startswith("services."):
+                yield node.module[len("services."):]
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("services."):
+                    yield alias.name[len("services."):]
+
+
 def lane3_direct_imports(repo_root: Path) -> set[str]:
     """Repo-relative paths of every module a Lane 3 source imports directly.
 
@@ -549,6 +635,7 @@ def lane3_direct_imports(repo_root: Path) -> set[str]:
     criterion, made mechanical: strategy, risk, and execution are where a
     defect costs money, so what they depend on is Tier A too - computed from
     the source on every run, not from a list someone must remember to update.
+    Returns 27 targets at a39d5f9.
     """
     targets: set[str] = set()
     for pkg in labels.LANES[3]["packages"]:
@@ -560,8 +647,9 @@ def lane3_direct_imports(repo_root: Path) -> set[str]:
         else:
             sources = []
         for source in sources:
-            for match in _LANE3_IMPORT_RE.finditer(source.read_text()):
-                resolved = _resolve_import_target(repo_root, match.group(1) or match.group(2))
+            tree = ast.parse(source.read_text(), filename=str(source))
+            for dotted in _imported_dotted_names(tree):
+                resolved = _resolve_import_target(repo_root, dotted)
                 if resolved is not None:
                     targets.add(resolved)
     return targets
@@ -570,10 +658,12 @@ def lane3_direct_imports(repo_root: Path) -> set[str]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
-Expected: PASS (5 tests). If
+Expected: PASS (6 tests). If
 `test_every_lane3_direct_import_is_covered_by_review_tier_a_paths` fails, do
-not loosen the test — add the named path to `_REVIEW_TIER_A_EXTRA_PATHS` in
-`labels.py`. That finding is what the test exists to produce.
+not loosen the test — decide the named path on its merits and add it to
+`_REVIEW_TIER_A_EXTRA_PATHS` in `labels.py`. That finding is what the test
+exists to produce, and it has already produced one: the six paths Task 1 adds
+beyond `app_state.py` were invisible to the regex this scanner replaced.
 
 - [ ] **Step 5: Commit**
 
@@ -584,8 +674,9 @@ Stage `tools/kanban_sync/review_tier.py` and
 feat: scan Lane 3's direct imports so its dependencies are Tier A too
 
 A module strategy/risk/execution imports directly is Tier A whatever lane it
-nominally sits in. Computed from source on every CI run rather than kept as a
-list someone has to remember to update.
+nominally sits in. Computed from source on every CI run, by parsing rather than
+pattern-matching: `from services import a, b, c` is the dominant form here and
+a regex over `from services.` sees none of it.
 ```
 
 ---
@@ -603,17 +694,25 @@ list someone has to remember to update.
   — returns `("A" | "B", reasons)`, where each reason is a human-readable
   string naming the rule that fired and the path or line that fired it
 
-**Verification note (already run, 2026-09-07):** this exact rule set was
-simulated over the recorded 200-PR window before the plan was written. It
-reproduces spec §3.2's code-typed split (68 A / 16 B) and unreviewed split
-(23 A / 7 B, the same seven numbers) **exactly**, and the test-stem rule moves
-zero PRs, as §3.2 claims. The overall count comes out 142/58 rather than
-141/59 for one reason that is not a rule difference: the recorded window ends
-at #663 (merged during the adversarial review) and therefore starts at #255,
-where the spec's window ends at #662 and starts at #254 — and #254 is a
-docs-only PR (`docs/next-action.md`, `docs/open-decisions.md`) that is Tier B,
-swapped for #663, which is Tier A through the pipeline-directory prose rule.
-Step 4's expected values below are the ones this rule set actually produces.
+**Verification note (run twice, 2026-09-07).** The rule set was simulated over
+the recorded 200-PR window before the plan was written, and again after the
+adversarial review widened Tier A by six paths (Task 1). Both runs, and an
+independent re-simulation by the adversarial pass, agree.
+
+*Before the six paths:* 142 A / 58 B overall, code-typed 68/16, unreviewed
+23/7 — reproducing spec §3.2's code-typed and unreviewed splits exactly. The
+overall 142/58 against §3.2's 141/59 is a one-PR window shift, not a rule
+difference: the recorded window ends at #663 (merged during the spec's
+adversarial review) and so starts at #255, where the spec's window ends at
+#662 and starts at #254 — #254 is docs-only (`docs/next-action.md`,
+`docs/open-decisions.md`) and Tier B, swapped for #663, which is Tier A
+through both the pipeline-directory prose rule and the `labels.py` path rule.
+
+*After the six paths (what this plan implements):* **144 A / 56 B overall,
+code-typed 70 / 14, unreviewed 24 / 6.** Exactly two PRs move, #614 and #498.
+**This supersedes spec §3.2**, which was measured against an import list
+derived by the same incomplete scan Task 2 replaces; the spec carries a dated
+correction saying so. The fixture in step 1 uses the corrected set.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -623,18 +722,22 @@ Append to `tests/test_kanban_sync_review_tier.py`:
 # Real changed-file lists, taken from the merged PRs themselves (spec §3.2 and
 # §7). These are the fixture corpus: if the boundary ever reclassifies one of
 # them, that is a decision someone has to make on purpose.
-def test_tier_b_the_seven_unreviewed_low_blast_radius_prs():
-    """The seven PRs from the research's unreviewed-30 list that the boundary
+def test_tier_b_the_six_unreviewed_low_blast_radius_prs():
+    """The six PRs from the research's unreviewed-30 list that the boundary
     genuinely excuses: a test tightening, a backup-overlap guard, a container
-    image line, a gitignore, a test flush-race, a comment fix, a one-off
-    backfill tool. Nothing here touches trading, money, or the data plane."""
+    image line, a gitignore, a comment fix, and a one-off backfill tool.
+
+    Six, not the seven spec §3.2 lists: #498 (tests/test_index_feed_backfill.py)
+    moved to Tier A once services/index_feed/ was added as a Lane 3 dependency
+    (2026-09-07 adversarial review). #273 is Tier B on its *file list* and Tier
+    A on its diff - it adds recovered `raw_trades` rows, which rule 3 catches -
+    so this fixture exercises the file rules only."""
     corpus = {
         301: ["tests/test_e2e_terminal_static_and_api.py"],
         308: ["services/backup/backup.py", "services/backup/routes.py",
               "tests/test_backup.py", "tests/test_backup_routes.py"],
         415: ["Dockerfile", "docs/open-decisions.md"],
         445: [".gitignore"],
-        498: ["tests/test_index_feed_backfill.py"],
         623: ["services/diagnostics/routes.py"],
         273: ["static/project-manifest.json", "tests/test_historical_data_backfill.py",
               "tools/historical_data_backfill.py"],
@@ -642,6 +745,15 @@ def test_tier_b_the_seven_unreviewed_low_blast_radius_prs():
     for number, files in corpus.items():
         tier, reasons = review_tier.review_tier(files)
         assert tier == "B", f"PR #{number} should be Tier B, got A because {reasons}"
+
+
+def test_pr_498_is_tier_a_through_the_lane_3_dependency_index_feed():
+    """The one PR the Lane 3 import correction moved. Its only changed file is a
+    test, and it is Tier A through the stem rule because services/index_feed/ is
+    a Lane 3 dependency - settlement_edge_entry.py imports it."""
+    tier, reasons = review_tier.review_tier(["tests/test_index_feed_backfill.py"])
+    assert tier == "A"
+    assert any("index_feed" in r for r in reasons)
 
 
 def test_tier_a_via_main_py_and_its_test():
@@ -744,13 +856,12 @@ def test_no_rule_moves_a_pr_from_a_to_b():
 
 
 def test_a_test_of_a_tier_a_module_is_tier_a_but_the_tests_dir_is_not():
-    """Spec D8. `tests/test_<stem>*.py` for a Tier A stem, prefix-matched at an
-    underscore boundary - not any test file mentioning the stem anywhere, which
-    would pull in tests/test_index_feed_backfill.py (PR #498, Tier B) through
-    services/index_feed/backfill.py."""
+    """Spec D8. `tests/test_<stem>*.py` for a Tier A stem, matched as a prefix
+    at an underscore boundary - not as a substring, which would make
+    `test_maintenance.py` Tier A through the stem `main` (from main.py)."""
     assert review_tier.review_tier(["tests/test_strategy_engine_gate.py"])[0] == "A"
     assert review_tier.review_tier(["tests/test_risk_manager.py"])[0] == "A"
-    assert review_tier.review_tier(["tests/test_index_feed_backfill.py"])[0] == "B"
+    assert review_tier.review_tier(["tests/test_maintenance.py"])[0] == "B"
     assert review_tier.review_tier(["tests/test_e2e_terminal_static_and_api.py"])[0] == "B"
 
 
@@ -886,7 +997,7 @@ def review_tier(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
-Expected: PASS (20 tests: 5 from Task 2, 15 here).
+Expected: PASS — the six tests from Task 2 plus the sixteen here.
 
 - [ ] **Step 5: Commit**
 
@@ -914,9 +1025,11 @@ a reclassification has to be somebody's decision rather than a silent drift.
 **Interfaces:**
 - Consumes: nothing new
 - Produces: `review_tier.REVIEW_ARTIFACT_FIRST_LINE: re.Pattern`;
-  `review_tier.count_review_artifacts(comments: Sequence[str], files:
-  Sequence[str]) -> tuple[int, list[str]]` — returns the count and the list of
-  matched labels (a comment's first line, or a filename)
+  `review_tier.count_review_artifacts(comments: Sequence[str]) -> tuple[int,
+  list[str]]` — returns the count and the matched first lines. **Comments
+  only:** a committed review document is a planning-stage artifact, not a
+  PR-stage one, and counting files in the diff would let this initiative's own
+  branch pass its PR gate on the research and spec stages' documents.
 
 This is P3's whole mechanism: *a review that is not a persisted artifact did
 not happen.* It counts presence, not independence — spec D11: every comment in
@@ -944,13 +1057,16 @@ wc -l tests/fixtures/review_artifact_first_lines.tsv
 ```
 
 This is a **snapshot**, committed once and then frozen — the numbers in step 3
-are asserted against this file, not against the live repo, so the test does
-not drift as new PRs are merged. Measured while writing this plan over the
-same 200-PR window: **261 records, 224 matching, 37 not**, and every one of
-the 37 is a CI re-trigger, a correction, a checkpoint, a fix-list recheck, or
-a scope amendment — no review artifact among them. If the regenerated snapshot
-differs (comments landed since), record the new totals in the test and say the
-new figures in the commit message; do not adjust the regex to hit a number.
+are asserted against this file, not against the live repo, so the test does not
+drift as new PRs are merged. Measured while writing this plan over the same
+200-PR window: **261 records, 213 matching under the anchored pattern, 48 not**
+(an unanchored search matched 224, eleven of which were not artifacts — see
+step 3's negative fixtures). The live corpus had grown to 265 records by the
+time the adversarial pass re-fetched it a few hours later; that is comments
+landing, not a disagreement. If the regenerated snapshot differs, record the
+new totals in the test and say the new figures in the commit message; **never
+adjust the regex to hit a number** — inspect what changed instead, the way the
+eleven false positives were found.
 
 Add a first line to the file, before committing it, marking what it is:
 
@@ -965,6 +1081,8 @@ Add a first line to the file, before committing it, marking what it is:
 Append to `tests/test_kanban_sync_review_tier.py`:
 
 ```python
+import pytest   # add to the file's imports if not already present
+
 _FIXTURE = _REPO_ROOT / "tests" / "fixtures" / "review_artifact_first_lines.tsv"
 
 
@@ -994,64 +1112,90 @@ def test_review_artifact_pattern_matches_this_repos_real_artifact_headings():
         assert review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
 
 
-def test_review_artifact_pattern_rejects_the_comments_that_are_not_artifacts():
+def test_review_artifact_pattern_rejects_comments_that_merely_mention_a_review():
+    """The false-positive direction, and the dangerous one: a comment that
+    *talks about* a review would otherwise count as one, moving the narration
+    from the PR body into a comment's first line and defeating the whole gate.
+    Every line here is verbatim from a merged PR (the 2026-09-07 adversarial
+    review found eight; PR #632, a Tier A PR, reached its required three only
+    through the second of them)."""
     for line in (
+        "## Fix-list recheck (adversarial review returned NO-GO)",
+        "**Response to the independent adversarial review's finding** (commit `f21cf3c`)",
+        "## Clarifying the 1740-vs-1800 discrepancy the adversarial review flagged",
+        "## Correction to the self-review's own claim",
+        "## Addendum to self-review gap #2 (rate-limit disclosure)",
+        "**Status (df, pre-/compact checkpoint):** standing by, waiting on 71's "
+        "independent adversarial pass",
+        "Merging as the durable #601 benchmark record per tonight's action plan. "
+        "Consolidation GO is above",
+        "**Coordinator check against the three sign-off conditions.** This is not "
+        "the adversarial review",
         "Re-triggering CI: required pr/* contexts never posted",
-        "## Fix-list recheck — all 16 items confirmed, not just claimed",
         "## Checkpoint — fleet-wide pause (David, 3.5h), stopping here",
         "## Production-scale equivalence check (read-only, no writes)",
+        "## INCOMPLETE — independent adversarial review terminated mid-pass",
+        "**PR review cycle complete** (self-review + adversarial review + "
+        "consolidation, per CLAUDE.md)",
     ):
         assert not review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
 
 
 def test_review_artifact_pattern_against_the_recorded_snapshot():
     """Frozen data (tests/fixtures/review_artifact_first_lines.tsv): 261 real
-    comment first lines from the 200 most recently merged PRs as of
-    2026-09-07. The stricter heading-anchored form the spec's first revision
-    proposed matched 170 of these and rejected the fully compliant PR #625."""
+    comment first lines from the 200 most recently merged PRs as of 2026-09-07.
+
+    213 match. The 48 that do not are CI re-triggers, corrections, checkpoints,
+    rechecks, responses, and two `PR review cycle complete` summaries - one
+    comment claiming all three stages is not three artifacts. Exactly one real
+    artifact is missed (`## Review outcome (independent adversarial review,
+    fresh Agent call)`), and that failure is *closed*: the PR reads FAIL and the
+    author gives the comment a conventional heading."""
     lines = _fixture_first_lines()
     matched = [ln for ln in lines if review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(ln)]
     assert len(lines) == 261
-    assert len(matched) == 224
+    assert len(matched) == 213
 
 
 def test_count_review_artifacts_uses_only_the_first_line_of_a_comment():
-    """A PR body or comment that *narrates* a review in its prose counts for
-    nothing (spec D2): 12 of the 24 unreviewed code PRs in the research did
-    exactly that."""
+    """A comment that *narrates* a review counts for nothing (spec D2): 12 of
+    the 24 unreviewed code PRs in the research narrated one in the body."""
     comments = [
         "## Self-review\n\nfindings: none",
         "Merging now — the adversarial review found nothing worth blocking on.",
     ]
-    count, matched = review_tier.count_review_artifacts(comments, [])
+    count, matched = review_tier.count_review_artifacts(comments)
     assert count == 1
     assert matched == ["## Self-review"]
 
 
-def test_count_review_artifacts_counts_review_named_files_in_the_diff():
-    """A planning-pipeline PR carries its artifacts as committed documents
-    rather than comments; both forms count, and only files in this PR's own
-    diff are counted."""
+def test_committed_review_documents_do_not_satisfy_the_pr_gate():
+    """The PR-stage cycle reviews the PR *as submitted*, so its artifacts are PR
+    comments. Counting review-named files in the diff would let a planning-
+    pipeline PR's earlier-stage documents satisfy its PR-stage requirement -
+    this very branch carries seven such files and would have printed PASS with
+    zero PR-stage comments, contradicting CLAUDE.md's "nothing is shared,
+    reused, or 'already covered' across stages"."""
     files = [
-        "docs/archive/lane-9-tooling-ci-process-governance/research/x.md",
         "docs/archive/lane-9-tooling-ci-process-governance/research/x-self-review.md",
         "docs/archive/lane-9-tooling-ci-process-governance/research/x-adversarial-review.md",
         "docs/archive/lane-9-tooling-ci-process-governance/research/x-consolidation.md",
     ]
-    count, matched = review_tier.count_review_artifacts([], files)
-    assert count == 3
-    assert all("x.md" != m for m in matched)
+    # the signature takes comments only; files cannot contribute a count at all
+    assert review_tier.count_review_artifacts([])[0] == 0
+    with pytest.raises(TypeError):
+        review_tier.count_review_artifacts([], files)
 
 
 def test_count_review_artifacts_does_not_double_count_one_comment():
     count, _ = review_tier.count_review_artifacts(
-        ["## Self-review and adversarial review and consolidation"], []
+        ["## Self-review and adversarial review and consolidation"]
     )
     assert count == 1
 
 
 def test_count_review_artifacts_ignores_an_empty_or_whitespace_comment():
-    count, _ = review_tier.count_review_artifacts(["", "   \n\n"], [])
+    count, _ = review_tier.count_review_artifacts(["", "   \n\n"])
     assert count == 0
 ```
 
@@ -1060,36 +1204,53 @@ def test_count_review_artifacts_ignores_an_empty_or_whitespace_comment():
 Append to `tools/kanban_sync/review_tier.py`:
 
 ```python
-# A review artifact is recognised by the first line of its comment. Validated
-# against tests/fixtures/review_artifact_first_lines.tsv - 261 real comment
-# first lines, 224 matched, and every one of the 37 misses is a CI re-trigger,
-# a correction, a checkpoint, a fix-list recheck, or a scope amendment. The
-# stricter `^#+\s*(self-review|...)` form this replaced matched 170 and
-# rejected PR #625, which was fully compliant.
+# A review artifact is recognised by the first line of its comment *starting*
+# with what it is - optional markdown noise, an optional qualifier, then the
+# word. Anchoring is the whole point: an unanchored search counted eight real
+# comments that only *talk about* a review ("Response to the independent
+# adversarial review's finding", "Fix-list recheck (adversarial review returned
+# NO-GO)"), and PR #632 reached its required three through one of them. That is
+# the body-narrative failure moving into a comment.
+#
+# Validated against tests/fixtures/review_artifact_first_lines.tsv - 261 real
+# first lines, 213 matched, all eight known false positives rejected, and every
+# heading form this repo actually posts kept, including the `**bold**` ones that
+# broke the stricter `^#+\s*(self-review|...)` form (which matched 170 and
+# failed the fully compliant PR #625).
+#
+# One real artifact is missed: `## Review outcome (independent adversarial
+# review, fresh Agent call)`. Accepted deliberately - it fails *closed* (the PR
+# reads FAIL and the author retitles the comment), and a pattern that defines
+# the expected heading is worth more than one that guesses every past form. The
+# rule text says what the first line must look like.
 REVIEW_ARTIFACT_FIRST_LINE = re.compile(
-    r"\b(self[-\s]?review|adversarial|consolidation)\b", re.IGNORECASE
-)
-_ARTIFACT_FILENAME = re.compile(
-    r"(self-review|adversarial-review|consolidation)", re.IGNORECASE
+    r"^[\s#*_>`]*"
+    r"(?:(?:independent|pr(?:[-\s](?:level|stage))?|dispatching[-\s]session|"
+    r"tier\s+b|final|lean|post[-\s]merge|stage\s+\d+|review[-\s]cycle)[\s,:—–-]+)*"
+    r"(self[-\s]?review|adversarial|consolidation)\b",
+    re.IGNORECASE,
 )
 
 
-def count_review_artifacts(
-    comments: Sequence[str], files: Sequence[str]
-) -> tuple[int, list[str]]:
+def count_review_artifacts(comments: Sequence[str]) -> tuple[int, list[str]]:
     """How many persisted review artifacts this PR carries.
 
-    Two forms count: a PR comment whose *first line* names itself as one, and a
-    review-named document added or changed in this PR's own diff (a planning-
-    pipeline PR commits its artifacts rather than commenting them). Only the
-    first line of a comment is read - a body that merely narrates a review in
-    its prose is not an artifact (spec D2), which is what stood in for a review
-    on 12 of the 24 unreviewed code PRs the research found.
+    Comments only, by design. A committed `-self-review.md` / `-consolidation.md`
+    document is a *stage* artifact for the planning pipeline; the PR-stage cycle
+    reviews the PR as submitted, so its artifacts are PR comments. Counting
+    review-named files in the diff would let a pipeline PR's earlier stages
+    satisfy its PR stage - this initiative's own branch carries seven such files
+    and would have passed with zero PR-stage comments, which is exactly the
+    "nothing is shared, reused, or 'already covered' across stages" that
+    CLAUDE.md forbids.
 
-    What this cannot do (spec D11): tell an independent Agent's comment from
-    the author's. Every comment in the measured window is by the same GitHub
-    login. Independence rests on the session's honesty, as the rule already
-    does; this catches absence, the failure that actually recurred.
+    Only the first line of a comment is read, and it must *begin* with what it
+    is - a comment that narrates a review is not one (spec D2).
+
+    What this cannot do (spec D11): tell an independent Agent's comment from the
+    author's. Every comment in the measured window is by the same GitHub login.
+    Independence rests on the session's honesty, as the rule already does; this
+    catches absence, the failure that actually recurred four times.
     """
     matched: list[str] = []
     for body in comments:
@@ -1099,16 +1260,13 @@ def count_review_artifacts(
         first_line = stripped.splitlines()[0]
         if REVIEW_ARTIFACT_FIRST_LINE.search(first_line):
             matched.append(first_line)
-    for path in files:
-        if _ARTIFACT_FILENAME.search(path.rsplit("/", 1)[-1]):
-            matched.append(path)
     return len(matched), matched
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
-Expected: PASS (27 tests). If
+Expected: PASS — every test in the file. If
 `test_review_artifact_pattern_against_the_recorded_snapshot` fails on the
 counts, the snapshot differs from the one measured here — update both numbers
 from the new file and say so in the commit message, rather than changing the
@@ -1123,11 +1281,16 @@ Stage `tools/kanban_sync/review_tier.py`,
 ```
 feat: count persisted review artifacts from comment first lines
 
-A review that is not a persisted artifact did not happen. The pattern is
-validated against a frozen snapshot of 261 real comment first lines (224
-match; the 37 that don't are CI re-triggers, corrections, checkpoints and
-rechecks) rather than against what a heading ought to look like - the stricter
-form matched 170 and rejected a fully compliant PR.
+A review that is not a persisted artifact did not happen. The first line must
+*begin* with what it is: an unanchored search counted eight real comments that
+only talk about a review, and PR #632 reached its required three through one of
+them - the body narrative simply moving into a comment. Validated against a
+frozen snapshot of 261 real first lines, 213 matching, with every known false
+positive as an explicit negative fixture.
+
+Comments only. A committed review document belongs to a planning stage; the PR
+stage reviews the PR as submitted, and counting files would let this branch's
+own earlier-stage documents satisfy its PR gate.
 ```
 
 ---
@@ -1530,7 +1693,7 @@ def _cmd_review_tier(args: argparse.Namespace) -> None:
     tier, reasons = review_tier(
         files, diff_text=diff_text, pr_labels=pr_labels, escalate=args.tier == "A",
     )
-    artifacts, matched = count_review_artifacts(comments, files)
+    artifacts, matched = count_review_artifacts(comments)
     required = _REVIEW_TIER_REQUIREMENT[tier]
     verdict = "PASS" if artifacts >= required else "FAIL"
     _emit_review_tier(
@@ -1657,7 +1820,7 @@ with:
 
 - [ ] **Step 7: Add the merge-check bullet (after line 48)**
 
-> - Before `gh pr merge` on any PR, the merging session runs `python -m tools.kanban_sync review-tier --pr N` (with `--exempt "<reason>"` for a mechanical change, `--tier A` to escalate) and merges only on `PASS` or `EXEMPT`: Tier A needs three distinct persisted artifacts, Tier B one; a PR body that *narrates* a review counts for nothing (12 of the 24 unreviewed code PRs in the 2026-09-07 research did exactly that; the four dated recurrences behind memory `persist-code-pr-reviews-as-comments` are the same shape).
+> - Before `gh pr merge` on any PR, the merging session runs `python -m tools.kanban_sync review-tier --pr N` (with `--exempt "<reason>"` for a mechanical change, `--tier A` to escalate) and merges only on `PASS` or `EXEMPT`: Tier A needs three distinct persisted artifacts as **PR comments**, Tier B one; a comment counts only if its first line begins with what it is (`Self-review`, `Adversarial review`, `Consolidation`, `Tier B self-review`, optionally prefixed — `Independent`, `PR-stage`, `Tier B`, a stage number), because a comment that merely *narrates* a review counts for nothing (12 of the 24 unreviewed code PRs in the 2026-09-07 research narrated one in the body; the four dated recurrences behind memory `persist-code-pr-reviews-as-comments` are the same shape, and eight comments in the last 200 PRs talk about a review in their first line without being one). A planning stage's committed `-self-review.md`/`-consolidation.md` documents belong to that stage and never count toward the PR's own cycle. `review-tier` is enabled on day one rather than earning its place first — the stated exception to the Toolchain section's handspun-tool default, with its own retirement test dated 2026-10-05 in `docs/open-decisions.md`.
 
 - [ ] **Step 8: Tier the lean-execution clause (line 49)**
 
@@ -1714,10 +1877,19 @@ grep -n 'in-scope PR\|in-scope stage' CLAUDE.md
 grep -n 'kalshi_account_client\|main` is protected' CLAUDE.md
 ```
 
-Expected: every surviving hit is scoped to Tier A (lines 43, 48, 49 as
-rewritten) or is inside the new merge bullet. The last two greps return
-nothing. If any hit states the requirement unconditionally, fix it here — do
-not leave it for the PR review.
+Expected survivors, exactly:
+
+- lines 43, 48, 49 as rewritten, each scoped to Tier A, plus the new merge
+  bullet;
+- **line 38's second sentence, which still reads "applies to every such
+  pipeline and every in-scope PR" — leave it.** It is coherent after the Scope
+  rewrite (in scope now means tiered, and a Tier B PR is in scope for one
+  artifact), and an executor following a "no survivors" prediction literally
+  would edit a line that is already correct.
+
+The last two greps return nothing. Any *other* hit that states the
+three-artifact requirement unconditionally is a real defect — fix it here,
+do not leave it for the PR review. This is spec §10's fourth NO-GO trigger.
 
 - [ ] **Step 16: Commit**
 
@@ -1751,11 +1923,25 @@ the moved kalshi_account_client path, and main being server-side protected
 
 Immediately before "Read the PR body before merging":
 
-> Decide the exemption question first, then run `python -m tools.kanban_sync review-tier --pr <n>` (`--exempt "<reason>"` for a mechanical change, `--tier A` to escalate) and paste its output into the final PR comment or the merge commit; merge only on `PASS` or `EXEMPT`. It decides Tier A/B from the changed paths, data-model lines, and `concern:hotpath`, and counts the persisted review artifacts (three for A, one for B). A `FAIL` is not a formality — supply the missing artifact (a fresh Agent for an adversarial pass, the author for a Tier B self-review) or do not merge.
+> Decide the exemption question first, then run `python -m tools.kanban_sync review-tier --pr <n>` (`--exempt "<reason>"` for a mechanical change, `--tier A` to escalate) and paste its output into the final PR comment or the merge commit; merge only on `PASS` or `EXEMPT`. It decides Tier A/B from the changed paths, data-model lines, and `concern:hotpath`, and counts the persisted review artifacts (three for A, one for B), reading only each comment's first line. A `FAIL` is not a formality — supply the missing artifact (a fresh Agent for an adversarial pass, the author for a Tier B self-review) or do not merge.
+>
+> A counted artifact's first line begins with what it is: `## Self-review`, `## Adversarial review`, `## Consolidation`, `Tier B self-review`, optionally prefixed (`Independent`, `PR-stage`, `Tier B`, `stage 2 of 3`). A comment that discusses a review — a correction, a recheck, a response to a finding — is not one, however much it says about it. A Tier B PR's single comment:
+>
+> ```markdown
+> Tier B self-review
+>
+> **Tier:** <changed paths>; none matches REVIEW_TIER_A_PATHS, no data-model line, no concern:hotpath.
+> **What changed and why:** <the behaviour, not the diff>
+> **Evidence:** <checks that ran and what they showed; CI status URL>
+> **Falsifier:** <what observation after merge would show this was wrong>
+> **Left undone:** <anything noticed and not done, or "nothing">
+> ```
 
 - [ ] **Step 2: Tier the peer-ping parenthetical (lines 76–78)**
 
-Replace
+The phrase below **wraps across lines 77–78** in the file, so a single-line
+search will not find it — match it with the line break, or edit the two lines
+together. Replace
 "(that still needs its own fresh, memory-less Agent call regardless of what a peer says)"
 with:
 
@@ -1763,7 +1949,7 @@ with:
 
 - [ ] **Step 3: Tier the single-developer bullet (lines 88–94)**
 
-Replace
+This phrase also **wraps, across lines 92–94**. Replace
 "but the AI-executed self-review/adversarial-review/consolidation cycle still runs before `gh pr merge` — that is rigor, not approval ceremony."
 with:
 
@@ -1870,19 +2056,30 @@ when the spec's PR merges)" section. Replace that whole section with two
 lines: one recording that the decision shipped, one parking the measurement
 question this plan deliberately did not build.
 
-> ## Parked 2026-09-07 — is a review-outcomes report worth building?
+> ## Parked 2026-09-07 — two dated questions about the review tiering
 >
-> Review tiering shipped (PR #<n>, `review-tier` decides the tier and counts
-> artifacts). The design also specified `python -m tools.kanban_sync outcomes`
-> — defects per tier and size band over a fixed window — and it was cut before
-> implementation: the repo's own rule is that a handspun tool earns its place
-> by run history, and nothing has yet needed this number. **Decide by
-> 2026-10-05:** has any decision since the merge wanted a defect-per-tier
-> figure? If yes, build it from the design's §6.3, which is written out in
-> full. If no, close this line and let the tiering stand on the merge check
-> alone. Principle P4 as stated — outcomes are judged by defects per tier and
-> size band, never by volume, and never by human hours (only David can supply
-> that one) — holds either way.
+> Review tiering shipped (PR #<n>): depth follows consequence, decided by the
+> paths a PR touches, `review-tier` decides it and counts the persisted
+> artifacts. David chose "tier by consequence" over "keep the uniform cycle"
+> and "measure first, decide later" when asked directly (session
+> `autotrade-d9`, 2026-09-07), resolving the 2026-09-03 conflict recorded in
+> memory `scale-review-effort-to-blast-radius`.
+>
+> **Decide by 2026-10-05, both from evidence, not impression:**
+>
+> 1. *Is `review-tier` earning its place?* It was enabled on day one rather
+>    than proving itself first — the stated exception to the Toolchain
+>    section's handspun-tool default. Test: has it ever printed `FAIL` on a PR
+>    that then got its missing artifact supplied? If it has only ever
+>    rubber-stamped, it is ceremony and should be retired.
+> 2. *Is a review-outcomes report worth building?* The design also specified
+>    `python -m tools.kanban_sync outcomes` — defects per tier and size band
+>    over a fixed window — cut before implementation because nothing had needed
+>    the number. Test: has any decision since the merge wanted a defect-per-tier
+>    figure? If yes, build it from the design's §6.3, which is written out in
+>    full. Principle P4 as stated — outcomes are judged by defects per tier and
+>    size band, never by volume, and never by human hours (only David can
+>    supply that one) — holds either way.
 
 - [ ] **Step 4: Rewrite `docs/next-action.md`**
 
@@ -1918,10 +2115,18 @@ gh pr create --title "..." --body "..."
 gh pr edit <n> --add-label lane:9 --add-label phase:research --add-label phase:spec --add-label phase:plan
 ```
 
-The PR body records: David's 2026-09-07 tiering decision, the numbers from
-spec §3.2, the dry-run output from step 1, the deviations list at the top of
-this plan, and the fact that #613's two edits are folded in (the PR closes
-#613). Then, per CLAUDE.md, this Tier A PR owes its own self-review,
+The PR body records: David's 2026-09-07 tiering decision, the corrected
+numbers (70/14 code-typed, 24/6 unreviewed — and that stage 3 corrected spec
+§3.2), the dry-run output from step 1, the deviations list at the top of this
+plan, and the fact that #613's two edits are folded in (the PR closes #613).
+
+**Write `#615` only in sentences with no close-family verb anywhere near it,**
+and after merging check `gh issue view 615 --json state,stateReason,closedAt`
+as well as #613's. GitHub's auto-close matches incidental phrasing, and this
+body discusses #615 at length while closing #613 — the exact shape that closed
+the wrong issue here before.
+
+Then, per CLAUDE.md, this Tier A PR owes its own self-review,
 adversarial review (a fresh Agent, no session memory), and consolidation as
 three distinct persisted comments — and `review-tier --pr <n>` must print
 `PASS` against its own rule before the merge. Verify the comments exist with
@@ -1932,6 +2137,9 @@ the failure this whole PR is about.
 
 ## Plan self-review
 
+*(Written before the adversarial pass; the three items below it record what
+that pass changed.)*
+
 **Spec coverage.** P1 → Tasks 1, 3, 7. P2 and P5 → Task 7 step 12. P3 → Tasks
 4, 6, 7 step 7, 8 step 1. P6 → Task 7 step 1. P7 → Task 7 step 11. Spec §3.1's
 five rules → Task 3, each with a test. §4's merge check → Task 6. §5.1 →
@@ -1940,12 +2148,18 @@ Task 7 (all fourteen edits). §5.2 → Task 8. §5.3 → Task 8 step 5, minus th
 §6.3 → **not built** (deviation 5). §7's verification list → the tests in
 Tasks 1–6 plus Task 9 step 1. §8's rollout → Task 9.
 
+**Where this plan supersedes the spec** (deviations 4, 6, 7; the spec carries
+a dated correction block for each): §3.1's Lane-3 import list and §3.2's
+counts, both derived from an incomplete import scan; §6.2's file-based
+artifact counting; §6.2's unanchored artifact pattern.
+
 **Not covered, deliberately:** spec §6.3 and the P4 tooling. Parked with a
 dated decision rather than dropped silently (Task 9 step 3).
 
 **Type consistency.** `review_tier(files, *, diff_text, pr_labels, escalate)`
-is called with exactly those keywords in Task 6. `count_review_artifacts(comments,
-files)` returns `(int, list[str])` and is unpacked as such. `_REVIEW_TIER_REQUIREMENT`
+is called with exactly those keywords in Task 6. `count_review_artifacts(comments)`
+takes one argument and returns `(int, list[str])`, unpacked as such at its single
+call site. `_REVIEW_TIER_REQUIREMENT`
 is keyed `"A"`/`"B"`, and the exempt path never indexes it.
 `labels.resolve_lane_package` returns a `str` and is wrapped in a `Path` by
 the test helper that uses it as one.

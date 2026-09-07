@@ -79,13 +79,22 @@ evaluated **first** and is unchanged; an exempt PR owes no artifact and
      (`record_rejection()` at eight sites in `strategy_engine.py`),
      `services/history/` (fees and realized P&L — #423 is a real
      fees/P&L fix that was Tier B in revision 1);
-   - **every module a Lane 3 module imports directly** (today, beyond
-     paths already listed: `services/app_state.py`, `services/signal_log.py`,
-     `services/kalshi/interfaces.py`, `services/kalshi/contracts/lifecycle.py`,
-     `services/position/account_positions.py`), enforced by a test that
-     scans Lane 3 sources for `from services.X` / `import services.X`
-     and asserts each target is covered — the 09-03 memory's "widely-used
-     code" criterion, made mechanical;
+   - **every module a Lane 3 module imports directly**, enforced by a test
+     that scans Lane 3 sources and asserts each target is covered — the
+     09-03 memory's "widely-used code" criterion, made mechanical.
+     **Corrected 2026-09-07 by the implementation plan's adversarial review
+     (see `../plans/2026-09-07-ai-assisted-engineering-principles.md`,
+     deviation 4):** this bullet originally listed five paths and specified a
+     scan for `from services.X` / `import services.X`. That misses Lane 3's
+     dominant import form, `from services import a, b, c`
+     (`services/strategy_engine.py:9`, `services/exits/exit_engine.py:17`,
+     `services/settlement_resolver.py:38-39`). An `ast` re-derivation finds
+     **27** direct imports, not 13; four of the five originally listed were
+     already Tier A through `LANES`, and **six were not Tier A at all** —
+     `services/fault_log.py`, `services/history_push.py`,
+     `services/http_client.py`, `services/index_feed/`,
+     `services/market_analyst_agent/`, `services/market_lookup.py`. All six
+     are Tier A as of the plan; the scan is `ast`-based;
    - `main.py`; `services/db.py`, `services/capture_writer.py`,
      `services/task_supervisor.py`, `services/tick_executor.py` (the
      data-plane plumbing the HARD RULE's six properties ride on);
@@ -131,6 +140,17 @@ simulation independently and matched within ±1 (its window included
 | Code-typed (84) | 68 | 16 |
 | Docs-typed (105) | 64 | 41 |
 | The 30 PRs the research found with **no** review artifact | **23** | 7 |
+
+> **Corrected 2026-09-07 (implementation-plan stage).** These counts were
+> measured against §3.1's Lane-3 import list as originally derived, which the
+> correction above shows was produced by an incomplete scan. With the six
+> missing Lane 3 dependencies added, **two PRs move B → A (#614, #498)** and
+> the table becomes: all 200 → 143/57; code-typed → **70 / 14**; unreviewed →
+> **24 / 6** (the Tier B set loses #498, leaving #273 #301 #308 #415 #445
+> #623). The rows above are kept as the record of what was measured when;
+> the corrected figures are what the boundary actually does. Re-derived twice
+> in this session and independently re-simulated by the plan's adversarial
+> reviewer.
 
 Revision 1's boundary gave 133 / 67 (code 60 / 24); the eight code PRs
 that moved to Tier A in this revision are #423 (history fees/P&L),
@@ -390,6 +410,18 @@ the client's retrying `_run` shape: `get_pr_files` (REST
 100 and PR #660 had 124), `get_pr_diff`, `get_pr_labels` (PR and
 closing-issue labels), `list_pr_comments`, `get_pr_meta` (`createdAt`,
 `mergedAt`, `additions`), `list_merged_prs(since, until)`.
+
+> **Corrected 2026-09-07 (implementation-plan stage), twice.** (1) The
+> "plus files in the diff" clause below is **withdrawn**: counting
+> review-named files lets a planning-pipeline PR's earlier-stage documents
+> satisfy its PR-stage requirement — this initiative's own branch carries
+> seven such files and would have printed `PASS` with zero PR-stage comments,
+> which is the "already covered across stages" CLAUDE.md forbids. The counter
+> takes comments only. (2) "anywhere in that line" is **withdrawn** for an
+> anchored match: the keyword must *begin* the line after optional markdown
+> noise and an optional qualifier. Measured — the unanchored form counts eight
+> real comments that only discuss a review, and PR #632 (Tier A) reached its
+> required three through one of them. See the plan's deviations 6 and 7.
 
 Artifact count: PR comments whose **first line** matches
 `REVIEW_ARTIFACT_FIRST_LINE` = optional `#`/`**`/`*`/`_` prefix, then
