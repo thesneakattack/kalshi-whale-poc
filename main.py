@@ -1938,8 +1938,12 @@ async def get_state(request: Request):
     # fully event-loop-blocking cost on this app's one shared trading loop,
     # but NOT, on its own, large enough to explain the separately-tracked
     # 9.3-9.6s stall magnitude issue #605 also recorded around the same
-    # time (that magnitude is issue #150's leaked-ThreadPoolExecutor-worker
-    # mechanism, a different bug - see #605's own comment thread). Offloading
+    # time (that residual magnitude is tentatively but NOT confirmed linked
+    # to issue #150's still-open transient-pool-occupancy lead - #150's own
+    # closing comment measured the leak as non-permanent and explicitly
+    # states "that link is a lead, not a mechanism"; do not read this as an
+    # established cause - see #605's own comment thread for the current,
+    # honest state). Offloading
     # jsonable_encoder to a thread (matching #552/#629/#630/#636's precedent
     # for this exact class of problem) removes it from the loop regardless
     # of which field would have triggered the slow path; json.dumps on the
