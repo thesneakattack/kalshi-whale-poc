@@ -3,9 +3,9 @@
 ## Status
 
 Draft design (2026-09-03), stage 2 of a research → design → plan pipeline. Research basis:
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
 (§5, §9) and its authoritative correction/extension,
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` (§4.1, §6.1, §8
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` (§4.1, §6.1, §8
 Tier 2 items 15/16/23/24/28, §9). This document covers only those five items — the shared
 persistence module, finishing the `aiosqlite` migration, the `raw_trades`/`index_ticks`
 engine decision, `candidate_log.db` lock contention, and small-file consolidation. It does

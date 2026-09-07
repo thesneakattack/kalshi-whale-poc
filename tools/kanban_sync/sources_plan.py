@@ -77,8 +77,7 @@ def list_plan_candidates(plans_dir: Path) -> list[str]:
 def resolve_plan_path(plans_dir: Path, archive_root: Path, filename: str) -> Path:
     """Locates a single named plan doc's current file for decompose-plan
     (`_cmd_decompose_plan`), wherever it lives during the 2026-09-06
-    planning-lanes migration (docs/superpowers/specs/2026-09-06-planning-
-    lanes-design.md, docs/superpowers/lanes/step4-file-move-plan.md): still
+    planning-lanes migration (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md, docs/superpowers/lanes/step4-file-move-plan.md): still
     in `plans_dir` (not yet moved - the common case, and correct for every
     call before/outside this migration), or already relocated to
     `archive_root/lane-<N>-<slug>/plans/`.

@@ -10,7 +10,7 @@ read on `market_history.db`'s corruption fault — the three items
 either architecture audit.
 
 **Research basis:**
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
 §4.1 (fd exhaustion + `market_history.db` corruption), §4.7
 (`markets_watched: 0` / stuck tick), §8 Tier 0 items 0-2. No separate design
 spec exists for this plan — see "Why no spec doc" under Global Constraints
@@ -126,8 +126,7 @@ unblocks live investigation:**
    `/api/health/pipeline`'s store probes.
 
 **Tech Stack:** Python 3 stdlib only (`asyncio`, `contextlib`, `sqlite3`) —
-no new dependencies, consistent with `docs/superpowers/research/2026-09-02-
-architecture-audit-second-pass.md`'s §6.3 finding that this repo's
+no new dependencies, consistent with `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`'s §6.3 finding that this repo's
 dependency minimalism is a real strength, not a gap to fix here.
 
 ## Global Constraints

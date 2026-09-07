@@ -1,9 +1,7 @@
-"""Canonical label constants (docs/superpowers/specs/2026-08-26-kanban-
-board-sync-design.md §7). status:* values are copied verbatim from the
+"""Canonical label constants (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md §7). status:* values are copied verbatim from the
 installed github-issues-kanban skill's assets/label-scheme.json - do not
 invent new status values. type:* is this repo's own extension, already
-established by docs/superpowers/specs/2026-08-26-autonomous-engineering-
-mode-design.md (Task 15's note); type:tracking is this plan's own addition
+established by docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md (Task 15's note); type:tracking is this plan's own addition
 to that same repo-local family, for issues that track a worktree rather
 than represent claimable work.
 """
@@ -35,8 +33,7 @@ TYPE_TRACKING = "type:tracking"
 # phase-detection docstring for what it can and can't infer). Renamed
 # 2026-08-27 to match superpowers' own lifecycle vocabulary (brainstorming/
 # spec/plan/implementing/verification/done) rather than the original
-# ad hoc wording - see docs/superpowers/specs/2026-08-27-kanban-sync-
-# project-status-field-design.md §4.1. Label-based, NOT because this
+# ad hoc wording - see docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-kanban-sync-project-status-field-design.md §4.1. Label-based, NOT because this
 # repo's board can group its view by Labels - it can't: GitHub Projects V2
 # board/table views can only be grouped by a single-select or iteration
 # *field* on the Project itself, confirmed against GitHub's own current
@@ -67,8 +64,7 @@ SYNC_MARKER_KIND_WORKTREE = "worktree"
 SYNC_MARKER_KIND_ROADMAP = "roadmap"
 SYNC_MARKER_KIND_PLAN = "plan"
 
-# lane:* / concern:* (2026-09-06, docs/superpowers/specs/2026-09-06-planning-
-# lanes-design.md §3/§8 rule 5) - the planning-lanes migration's own
+# lane:* / concern:* (2026-09-06, docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md §3/§8 rule 5) - the planning-lanes migration's own
 # vocabulary, replacing the retired area:* labels. LANES is the single
 # source of truth for "closest primary fit" (lane number -> name -> primary
 # package list, verbatim from the design's §3 table); CONCERNS mirrors it

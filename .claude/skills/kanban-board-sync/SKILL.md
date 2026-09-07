@@ -6,7 +6,7 @@ description: This skill should be used when the user asks to "sync the kanban bo
 # Kanban board sync
 
 Reflects repo state onto GitHub Issues, one way — repo state is authoritative,
-nothing here edits a repo file (`docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md`).
+nothing here edits a repo file (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md`).
 `tools/kanban_sync` does every deterministic part; this skill supplies the one
 judgment call it can't: which numbered plan docs are still open. The installed
 `github-issues-kanban` plugin owns claiming/working/reporting on an issue (same

@@ -3,7 +3,7 @@ tool that acts as an automated project manager and janitor over THIS REPOSITORY'
 engineering workflow (branch/PR/CI lifecycle, superpowers plan/ledger execution health,
 standing-rule and process hygiene) - informed by, but never auditing, the trading
 application's own self-reported diagnostics
-(docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md).
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md).
 
 "AQC" now names, and only names, this tool. The prior implementation under this name
 audited the trading application's own static code findings instead - a real, corrected
@@ -313,7 +313,7 @@ def _discover_plan_doc_paths(repo_root: Path) -> list[Path]:
     """Every plan doc path collect_plan_doc_signals should monitor for
     staleness/activity, across both of the two places a plan doc can live
     during the 2026-09-06 planning-lanes migration
-    (docs/superpowers/specs/2026-09-06-planning-lanes-design.md,
+    (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md,
     docs/superpowers/lanes/step4-file-move-plan.md §2/§4/§6): the live
     docs/superpowers/plans/ directory (not-yet-moved plans, plus any
     genuinely new plan doc written after this fix ships - that directory
@@ -447,7 +447,7 @@ _WORD_RE = re.compile(r"[a-z]{4,}")
 def _open_roadmap_bullets(text: str) -> list[str]:
     """Collects each top-level `- [ ]` bullet's full text, including 6-space-indented
     continuation lines up to the next top-level bullet or a blank line - mirroring
-    docs/superpowers/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
+    docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
     approach for the identical problem. A bare single-line regex (found in review,
     2026-08-27) truncates virtually every real ROADMAP.md bullet to its first physical line
     - this repo's bullets routinely wrap onto continuation lines, confirmed against
@@ -501,8 +501,7 @@ def collect_docs_roadmap_feed(roadmap_text: str, recent_commit_subjects: list[st
 (spec §5); callers only invoke these when Task 8's CLI is run with --clean, and even then
 only for identities Task 8's own eligibility check already confirmed. Every action is
 deterministic, idempotent, path-contained, and independently verifiable
-(the "Remediation authority rule" recorded in docs/superpowers/specs/
-2026-08-27-autonomous-quality-coordination-workflow-design.md, generalized from
+(the "Remediation authority rule" recorded in docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md, generalized from
 GitHub-write to git/filesystem-write per spec §3). main is never a target
 under any code path (spec §11).
 """

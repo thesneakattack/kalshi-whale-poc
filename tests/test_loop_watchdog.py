@@ -64,7 +64,7 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
     """The 2026-09-02 incident had zero attribution for what was blocking
     the loop - services/loop_watchdog.py's own docstring already tracks
     magnitude/count but nothing about *what*. This is the fix (§4.3 of
-    docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md):
+    docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md):
     capture the main thread's stack on the stall path itself and record it
     via fault_log's existing traceback slot, off the event loop so the
     diagnostic write can never become a new instance of the #210 blocking-

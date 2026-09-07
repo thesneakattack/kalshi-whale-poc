@@ -16,8 +16,8 @@ reading, see Finding 10.
 ## Method
 
 Read in full: the artifact itself; both research documents it cites
-(`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
-§3, §3.3, §3.4, §11, §12, §13; `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+§3, §3.3, §3.4, §11, §12, §13; `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
 §4.4, §6.7, §8); `docs/prediction-market-strategy-alignment-plan.md` Part 3.2.
 
 Read/grepped directly: `services/strategy_engine.py` (`evaluate()` in full,
@@ -374,7 +374,7 @@ the rejected one in each case is rejected on stated, falsifiable grounds.
 
 ### 9. CONFIRMED (as an accurate pass-through) — predictionmarketspicks "dead zone" figure
 
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md:1211`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md:1211`
 reads verbatim: `"a 'dead zone' (~3–5pp fee band around fair value) below
 which a signal is not actionable at all"` — matches the design's "roughly
 3–5 percentage points" citation exactly. This is correctly sourced through

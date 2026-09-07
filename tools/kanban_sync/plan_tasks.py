@@ -1,7 +1,6 @@
 """Canonical `### Task N: <title>` heading parser for numbered plan docs,
 and the one-time milestone/sub-issue decomposition action for
-plan-tracked kanban_sync issues (spec: docs/superpowers/specs/
-2026-08-27-kanban-sync-milestones-and-subissues-design.md).
+plan-tracked kanban_sync issues (spec: docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-kanban-sync-milestones-and-subissues-design.md).
 
 Only the canonical writing-plans template heading
 (`### Task N: <title>`) is parsed - this repo's own plan docs are

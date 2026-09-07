@@ -25,8 +25,8 @@ into §1.1 as the PR #558 correction).**
 - `docs/superpowers/research/2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md`
   (merged, PR #547) — root-caused the trade-vs-ticker shared-consumer blocking mechanism (#542)
   and compared three fix options. Its Option B recommendation is not re-litigated here.
-- `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` and its own
-  predecessor `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` and its own
+  predecessor `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
   — named the two-process split (item 25/#17, full mechanism in the first audit's §4.4) and
   "push more state over the dashboard WebSocket" (item 26/#18, first audit's §6.3 item 5) as the
   Tier 3 target shape. Not re-derived; re-verified against current code where it bears on
@@ -417,10 +417,10 @@ Checked against the first audit's own route list (§4.4: Process B = `/api/quali
   services/history/*.py` (zero hits) — §2, confirming History has no backend scheduler of its
   own.
 - `main.py:777`, `services/candidate_retry.py:167` — §1.2's live call-graph confirmation.
-- `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §4.4
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §4.4
   (two-process split full design) and §6.3 item 5 (push more over dashboard WS) — read in full,
   cited, not re-derived.
-- `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §6.5, §6.6, §8 (Tier
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` §6.5, §6.6, §8 (Tier
   3 items 25/26) — read in full, cited, not re-derived.
 - `docs/superpowers/research/2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md`
   — read in full, its §1.1 finding (two_consumer_mode/shared consumer) is the starting point

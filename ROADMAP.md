@@ -63,7 +63,7 @@ currently-unimplemented finding), and canonical decision/execution
 semantics (fully open). See
 `docs/kalshi-personal-production-execution-program-2026-08-26.md` for how
 that work is sequenced, and
-`docs/superpowers/plans/2026-08-26-active-tracks-board.md` for the
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md` for the
 short, cross-session board tracking which of these tracks is next and
 which can run in parallel right now.
 
@@ -663,7 +663,7 @@ which can run in parallel right now.
       app-owned API routes): that coupling was a real misunderstanding of
       the feature's own purpose (workflow/tooling quality control, not
       application behavior) and was fully reversed — see
-      `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s
+      `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md`'s
       Task 15 and `CLAUDE.md`'s "Workflow/tooling and application code must
       never overlap" standing rule for the full account. No API surface, no
       dashboard view; inspect `tools/quality_ratchet_data/quality_
@@ -677,10 +677,8 @@ which can run in parallel right now.
       see the next item for what "AQC" now refers to.
 - [ ] **Autonomous Quality Coordination (workflow-health)** — spec'd and
       implemented 2026-08-27:
-      `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
-      workflow-design.md`,
-      `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
-      workflow.md`. An automated project-manager/janitor over this repo's
+      `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`,
+      `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-autonomous-quality-coordination-workflow.md`. An automated project-manager/janitor over this repo's
       own engineering workflow — branch/PR/CI lifecycle, `superpowers`
       plan/ledger execution health, standing-rule/baseline hygiene, and
       (as context, not an audited target) the trading app's own

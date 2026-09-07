@@ -2,8 +2,7 @@
 without any real credential or network call. FakeGitHubTransport is in-memory only.
 
 Prototype status: EXPERIMENTAL, part of the I8 throwaway coordination-sim package. Nothing here
-is wired to a real GitHub client or credential -- see docs/superpowers/research/2026-08-25-
-quality-event-fault-injection.md.
+is wired to a real GitHub client or credential -- see docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-event-fault-injection.md.
 """
 from __future__ import annotations
 

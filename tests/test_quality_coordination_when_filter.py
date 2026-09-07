@@ -1,8 +1,7 @@
 """I9: prove Woodpecker `when:` event/branch filter semantics using a documentation-faithful
 evaluator, validated against real pipeline records fetched live from this repo's own Woodpecker
 instance (https://ci.webfoundry.dev/api/repos/1/pipelines/<n>, anonymous public API, 2026-08-25)
--- not synthetic assumptions. See docs/superpowers/research/2026-08-25-quality-event-fault-
-injection.md for the full evidence chain and citations.
+-- not synthetic assumptions. See docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-event-fault-injection.md for the full evidence chain and citations.
 
 Prototype status: EXPERIMENTAL, part of the I8 throwaway coordination-sim package. Proves a
 *candidate* filter's semantics before any real privileged Woodpecker step exists in this repo --
@@ -31,7 +30,7 @@ def test_naive_branch_only_filter_matches_real_main_push():
 
 
 def test_naive_branch_only_filter_wrongly_matches_real_pr_targeting_main():
-    """The documented hazard (docs/superpowers/research/2026-08-25-autonomous-quality-threat-model.md:
+    """The documented hazard (docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-threat-model.md:
     'a Woodpecker branch: main condition alone also matches a PR whose target is main'),
     reproduced against a real recorded pipeline, not a hypothetical one."""
     assert matches(NAIVE, REAL_PR_TARGETING_MAIN) is True

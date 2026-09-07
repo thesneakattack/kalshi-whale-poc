@@ -8,7 +8,7 @@ docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-contro
 (moved there 2026-09-06, planning-lanes migration) Task 9; see this package's README.md.
 
 Deliberately reuses existing counters rather than adding new instrumentation
-(docs/superpowers/specs/2026-08-24-quality-control-plane-design.md section
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-24-quality-control-plane-design.md section
 8's "reuse existing state" scoping) - capture_from_runtime is a pure
 metric-name mapping over whatever state/trade_stream/index_stream already
 expose, with no new counters of its own.

@@ -138,8 +138,7 @@ but small ~50%-mean effect, ~12x short of the observed magnitude).
 cold-start outlier once compared against temporally-adjacent phases
 instead. **Most important finding**: this app already has a
 well-documented, frequent (4-21/hour, every hour), unattributed
-≥10s-stall pattern (`docs/superpowers/research/2026-09-02-architecture-
-audit-second-pass.md`) independent of backups — the original 90.61s
+≥10s-stall pattern (`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`) independent of backups — the original 90.61s
 observation may simply be one more instance of that pattern, not
 something the backup specifically caused. `#642` stays open on this
 reframing, not closed; `tick_phase_timings` (`GET /api/health/pipeline`)

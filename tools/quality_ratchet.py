@@ -11,7 +11,7 @@ audit the application, but to ... be an expert project manager, and ... 'be a ja
 the automated workflow itself." This module's own behavior is unchanged by that correction
 — it was a legitimate, working capability under the wrong name, so it keeps its
 implementation and gets a name that no longer collides with AQC's. See
-docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md for
+docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md for
 what "AQC" now refers to.
 
 Standalone tool, not application code: lives under tools/ (alongside tools/quality_audit/,
@@ -27,7 +27,7 @@ tools/quality_ratchet_data/quality_ratchet.db — deliberately NOT under the sha
 directory the trading app owns (that directory is globbed whole by the app's own backup
 cycle and storage-health inventory; living there would silently couple this standalone
 tool's data into app-owned mechanisms it was never meant to be part of). See
-docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md for the design
+docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md for the design
 this module still implements exactly — that document's own title predates the rename and is
 left as the historical record of what was actually built, per this repo's own
 "struck through, not deleted" documentation convention.

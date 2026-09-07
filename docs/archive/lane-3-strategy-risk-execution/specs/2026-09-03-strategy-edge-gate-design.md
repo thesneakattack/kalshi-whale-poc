@@ -3,10 +3,10 @@
 ## Status
 
 Design document (2026-09-03), still paper-mode only. Research this design implements:
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
 §3 ("Is the app's strategic approach even good?"), §3.3's five-step sketch, §3.4, §10.2,
 §11 items 8–9, §12 open question 1; amended (unchanged on this topic) by
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §6.7, and its
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` §6.7, and its
 revised plan §8 items 20 (EV gate + markout measurement) and 27 (`market_analyst_agent`
 cleanup + category fair-value anchors, scoped here as Phase 2, §7). Per CLAUDE.md's
 "nothing advances on one pass" HARD RULE this is the design stage only: it needs its own
@@ -71,7 +71,7 @@ both the entry and exit paths — with materially different live weight on each 
   decision," `docs/open-decisions.md` — **that comment is currently absent from the live
   primary-repo `config/settings.yaml`, per an uncommitted in-progress edit already tracked
   as "the third data-wipe of the same shape" in
-  `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §4.4; a reader
+  `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` §4.4; a reader
   of the live file today would not find this justification written down, only in git
   history/this worktree's checkout — the underlying `0.0` value itself is unaffected and
   still confirmed live**). **Net effect: the code path
