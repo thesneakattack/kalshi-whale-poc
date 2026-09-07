@@ -3,7 +3,7 @@ Tests for services/market_watch/milestone_live_data.py - the shared
 per-milestone-type live-data extractor (kalshi-category-data-completeness
 Task 5). See the module's own docstring for the default-pass-through-not-
 null design decision and its evidence (census S3/S4,
-docs/superpowers/research/2026-08-30-kalshi-category-data-shape-audit.md).
+docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-category-data-shape-audit.md).
 """
 from services.market_watch import milestone_live_data as mld
 

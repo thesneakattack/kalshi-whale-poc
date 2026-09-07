@@ -138,7 +138,7 @@ the CURRENT (un-fixed) source, not Tier 0's planned end state.
 4. **`record_snapshot_from_ticker` off the event loop** — the caller
    (`_process_stream_ticker`) schedules the write via `tick_executor.run()`
    + `asyncio.create_task()`, the exact idiom PR #414
-   (`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix1.md`) used
+   (`docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-blocking-fix1.md`) used
    for four sibling functions; the function itself is unchanged (still a
    valid direct synchronous call for its own 3 existing tests).
 5. **`config_store.update()` stops destroying comments and does not

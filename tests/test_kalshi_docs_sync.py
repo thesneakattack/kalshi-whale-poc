@@ -1,6 +1,6 @@
 """
 tools/kalshi_docs_sync.py (Kalshi Integration Phase A Task A2 -
-docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md) - builds/
+docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md) - builds/
 refreshes docs/kalshi/upstream-manifest.json from docs/kalshi/llms.txt's
 real index plus current on-disk mirror content, and generates
 docs/kalshi/README.md from the manifest - replacing the old direction

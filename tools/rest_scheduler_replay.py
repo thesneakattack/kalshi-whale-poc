@@ -1,5 +1,5 @@
 """REST scheduling and candidate-recovery replay (realtime data-plane
-investigation task I11, docs/superpowers/plans/2026-08-25-realtime-data-
+investigation task I11, docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-
 plane-investigation.md).
 
 Two deterministic simulators, no sockets, no databases:
@@ -20,7 +20,7 @@ Two deterministic simulators, no sockets, no databases:
    decision latency / extra REST calls.
 
 Nothing here selects a design; ``--compare`` and ``--recovery`` print the
-matrices docs/superpowers/research/2026-08-25-rest-solution-comparison.md
+matrices docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-rest-solution-comparison.md
 is written from.
 """
 from __future__ import annotations

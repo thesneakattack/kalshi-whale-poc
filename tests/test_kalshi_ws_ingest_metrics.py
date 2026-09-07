@@ -1,5 +1,5 @@
 """Queue-health metrics on the Kalshi WebSocket ingest path (realtime
-data-plane investigation task I1, docs/superpowers/plans/2026-08-25-
+data-plane investigation task I1, docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-
 realtime-data-plane-investigation.md).
 
 Deterministic: every clock the gateway reads is injectable, no socket is

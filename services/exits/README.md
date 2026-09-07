@@ -201,7 +201,7 @@ per ticker, or (b) a `tick_cache` were shared across more than one
 `check_exits()` call within a short window (e.g. across `main.py`'s tick
 loop and the two `services/whale_stream/whale_stream_handlers.py` call
 sites, which Task 20 deliberately left unwired — see its own scope in
-`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`).
+`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`).
 Not a defect in the shipped code — `tick_cache=None` stays the byte-
 identical default everywhere it isn't passed — but a real gap between "the
 interface Task 20 specified" and "what actually reduces read count in the

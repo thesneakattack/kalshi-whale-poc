@@ -3,7 +3,7 @@ position_netting.review get a second, WS-triggered call site alongside
 trading_loop's tick, prove near-simultaneous callers can't produce
 overlapping/duplicate decisions on the same order or position. The plan
 explicitly required this proven with a real test before wiring landed - see
-docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md's
+docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md's
 Task 38.
 
 Both functions are plain `def`, not `async def`: no line inside either one

@@ -79,12 +79,12 @@ actual findings — those stay in the investigation's own artifacts.
 | Name | Status | Branch / worktree | Canonical plan | Confidence |
 |---|---|---|---|---|
 | Quality Control Plane (QCP) | COMPLETED — MERGED | (folded into `main`) | `docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md` (moved there 2026-09-06, planning-lanes migration) | High |
-| Kalshi Integration Phase A (boundary) | COMPLETED — MERGED (PR #3) | (folded into `main`) | `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md` | High |
-| Kalshi Integration Phase C (facade-free boundary) | COMPLETED — MERGED (PR #9) | (folded into `main`) | `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md` | High |
+| Kalshi Integration Phase A (boundary) | COMPLETED — MERGED (PR #3) | (folded into `main`) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md` | High |
+| Kalshi Integration Phase C (facade-free boundary) | COMPLETED — MERGED (PR #9) | (folded into `main`) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md` | High |
 | Frontend Modularization — design | COMPLETED — MERGED (PR #11) | (folded into `main`) | `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md` (moved there 2026-09-06, planning-lanes migration) | High |
 | Frontend Modularization — implementation | QUEUED — confirmed not started | none | `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md` (moved there 2026-09-06, planning-lanes migration) via `.claude/skills/frontend-modularization-task/SKILL.md` | High (direct file check: `frontend/src/js/` is still the pre-migration flat layout — `advisory-calibration.js`, `config-panel.js`, etc. — no `core/`/`panels/`/`legacy/` split the plan's T1c calls for) |
-| Realtime Kalshi Data-Plane Investigation (research+root cause) | COMPLETED — MERGED (PR #10, PR #12) | (folded into `main`) | `docs/superpowers/plans/2026-08-25-realtime-data-plane-investigation.md` | High |
-| Realtime Kalshi Data-Plane Remediation (implementation) | **ACTIVE — IMPLEMENTATION** | `feat/realtime-data-plane-remediation` / `.claude/worktrees/agent-a77b293d25b099924` (locked) | `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md` (7 phases, P0–P6) | High — 2 commits observed (`36ca1f9` event-loop stall watchdog, `dcc9816` durable candidate-ledger table, both P0) |
+| Realtime Kalshi Data-Plane Investigation (research+root cause) | COMPLETED — MERGED (PR #10, PR #12) | (folded into `main`) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-investigation.md` | High |
+| Realtime Kalshi Data-Plane Remediation (implementation) | **ACTIVE — IMPLEMENTATION** | `feat/realtime-data-plane-remediation` / `.claude/worktrees/agent-a77b293d25b099924` (locked) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md` (7 phases, P0–P6) | High — 2 commits observed (`36ca1f9` event-loop stall watchdog, `dcc9816` durable candidate-ledger table, both P0) |
 | Autonomous Quality Coordination Investigation ("P1") | **COMPLETED — MERGED** (PR #15, checklist close-out PR #18) | (folded into `main`) | `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | High |
 | Autonomous Quality Coordination — production implementation | QUEUED — not started; **two autonomous attempts this session, both aborted before any commit** | none (branches `chore/autonomous-quality-coordination-implementation` and a stray `worktree-agent-*` were created and deleted, zero commits on either) | `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md` (9 tasks) | High |
 | Claude/AI Control-Plane Bloat Investigation ("P2") | QUEUED — not yet created | none | none exists | High (absence re-confirmed by repo-wide grep this baseline) |
@@ -154,7 +154,7 @@ inside any plan file itself.
   document's prior draft, which recorded this plan as "queued and ready."
   This portfolio's own non-interference rule means: **do not touch that
   worktree/branch, do not modify
-  `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`,
+  `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`,
   and do not modify any file under `services/kalshi/`,
   `services/whale_stream/`, or `services/http_client.py`** while it is
   live.

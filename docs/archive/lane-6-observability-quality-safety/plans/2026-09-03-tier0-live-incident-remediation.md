@@ -1301,7 +1301,7 @@ Expected: every test in the file passes, including both new ones.
 **Not a code task** — the empirical confirmation this plan's fixes actually
 resolve the live symptoms, per this repo's own standing practice (matching
 every precedent plan's own final task, e.g.
-`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix1.md`'s Task 5).
+`docs/archive/lane-1-kalshi-ingestion/plans/2026-09-01-event-loop-blocking-fix1.md`'s Task 5).
 
 **Note on this plan's own trigger evidence going stale between review
 passes:** by the time this plan's PR-stage review ran (2026-09-03,

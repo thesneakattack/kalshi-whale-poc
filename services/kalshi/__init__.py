@@ -1,5 +1,5 @@
 """Kalshi integration boundary package (Kalshi Integration Phase A,
-docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md).
+docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md).
 
 All vendor-specific Kalshi semantic interpretation - REST/WS request and
 response shapes, field aliases, direction/side semantics, lifecycle states,

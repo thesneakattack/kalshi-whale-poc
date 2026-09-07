@@ -1,7 +1,7 @@
 # Economic Strategy Effectiveness & Execution Realism — Investigation Design
 
 **Status:** design for the investigation itself (not the eventual remediation). Mirrors
-`docs/superpowers/specs/2026-08-25-realtime-data-plane-investigation-design.md` in shape;
+`docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-investigation-design.md` in shape;
 scoped by `docs/kalshi-personal-production-execution-program-2026-08-26.md` §6.1
 ("Immediate 3 — parallel research worktree").
 

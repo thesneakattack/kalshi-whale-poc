@@ -114,7 +114,7 @@ realtime_data_plane:
   # websocket.py) instead of the consumer - default false ships as
   # shadow-mode-only (counts ingest.prefiltered.trade, never drops).
   # Flipping this requires a paper-mode soak per the P3 gate criteria in
-  # docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md.
+  # docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md.
   reader_gate_enabled: false
   # P4 Task 18: routes decision-critical WS classes (fill/position/
   # lifecycle/control) and bulk market flow (trade/ticker/index/other)

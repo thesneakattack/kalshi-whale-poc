@@ -1,6 +1,6 @@
 """Whale-candidate lifecycle under transient enrichment failure (realtime
 data-plane investigation task I3 - hypothesis H4 in
-docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md).
+docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md).
 
 The sequence under test, exactly as the findings file states it:
 

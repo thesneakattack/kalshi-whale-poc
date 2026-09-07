@@ -2,7 +2,7 @@
 
 Owns **all vendor-specific Kalshi semantic interpretation** (Phase A of
 the dual-phase initiative, tasks A4–A17, 2026-08-24/25 — design spec:
-`docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md`).
+`docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md`).
 Application policy (market selection, strategy, execution orchestration)
 deliberately lives OUTSIDE this package; raw payload archival is
 preserved end to end.

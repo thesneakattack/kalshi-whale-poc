@@ -750,7 +750,7 @@ def sustainable_trade_rate(workload_for_rate: Callable[[float], Workload], topol
 
 # --- measured presets --------------------------------------------------------
 #
-# Numbers from the I0 baseline (docs/superpowers/research/2026-08-25-realtime-
+# Numbers from the I0 baseline (docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-
 # data-plane-baseline.md section 6), the I1/I2 windows recorded in
 # services/observability/README.md, and the I7 busy hour
 # (2026-08-25-realtime-live-baseline.md): trade-channel arrival p50 148 / p95

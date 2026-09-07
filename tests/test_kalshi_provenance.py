@@ -1,6 +1,6 @@
 """Tests for services/kalshi/provenance.py — the runtime half of the
 contract-documentation provenance interface (Kalshi Integration Phase A
-Task A4, docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md).
+Task A4, docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md).
 
 The static half (tools/quality_audit/kalshi_contract_docs.py, Task A3)
 AST-scans services/kalshi/ modules in CI; this module is the importable
