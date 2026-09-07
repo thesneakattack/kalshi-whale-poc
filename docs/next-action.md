@@ -156,6 +156,15 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    the fact. Every sweep from Lane 9 onward counts occurrences
    (`grep -c`-style, not existence), and re-sweeps with occurrence
    counting specifically after any fix-list round, not just presence.
+9. **Check whether the lane's OWN newly-moved files cite OTHER
+   already-merged lanes by old path** — distinct from the documented
+   self-heal-later exception (which only covers citing a *not-yet-moved*
+   lane). Found 3 times now (Lane 5/PR #655, Lane 2/PR #656, Lane
+   1/PR #657 — 5 files/7 occurrences citing Lanes 8/4/6) — a moved
+   file's own content can reference a sibling lane that already landed,
+   and that citation is fixable right now, not deferrable. Sweep for
+   this explicitly on every remaining lane, don't rely on the
+   already-moved lanes having self-corrected it themselves.
 
 **Meta-lesson, elevated above the numbered list after a second lane hit
 this: a citation-discovery script's blind spots are not a fixed,
@@ -189,25 +198,32 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status — fully parallelized on David's instruction (2026-09-07)
+## Peer status (both this session and `ea` compacting ~2026-09-07 05:50 — this file is the durable record, not chat memory)
 
-Lanes 1, 2, and 3 now executing **simultaneously** (disjoint file sets,
-same pattern 49 proved safe running Lane 6 + the wrap-citation fix
-concurrently). Only Lane 9 remains after these three, and it stays
-blocked until all three are confirmed **merged** (not just done) —
-it contains the design doc governing the whole migration.
+Only Lane 9 remains after Lanes 1 and 3 land, blocked until both are
+confirmed **merged** (not just done) — it contains the design doc
+governing the whole migration.
 
-- **`49`** — executing Lane 3. After it finishes: help `c4` verify
-  whichever of Lane 1/2/3 lands first, or hold — does NOT start Lane 9
-  until Lanes 1 and 2 are both confirmed merged.
-- **`0d`** — executing **Lane 1** (Kalshi & index ingestion).
-- **`ea`** — executing **Lane 2** (whale signal). Reassigned off
-  app-health standing watch to do this — no session is doing that watch
-  right now, a deliberate throughput tradeoff, not an oversight; the
-  kill switch/`trading_enabled=false` invariants don't depend on active
-  monitoring to hold.
-- **`c4`** — independent verification role continues for all three
-  in-flight lanes, same as it played for 4/5/6/8.
+- **`49`** — Lane 3 (PR #658, OPEN, 1 comment): fixing a confirmed
+  fix-list of 10 real misses (a *third*, distinct sweep-blind-spot
+  mechanism — bare-indented continuation inside a `"""docstring` with no
+  comment marker) plus correcting a mis-stated deliberate-gaps count
+  (7 real, reported as 4). `ea`'s independent sweep found #658
+  otherwise clean (no cross-lane back-citation gap). Not merged.
+- **`0d`** — Lane 1 (PR #657, OPEN, 2 comments as of last check): two
+  required fixes outstanding — (1) re-check for the Lane-2-style
+  occurrence-vs-presence bug (not yet confirmed either way), (2) a
+  confirmed-real cross-lane back-citation gap, 5 files/7 occurrences
+  citing Lanes 8/4/6 by old path (full list in methodology point 9
+  above; one hit independently verified directly against the PR's own
+  branch content). Not merged.
+- **`ea`** — Lane 2 (PR #656): **MERGED** (`0fe413b`), fully closed out,
+  nothing pending. Also ran the independent post-merge sweeps on #657/
+  #658 above before compacting; said it will re-derive the file list
+  from `step4-file-move-plan.md`'s Appendix A again rather than trust
+  its own memory of this if asked to re-verify after compaction.
+- **`c4`** — standing watch, independent-verification role continues
+  for whichever of Lane 1/3 lands first.
 
 ---
 
