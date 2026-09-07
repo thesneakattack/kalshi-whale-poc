@@ -54,7 +54,7 @@ a real risk, using PR #409's own `run_offline()` incident (permanently pinned bo
 
 ## 2. Confirming the caching claim against current source (not the research doc's citation)
 
-Read directly, not trusted from `docs/superpowers/research/2026-09-03-trade-stream-decoupling-and-history-event-driven-research.md`'s citation:
+Read directly, not trusted from `docs/archive/lane-2-whale-signal-calibration/research/2026-09-03-trade-stream-decoupling-and-history-event-driven-research.md` (moved there 2026-09-07, planning-lanes migration)'s citation:
 
 - `services/analytics/routes.py:42-49` — `_POPULATION_GATES_CACHE_TTL_SEC = 30`, a module-level
   `_population_gates_cache` dict, wrapping `await tick_executor.run(lambda:

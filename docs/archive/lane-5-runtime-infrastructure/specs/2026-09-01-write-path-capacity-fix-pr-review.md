@@ -259,8 +259,9 @@ the whale-scoring side).
    files, versus once per trade before).
 
 8. **"Task 7 not done" admission — honest, and if anything conservative, not
-   understated.** Re-read `docs/superpowers/plans/2026-09-01-whale-scoring-
-   connection-reuse.md`'s actual Task 7 (lines 600-639): Step 1 (pre-change
+   understated.** Re-read `docs/archive/lane-2-whale-signal-calibration/plans/
+   2026-09-01-whale-scoring-connection-reuse.md` (moved there 2026-09-07,
+   planning-lanes migration)'s actual Task 7 (lines 600-639): Step 1 (pre-change
    baseline on `main`, ≥10 min real load, specific metrics named), Step 2
    (identical post-change reading), Step 3 (compare + optional burst test, honest
    disclosure if skipped), Step 4 (record the result in
