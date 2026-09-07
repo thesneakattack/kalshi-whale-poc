@@ -9,8 +9,9 @@ from pathlib import Path as _Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -1878,19 +1879,67 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.get("/api/state")
-async def get_state(request: Request, response: Response):
+async def get_state(request: Request):
     # ETag is just the generation counter - cheap to compute, and exact
     # (bumped only on a real change, see _bump_generation/state["generation"]).
     # A poll that lands between real changes (the common case at a 5s
     # frontend interval against a 15s backend poll_interval_sec) costs a
     # conditional request's worth of headers instead of the full ~40KB body,
-    # re-fetched and re-parsed for data the dashboard already has.
+    # re-fetched and re-parsed for data the dashboard already has. This 304
+    # path is untouched by issue #634's fix below - it returns before ever
+    # reaching _build_state_body()/jsonable_encoder.
     etag = f'"{state["generation"]}"'
     if _if_none_match_hits(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
-    response.headers["ETag"] = etag
-    response.headers["Cache-Control"] = "no-cache"  # always revalidate via If-None-Match, never assume freshness
-    return _build_state_body()
+    # Issue #634: _build_state_body()'s returned dict is memoized by
+    # state["generation"] (see that function's own docstring) - but turning
+    # that dict into JSON bytes was NOT memoized, and ran synchronously, on
+    # the event loop, on every single 200 response. FastAPI's default
+    # handling for a returned plain dict calls jsonable_encoder(...) (a
+    # pure-Python recursive walk - every single value, at every nesting
+    # level, checks isinstance(obj, BaseModel) and dataclasses.is_dataclass(obj)
+    # before falling through to the primitive/dict/list cases; confirmed by
+    # reading fastapi/encoders.py's jsonable_encoder at the pinned
+    # fastapi==0.134.0, not assumed - so a live loop_watchdog capture
+    # showing "is_dataclass" deep in the recursion does NOT by itself mean a
+    # real dataclass instance was present anywhere in this payload; that
+    # frame appears on literally every value jsonable_encoder ever touches)
+    # directly inline via fastapi/routing.py's serialize_response, with zero
+    # yield points - real, measured cost at this route's actual observed
+    # sizes (nginx access log: 33-35KB most polls, 747-782KB on the ~60s
+    # event_live_data repoll cycle - see _EVENT_LIVE_DATA_REPOLL_SEC): a
+    # synthetic payload built to the same shape/size measured
+    # jsonable_encoder alone at ~3.2ms (33KB) / ~38ms (780KB) / ~164ms (3.45MB,
+    # the #634 issue body's own worst observed figure) - real, recurring,
+    # fully event-loop-blocking cost on this app's one shared trading loop,
+    # but NOT, on its own, large enough to explain the separately-tracked
+    # 9.3-9.6s stall magnitude issue #605 also recorded around the same
+    # time (that magnitude is issue #150's leaked-ThreadPoolExecutor-worker
+    # mechanism, a different bug - see #605's own comment thread). Offloading
+    # jsonable_encoder to a thread (matching #552/#629/#630/#636's precedent
+    # for this exact class of problem) removes it from the loop regardless
+    # of which field would have triggered the slow path; json.dumps on the
+    # now-already-jsonable result still runs inline inside JSONResponse
+    # (cheap - ~0.5-25ms across the same size range, since it's a single
+    # C-accelerated pass over already-primitive data, not a per-value
+    # Python recursion). asyncio.to_thread's own dispatch overhead measured
+    # negligible (~+0.1ms, within run-to-run noise) against the ~3.2ms small
+    # common case, so this does not tax the cheap path to fix the rare one.
+    #
+    # Headers must be built explicitly here rather than left on the
+    # `response: Response` FastAPI would otherwise inject: verified by
+    # reading fastapi/routing.py's get_request_handler at 0.134.0 that its
+    # `response.headers.raw.extend(...)` merge onto the final response ONLY
+    # runs in the branch where the endpoint returns a plain (non-Response)
+    # value - when an endpoint returns a Response instance directly (as
+    # this one now does), FastAPI uses it completely as-is and never merges
+    # anything set on an injected `response` parameter. Relying on that
+    # parameter here would have silently dropped ETag/Cache-Control on
+    # every 200 response - covered by
+    # test_state_endpoint_200_preserves_etag_and_cache_control_headers.
+    body = _build_state_body()
+    encoded = await asyncio.to_thread(jsonable_encoder, body)
+    return JSONResponse(content=encoded, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
 def _shadow_state() -> dict:
