@@ -308,7 +308,7 @@ def test_read_and_write_buckets_are_independent():
 
 
 # ---- per-endpoint-family REST telemetry (2026-08-24, QCP Task 15 -
-# docs/superpowers/plans/2026-08-24-quality-control-plane.md). Semantics
+# docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration). Semantics
 # chosen and encoded in these test names: `calls` increments once per real
 # HTTP attempt (including every retried 429, matching call_with_backoff's
 # own per-attempt retry loop, not once per call_with_backoff invocation);

@@ -3,7 +3,7 @@
 Owns: `models.py` (`QualityFinding`/`QualityReport`, the shared contract
 runtime diagnostics and CI audit tooling both produce — Task 1) +
 `routes.py` (`GET /api/quality/summary`, Tasks 10-11 of
-`docs/superpowers/plans/2026-08-24-quality-control-plane.md`). This package
+`docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md`, moved there 2026-09-06, planning-lanes migration). This package
 is a *composition* layer, not a new source of truth — it owns no
 persistence of its own and performs no I/O beyond calling into modules
 that already exist.

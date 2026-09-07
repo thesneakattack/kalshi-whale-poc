@@ -1,6 +1,6 @@
 """
 Read-only, unauthenticated Kalshi API canary - Quality Control Plane
-Task 14 (docs/superpowers/plans/2026-08-24-quality-control-plane.md).
+Task 14 (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration).
 
 Confirms two publicly documented endpoints still return the response shape
 production code depends on: `GET /exchange/status` and `GET /markets`. Both

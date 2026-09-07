@@ -5,8 +5,9 @@ data/*.db file this app owns - the "informativeness" half of CLAUDE.md's
 this module exists to make visible before a human notices disk usage by
 hand: game_state.db grew to 5.7GB from repeated full crypto payload
 persistence (git log, static/status.html phase 126), unnoticed until a
-direct 2026-08-23 investigation found it. docs/superpowers/plans/2026-08-24-
-quality-control-plane.md Task 11; see this package's README.md.
+direct 2026-08-23 investigation found it.
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md
+(moved there 2026-09-06, planning-lanes migration) Task 11; see this package's README.md.
 
 Three cost tiers, deliberately kept separate:
 - inventory_data_dir()/database_health(include_table_counts=False) - file

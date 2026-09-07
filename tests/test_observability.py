@@ -1,8 +1,9 @@
 """
 services/observability/observability.py - bounded, low-frequency persistence
 of runtime metrics the app already computes in memory (tick timing, WS
-message counters, ...), docs/superpowers/plans/2026-08-24-quality-control-
-plane.md Task 9. capture_from_runtime/maybe_capture take `state` (and the
+message counters, ...),
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md
+(moved there 2026-09-06, planning-lanes migration) Task 9. capture_from_runtime/maybe_capture take `state` (and the
 trade/index stream objects) as explicit arguments rather than importing
 services.app_state directly, so this module never triggers app_state's
 eager PaperBroker/RiskManager/ShadowTrader construction - unlike
@@ -17,7 +18,7 @@ own plan explicitly calls out the same restart-safety requirement for
 observability sampling, so it gets the same regression coverage up front
 instead of waiting to rediscover the bug live.
 
-Task 10 (docs/superpowers/plans/2026-08-24-quality-control-plane.md) adds
+Task 10 (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration) adds
 runtime_findings() below - the same "unknown/insufficient evidence is
 better than a fabricated verdict" discipline as everywhere else in this
 app, applied to the QCP's shared QualityFinding model instead of

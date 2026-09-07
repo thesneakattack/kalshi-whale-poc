@@ -454,8 +454,9 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
     incident (2026-09-02) once enough of them piled up. This module was
     one of the four confirmed leaking live.
 
-    Deviation from the plan's literal Step 1 test (docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md Task 2): the plan assigns
+    Deviation from the plan's literal Step 1 test (docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration, Task 2): the plan assigns
     `conn.close = _close` directly on a live sqlite3.Connection instance.
     Verified by direct reproduction (host Python 3.12.3 and the ddev
     fastapi container's Python 3.13.15, both) that sqlite3.Connection is an

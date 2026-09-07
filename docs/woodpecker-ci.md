@@ -99,7 +99,7 @@ while testing.
 ## Final job taxonomy (QCP Task 20)
 
 Every deterministic check this initiative built or touched, in one place —
-the target list `docs/superpowers/plans/2026-08-24-quality-control-plane.md`
+the target list `docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md` (moved there 2026-09-06, planning-lanes migration)
 Task 20 names, mapped to where each one actually lives (not always a literal
 "GitHub Actions job name," since Woodpecker owns push/PR here — see
 "Architecture" above):

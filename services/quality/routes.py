@@ -3,8 +3,9 @@ Unified, local-only "is the system healthy" endpoint - composes existing
 read-only surfaces (services/diagnostics, services/observability,
 services/alerting, services/fault_log, services/storage_health) into one
 response instead of a human needing to know which of five separate routes
-to check. Quality Control Plane Tasks 10-11 (docs/superpowers/plans/
-2026-08-24-quality-control-plane.md); see this package's README.md.
+to check. Quality Control Plane Tasks 10-11
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md,
+moved there 2026-09-06, planning-lanes migration); see this package's README.md.
 
 Deliberately composes only sources that are already local/read-only -
 diagnostics.run_offline() itself explicitly excludes the one diagnostic

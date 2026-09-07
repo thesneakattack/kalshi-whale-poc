@@ -4,7 +4,7 @@ Owns: `observability.py` (bounded, low-frequency persistence of runtime
 metrics the app already computes in memory, into `data/observability.db`)
 + `routes.py` (`/api/observability/current|history|summary`, the
 informativeness half). New 2026-08-24, Quality Control Plane Task 9
-(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`) — the first
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md`, moved there 2026-09-06, planning-lanes migration) — the first
 of several QCP services turning this project's habit of ad hoc live
 investigation (tick-phase timing, trade-stream perf counters, ...) into a
 queryable history instead of only "whatever's in `state` right now."

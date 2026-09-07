@@ -1,10 +1,10 @@
 # Consolidation — Tier 0 live-incident remediation plan (2026-09-03)
 
 Reconciles the plan artifact
-(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`),
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`, moved there 2026-09-06, planning-lanes migration),
 its embedded self-review (the "Plan self-review" section at the end of
 that document), and an independent adversarial review
-(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation-plan-review.md`),
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation-plan-review.md`, moved there 2026-09-06, planning-lanes migration),
 per CLAUDE.md's "nothing advances on one pass" HARD RULE.
 
 ## Verdict: GO, after this revision
@@ -152,7 +152,7 @@ independent live re-run of the read-only integrity check, and live probes.
 3 intended files, no code/config touched.
 
 **Adversarial review**
-(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation-pr-review.md`):
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation-pr-review.md`, moved there 2026-09-06, planning-lanes migration):
 **verdict GO-AFTER-FIXES.** Every one of the plan's 10 tasks' actual code
 diffs — line numbers, function bodies, call-site counts, import
 orderings — was independently re-derived from current source and found

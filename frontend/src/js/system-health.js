@@ -1,8 +1,9 @@
 import { $, esc, fetchJSON } from './shared-utils.js';
 import { refreshIntervalMs } from './trading-gate-and-connectivity.js';
 
-// Terminal tab's "System Health" panel (QCP Task 18, docs/superpowers/
-// plans/2026-08-24-quality-control-plane.md) - a read-only view of
+// Terminal tab's "System Health" panel (QCP Task 18,
+// docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md,
+// moved there 2026-09-06, planning-lanes migration) - a read-only view of
 // GET /api/quality/summary, the composite runtime-health endpoint QCP
 // Tasks 9-11/16 built. Deliberately the LAST thing that landed in this
 // initiative's rollout order (design spec section 22: "After APIs are

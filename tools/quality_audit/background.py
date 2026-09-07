@@ -1,5 +1,5 @@
 """Background-scheduler wiring scanner for the Quality Control Plane's
-static audit CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md,
+static audit CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md (moved there 2026-09-06, planning-lanes migration),
 Task 4). Flags a `_maybe_*`-named function that has the shape of a
 background-task scheduler (calls task_supervisor.supervise(...) or
 asyncio.create_task(...), or assigns into a `[...]["task"]`-style slot) but

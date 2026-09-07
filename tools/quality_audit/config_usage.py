@@ -1,5 +1,5 @@
 """Config-usage scanner for the Quality Control Plane's static audit CLI
-(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 5). Flags
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Task 5, moved there 2026-09-06, planning-lanes migration). Flags
 a config/settings.yaml leaf that no non-test source file appears to read
 via a direct `cfg["a"]["b"]` or `cfg.get("a", ...).get("b", ...)` chain
 (or a mix of the two) rooted at a variable literally named `cfg` - the

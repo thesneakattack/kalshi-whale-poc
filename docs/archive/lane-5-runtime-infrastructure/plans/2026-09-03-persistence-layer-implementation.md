@@ -30,7 +30,7 @@ pass" HARD RULE):**
 **Verified fresh at plan-drafting time (2026-09-03), not assumed from the
 design's own now-hours-old numbers:** at drafting time, `docs/next-action.md`
 confirmed Tier 0's own plan
-(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`,
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md` (moved there 2026-09-06, planning-lanes migration),
 PR #441, merged) was still code-not-landed. **PR-stage update:** Tier 0's
 code has since landed (`services/market_history.py:87-88` now has
 `@contextlib.contextmanager` on `_connect()`, confirmed against current
@@ -216,7 +216,7 @@ tooling.
   declined it: `_connect()` itself becomes the closing context manager, so
   no call site's syntax changes. Consistent with this plan's own migrated
   modules and with Tier 0's precedent
-  (`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`'s
+  (`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md` (moved there 2026-09-06, planning-lanes migration)'s
   Global Constraints).
 - **This repo has no `pytest-asyncio`.** Not directly relevant to this
   plan's tasks (none add new `async def` functions), noted only because

@@ -2,7 +2,7 @@
 ratchet comparison, the CLI's exit-code gate, the source-file walking
 helpers, the router-registration/background-wiring scanners, and the
 persistence/resource-lifecycle/config-usage/API-usage scanners
-(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Tasks 3-5).
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Tasks 3-5, moved there 2026-09-06, planning-lanes migration).
 Baseline-gate and CLI-plumbing tests use synthetic QualityFindings and
 temporary fixture trees rather than depending on real repo content
 triggering (or not triggering) a finding; the scanner tests use small

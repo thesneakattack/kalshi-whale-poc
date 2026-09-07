@@ -1,5 +1,5 @@
 """Router-registration scanner for the Quality Control Plane's static audit
-CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 4).
+CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Task 4, moved there 2026-09-06, planning-lanes migration).
 Flags an APIRouter defined under a service package but never mounted via
 app.include_router(...) in main.py - the one FastAPI entrypoint per
 CLAUDE.md's "Quick file map" (`main.py` - FastAPI app, API/auth routes

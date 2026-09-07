@@ -245,8 +245,9 @@ than applying a stale patch.
 In `services/diagnostics/routes.py`, near the top of the file, add:
 
 ```python
-# Task 1 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
-# remediation.md: no individual probe below had a timeout, so one store
+# Task 1 of docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-09-03-tier0-live-incident-remediation.md (moved there 2026-09-06,
+# planning-lanes migration): no individual probe below had a timeout, so one store
 # whose blocking sqlite3 call never returns hung the whole route forever
 # (live incident, 2026-09-03 - GET /api/health/pipeline stopped responding
 # while every other route kept serving). 10.0s is an estimate: Python's
@@ -490,8 +491,9 @@ to:
 def _connect(db_path: Path):
     """Every existing `with _connect(DB_PATH) as conn:` call site keeps
     working unchanged - this yields the same conn as before, but now
-    closes it on exit (2026-09-03, Task 2 of docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    closes it on exit (2026-09-03, Task 2 of docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration): `with conn:` alone
     commits/rolls back a transaction, it never closes the connection, and
     this module was one of four confirmed leaking descriptors in the
     2026-09-02 fd-exhaustion incident."""
@@ -760,8 +762,9 @@ TABLE`):
 def _connect():
     """Every existing `with _connect() as conn:` call site (21 of them)
     keeps working unchanged - this yields the same conn as before, but now
-    closes it on exit (2026-09-03, Task 5 of docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md), same fix and same
+    closes it on exit (2026-09-03, Task 5 of docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration), same fix and same
     reasoning as market_history.py's Task 2."""
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -1246,8 +1249,9 @@ already works.
 Add near `STORE_PROBE_TIMEOUT_SEC` (Task 1):
 
 ```python
-# Task 9 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
-# remediation.md: the 2026-09-02 fd-exhaustion incident had zero
+# Task 9 of docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-09-03-tier0-live-incident-remediation.md (moved there 2026-09-06,
+# planning-lanes migration): the 2026-09-02 fd-exhaustion incident had zero
 # visibility anywhere until the container was already at its ceiling.
 # 80% is an estimate - enough lead time to notice before the 1,024-fd
 # limit this incident actually hit, without firing on ordinary variation;
@@ -1499,7 +1503,7 @@ implied as solved.
 
 This plan went through the independent adversarial review the "nothing
 advances on one pass" HARD RULE requires
-(`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation-plan-review.md`,
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation-plan-review.md` (moved there 2026-09-06, planning-lanes migration),
 verdict GO-AFTER-FIXES) before being considered ready. Every item on that
 review's must-fix and should-fix list was applied — most visibly, Task 1's
 `_bounded()` timeout-resolution bug fixed, Tasks 6-7 added
@@ -1512,4 +1516,4 @@ pass/fail criterion split into two separately-stated claims rather than
 one that conflated them. The full fix list, what was applied against each
 item, and why this revision did not trigger a third independent review
 cycle are recorded in the companion document,
-`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation-consolidation.md`.
+`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation-consolidation.md` (moved there 2026-09-06, planning-lanes migration).

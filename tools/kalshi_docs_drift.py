@@ -1,7 +1,7 @@
 """
 Upgrades docs-drift-check.yml from "does each URL still 200" to real
 content-drift detection against docs/kalshi/ - Quality Control Plane
-Task 12 (docs/superpowers/plans/2026-08-24-quality-control-plane.md); see
+Task 12 (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration); see
 CLAUDE.md's "Kalshi API documentation" section for why docs/kalshi/ is
 treated as ground truth in this repo, and docs/kalshi/upstream-manifest.json
 for the mirror's own provenance record.

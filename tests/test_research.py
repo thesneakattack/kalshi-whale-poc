@@ -1,7 +1,7 @@
 """
 services/research/research.py - evidence-triggered orchestration of seven
 existing read-only analyzers into one persisted snapshot (QCP Task 16,
-docs/superpowers/plans/2026-08-24-quality-control-plane.md).
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration).
 
 build_report's own composition tests monkeypatch every analyzer it calls
 (same instruction as this task's own plan: "Write report-composition tests

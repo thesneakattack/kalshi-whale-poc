@@ -1,5 +1,5 @@
 """Tests for the frontend-to-backend API contract scanner
-(docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 7). Uses
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Task 7, moved there 2026-09-06, planning-lanes migration). Uses
 small synthetic fixture repos (a couple of Python route files, a couple of
 JS files under frontend/src/js/) rather than depending on real repo content
 triggering (or not triggering) a mismatch.

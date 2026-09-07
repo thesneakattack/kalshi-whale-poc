@@ -1,5 +1,5 @@
 """Filesystem/AST helpers shared by every Quality Control Plane static
-scanner (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 3
+scanner (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md (moved there 2026-09-06, planning-lanes migration), Task 3
 Step 3). Centralizes "what counts as this repo's own Python source" so each
 scanner doesn't reinvent its own exclude list.
 """

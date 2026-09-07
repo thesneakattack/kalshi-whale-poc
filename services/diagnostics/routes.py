@@ -47,8 +47,9 @@ from services.pagination import paginate
 
 router = APIRouter()
 
-# Task 1 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
-# remediation.md: no individual probe below had a timeout, so one store
+# Task 1 of docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-09-03-tier0-live-incident-remediation.md (moved there 2026-09-06,
+# planning-lanes migration): no individual probe below had a timeout, so one store
 # whose blocking sqlite3 call never returns hung the whole route forever
 # (live incident, 2026-09-03 - GET /api/health/pipeline stopped responding
 # while every other route kept serving). 10.0s is an estimate: Python's
@@ -89,8 +90,9 @@ async def _bounded(coro, *, timeout: float | None = None) -> dict:
         return {"error": f"timed out after {timeout:.0f}s"}
 
 
-# Task 9 of docs/superpowers/plans/2026-09-03-tier0-live-incident-
-# remediation.md: the 2026-09-02 fd-exhaustion incident had zero
+# Task 9 of docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-09-03-tier0-live-incident-remediation.md (moved there 2026-09-06,
+# planning-lanes migration): the 2026-09-02 fd-exhaustion incident had zero
 # visibility anywhere until the container was already at its ceiling.
 # 80% is an estimate - enough lead time to notice before the 1,024-fd
 # limit this incident actually hit, without firing on ordinary variation;

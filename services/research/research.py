@@ -1,6 +1,6 @@
 """
 Evidence-triggered read-only research sweep - Quality Control Plane Task 16
-(docs/superpowers/plans/2026-08-24-quality-control-plane.md). Orchestrates
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration). Orchestrates
 existing read-only analytics into one coherent, persisted snapshot so a
 human or agent doesn't have to re-run each one by hand - invents no new
 algorithm or statistic of its own. See this package's README.md for the

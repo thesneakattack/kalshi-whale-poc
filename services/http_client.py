@@ -347,7 +347,7 @@ def get_and_reset_rate_limit_hits() -> int:
 
 
 # Per-endpoint-family REST usage telemetry (2026-08-24, QCP Task 15 -
-# docs/superpowers/plans/2026-08-24-quality-control-plane.md). Instrumented
+# docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration). Instrumented
 # INSIDE call_with_backoff's own retry loop, not by wrapping
 # call_with_backoff from the outside, so each real HTTP attempt (including
 # every retried 429) is counted once - wrapping from outside would collapse

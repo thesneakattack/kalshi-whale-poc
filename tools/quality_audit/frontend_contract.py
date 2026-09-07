@@ -1,5 +1,5 @@
 """Frontend-to-backend API contract scanner for the Quality Control Plane's
-static audit CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md,
+static audit CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md (moved there 2026-09-06, planning-lanes migration),
 Task 7). Cross-checks every `fetchJSON(...)`/`fetch(...)` call in
 frontend/src/js/*.js (the real, hand-authored ES module source per CLAUDE.md
 - not static/js/dashboard.bundle.js, which is generated) against every

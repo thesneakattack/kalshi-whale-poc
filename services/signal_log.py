@@ -197,8 +197,9 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 def _connect():
     """Every existing `with _connect() as conn:` call site (21 of them)
     keeps working unchanged - this yields the same conn as before, but now
-    closes it on exit (2026-09-03, Task 5 of docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md), same fix and same
+    closes it on exit (2026-09-03, Task 5 of docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration), same fix and same
     reasoning as market_history.py's Task 2.
 
     The `try:` starts immediately after `sqlite3.connect()` succeeds, not

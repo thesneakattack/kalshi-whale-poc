@@ -348,7 +348,7 @@ test's fixture corrected to match, plus a new regression test proving the
 plural string no longer dispatches.
 **Found:** 2026-08-24, same session as the `fill_id`/`trade_id` finding
 above — the plan document for this task's own initiative
-(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`) named
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md`, moved there 2026-09-06, planning-lanes migration) named
 `type: "market_position" singular` as a required fixture-encoding target,
 which is what prompted re-checking this dispatch against the real docs
 instead of assuming the existing code already had it right.

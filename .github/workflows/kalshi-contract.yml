@@ -1,8 +1,9 @@
 name: kalshi-contract
 
 # Scheduled/manual live canary against Kalshi's real, unauthenticated public
-# API (QCP Task 14, docs/superpowers/plans/2026-08-24-quality-control-
-# plane.md) - complements tests/test_kalshi_contracts.py's offline fixture
+# API (QCP Task 14, docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes
+# migration) - complements tests/test_kalshi_contracts.py's offline fixture
 # tests (which prove production code parses documented shapes correctly)
 # with a live check that Kalshi's real API still SENDS those shapes. Only
 # ever calls GET /exchange/status and GET /markets - both public/read-only
