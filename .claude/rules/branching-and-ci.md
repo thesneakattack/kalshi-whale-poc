@@ -123,8 +123,8 @@ commit → push → Woodpecker → PR → merge → delete branch
   `gh pr merge`, and `review-tier` records that it did — that is rigor,
   not approval ceremony.
 
-**GitHub-side enforcement (configured 2026-08-25; lapsed 2026-09-05 when the
-repo was private, #615; restored 2026-09-07 once it was public again):**
+**GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05, #615;
+restored 2026-09-07):**
 `gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` reports
 `enforce_admins: true`, `allow_force_pushes: false`, `allow_deletions: false`,
 `required_pull_request_reviews: null`, `required_status_checks.strict: false`,
@@ -137,19 +137,40 @@ path-filtered to `frontend/**` and posts no status when skipped, so requiring
 it would block every non-frontend PR. Update with
 `gh api -X PUT .../protection --input <file>` when a required pipeline is added.
 
-**The gap this closes, and why the manual practice stays anyway.** Between
-2026-09-05 and 2026-09-07 there was no server-side gate at all: the repo was
-`private: true` on a Free plan, so the protection endpoint returned 403
-*"Upgrade to GitHub Pro or make this repository public"*. That is why a CI
-outage the night of 2026-09-05 left a PR at `mergeStateStatus: CLEAN` with zero
-checks having run. Protection now exists again, but **`mergeStateStatus` is
-still not evidence** and the merging session still reads
-`commits/<sha>/status` itself and confirms each of the six contexts is
-`success` for the PR head — the same instruction as the interim practice, kept
-because the enforcement it depends on has now silently disappeared once.
-Re-verify with the `.../branches/main/protection` call above rather than
-assuming this paragraph is current; it was wrong for two days without anyone
-noticing, and a session's own copy of this file is a snapshot from its start.
+**The gap this closes, and why the manual practice stays anyway.** There was no
+server-side gate at all for roughly two days: the repo was `private: true` on a
+Free plan, so the protection endpoint returned 403 *"Upgrade to GitHub Pro or
+make this repository public"*. **Dated precisely, because "lapsed 2026-09-05" is
+more than the evidence supports:** the last live read showing protection present
+is a 2026-09-03 16:38 doc, and `0356b2e` recorded the 403 at 2026-09-05 04:31,
+so the lapse began somewhere in that window and 2026-09-04 is not excluded.
+`0356b2e` also attributes a contemporaneous CI outage in which a PR sat at
+`mergeStateStatus: CLEAN` with zero checks having run — cited from that commit,
+not independently reproduced here.
+
+Protection exists again, but **`mergeStateStatus` is still not evidence** and the
+merging session still reads `commits/<sha>/status` itself and confirms each of
+the six contexts is `success` for the PR head. Kept deliberately: the enforcement
+it substitutes for has now vanished once and stayed gone for two days.
+`required_pull_request_reviews: null` also means a green PR head can still be
+pushed straight to `main`, bypassing `gh pr merge` and the `review-tier` artifact
+count — the branch model, not the server, is what prevents that.
+`required_status_checks.strict: false` means a branch need not be up to date with
+`main` before merging; that was already the 2026-08-25 setting and is restored
+unchanged, not a new choice. Re-verify with the `.../branches/main/protection`
+call above rather than assuming this paragraph is current: it was wrong for two
+days without anyone noticing, and a session's copy of this file is a snapshot
+from its own start that any mid-session `git pull` invalidates.
+
+**A second enforcement surface exists and is currently a no-op.** Ruleset
+`22360419` ("Protection", `enforcement: active`, created 2026-09-06) carries
+`deletion` + `non_fast_forward` rules but its `conditions.ref_name.include` is
+`[]`, which targets **no branches** — `gh api .../rules/branches/main` returns
+empty. It also lists the "Claude" GitHub App as a bypass actor with
+`bypass_mode: always`. It is doing nothing today; if it is ever pointed at a
+branch, it becomes a second, differently-configured gate. Check it alongside
+classic protection (`gh api .../rulesets`) rather than assuming the branch API
+tells the whole story.
 
 ## Git history
 

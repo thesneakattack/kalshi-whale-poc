@@ -76,7 +76,7 @@ Woodpecker cron scheduling is ever configured for this project.
 **A path-filtered workflow (`quality-frontend-build`) posts no status at
 all when skipped** — if branch protection ever marks it "required," a
 backend-only PR would block on a check that never runs. Don't mark it
-required; the other four aren't path-filtered and are safe to require.
+required; the other five aren't path-filtered and are safe to require.
 
 **A manually triggered pipeline (`scripts/woodpecker-trigger`, the "Run
 pipeline" UI button, or a raw `POST /api/repos/{id}/pipelines`) carries
