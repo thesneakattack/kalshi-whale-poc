@@ -293,6 +293,70 @@ Lane 3's own batch (now running) will close its half of this.
 **Step 5 (retire `plans/README.md`)** — not started, low-risk, can
 follow once step 4 finishes.
 
+**Lane 9 read-only prep (2026-09-07 ~06:15-06:20Z, `49` + `c4`, both
+independently converging — not started, still blocked on Lane 1
+merging):** 79-file count triangulated two ways (49 pulled it from
+`step4-file-move-plan.md`'s Appendix A; `c4` independently rebuilt it
+from the two step1 classification tables from scratch) — same number,
+different method, high confidence. Two real findings surfaced early:
+1. **GitHub-issue side (49, self-corrected on a coordinator prompt and
+   verified directly): 53 distinct issues / 54 citation-rows (`#81`
+   cites two different Lane-9 files) will need re-pointing once Lane 9
+   moves** — **8 open** (the plan doc's own tally of 7 — `#81`, `#321`,
+   `#323`-`#325`, `#327`-`#328` — plus `#74`, a genuine 8th: `type:
+   feature` not `type:plan-task`, so the design doc's tally never
+   caught it, same shape as #616 in Lane 3) + **45 closed**, none
+   counted by any prior tally (design doc only ever stated the
+   type:plan-task open number). Root cause of the closed volume is Lane
+   9's own dense GitHub-issue development history (`kanban_sync`
+   build-out #154-168/#173-185+226, workflow-remediation #278-288, plus
+   more). ~7x the issue-citation burden of any completed lane so far
+   (Lane 3 had 9, Lane 6 had 11) — a real sizing signal for whoever
+   executes Lane 9, not just a bigger number. Full list is in `49`'s
+   scratchpad, not reproduced here verbatim — regenerate fresh at Lane 9
+   execution time rather than trust this snapshot cold, since more
+   lanes may merge before then and shift the picture.
+2. **File-citation side (`c4`, coordinator spot-checked and confirmed
+   real): 5 of the 79 Lane-9 files already cite already-merged Lanes
+   3/4/8 by old path, right now** — 10 sites/12 occurrences, methodology
+   point 9's exact class, found proactively before the move:
+   `2026-08-26-active-tracks-board.md` (4 sites → Lane 3 ×3 + Lane 4
+   ×1), `2026-08-27-workflow-remediation.md` (1 → Lane 3),
+   `2026-09-02-architecture-audit-and-rewrite-considerations.md` (2
+   sites/4 occurrences → Lane 8), `2026-09-02-architecture-audit-
+   second-pass.md` (1 → Lane 8), `2026-08-27-kanban-sync-milestones-
+   and-subissues-design.md` (2 → Lane 4 + Lane 8). Separately, 9 more
+   occurrences across 3 of these same files cite Lane 1 by old path —
+   correctly deferred, not counted above, since #657 hasn't merged yet.
+   Also confirmed, not new: `README.md` is Lane 9 by classification but
+   excluded from step 4 (retire-not-move, step 5's job); `2026-08-26-
+   active-tracks-board.md` carries a pre-flagged RULE-GAP (`kind`
+   doesn't fit `plan`/`companion-of`, forced into `plan` by a count
+   constraint) — both already known from the classification tables, not
+   surprises for whoever executes Lane 9.
+
+**Separate, higher-stakes finding: the master planning document itself
+was never merged to `main` (2026-09-07 ~06:20Z, coordinator `36`).**
+`docs/superpowers/lanes/step4-file-move-plan.md` — the document every
+lane tonight has executed against for file lists, batch order, and
+reference counts — exists only on an unmerged branch
+(`docs/step4-file-move-plan`, commit `b388fa1`, 2026-09-06) and in one
+stray worktree (`.claude/worktrees/agent-a4006042ebd399799/`); `git ls-
+tree main` confirms it is not tracked on `main` at all. Read its
+consolidation file directly: a full self-review → adversarial-review →
+consolidation cycle already ran and reached an explicit **GO** verdict,
+but the document was deliberately left unmerged — "ready to report back
+to David... no PR opened yet (his call, per the task)" — with 3 named
+judgment calls surfaced for him, not resolved in the document itself.
+Every lane batch tonight (4→8→5→6→3→2→1, all matching this document's
+own batch order and file counts exactly) has been executing against it
+correctly in practice, but it has never been durable, on-`main` history
+— a real gap against "git log is the only maintained history." Flagged
+directly to David; `ea` assigned to check for any trace of him already
+weighing in on this since 2026-09-06 and to summarize the 3 judgment
+calls. Decision (merge now / hold / something else) is his, not
+resolved here.
+
 ---
 
 ## Peer status (rewritten 2026-09-07 ~06:10Z by coordinator `36` — this file is the durable record, not chat memory)
