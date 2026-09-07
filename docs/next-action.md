@@ -147,14 +147,18 @@ follow once step 4 finishes.
 
 ## Peer status
 
-- **`49`** — executing Lane 3 (next in the approved order), carrying
-  forward all 6 standing-methodology points above.
+- **`49`** — executing Lane 3. After it finishes, proceeds to **Lane 1**
+  next (not Lane 2 — see `ea`, below), Lane 9 last regardless.
 - **`c4`** — standing watch, available for verification asks.
 - **`0d`** — standing watch, available. Last task (Lane 4/8
   stale-citation follow-up) closed clean: zero real remaining gaps.
-- **`ea`** — standing watch. Watching `last_tick_duration_sec` for
-  whether a mildly-elevated single reading (7.45s vs. usual ~2-3s)
-  turns out sustained; correctly not treating one reading as a finding.
+- **`ea`** — **reassigned off app-health monitoring onto Lane 2**
+  (David's direct instruction, 2026-09-07: focus the fleet on
+  completing the migration), running in parallel with 49's Lane 3
+  (disjoint file sets). No session is doing standing app-health watch
+  right now — a deliberate tradeoff for migration throughput, not an
+  oversight; the kill switch/`trading_enabled=false` invariants don't
+  depend on active monitoring to hold.
 
 ---
 
