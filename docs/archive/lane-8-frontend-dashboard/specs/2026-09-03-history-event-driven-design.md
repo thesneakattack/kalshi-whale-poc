@@ -3,8 +3,8 @@
 ## Status
 
 Design document (2026-09-03). Builds directly on
-`docs/superpowers/research/2026-09-03-trade-stream-decoupling-and-history-event-driven-research.md`
-(§2, §3, §4's Tier-3-related findings) and
+`docs/archive/lane-2-whale-signal-calibration/research/2026-09-03-trade-stream-decoupling-and-history-event-driven-research.md`
+(moved there 2026-09-07, planning-lanes migration; §2, §3, §4's Tier-3-related findings) and
 `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §6.6/§8 (item 26,
 "push more state over the dashboard WebSocket") and its predecessor
 `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §13

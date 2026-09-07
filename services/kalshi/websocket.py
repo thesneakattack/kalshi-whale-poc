@@ -206,8 +206,9 @@ _HANDLER_TIMEOUT_SEC = 10.0
 # consumer's.
 _LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
 
-# Option B (2026-09-03 live-incident fix - docs/superpowers/research/
-# 2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md, issue
+# Option B (2026-09-03 live-incident fix - docs/archive/lane-2-whale-signal-
+# calibration/research/2026-09-03-trade-resolve-consumer-blocking-solution-
+# comparison.md, moved there 2026-09-07, planning-lanes migration, issue
 # #542/#541): bounds how many trade items' full handling (on_trade -> ... ->
 # kalshi_trade_tape.py's fetch_signals, which can await a multi-second REST
 # resolve call for an off-watchlist/uncached print) may run concurrently off
@@ -1381,9 +1382,10 @@ class KalshiStreamGateway:
     async def _consume_one(self, queue: asyncio.Queue, item, on_trade, on_ticker, on_status,
                            on_fill, on_position, on_index, on_lifecycle) -> None:
         """Single dequeued item's dispatch, shared by _consume_from and
-        _consume_market_from (Option B, 2026-09-03 - docs/superpowers/
-        research/2026-09-03-trade-resolve-consumer-blocking-solution-
-        comparison.md §3). A "trade" item goes through bounded-concurrency
+        _consume_market_from (Option B, 2026-09-03 - docs/archive/lane-2-
+        whale-signal-calibration/research/2026-09-03-trade-resolve-consumer-
+        blocking-solution-comparison.md, moved there 2026-09-07, planning-
+        lanes migration, §3). A "trade" item goes through bounded-concurrency
         dispatch (_dispatch_trade_concurrent) so this call returns as soon
         as a semaphore slot is claimed and a background task is spawned -
         well before that trade's own handler (which can await a

@@ -5,8 +5,9 @@ design.
 
 The candidate-retry path (score_recovered_trade) used to share this pool
 and no longer does - it has its own services/whalewatchers/
-_candidate_retry_pool.py as of issue #563 (docs/superpowers/specs/
-2026-09-03-scoring-pool-candidate-retry-isolation-design.md). Note that
+_candidate_retry_pool.py as of issue #563 (docs/archive/lane-2-whale-signal-
+calibration/specs/2026-09-03-scoring-pool-candidate-retry-isolation-design.md,
+moved there 2026-09-07, planning-lanes migration). Note that
 cached_read_connection() below is still called by BOTH paths' threads:
 signal_log.py/market_history.py/market_analyst_agent/_db.py call it by
 name, and it keys on threading.local(), so each pool's threads simply get
