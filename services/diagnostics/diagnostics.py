@@ -762,8 +762,10 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
 # strategy-remediation-design.md) asks check_gate_cost_bands to flag any
 # (gate, band) with "n >= min_samples and ev_per_contract meaningfully
 # negative" without saying what "meaningfully" means numerically - this is
-# that threshold, calibrated against the real numbers docs/superpowers/
-# research/2026-08-26-economic-gate-marginal-contribution.md's E4 analysis
+# that threshold, calibrated against the real numbers
+# docs/archive/lane-4-analytics-advisory-research/research/
+# 2026-08-26-economic-gate-marginal-contribution.md's (moved there
+# 2026-09-06, planning-lanes migration) E4 analysis
 # found (not picked arbitrarily): the two big-n (383,955 and 299,264),
 # high-confidence rows issue #616's own decision record cites by name are
 # whale_watcher.min_contracts' 0.60-0.80 (-0.0728/contract) and 0.80-0.95
@@ -785,8 +787,10 @@ _NEGATIVE_EV_THRESHOLD = -0.02
 async def check_gate_cost_bands(min_samples: int = 30) -> Check:
     """issue #616 D1: population_gate_summary()'s one hypothetical_win_rate
     per gate, averaged across every unit_cost that gate ever rejected, hides
-    the real 0.60-0.95-band negative-EV pattern docs/superpowers/research/
-    2026-08-26-economic-gate-marginal-contribution.md's E4 analysis found
+    the real 0.60-0.95-band negative-EV pattern
+    docs/archive/lane-4-analytics-advisory-research/research/
+    2026-08-26-economic-gate-marginal-contribution.md's (moved there
+    2026-09-06, planning-lanes migration) E4 analysis found
     underneath that aggregate. This is the runtime detection-for-recurrence
     half of D1 (the other half is the population_gates_banded field itself,
     services/candidate_log.py's population_gate_summary_banded()) - folded

@@ -4,9 +4,12 @@
 E8-E10 explicitly scoped-not-executed or closed-infeasible — see the plan file's status
 table). This is the synthesis document the execution program's §6.1 deliverable list calls
 for; read the four documents it draws from for full evidence
-(`docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md`,
-`...-gate-marginal-contribution.md`, `...-advisory-calibration-execution-audit.md`,
-`...-adversarial-review.md`).
+(all moved to `docs/archive/lane-4-analytics-advisory-research/research/` on
+2026-09-06, planning-lanes migration:
+`2026-08-26-economic-population-and-replay-gaps.md`,
+`2026-08-26-economic-gate-marginal-contribution.md`,
+`2026-08-26-economic-advisory-calibration-execution-audit.md`,
+`2026-08-26-economic-strategy-effectiveness-adversarial-review.md`).
 
 **Addendum (2026-08-26, resumed after this branch was stopped mid-flight):** Program 1
 (realtime data-plane remediation) merged into `main`@`22d1a79` at 2026-08-26T12:01:39-05:00

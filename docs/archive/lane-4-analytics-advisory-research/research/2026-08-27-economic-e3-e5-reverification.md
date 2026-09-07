@@ -8,8 +8,9 @@ Program 1 P0-P2 merged into `main`@`22d1a79` on 2026-08-26T17:01:39Z (`main`'s
 candidate-duplication (candidate_ledger `claim()`, gated on `_handle_signal` via Task 10),
 WAL on `candidate_ledger.db`, and a real cross-thread lock on `series_watcher`'s capture
 buffers. This document re-runs E3/E4/E5's original queries (methodology unchanged from
-`docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md` and
-`docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md`) against
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md` and
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-gate-marginal-contribution.md`
+(both moved there 2026-09-06, planning-lanes migration) against
 current data, pulled 2026-08-27 ~06:00 UTC (`NOW` epoch `1787810000`), all read-only
 (`data/signal_log.db`, `data/paper_broker.db`, `data/reset_log.db`, `data/candidate_ledger.db`,
 `data/observability.db` copied to scratchpad; `data/candidate_log.db` — 1.2 GB — read via a
@@ -170,7 +171,7 @@ data) + 3 (deterministic re-computation via the real, reviewed `reconcile()` fun
 every number in the table; the choice between (a)/(b) above is explicitly evidence class
 6 (labeled inference) — not settled by this pass.**
 
-## Evidence class summary (per the investigation's own design doc §4, `docs/superpowers/specs/2026-08-26-economic-strategy-effectiveness-investigation-design.md` — the numbering `.claude/rules/autonomous-quality-coordination-evidence.md`'s evidence-classes section inspired, same convention the sibling E1-E3 doc cites)
+## Evidence class summary (per the investigation's own design doc §4, `docs/archive/lane-4-analytics-advisory-research/specs/2026-08-26-economic-strategy-effectiveness-investigation-design.md` — moved there 2026-09-06, planning-lanes migration — the numbering `.claude/rules/autonomous-quality-coordination-evidence.md`'s evidence-classes section inspired, same convention the sibling E1-E3 doc cites)
 
 **Class 1 (current persisted data) + 3 (deterministic re-computation via existing,
 reviewed code):** every numeric table above — the reset-log/trade-count sanity check, the
