@@ -123,20 +123,33 @@ commit → push → Woodpecker → PR → merge → delete branch
   `gh pr merge`, and `review-tier` records that it did — that is rigor,
   not approval ceremony.
 
-**GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05,
-#615):** `gh api repos/thesneakattack/kalshi-whale-poc/branches/main` reports
-`protected: false`, `enforcement_level: off`; whether it lapsed via a plan
-change or the repo going private is not recoverable from the API. Until #615
-is decided (GitHub Pro, a public repo, or accepting this as permanent), the
-six contexts below are enforced by the merging session reading
-`commits/<sha>/status` and treating any state other than `success` on any of
-them as not merged: `ci/woodpecker/pr/tests-pytest-app`,
+**GitHub-side enforcement (configured 2026-08-25; lapsed 2026-09-05 when the
+repo was private, #615; restored 2026-09-07 once it was public again):**
+`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` reports
+`enforce_admins: true`, `allow_force_pushes: false`, `allow_deletions: false`,
+`required_pull_request_reviews: null`, `required_status_checks.strict: false`,
+and `required_status_checks.contexts` = `ci/woodpecker/pr/tests-pytest-app`,
 `.../tests-pytest-tooling`, `.../tests-dependency-audit`,
 `.../quality-architecture-audit`, `.../quality-browser-e2e`,
-`.../kalshi-contract-fixtures`. `quality-frontend-build` is path-filtered to
-`frontend/**` and posts no status when skipped, so it is read only when it
-ran. If protection is re-enabled, restore the 2026-09-03 contexts list with
-`gh api -X PUT .../protection --input <file>` and rewrite this paragraph.
+`.../kalshi-contract-fixtures` — the 2026-09-03 list, restored unchanged.
+Deliberately excludes `ci/woodpecker/pr/quality-frontend-build`: it is
+path-filtered to `frontend/**` and posts no status when skipped, so requiring
+it would block every non-frontend PR. Update with
+`gh api -X PUT .../protection --input <file>` when a required pipeline is added.
+
+**The gap this closes, and why the manual practice stays anyway.** Between
+2026-09-05 and 2026-09-07 there was no server-side gate at all: the repo was
+`private: true` on a Free plan, so the protection endpoint returned 403
+*"Upgrade to GitHub Pro or make this repository public"*. That is why a CI
+outage the night of 2026-09-05 left a PR at `mergeStateStatus: CLEAN` with zero
+checks having run. Protection now exists again, but **`mergeStateStatus` is
+still not evidence** and the merging session still reads
+`commits/<sha>/status` itself and confirms each of the six contexts is
+`success` for the PR head — the same instruction as the interim practice, kept
+because the enforcement it depends on has now silently disappeared once.
+Re-verify with the `.../branches/main/protection` call above rather than
+assuming this paragraph is current; it was wrong for two days without anyone
+noticing, and a session's own copy of this file is a snapshot from its start.
 
 ## Git history
 
