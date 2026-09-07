@@ -269,8 +269,18 @@ def test_review_artifact_pattern_matches_this_repos_real_artifact_headings():
         "## PR-stage adversarial review (fresh Agent, no session memory)",
         "## Dispatching-session self-review (lean)",
         "Tier B self-review",
+        # the prefix forms .claude/rules/branching-and-ci.md documents verbatim;
+        # `stage 2 of 3` was rejected until the 2026-09-07 PR-stage review (B2)
+        "stage 2 of 3: Adversarial review",
+        "## stage 2 of 3 — Adversarial review",
+        # real headings that continue with a noun or preposition, not a verb
+        "## Adversarial review record (reconstructed after the fact, 2026-09-03)",
+        "## Adversarial review + consolidation — coordinator-direct",
+        "## Self-review of the PR as submitted (before the PR-level adversarial pass)",
+        "## Consolidation addendum — retroactive adversarial review complete",
+        "## Independent adversarial sweep (fresh, memory-less pass — read-only)",
     ):
-        assert review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
+        assert review_tier.is_review_artifact_first_line(line), line
 
 
 def test_review_artifact_pattern_rejects_comments_that_merely_mention_a_review():
@@ -298,20 +308,41 @@ def test_review_artifact_pattern_rejects_comments_that_merely_mention_a_review()
         "## INCOMPLETE — independent adversarial review terminated mid-pass",
         "**PR review cycle complete** (self-review + adversarial review + "
         "consolidation, per CLAUDE.md)",
+        # Narration that *starts* with the word, which anchoring alone did not
+        # stop. The first two are verbatim from merged PRs #511 and #515 -
+        # author responses reporting a review's verdict, not review artifacts.
+        # Found by the 2026-09-07 PR-stage adversarial review (B1); under Tier B
+        # any one of these was a full PASS with no review behind it.
+        "**Adversarial review returned NO-GO on one Critical finding. It was "
+        "right, the finding was mine, and it is now fixed in `4ba223b`.**",
+        "**Adversarial review returned NO-GO. It was right, and it found exactly "
+        "the doubt I flagged when opening this — fixed in `7aaacc2`.**",
+        "Consolidation is still pending - do not merge yet.",
+        "Adversarial review is running now, will post when it lands.",
+        "Self-review pending; holding the merge.",
+        "Consolidation GO is above; merging now.",
+        "Self-review, adversarial review and consolidation are all in the PR "
+        "body above.",
+        "Consolidation was posted on the other PR.",
+        "Self-review says this is fine.",
     ):
-        assert not review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(line), line
+        assert not review_tier.is_review_artifact_first_line(line), line
 
 
 def test_review_artifact_pattern_against_the_recorded_snapshot():
     """Frozen data (tests/fixtures/review_artifact_first_lines.tsv): 265 real
     comment first lines from the 200 most recently merged PRs as of 2026-09-07.
 
-    216 match. The 49 that do not are CI re-triggers, corrections, checkpoints,
+    214 match. The 51 that do not are CI re-triggers, corrections, checkpoints,
     rechecks, responses, and two `PR review cycle complete` summaries - one
     comment claiming all three stages is not three artifacts. Exactly one real
     artifact is missed (`## Review outcome (independent adversarial review,
     fresh Agent call)`, PR #501), and that failure is *closed*: the PR reads
     FAIL and the author gives the comment a conventional heading.
+
+    216 until the 2026-09-07 PR-stage adversarial review: the label-boundary
+    rule dropped exactly two, PRs #511 and #515, both author responses that
+    report a review's verdict rather than being one. Nothing else moved.
 
     The plan measured 213 of 261 against a snapshot taken earlier the same day
     with a per-PR fetch loop. This snapshot, taken in one `gh pr list
@@ -321,9 +352,9 @@ def test_review_artifact_pattern_against_the_recorded_snapshot():
     and match; the fourth is not one and does not. The pattern itself is
     unchanged - it still returns exactly 213 of 261 on the earlier file."""
     lines = _fixture_first_lines()
-    matched = [ln for ln in lines if review_tier.REVIEW_ARTIFACT_FIRST_LINE.search(ln)]
+    matched = [ln for ln in lines if review_tier.is_review_artifact_first_line(ln)]
     assert len(lines) == 265
-    assert len(matched) == 216
+    assert len(matched) == 214
 
 
 def test_count_review_artifacts_uses_only_the_first_line_of_a_comment():

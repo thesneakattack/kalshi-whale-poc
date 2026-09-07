@@ -192,13 +192,29 @@ def review_tier(
 # NO-GO)"), and PR #632 reached its required three through one of them. That is
 # the body-narrative failure moving into a comment.
 #
-# Validated against tests/fixtures/review_artifact_first_lines.tsv - 265 real
-# first lines, 216 matched, all eight known false positives rejected, and every
-# heading form this repo actually posts kept, including the `**bold**` ones that
+# Anchoring alone is not enough, and the 2026-09-07 PR-stage adversarial review
+# proved it: narration that *starts* with the word still matched. "Consolidation
+# is still pending - do not merge yet." counted as a consolidation, and under
+# Tier B (one artifact required) that single comment was a full PASS with no
+# review behind it - the initiative's own failure mode, inverted. Two real
+# comments were counted this way (PRs #511 and #515, both author responses
+# reporting a review's verdict rather than being one).
+#
+# The rule that fixes it is about grammar, not vocabulary, so it does not become
+# a list of the mistakes made so far: an artifact's first line is a *label* -
+# the artifact's name, optionally qualified - where narration is a *sentence*,
+# the name followed by a finite verb. A markdown heading is a title by
+# construction, so the start anchor alone settles it. Unmarked or bold-led text
+# must additionally continue with a delimiter or end, never with another word.
+#
+# Measured against tests/fixtures/review_artifact_first_lines.tsv - 265 real
+# first lines, 214 matched. Exactly two dropped against the unrestricted form,
+# both of them the named false positives; nothing else moved, and no real
+# heading form this repo posts was lost, including the `**bold**` ones that
 # broke the stricter `^#+\s*(self-review|...)` form (which matched 170 and
 # failed the fully compliant PR #625).
 #
-# One real artifact is missed: `## Review outcome (independent adversarial
+# One real artifact is still missed: `## Review outcome (independent adversarial
 # review, fresh Agent call)`. Accepted deliberately - it fails *closed* (the PR
 # reads FAIL and the author retitles the comment), and a pattern that defines
 # the expected heading is worth more than one that guesses every past form. The
@@ -206,10 +222,37 @@ def review_tier(
 REVIEW_ARTIFACT_FIRST_LINE = re.compile(
     r"^[\s#*_>`]*"
     r"(?:(?:independent|pr(?:[-\s](?:level|stage))?|dispatching[-\s]session|"
-    r"tier\s+b|final|lean|post[-\s]merge|stage\s+\d+|review[-\s]cycle)[\s,:—–-]+)*"
-    r"(self[-\s]?review|adversarial|consolidation)\b",
-    re.IGNORECASE,
+    r"tier\s+b|final|lean|post[-\s]merge|stage\s+\d+(?:\s+of\s+\d+)?|"
+    r"review[-\s]cycle)[\s,:—–-]+)*"
+    r"(?:self[-\s]?review|adversarial(?:[-\s]review)?|consolidation)"
+    r"(?P<rest>.*)$",
+    re.IGNORECASE | re.DOTALL,
 )
+
+# A `#` heading is a title, not a sentence - nothing further to check.
+_ARTIFACT_HEADING = re.compile(r"^\s*#")
+
+# Otherwise the name must end the label or hand off to a delimiter: `—`, `-`,
+# `:`, `(`, `[`, `/`, `|`, `+` (a combined "Adversarial review + consolidation"),
+# `.`, or a closing `**`. A following *word* means it is a sentence.
+_ARTIFACT_LABEL_BOUNDARY = re.compile(r"^\s*(?:[*_`]*\s*)?(?:$|[—–\-:(\[/|+#.])")
+
+
+def is_review_artifact_first_line(line: str) -> bool:
+    """Does this comment's first line announce a review artifact (spec D2)?
+
+    True for `## Self-review`, `**Consolidation — GO**`, `Tier B self-review`,
+    `## stage 2 of 3 — Adversarial review`. False for a comment that merely
+    talks about a review: `Consolidation is still pending`, `Adversarial review
+    returned NO-GO on one finding`, `Self-review, adversarial review and
+    consolidation are all in the PR body above`.
+    """
+    match = REVIEW_ARTIFACT_FIRST_LINE.match(line)
+    if match is None:
+        return False
+    if _ARTIFACT_HEADING.match(line):
+        return True
+    return bool(_ARTIFACT_LABEL_BOUNDARY.match(match.group("rest")))
 
 
 def count_review_artifacts(comments: Sequence[str]) -> tuple[int, list[str]]:
@@ -238,6 +281,6 @@ def count_review_artifacts(comments: Sequence[str]) -> tuple[int, list[str]]:
         if not stripped:
             continue
         first_line = stripped.splitlines()[0]
-        if REVIEW_ARTIFACT_FIRST_LINE.search(first_line):
+        if is_review_artifact_first_line(first_line):
             matched.append(first_line)
     return len(matched), matched

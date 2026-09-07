@@ -256,6 +256,17 @@ _REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
     "scripts/ci-",
     "scripts/woodpecker-",
     "tools/kanban_sync/labels.py",
+    # the tier definition's own tests, and the test-isolation layer. CLAUDE.md's
+    # Scope bullet says "the tier definition and tests of Tier A code" are Tier
+    # A, but the stem rule keys on a Tier A path's *basename*, so
+    # test_kanban_sync_labels.py never matched the stem `labels`. conftest.py is
+    # the autouse isolation that keeps a pytest run from writing into the live
+    # paper_broker.db - it did exactly that on 2026-08-23. Named explicitly
+    # rather than widening the stem rule (2026-09-07 PR-stage review, N1).
+    "tests/conftest.py",
+    "tests/support/",
+    "tests/test_kanban_sync_labels.py",
+    "tests/test_kanban_sync_review_tier.py",
 )
 
 REVIEW_TIER_A_PATHS: tuple[str, ...] = tuple(sorted(set(

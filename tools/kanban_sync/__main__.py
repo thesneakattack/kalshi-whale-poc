@@ -258,6 +258,16 @@ def _cmd_review_tier(args: argparse.Namespace) -> None:
     except GithubCliError as exc:
         print(f"error: could not read PR #{args.pr}: {exc}", file=sys.stderr)
         sys.exit(2)
+    except (ValueError, KeyError, TypeError) as exc:
+        # A malformed or unexpected gh payload is still "could not read", not
+        # "review missing": without this it would surface as a bare traceback
+        # and exit 1, the documented FAIL code (2026-09-07 PR-stage review, N4).
+        print(f"error: unreadable response for PR #{args.pr}: {exc!r}", file=sys.stderr)
+        sys.exit(2)
+    if not files:
+        print(f"error: PR #{args.pr} reported no changed files - refusing to "
+              f"classify it as Tier B on an empty list", file=sys.stderr)
+        sys.exit(2)
 
     tier, reasons = review_tier(
         files, diff_text=diff_text, pr_labels=pr_labels, escalate=args.tier == "A",
