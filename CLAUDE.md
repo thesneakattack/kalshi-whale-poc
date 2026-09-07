@@ -79,6 +79,7 @@ Any arithmetic, unit conversion, or numeric derivation gets a `dimensional-analy
 
 - `docs/next-action.md` holds the single next action and is printed in every session banner; "continue" means do that one thing. Rewrite it at the end of a session; never leave it describing finished work.
 - `git log`/`blame`/`diff` are the only maintained history since the 2026-08-07 cutover. `ROADMAP.md` is the living to-do (check items off in place; `/close-roadmap-item`). `docs/open-decisions.md` is the single list of parked decisions, printed every session — act on a line or ask about it; never write a new plan for something already on it.
+- Planning docs, issues and PRs are organized by **lane** (`docs/archive/lane-N-*/`; `lane:N`/`concern:*` labels defined in `tools/kanban_sync/labels.py`, replacing the retired `area:*`): a cross-lane initiative carries exactly one `lane:N` — the lane its own Goal/spec text names as its subject, never a file-reference count — with other-lane tasks as linked sub-issues in their own lanes, never a second `lane:M` and never a silent split. Rule, cross-lane link form (`depends-on:#N` gates claimability, so an informational reference is a plain `#N` body mention) and worked examples: `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md` §5 and §3.
 - Frozen, not maintained: `docs/status-archive-2026-08-26.html` (the pre-git narrative), `docs/roadmap-archive-2026-08-09.md`, `docs/roadmap-archive-2026-08-16.md`, `docs/roadmap-archive-2026-08-23.md`.
 
 ## Dev workflow — ddev, not bare uvicorn
