@@ -6,14 +6,39 @@ Fleet (`49`, `c4`, `0d`, `ea`) all idle/available as of 2026-09-07
 (see below) and nothing else is queued. Verify identity by direct
 reply before trusting a name, in either direction.
 
-**No active task.** David has not given a new instruction since Step 5
-merged. Don't self-assign work — report status and let him decide,
-consistent with how every judgment call tonight was handled. One
-pointer for whenever it's relevant, not to be chased proactively:
-memory `pending-ai-dev-principles-doc-after-lanes-migration` — David
-has a research-backed doc on AI-assisted-development stability
-principles he deliberately deferred until this migration wrapped,
-which it now has.
+**No active task.** David has not given a new instruction as of this
+writeup. Don't self-assign work — report status and let him decide,
+consistent with how every judgment call tonight was handled.
+
+**Housekeeping done post-migration (2026-09-07, coordinator, not part
+of the migration itself):**
+- **23 stale local branches + 1 stale remote branch removed** (leftover
+  worktrees from tonight's many dispatched-subagent reviews and lane
+  executions, every one independently verified as a proven `main`
+  ancestor before deletion — `scripts/cleanup-worktrees.sh` for the 2
+  with an exact-name merged PR, manual `git merge-base --is-ancestor`
+  checks for the rest). Two had real uncommitted content (an abandoned
+  "Family A" prototype benchmark for issue `#576`) — traced and
+  confirmed `#576` already has a real, deployed fix via a different,
+  chosen approach (PR #597) before discarding it as safe. Kept:
+  `feat/candlestick-volatility` (deliberately parked, recorded in
+  `docs/open-decisions.md`) and the `main-tools` detached worktree
+  (standing infrastructure for running `tools/`).
+- **Autonomous Engineering Mode scrapped entirely** (David, direct
+  instruction) — PR #663 (`b3a64e5`) deleted its 3977-line plan+design
+  spec. Confirmed zero code was ever built from it first (no
+  `tools/autonomous_mode/` package, no skill, no tests — never left the
+  planning stage); `AQC`'s own design doc already declared itself
+  independent of it, so nothing else in the app is affected. Issue
+  `#81` (its tracker) closed with an explanation.
+- **Not this session's task, explicitly deferred:** two files appeared
+  in the working directory (`ai-coding-productivity-analysis.md`,
+  `ai-engineering-llm-instructions.md`) matching the shape of the
+  AI-dev-principles document referenced in memory
+  `pending-ai-dev-principles-doc-after-lanes-migration` — David
+  clarified these were placed for a **peer session** to read, not this
+  one. Left untouched; don't re-raise or offer to read them (memory
+  updated with this resolution).
 
 ---
 
