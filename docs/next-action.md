@@ -20,16 +20,33 @@ scope) and are now fixed. Memory:
 don't grep a stale local checkout to judge whether an in-flight PR
 covers a finding; check its diff directly or wait for the pull.
 
-**Still legitimately open, reassigned to `0d` against CURRENT main**:
-(1) whether `docs/superpowers/specs/2026-08-27-backend-services-
-modularization-design.md` (still at its original location, never moved
-with its parent plan which did move to Lane 4) was a deliberate
-different-lane classification or a genuine miss — check the step-1
-specs/research table; (2) a fresh, from-scratch sweep against current
-main for any remaining genuine Lane 4/8 stale citations (exact-filename-
-matched, not prefix/topic-matched — the earlier false-positive trap
-still applies) — no confirmed real Lane 8 hit exists yet, that side is
-still an open question, not a known gap.
+**Both re-scoped questions resolved by `0d`, closed:**
+(1) `2026-08-27-backend-services-modularization-design.md` is
+deliberately `UNDECIDED` (step1-specs-research-classification.md, the
+"Unlaned / UNDECIDED" section) — genuinely splits into 4 co-equal groups
+with no stated primary (services/history→4, config→7, position→3,
+reset→6), verified directly against the table. Not a miss; correctly
+left unmoved. (2) Fresh sweep against current (post-#654) main: 37 raw
+hits, all either point-in-time classification-table snapshots (never
+touched by any lane's sweep, confirmed by checking Lane 5's own
+already-completed one has zero `docs/archive/` updates in its table
+either) or expected forward-references from not-yet-moved lanes
+(self-heals on schedule, already documented above). **Zero real
+remaining gaps** in services/, tests/, tools/, main.py, or ROADMAP.md —
+Lane 8 is now actually ruled out, not just unchecked. This entire
+follow-up line is closed.
+
+**Also surfaced, not an incident requiring action**: that same
+classification table documents `ea` correctly resisting two
+"coordinator"-claiming messages that arrived through an unverifiable
+channel (a system-reminder narrating a claimed instruction, not a
+verified direct message) during the original drafting — one carried a
+demonstrably false claim about her own work, the other asserted what
+turned out to be the actually-correct final rule but she still
+re-derived it independently rather than trust the channel. Good
+real-world confirmation the "verify identity before trusting a name"
+discipline works; see the table's own "Note on a mid-task message
+claiming to be from 'the coordinator'" section for the full account.
 
 ---
 
