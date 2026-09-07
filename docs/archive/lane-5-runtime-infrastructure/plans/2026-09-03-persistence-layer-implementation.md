@@ -18,12 +18,12 @@ pass" HARD RULE):**
 - `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
   and `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
   (Tier 2 items 15/16/23/24/28)
-- `docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`
+- `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`
   (commit `bb64a7c`, then fixed post-review at `1b44cb0`) — the design this
   plan implements
-- `docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design-review.md`
+- `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design-review.md (moved there 2026-09-06, planning-lanes migration)`
   (commit `12ae40c`) — independent adversarial review, verdict GO-AFTER-FIXES
-- `docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design-consolidation.md`
+- `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design-consolidation.md (moved there 2026-09-06, planning-lanes migration)`
   — verdict **GO** for the design stage; explicit that "implementation plan"
   is the next, separate, still-gated stage (this document)
 
@@ -399,7 +399,7 @@ here verbatim, not re-derived):
 30-module (25 in this plan's scope; Tier 0 already covers the other 5)
 "opens a connection, never calls .close()" leak shape that produced a real
 6.8-hour fd-exhaustion incident (2026-09-02). Design:
-docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md §1.
+docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration) §1.
 
 Every existing `with _connect() as conn:` call site keeps working unchanged
 once its owning module's _connect() is rewritten to return db.connect(...)
@@ -540,7 +540,7 @@ convention rather than introducing a new one):
 ```python
 def test_flush_retained_on_lock_records_caller_in_operation_name(monkeypatch, tmp_path):
     """Pins the fix for the design's named falsifier
-    (docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md
+    (docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)
     §4.2): flush_retained_on_lock's fault_log row must distinguish which
     caller (daemon vs. flush_now) hit the lock, via `operation`, not
     `context` - fault_log._write()'s ON CONFLICT clause never updates
@@ -814,8 +814,7 @@ DDL once, at module scope, and rewrite `_connect()`:
 **PR-stage correction (found during this PR's own required review cycle,
 after the plan-stage review had already run): a separate, already-merged
 initiative (`0e90287`, "refactor: one canonical DDL string per table, owned
-by capture_writer.py", Task 3c of `docs/superpowers/plans/2026-09-03-tier1-
-backend-hygiene.md`, merged the same day as this plan was drafted) already
+by capture_writer.py", Task 3c of `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)`, merged the same day as this plan was drafted) already
 extracted both `rejected_candidates`' and `rejection_events`' DDL into named
 constants on `capture_writer.py` — `capture_writer.REJECTED_CANDIDATES_DDL_SQL`
 and `capture_writer.REJECTION_EVENTS_DDL_SQL`. `candidate_log.py`'s real,
@@ -894,7 +893,7 @@ The actual `_connect()` implementation:
 def _connect():
     """Every existing `with _connect() as conn:` call site keeps working
     unchanged - now backed by services/db.py's closing connect() (2026-09-03,
-    Task 3 of docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md).
+    Task 3 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md, moved there 2026-09-06, planning-lanes migration).
     Also sets an explicit busy_timeout pragma (db.connect()'s 5000ms default -
     unchanged from Python's own prior implicit default, now stated rather than
     silent), the fix this plan's design named as §4.3 candidate 2. DDL for
@@ -1062,9 +1061,8 @@ Add near the top of `services/candidate_log.py`, after `DB_PATH`:
 # thread's own periodic flush already does, instead of racing it on the far
 # shorter 50ms budget tuned for UI/route callers
 # (capture_writer._CALLER_BUSY_TIMEOUT_MS). Design decision:
-# docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md §4.3
-# candidate 1, implemented docs/superpowers/plans/2026-09-03-persistence-
-# layer-implementation.md Task 4.
+# docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration) §4.3
+# candidate 1, implemented docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md (moved there 2026-09-06, planning-lanes migration) Task 4.
 _TICK_RESOLVE_FLUSH_BUSY_TIMEOUT_MS = capture_writer._DAEMON_BUSY_TIMEOUT_MS
 ```
 
@@ -1228,7 +1226,7 @@ db.register_ddl(
 def _connect():
     """Every existing `with _connect() as conn:` call site keeps working
     unchanged - now backed by services/db.py's closing connect() (2026-09-03,
-    Task 5 of docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md).
+    Task 5 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md, moved there 2026-09-06, planning-lanes migration).
     This was one of the three modules the architecture audit's fd census
     named with a demonstrated, measured leak contribution. raw_trades' DDL
     comes from capture_writer.RAW_TRADES_DDL_SQL, already the single source
@@ -1355,7 +1353,7 @@ db.register_ddl(
 def _connect():
     """Every existing `with _connect() as conn:` call site keeps working
     unchanged - now backed by services/db.py's closing connect() (2026-09-03,
-    Task 6 of docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md).
+    Task 6 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md, moved there 2026-09-06, planning-lanes migration).
     Third of the three fd-census-priority modules (see series_watcher.py's
     and candidate_log.py's own migration tasks for the other two)."""
     with db.connect(DB_PATH, tables=("metric_samples",)) as conn:
@@ -1433,7 +1431,7 @@ even though it only records metadata rather than gating the decision).
 module (services/db.py): migrate the remaining 22 _connect() modules
 opportunistically" --body "..."` — body content: the 22-module list above,
 the design citation
-(`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`
+(`docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`
 §1.5), this plan's citation, an explicit note that
 `risk_manager.py`/`paper_broker.py`/`candidate_ledger.py` each need their own
 dedicated PR, never bundled with an unrelated change or with each other, and

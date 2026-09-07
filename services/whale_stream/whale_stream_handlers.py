@@ -399,8 +399,7 @@ async def _process_stream_ticker(ticker_msg: dict) -> None:
                 spread = max(float(yes_ask_raw) - float(yes_bid_raw), 0.0)
             except (TypeError, ValueError):
                 spread = None
-        # 2026-09-03, Task 4 of docs/superpowers/plans/2026-09-03-tier1-
-        # backend-hygiene.md (§4.5 of the architecture-audit-second-pass
+        # 2026-09-03, Task 4 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) (§4.5 of the architecture-audit-second-pass
         # research): record_snapshot_from_ticker's own `with
         # _connect(DB_PATH)` SQLite write ran synchronously on the event
         # loop, per throttled ticker message - the same bug class PR #414

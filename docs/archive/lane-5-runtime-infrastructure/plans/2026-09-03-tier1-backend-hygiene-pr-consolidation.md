@@ -1,8 +1,8 @@
 # PR-Stage Consolidation — Tier 1 Backend Hygiene Plan (PR #483)
 
-Reconciling PR #483's PR-stage self-review (`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene-pr-self-review.md`,
+Reconciling PR #483's PR-stage self-review (`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene-pr-self-review.md (moved there 2026-09-06, planning-lanes migration)`,
 commit `7b3e5f6`) and its independent PR-stage adversarial review
-(`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene-pr-review.md`, commit `1936ab4`, a
+(`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene-pr-review.md (moved there 2026-09-06, planning-lanes migration)`, commit `1936ab4`, a
 fresh Agent call with no memory of any prior stage of this initiative) per CLAUDE.md's
 "nothing advances on one pass" HARD RULE: "For an in-scope PR: after it's pushed and opened,
 one more full review cycle of the same shape (self-review, adversarial review, consolidation,

@@ -202,7 +202,7 @@ exact gap: `loop_watchdog` "records nothing about *what* the loop was doing,"
 and proposed capturing `sys._current_frames()[main_thread_id]` on the stall
 path as "the single most valuable diagnostic missing from the app." That
 diagnostic **has since been built** — `services/loop_watchdog.py`, per its own
-header, "Task 1 of `docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md`"
+header, "Task 1 of `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)`"
 — and is live today. Reading it end to end:
 
 ```python
@@ -275,7 +275,7 @@ fix.
 
 `services/whale_stream/whale_stream_handlers.py:334-355`'s own comment
 states the fix and cites its own task: *"2026-09-03, Task 4 of
-`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md`
+`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)`
 (§4.5 of the architecture-audit-second-pass research): `record_snapshot_
 from_ticker`'s own `with _connect(DB_PATH)` SQLite write ran synchronously
 on the event loop... the fix is here at the call site: schedule the WHOLE
@@ -457,7 +457,7 @@ message.)*
 — a fresh `sqlite3.connect()` + `PRAGMA`/schema setup + query + implicit
 close-on-exit-of-`with`, per call (confirmed: `market_history.py` is one of
 the 5 modules already fixed to close its connection properly, PR #499/#501,
-per `docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`
+per `docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration.md (moved there 2026-09-06, planning-lanes migration)`
 — so this is real per-call connect/query/close overhead, not a leak, for
 *this* module specifically). `volatility()` additionally does real
 Python-level work after the fetch — `deltas = [prices[i+1]-prices[i] for
@@ -534,7 +534,7 @@ larger than the other DBs' 5–6 because **`candidate_log.py`'s own
 candidate_log.py:76`, `def _connect() -> sqlite3.Connection: ...; conn =
 sqlite3.connect(DB_PATH); ...; return conn` (no `@contextlib.contextmanager`),
 called at 6 sites as `with _connect() as conn:`, which — per
-`docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`'s
+`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration.md (moved there 2026-09-06, planning-lanes migration)`'s
 already-established finding for this exact code shape — only commits/rolls
 back via `sqlite3.Connection`'s native context-manager protocol, never
 closes. `candidate_log.db` sits on a far higher-volume path than

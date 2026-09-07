@@ -46,8 +46,7 @@ def test_check_daily_loss_zero_bankroll_baseline_does_not_crash(tmp_path, monkey
     baseline from the live bankroll at each UTC date rollover, so a
     bankroll of exactly 0 at rollover would raise ZeroDivisionError in the
     REAL kill switch (the inert shadow copy was already protected - the
-    safety asymmetry ran backwards). Task 3b of docs/superpowers/plans/
-    2026-09-03-tier1-backend-hygiene.md."""
+    safety asymmetry ran backwards). Task 3b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)."""
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=0.0, max_daily_loss_pct=0.1)
     # Must not raise ZeroDivisionError, and must not halt on a baseline
     # that was never really a baseline (matches ShadowTrader's own

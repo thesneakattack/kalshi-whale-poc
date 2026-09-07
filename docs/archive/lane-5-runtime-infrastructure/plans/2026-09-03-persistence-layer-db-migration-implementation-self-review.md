@@ -1,6 +1,6 @@
 # Self-review: persistence-layer db.py migration implementation plan
 
-Self-review of `docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`,
+Self-review of `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md (moved there 2026-09-06, planning-lanes migration)`,
 per CLAUDE.md's "nothing advances on one pass" HARD RULE — this document is its own artifact,
 not a section folded into the plan itself, matching how the design spec (PR #505) and its own
 review cycle were structured, not PR #484's looser precedent of an embedded closing section.

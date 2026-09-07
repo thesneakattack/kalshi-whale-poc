@@ -36,7 +36,7 @@ taken on the artifact-stage cycle's, the PR body's, or the commit message's own 
 
 **1. Fix (a) — happy-path fix wave citation (PR #499 only, not "#499/#500"). CONFIRMED.**
 Read the committed doc directly
-(`docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`, "5 of the 30 are
+(`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration.md (moved there 2026-09-06, planning-lanes migration)`, "5 of the 30 are
 already migrated" section): it cites **PR #499** alone for the 5 happy-path commits, and
 explicitly calls out PR #500 as "a separate, unrelated PR — it touches `fault_log.py` only for
 an unrelated DDL-canonicalization refactor, not this fix." Independently verified both halves:
@@ -178,7 +178,7 @@ variants of `kalshi-contract-fixtures`, `tests-dependency-audit`, `quality-archi
 
 **12. Genuinely docs-only. CONFIRMED.** `git diff --stat origin/main...HEAD`: 3 files changed,
 280 insertions(+), 0 deletions(-), all three `A` (added) per `git diff --name-status`:
-`docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`,
+`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration.md (moved there 2026-09-06, planning-lanes migration)`,
 `...-self-review.md`, `...-consolidation.md`. No code, config, or data file touched anywhere in
 the diff.
 

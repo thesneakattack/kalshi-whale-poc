@@ -4,7 +4,7 @@ produced a real 6.8-hour fd-exhaustion incident (2026-09-02). Tier 0
 (PR #501) already fixed 5 modules with their own per-module
 @contextlib.contextmanager; this module is the shared version the
 remaining 26 migrate onto. Design:
-docs/superpowers/specs/2026-09-03-persistence-layer-db-migration-design.md.
+docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-db-migration-design.md (moved there 2026-09-06, planning-lanes migration).
 
 Schema is registered as a callback (register_schema), not a DDL string -
 a callback can express CREATE TABLE, CREATE INDEX, and add_column_if_missing

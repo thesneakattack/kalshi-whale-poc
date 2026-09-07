@@ -57,8 +57,7 @@ DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "alert_log.db
 # default over silently assuming a human already knows.
 _last_known_bad: dict[str, bool] = {}
 
-# 2026-09-03, Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: asyncio.create_task()'s own documentation - "Save a
+# 2026-09-03, Task 8a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): asyncio.create_task()'s own documentation - "Save a
 # reference to the result of this function, to avoid a task disappearing
 # mid-execution. The event loop only keeps weak references to tasks."
 # task_supervisor.supervise() already returns a real Task; all 3 of this

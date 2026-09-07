@@ -30,7 +30,7 @@ def _cfg():
 
 @pytest.fixture(autouse=True)
 def _reset_report_cache():
-    """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
+    """Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)
     added a module-level _report_cache to get_confidence_calibration_report.
     Without this reset, one test's cached (mocked) report can leak into the
     next test that calls the same route within the 30s TTL, since
@@ -60,7 +60,7 @@ def test_report_never_runs_via_tick_executor(monkeypatch):
     """Deliberately the INVERSE of the assertion this test made until issue
     #410 (it was named test_report_runs_via_tick_executor).
 
-    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+    docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration)
     Sec 5 asks for this inversion as permanent detection-for-recurrence:
     this route's ~7s of work must never again occupy one of tick_executor's
     2 workers, which are shared with candidate_ledger.claim()/
@@ -197,8 +197,7 @@ def test_report_includes_evidence_provenance_block(monkeypatch):
 
 
 def test_confidence_calibration_report_is_cached_within_ttl(monkeypatch):
-    """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md: resolved_signals_with_factors() cannot be scoped with
+    """Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): resolved_signals_with_factors() cannot be scoped with
     since_ts (it computes a total-sample gate, verified in this task's own
     research), so the fix is a short-TTL cache on the ROUTE, not a query
     bound - confirmed live cost is real (~1s at 103k+ rows per signal_
@@ -263,8 +262,7 @@ def test_confidence_calibration_report_recomputes_after_ttl_expires(monkeypatch)
 
 def test_confidence_calibration_report_cache_is_stamped_at_completion_not_request_receipt(monkeypatch):
     """Issue #410 cache-alignment bug, sibling of the identical defect in
-    services/analytics/routes.py (docs/superpowers/research/2026-09-04-
-    issue-410-tick-executor-measurement.md Sec 3.4): `cached_at` was stamped
+    services/analytics/routes.py (docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration) Sec 3.4): `cached_at` was stamped
     with a `now` captured BEFORE awaiting _build_report(), whose real cost
     is ~5.5s (a ~2s fetch plus a ~3.4s pure-Python bucket/factor pass), so
     the entry was already seconds stale when written.

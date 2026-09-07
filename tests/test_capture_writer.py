@@ -576,8 +576,7 @@ def test_stop_waits_out_a_flush_already_blocked_on_the_daemon_budget(tmp_path, m
 
 
 def test_ddl_constants_are_exported_and_match_the_dict():
-    """Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - the three DDL strings become named, importable module
+    """Task 3c of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - the three DDL strings become named, importable module
     constants (not just dict values), so series_watcher.py/candidate_log.py
     can import them instead of hand-copying the SQL text."""
     from services import capture_writer as cw

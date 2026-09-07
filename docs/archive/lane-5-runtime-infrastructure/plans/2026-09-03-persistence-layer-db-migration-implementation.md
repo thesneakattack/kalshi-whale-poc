@@ -2,7 +2,7 @@
 
 **Stage:** implementation plan, per CLAUDE.md's "nothing advances on one pass" pipeline
 (research → design/spec → implementation plan). Input: the merged design spec
-(`docs/superpowers/specs/2026-09-03-persistence-layer-db-migration-design.md`, PR #505,
+(`docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-db-migration-design.md (moved there 2026-09-06, planning-lanes migration)`, PR #505,
 GO, round-2-reviewed) plus its own inputs — the research doc (PR #504), the db-foundation
 audit (PR #507), the baseline measurement (PR #509), and the two Gate-1 pre-audits
 (`docs/db-migration-gate1-preaudit-2026-09-03.md`, PR #506, 5 named modules;
@@ -612,7 +612,7 @@ produced a real 6.8-hour fd-exhaustion incident (2026-09-02). Tier 0
 (PR #501) already fixed 5 modules with their own per-module
 @contextlib.contextmanager; this module is the shared version the
 remaining 26 migrate onto. Design:
-docs/superpowers/specs/2026-09-03-persistence-layer-db-migration-design.md.
+docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-db-migration-design.md (moved there 2026-09-06, planning-lanes migration).
 
 Schema is registered as a callback (register_schema), not a DDL string -
 a callback can express CREATE TABLE, CREATE INDEX, and add_column_if_missing

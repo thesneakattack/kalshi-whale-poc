@@ -318,8 +318,7 @@ before writing):
 
 ```python
 def test_record_fault_stores_an_explicit_traceback():
-    """record_fault's tb param (added by Task 1 of docs/superpowers/plans/
-    2026-09-03-tier1-backend-hygiene.md) stores a pre-formatted stack/
+    """record_fault's tb param (added by Task 1 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) stores a pre-formatted stack/
     traceback string into the same first_traceback slot record() populates
     from a real exception - for a captured stack (loop_watchdog's stall
     attribution), not a raised one."""
@@ -372,8 +371,7 @@ def record_fault(component: str, operation: str, message: str,
     that couldn't be resolved. Same deduplication, same never-raises
     contract.
 
-    tb (2026-09-03, Task 1 of docs/superpowers/plans/2026-09-03-tier1-
-    backend-hygiene.md): stores a pre-formatted traceback/stack string into
+    tb (2026-09-03, Task 1 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): stores a pre-formatted traceback/stack string into
     the same first_traceback slot record() populates from a real
     exception - added for services/loop_watchdog.py's stall-attribution
     capture, a non-exception event (a captured stack, not a raised one)
@@ -519,8 +517,7 @@ to:
             if late > _STALL_THRESHOLD_SEC:
                 _stall_count += 1
                 _stall_max_ms = max(_stall_max_ms, late * 1000)
-                # Stack capture (2026-09-03, Task 1 of docs/superpowers/
-                # plans/2026-09-03-tier1-backend-hygiene.md): the 2026-09-02
+                # Stack capture (2026-09-03, Task 1 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): the 2026-09-02
                 # incident had zero visibility into *what* was blocking the
                 # loop. Capture is synchronous and cheap (sys._current_
                 # frames/format_stack, no I/O); the fault_log WRITE is
@@ -687,8 +684,7 @@ function refreshHistoryInsightsIfActive() {
 to:
 
 ```javascript
-// De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
-// tier1-backend-hygiene.md, §3.3 of the architecture-audit-second-pass
+// De-polled (2026-09-03, Task 2 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration), §3.3 of the architecture-audit-second-pass
 // research): this used to fire all 9 loaders on EVERY /api/state poll
 // (every 6s at this app's default kalshi.poll_interval_sec) while the
 // History tab was open, measured live as the dominant cause of a
@@ -736,8 +732,7 @@ to:
 
 ```javascript
       renderHalted(state.risk);
-      // De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
-      // tier1-backend-hygiene.md): §3.3 of the architecture-audit-second-
+      // De-polled (2026-09-03, Task 2 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): §3.3 of the architecture-audit-second-
       // pass research found this route is the LEAST-fetched of the three
       // named for de-polling (35 browser rows in 13h - the Terminal tab is
       // rarely open) and the MOST important to keep responsive, since it's
@@ -889,8 +884,7 @@ which already accepts arbitrary kwargs — only the assertion is new):
 
 ```python
 def test_maybe_run_auto_apply_passes_declined_ids(monkeypatch):
-    """Task 3a of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md: this is the ONE unsupervised generate_recommendations()
+    """Task 3a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): this is the ONE unsupervised generate_recommendations()
     call site (no human in the loop between a suggestion and it being
     applied) - per advisory_engine.py's own declined_ids docstring
     (":926-929", "a suggestion a human already clicked 'no thanks' on
@@ -966,8 +960,7 @@ to:
                 last_applied_by_path=config_performance.all_last_applied_by_path(),
                 series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
                 category_rows=regime_analytics.by_category(adv_all_rows),
-                # 2026-09-03, Task 3a of docs/superpowers/plans/2026-09-03-
-                # tier1-backend-hygiene.md: this is the one UNSUPERVISED
+                # 2026-09-03, Task 3a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): this is the one UNSUPERVISED
                 # call site (no human between a suggestion and applying it)
                 # - the one that most needs to honor a decline, and
                 # previously didn't (advisory_engine.py's declined_ids
@@ -1192,8 +1185,7 @@ def test_check_daily_loss_zero_bankroll_baseline_does_not_crash(tmp_path, monkey
     baseline from the live bankroll at each UTC date rollover, so a
     bankroll of exactly 0 at rollover would raise ZeroDivisionError in the
     REAL kill switch (the inert shadow copy was already protected - the
-    safety asymmetry ran backwards). Task 3b of docs/superpowers/plans/
-    2026-09-03-tier1-backend-hygiene.md."""
+    safety asymmetry ran backwards). Task 3b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)."""
     risk = _risk(tmp_path, monkeypatch, starting_bankroll=0.0, max_daily_loss_pct=0.1)
     # Must not raise ZeroDivisionError, and must not halt on a baseline
     # that was never really a baseline (matches ShadowTrader's own
@@ -1223,8 +1215,7 @@ to:
         self._maybe_rollover_day(current_bankroll, now)
         if not self.kill_switch_enabled or self.halted:
             return not self.halted
-        # 2026-09-03, Task 3b of docs/superpowers/plans/2026-09-03-tier1-
-        # backend-hygiene.md: mirrors ShadowTrader.check_daily_loss's own
+        # 2026-09-03, Task 3b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): mirrors ShadowTrader.check_daily_loss's own
         # already-shipped guard (services/shadow_mode.py:145-147) - without
         # it, a day_start_bankroll of exactly 0 (reachable via reset_day at
         # a UTC date rollover) raises ZeroDivisionError in the REAL kill
@@ -1324,8 +1315,7 @@ test_capture_writer.py`):
 
 ```python
 def test_ddl_constants_are_exported_and_match_the_dict():
-    """Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - the three DDL strings become named, importable module
+    """Task 3c of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - the three DDL strings become named, importable module
     constants (not just dict values), so series_watcher.py/candidate_log.py
     can import them instead of hand-copying the SQL text."""
     from services import capture_writer as cw
@@ -1433,8 +1423,7 @@ RAW_TRADES_DDL_SQL = """
     )
 """
 # Shared with services/series_watcher.py's _connect()/_ensure_schema_aio()
-# (2026-09-03, Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md) - previously three independent hand-typed copies (this
+# (2026-09-03, Task 3c of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) - previously three independent hand-typed copies (this
 # module plus series_watcher.py's own sync AND async schema-init
 # functions), with a self-documented "keep the two DDL blocks in sync by
 # hand" comment in series_watcher.py. This module owns the constant
@@ -1687,7 +1676,7 @@ fix1.md`'s own Step 7):
 
 ```python
 def test_process_stream_ticker_schedules_snapshot_write_via_tick_executor(monkeypatch):
-    """Task 4 of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
+    """Task 4 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)
     (§4.5 of the architecture-audit-second-pass research): record_snapshot_
     from_ticker did a synchronous `with _connect(DB_PATH)` SQLite write per
     throttled ticker message, directly on the event loop, with no thread
@@ -1800,8 +1789,7 @@ to:
                 spread = max(float(yes_ask_raw) - float(yes_bid_raw), 0.0)
             except (TypeError, ValueError):
                 spread = None
-        # 2026-09-03, Task 4 of docs/superpowers/plans/2026-09-03-tier1-
-        # backend-hygiene.md (§4.5 of the architecture-audit-second-pass
+        # 2026-09-03, Task 4 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) (§4.5 of the architecture-audit-second-pass
         # research): record_snapshot_from_ticker's own `with
         # _connect(DB_PATH)` SQLite write ran synchronously on the event
         # loop, per throttled ticker message - the same bug class PR #414
@@ -2053,8 +2041,7 @@ Change:
 to:
 
 ```python
-    # Full-replace-with-deletion paths (2026-09-03, Task 5 of docs/
-    # superpowers/plans/2026-09-03-tier1-backend-hygiene.md): the general
+    # Full-replace-with-deletion paths (2026-09-03, Task 5 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): the general
     # merge below never deletes a key the incoming patch doesn't mention
     # (same safety property update() has always had, just extended past
     # one level - see this task's own experiment log in the plan for why a
@@ -2268,7 +2255,7 @@ Create `tests/test_pagination.py`:
 """
 services/pagination.py - the paginate() FastAPI dependency factory that
 closes the "16 routes accept limit, only 8 clamp it" gap (Task 6a of
-docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md).
+docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration).
 """
 from services.pagination import paginate
 
@@ -2329,7 +2316,7 @@ audit's §9.2 finding #5, re-verified fresh 2026-09-03) found: 16 routes in
 this app accept `limit`, only 8 clamped it before this file existed.
 
 This is the app's first use of FastAPI's Depends() mechanism (2026-09-03,
-Task 6a of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) -
+Task 6a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) -
 `grep -rln "Depends(" services/*.py services/**/*.py` returned zero hits
 before this file. Standard FastAPI machinery, not a hand-rolled
 abstraction the 2026-08-30 "prefer proven" rule would flag.
@@ -2448,8 +2435,7 @@ Add to `tests/test_whale_calibration_routes.py`:
 
 ```python
 def test_confidence_calibration_report_is_cached_within_ttl(monkeypatch):
-    """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md: resolved_signals_with_factors() cannot be scoped with
+    """Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): resolved_signals_with_factors() cannot be scoped with
     since_ts (it computes a total-sample gate, verified in this task's own
     research), so the fix is a short-TTL cache on the ROUTE, not a query
     bound - confirmed live cost is real (~1s at 103k+ rows per signal_
@@ -2487,8 +2473,7 @@ In `services/whale_calibration/routes.py`, add near the top:
 ```python
 import time
 
-_REPORT_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/superpowers/
-# plans/2026-09-03-tier1-backend-hygiene.md: resolved_signals_with_
+_REPORT_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): resolved_signals_with_
 # factors() cannot be query-bounded (it's a total-sample gate, not a
 # recency-scoped read - verified in this task's own research). 30s matches
 # Task 2's own History-tab de-poll interval for this exact route -
@@ -2646,8 +2631,7 @@ before writing):
 
 ```python
 def test_event_live_data_is_throttled_to_its_own_repoll_cadence(monkeypatch):
-    """Task 7 of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md: event_live_data is 87.3% of /api/state's payload (live-
+    """Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): event_live_data is 87.3% of /api/state's payload (live-
     measured 2026-09-03) despite already being scoped to currently-
     relevant events (services/state_view.py's _scoped_event_live_data,
     2026-08-21) - the underlying data itself only refreshes once every
@@ -2688,8 +2672,7 @@ imports it via `from services.market_watch import (... _EVENT_LIVE_DATA_
 REPOLL_SEC, ...)`; reuse that existing import, do not add a duplicate.)
 
 ```python
-_last_event_live_data_sent_at = 0.0  # 2026-09-03, Task 7 of docs/
-# superpowers/plans/2026-09-03-tier1-backend-hygiene.md: event_live_data
+_last_event_live_data_sent_at = 0.0  # 2026-09-03, Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): event_live_data
 # is 87.3% of /api/state's payload (live-measured) despite already being
 # event-scoped; the underlying data only refreshes once every
 # _EVENT_LIVE_DATA_REPOLL_SEC (60s, services/market_watch/event_metadata.py),
@@ -2739,8 +2722,7 @@ Create `tests/test_app_state.py`:
 
 ```python
 """
-services/app_state.py's bump_generation() coarsening (Task 7 of docs/
-superpowers/plans/2026-09-03-tier1-backend-hygiene.md). No bespoke DB-
+services/app_state.py's bump_generation() coarsening (Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration). No bespoke DB-
 redirection needed here - tests/conftest.py's module-level
 install_runtime_isolation() (confirmed by direct read, line 11) already
 runs before this file is collected, same as every other test file in this
@@ -2794,8 +2776,7 @@ def bump_generation() -> None:
 to:
 
 ```python
-# 2026-09-03, Task 7 of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: bump_generation() fires on every processed trade message
+# 2026-09-03, Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): bump_generation() fires on every processed trade message
 # (confirmed live - services/whale_stream/whale_stream_handlers.py's
 # _process_stream_trade calls it unconditionally on all 3 exit paths),
 # which made state["generation"] (the literal /api/state ETag value)
@@ -2936,8 +2917,7 @@ conventions:
 
 ```python
 def test_record_alert_retains_a_strong_reference_to_its_dispatch_task():
-    """Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - Python's own asyncio.create_task() docs: 'Save a
+    """Task 8a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - Python's own asyncio.create_task() docs: 'Save a
     reference to the result... a task that isn't referenced elsewhere may
     get garbage collected at any time, even before it's done.'
     task_supervisor.supervise() already returns a real Task; alerting.py's
@@ -2963,8 +2943,7 @@ has no attribute '_background_tasks'`.
 Add near `_last_known_bad`:
 
 ```python
-# 2026-09-03, Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: asyncio.create_task()'s own documentation - "Save a
+# 2026-09-03, Task 8a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): asyncio.create_task()'s own documentation - "Save a
 # reference to the result of this function, to avoid a task disappearing
 # mid-execution. The event loop only keeps weak references to tasks."
 # task_supervisor.supervise() already returns a real Task; all 3 of this
@@ -3052,8 +3031,7 @@ Add to `tests/test_http_client.py`:
 
 ```python
 def test_get_client_pins_explicit_timeout_and_limits(monkeypatch):
-    """Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - makes the shared client's timeout/connection-pool ceiling
+    """Task 8b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - makes the shared client's timeout/connection-pool ceiling
     explicit, pinned to httpx 0.27.2's own already-measured defaults
     (Timeout(timeout=5.0), Limits(max_connections=100,
     max_keepalive_connections=20)) rather than an implicit, version-
@@ -3099,8 +3077,7 @@ def get_client() -> httpx.AsyncClient:
 to:
 
 ```python
-# 2026-09-03, Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: pins this shared client's timeout/connection-pool ceiling
+# 2026-09-03, Task 8b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): pins this shared client's timeout/connection-pool ceiling
 # explicitly rather than leaving it as an implicit, httpx-version-
 # dependent default. Values are httpx 0.27.2's OWN measured defaults
 # (docker exec ddev-kalshi-whale-poc-fastapi python3, confirmed live,

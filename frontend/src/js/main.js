@@ -69,8 +69,7 @@ showView(VIEWS.includes(localStorage.getItem('whale-signal-view')) ? localStorag
 // duplicating ~10 of its own fetches in the process. Removed entirely
 // (2026-08-23) rather than fixed in place - it had no purpose this
 // function and showView()'s initial tab-open call didn't already cover.
-// De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
-// tier1-backend-hygiene.md, §3.3 of the architecture-audit-second-pass
+// De-polled (2026-09-03, Task 2 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration), §3.3 of the architecture-audit-second-pass
 // research): this used to fire all 9 loaders on EVERY /api/state poll
 // (every 6s at this app's default kalshi.poll_interval_sec) while the
 // History tab was open, measured live as the dominant cause of a

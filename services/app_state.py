@@ -426,8 +426,7 @@ state = {
 }
 
 
-# 2026-09-03, Task 7 of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: bump_generation() fires on every processed trade message
+# 2026-09-03, Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): bump_generation() fires on every processed trade message
 # (confirmed live - services/whale_stream/whale_stream_handlers.py's
 # _process_stream_trade calls it unconditionally on all 3 exit paths),
 # which made state["generation"] (the literal /api/state ETag value)

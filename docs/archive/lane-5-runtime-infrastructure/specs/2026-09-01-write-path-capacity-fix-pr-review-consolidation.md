@@ -2,7 +2,7 @@
 
 Reconciles PR #409's own self-review (inline, throughout implementation) with
 the independent adversarial review (fresh Agent call, no memory of this
-session, `docs/superpowers/specs/2026-09-01-write-path-capacity-fix-pr-review.md`).
+session, `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-01-write-path-capacity-fix-pr-review.md`, moved there 2026-09-06, planning-lanes migration).
 
 ## Verdict: code review passes GO. Merge still blocked on Task 7 (unchanged from before this review).
 

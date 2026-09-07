@@ -150,8 +150,7 @@ RAW_TRADES_DDL_SQL = """
     )
 """
 # Shared with services/series_watcher.py's _connect()/_ensure_schema_aio()
-# (2026-09-03, Task 3c of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md) - previously three independent hand-typed copies (this
+# (2026-09-03, Task 3c of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) - previously three independent hand-typed copies (this
 # module plus series_watcher.py's own sync AND async schema-init
 # functions), with a self-documented "keep the two DDL blocks in sync by
 # hand" comment in series_watcher.py. This module owns the constant

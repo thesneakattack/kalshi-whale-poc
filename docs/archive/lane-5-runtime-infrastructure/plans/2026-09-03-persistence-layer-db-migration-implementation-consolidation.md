@@ -1,11 +1,11 @@
 # Consolidation: persistence-layer db.py migration implementation plan (PR #516)
 
 Reconciles three independent passes against
-`docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`, per
+`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md (moved there 2026-09-06, planning-lanes migration)`, per
 CLAUDE.md's "nothing advances on one pass" HARD RULE:
 
 1. **Self-review** (this session, plan's author) —
-   `docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation-self-review.md`.
+   `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation-self-review.md (moved there 2026-09-06, planning-lanes migration)`.
 2. **Coordinator sign-off-condition check** (autotrade-1d) — PR #516 comment, checked the three
    conditions attached to the API-shape decision at the design stage (PR #505's "Open question
    for explicit sign-off").

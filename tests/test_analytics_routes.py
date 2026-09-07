@@ -39,7 +39,7 @@ async def _noop_async(min_samples):
 
 @pytest.fixture(autouse=True)
 def _reset_population_gates_cache():
-    """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
+    """Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)
     added a module-level _population_gates_cache to get_candidate_log_
     summary. Without this reset, one test's cached (mocked) population_gates
     result could leak into the next test that calls this route within the
@@ -63,7 +63,7 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
     """Deliberately the INVERSE of the assertion this test made until issue
     #410 (it was named ..._runs_population_gate_summary_via_tick_executor).
 
-    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+    docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration)
     Sec 5 asks for exactly this inversion as its permanent
     detection-for-recurrence: the route must reach candidate_log's native
     aiosqlite path, never tick_executor's 2-worker pool, which is shared
@@ -123,7 +123,7 @@ def test_candidate_log_summary_never_routes_population_gates_through_tick_execut
 
 
 def test_candidate_log_summary_population_gates_is_cached_within_ttl(monkeypatch):
-    """Task 6b of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md:
+    """Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration):
     population_gate_summary() cannot be scoped with since_ts either (same
     total-sample-gate reasoning as resolved_signals_with_factors(), verified
     in this task's own research), so the fix is a short-TTL cache on the
@@ -177,8 +177,7 @@ def test_candidate_log_summary_population_gates_recomputes_after_ttl_expires(mon
 
 
 def test_candidate_log_summary_cache_is_stamped_at_completion_not_request_receipt(monkeypatch):
-    """Issue #410 cache-alignment bug (docs/superpowers/research/2026-09-04-
-    issue-410-tick-executor-measurement.md Sec 3.4): `cached_at` was stamped
+    """Issue #410 cache-alignment bug (docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration) Sec 3.4): `cached_at` was stamped
     with a `now` captured BEFORE awaiting the query, so a 15-22s query
     burned 53-73% of its own 30s TTL before the entry was even written.
 

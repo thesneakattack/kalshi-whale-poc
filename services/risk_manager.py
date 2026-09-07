@@ -158,8 +158,7 @@ class RiskManager:
         self._maybe_rollover_day(current_bankroll, now)
         if not self.kill_switch_enabled or self.halted:
             return not self.halted
-        # 2026-09-03, Task 3b of docs/superpowers/plans/2026-09-03-tier1-
-        # backend-hygiene.md: mirrors ShadowTrader.check_daily_loss's own
+        # 2026-09-03, Task 3b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): mirrors ShadowTrader.check_daily_loss's own
         # already-shipped guard (services/shadow_mode.py:145-147) - without
         # it, a day_start_bankroll of exactly 0 (reachable via reset_day at
         # a UTC date rollover) raises ZeroDivisionError in the REAL kill

@@ -1,8 +1,8 @@
 # Consolidation — Persistence Layer Implementation Plan (2026-09-03)
 
-Reconciling `docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md` (commit
+Reconciling `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md (moved there 2026-09-06, planning-lanes migration)` (commit
 `137d57d`), its embedded Plan self-review, and the independent adversarial review
-(`docs/superpowers/plans/2026-09-03-persistence-layer-implementation-review.md`, commit
+(`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation-review.md (moved there 2026-09-06, planning-lanes migration)`, commit
 `0080397`, a fresh Agent call with no memory of the authoring session) per CLAUDE.md's
 "nothing advances on one pass" HARD RULE.
 

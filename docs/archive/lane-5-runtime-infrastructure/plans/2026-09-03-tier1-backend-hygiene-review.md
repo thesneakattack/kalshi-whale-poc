@@ -10,7 +10,7 @@ standalone ruamel.yaml repro run inside that container), not from the
 plan's own tables, self-review, or citations.
 
 **Artifact reviewed:**
-`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md`
+`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)`
 (3,214 lines, 9 tasks: stall attribution, dashboard de-polling, three DRY
 fixes, one more event-loop-blocking write, config comment-wipe fix,
 pagination + TTL caching, `event_live_data`/`bump_generation` throttling,

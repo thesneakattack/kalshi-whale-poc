@@ -22,8 +22,7 @@ from services.whale_calibration import calibration_history, confidence_calibrati
 
 router = APIRouter()
 
-_REPORT_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/superpowers/
-# plans/2026-09-03-tier1-backend-hygiene.md: resolved_signals_with_
+_REPORT_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): resolved_signals_with_
 # factors() cannot be query-bounded (it's a total-sample gate, not a
 # recency-scoped read - verified in this task's own research). 30s matches
 # Task 2's own History-tab de-poll interval for this exact route -
@@ -43,8 +42,7 @@ class EnableAutoApplyBody(BaseModel):
 
 async def _build_report_async(cc_cfg: dict, current_weights) -> dict:
     """Builds the calibration report without occupying a tick_executor
-    worker. Issue #410, implementing docs/superpowers/specs/2026-09-04-
-    issue-410-pool-vs-aiosqlite-design.md.
+    worker. Issue #410, implementing docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration).
 
     ONE helper for what were two byte-identical `def _build_report()`
     closures - the polled GET /api/confidence-calibration/report and the
@@ -171,8 +169,7 @@ async def get_confidence_calibration_report():
         result = await _build_report_async(cc_cfg, current_weights)
         # Stamped at COMPLETION, not the `now` captured on request receipt
         # above - same issue #410 cache-alignment bug as services/analytics/
-        # routes.py's _population_gates_cache (docs/superpowers/research/
-        # 2026-09-04-issue-410-tick-executor-measurement.md Sec 3.4).
+        # routes.py's _population_gates_cache (docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration) Sec 3.4).
         # _build_report_async()'s real cost is ~8.0s, re-measured 2026-09-04
         # against the live 295,807-row table (0.884s SQL + 2.691s json.loads
         # + 4.383s bucket/factor pass), so it burned a smaller but still

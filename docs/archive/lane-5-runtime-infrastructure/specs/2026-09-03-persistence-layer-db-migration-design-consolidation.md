@@ -1,6 +1,6 @@
 # Consolidation — Persistence Layer db.py Migration Design Spec (2026-09-03)
 
-Reconciling `docs/superpowers/specs/2026-09-03-persistence-layer-db-migration-design.md`
+Reconciling `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-db-migration-design.md (moved there 2026-09-06, planning-lanes migration)`
 (commit `f198c53`, then a round-2 fix pass at `48b458a`), its embedded self-review, the
 independent adversarial review (fresh Agent call, no memory of the authoring session), and the
 scoped re-review of round 1's fixes (a second fresh Agent call, independently re-deriving every

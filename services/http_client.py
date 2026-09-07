@@ -424,8 +424,7 @@ def http_metrics_snapshot(reset: bool = False) -> dict:
     return snapshot
 
 
-# 2026-09-03, Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
-# hygiene.md: pins this shared client's timeout/connection-pool ceiling
+# 2026-09-03, Task 8b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): pins this shared client's timeout/connection-pool ceiling
 # explicitly rather than leaving it as an implicit, httpx-version-
 # dependent default. Values are httpx 0.27.2's OWN measured defaults
 # (docker exec ddev-kalshi-whale-poc-fastapi python3, confirmed live,

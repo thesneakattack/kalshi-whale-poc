@@ -260,8 +260,7 @@ workload.
 """Dedicated worker pool + thread-local connection cache for
 kalshi_trade_tape.py's per-trade scoring work (both the WS-message path,
 _process_stream_trade -> fetch_signals, and the candidate-retry path,
-score_recovered_trade - see docs/superpowers/specs/2026-09-01-whale-scoring-
-connection-reuse-design.md section 1a/4 for why both are in scope).
+score_recovered_trade - see docs/archive/lane-5-runtime-infrastructure/specs/2026-09-01-whale-scoring-connection-reuse-design.md (moved there 2026-09-06, planning-lanes migration) section 1a/4 for why both are in scope).
 
 Deliberately its own pool, not services.tick_executor's shared one (that pool
 is also used by candidate_ledger.claim()/record_decision(), which gate every
@@ -370,8 +369,7 @@ pool's sizing/behavior shouldn't need to reason about whether it affects the oth
 
 ```python
 """Dedicated worker pool for services/diagnostics/diagnostics.py's
-run_offline() - see docs/superpowers/specs/2026-09-01-whale-scoring-
-connection-reuse-design.md section 1b/4a for why this needs its own pool,
+run_offline() - see docs/archive/lane-5-runtime-infrastructure/specs/2026-09-01-whale-scoring-connection-reuse-design.md (moved there 2026-09-06, planning-lanes migration) section 1b/4a for why this needs its own pool,
 not services.tick_executor's shared one: run_offline()'s per-series
 raw_trades aggregate queries (services/series_watcher.py's funnel()) grew
 expensive enough, as raw_trades grew past 38M rows, to permanently occupy

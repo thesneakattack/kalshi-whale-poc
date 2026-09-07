@@ -1,7 +1,6 @@
 """Dedicated worker pool + thread-local connection cache for
 kalshi_trade_tape.py's per-trade scoring work on the WS-message path
-(_process_stream_trade -> fetch_signals). See docs/superpowers/specs/
-2026-09-01-whale-scoring-connection-reuse-design.md for the original
+(_process_stream_trade -> fetch_signals). See docs/archive/lane-5-runtime-infrastructure/specs/2026-09-01-whale-scoring-connection-reuse-design.md (moved there 2026-09-06, planning-lanes migration) for the original
 design.
 
 The candidate-retry path (score_recovered_trade) used to share this pool

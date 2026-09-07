@@ -769,7 +769,7 @@ def test_connect_sets_explicit_busy_timeout_pragma(tmp_path, monkeypatch, _redir
 
 # --- population_gate_summary_async (issue #410) ---------------------------
 #
-# docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md
+# docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration)
 # moves GET /api/candidate-log/summary's 15-22s scan off tick_executor's
 # 2-worker pool (shared with candidate_ledger.claim()/record_decision() on
 # the live per-signal decision path) and onto aiosqlite. These cover the

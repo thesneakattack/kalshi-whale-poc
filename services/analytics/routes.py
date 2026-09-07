@@ -39,8 +39,7 @@ from services.pagination import paginate
 
 router = APIRouter()
 
-_POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/
-# superpowers/plans/2026-09-03-tier1-backend-hygiene.md: population_gate_
+_POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): population_gate_
 # summary() cannot be query-bounded (it's a total-sample gate, not a
 # recency-scoped read - same reasoning as whale_calibration/routes.py's
 # _REPORT_CACHE_TTL_SEC, verified in this task's own research). 30s
@@ -124,8 +123,7 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # to production" section).
     #
     # Now served by candidate_log's native aiosqlite path, NOT tick_executor
-    # (issue #410, implementing docs/superpowers/specs/2026-09-04-issue-410-
-    # pool-vs-aiosqlite-design.md). The offload this comment used to
+    # (issue #410, implementing docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md, moved there 2026-09-06, planning-lanes migration). The offload this comment used to
     # describe moved the block off the event loop but parked it on one of
     # tick_executor's 2 workers for the query's whole 15-22s - workers
     # shared with candidate_ledger.claim()/record_decision() on the live
@@ -159,7 +157,7 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
     # every poll without one.
     #
     # 30s TTL cache on top of the offload above (2026-09-03, Task 6b of
-    # docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) - moving
+    # docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) - moving
     # the scan off the event loop never stopped every dashboard poll from
     # paying it; caching the route response is the fix, not a since_ts
     # bound on population_gate_summary() itself (it computes a total-sample
@@ -177,8 +175,7 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
             min_population_samples
         )
         # Stamped at COMPLETION, not at the `now` captured on request
-        # receipt above (issue #410, docs/superpowers/research/2026-09-04-
-        # issue-410-tick-executor-measurement.md Sec 3.4). This query costs
+        # receipt above (issue #410, docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration) Sec 3.4). This query costs
         # 15-22s and is rising with rejection_events' unbounded growth, so
         # stamping it with the receipt instant burned 53-73% of its own 30s
         # TTL before the entry was even written. The frontend throttles on

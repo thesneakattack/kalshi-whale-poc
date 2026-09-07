@@ -3,7 +3,7 @@
 Reconciling this PR-stage cycle's two artifacts per CLAUDE.md's "nothing advances on one
 pass" HARD RULE: a same-context self-review (done inline in this session while triaging the
 coordinator's request, not a separate document but recorded here) and the independent
-PR-stage adversarial review (`docs/superpowers/research/2026-09-03-persistence-layer-db-migration-pr-review.md`,
+PR-stage adversarial review (`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration-pr-review.md (moved there 2026-09-06, planning-lanes migration)`,
 commit `e82ba9b`, a fresh Agent call with no memory of the authoring session).
 
 ## Verdict: **GO — ready to advance to the design/spec stage**

@@ -1,6 +1,6 @@
 # Task 8 self-review — `services/candidate_ledger.py` migrates to `services/db.py`
 
-Plan: `docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-implementation.md`
+Plan: `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md (moved there 2026-09-06, planning-lanes migration)`
 lines 1597-1715 (Task 8). Safety-adjacent tier, dedicated PR, human go-ahead given for
 Tasks 6/7/8 (relayed by coordinator; plan content independently verified against the
 current file before starting — see below). Stage 1 of the review cycle requested for this

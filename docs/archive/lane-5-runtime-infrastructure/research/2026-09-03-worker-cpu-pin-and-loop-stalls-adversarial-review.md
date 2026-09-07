@@ -18,7 +18,7 @@ writes; no restart/reload.
    and is meant to be fetched/merged onto the real branch by the orchestrating
    session, not pushed by this one.
 2. Read both documents under review in full
-   (`docs/superpowers/research/2026-09-03-worker-cpu-pin-and-loop-stalls.md`,
+   (`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-worker-cpu-pin-and-loop-stalls.md (moved there 2026-09-06, planning-lanes migration)`,
    its `-self-review.md`).
 3. Re-read, from current source, every file/line the research doc cites as
    evidence for its central mechanism: `services/whale_stream/whale_stream_handlers.py`,

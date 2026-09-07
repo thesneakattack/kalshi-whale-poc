@@ -134,8 +134,7 @@ async def get_quality_summary():
         # permanently occupy both of tick_executor's 2 workers and starve the
         # trading-critical writes (capture_writer, candidate_log) that pool
         # exists to protect - confirmed live 2026-09-01, see
-        # docs/superpowers/specs/2026-09-01-whale-scoring-connection-reuse-
-        # design.md section 1b/4a. Two structurally identical siblings still
+        # docs/archive/lane-5-runtime-infrastructure/specs/2026-09-01-whale-scoring-connection-reuse-design.md (moved there 2026-09-06, planning-lanes migration) section 1b/4a. Two structurally identical siblings still
         # share tick_executor as of this fix and are NOT addressed here
         # (candidate_log.population_gate_summary in services/analytics/
         # routes.py, whale_calibration/routes.py's _build_report) - tracked

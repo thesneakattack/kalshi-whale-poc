@@ -1,7 +1,7 @@
 """
 services/pagination.py - the paginate() FastAPI dependency factory that
 closes the "16 routes accept limit, only 8 clamp it" gap (Task 6a of
-docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md).
+docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration).
 """
 from services.pagination import paginate
 

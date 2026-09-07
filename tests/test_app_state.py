@@ -1,6 +1,5 @@
 """
-services/app_state.py's bump_generation() coarsening (Task 7 of docs/
-superpowers/plans/2026-09-03-tier1-backend-hygiene.md). No bespoke DB-
+services/app_state.py's bump_generation() coarsening (Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration). No bespoke DB-
 redirection needed here - tests/conftest.py's module-level
 install_runtime_isolation() (confirmed by direct read, line 11) already
 runs before this file is collected, same as every other test file in this
