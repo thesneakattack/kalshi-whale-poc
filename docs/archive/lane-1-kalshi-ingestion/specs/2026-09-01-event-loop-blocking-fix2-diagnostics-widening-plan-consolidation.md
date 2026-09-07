@@ -1,7 +1,7 @@
 # Consolidation — Fix 2 (Diagnostics Widening) Implementation Plan
 
 Reconciles the self-review and adversarial review of
-`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
+`docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
 into one GO/no-go, per CLAUDE.md's "nothing advances on one pass" HARD RULE. This is
 the plan-writing pipeline stage; execution (Task 1 onward) does not start until this
 document says GO.
@@ -107,5 +107,5 @@ detail; it introduces no claim, mechanism, or file the review didn't already exa
 
 ## Verdict: **GO**
 
-Execution (Task 1 of `docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`)
+Execution (Task 1 of `docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`)
 may begin.

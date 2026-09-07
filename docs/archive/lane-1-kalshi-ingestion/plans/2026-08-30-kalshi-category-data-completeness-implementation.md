@@ -66,7 +66,7 @@ S3/S4 rows this plan cites directly in Task 5 — see the note there on why).
 - **A significant deviation from the spec's literal §2.2 sketch is made explicit in Task 5,
   not silently implemented.** The spec's `extract()` pseudocode returns `(None, None)` for
   any milestone `type` not in its dispatch table. Cross-checking that against the design's
-  own cited evidence (the census in `docs/superpowers/research/2026-08-30-kalshi-category-
+  own cited evidence (the census in `docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-category-
   data-shape-audit.md`, rows S3/S4) shows this would silently regress live-data coverage
   for roughly 21 of the census's 30 live-data-bearing milestone types — including
   `basketball_game` (15,564 milestones) and `soccer_tournament_multi_leg` (15,546), the
@@ -563,7 +563,7 @@ def test_trading_loop_no_longer_stamps_the_redundant_category_tags_field():
 - [ ] **Step 4: Run to verify PASS.**
 - [ ] **Step 5: Run `tests/test_main_tick_executor_wiring.py` in full; `ddev exec -s fastapi python -c "import main"` to confirm no syntax/import regression** (this repo's own
   precedent for a main.py-only change with no fuller integration test, per
-  `docs/superpowers/plans/2026-08-27-backend-services-modularization.md`).
+  `docs/archive/lane-4-analytics-advisory-research/plans/2026-08-27-backend-services-modularization.md`).
 - [ ] **Step 6: Commit:** `chore: drop the redundant category_tags stamp - series_metadata/series_tags supersede it (kalshi-category-data-completeness Task 4)` —
   cross-post one dated line to `docs/kalshi/CHEATSHEET.md`'s existing `category_tags`
   gotcha entry noting the real per-series replacement now exists.
@@ -600,7 +600,7 @@ section for the full evidence chain (census S3/S4 rows).
 from services.market_watch import milestone_live_data as mld
 
 def test_tennis_tournament_singles_is_pure_pass_through():
-    # The census's control case (docs/superpowers/research/2026-08-30-kalshi-
+    # The census's control case (docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-
     # category-data-shape-audit.md S3/S4): 49,764/49,764 payloads carry both
     # fields. Not in _EXTRACTORS - reaches this result via the default path.
     result = mld.extract("tennis_tournament_singles",

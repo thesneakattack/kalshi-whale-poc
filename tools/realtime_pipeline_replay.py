@@ -1,5 +1,5 @@
 """Deterministic replay/load harness for the Kalshi realtime data plane
-(realtime data-plane investigation tasks I6 and I10, docs/superpowers/plans/
+(realtime data-plane investigation tasks I6 and I10, docs/archive/lane-1-kalshi-ingestion/plans/
 2026-08-25-realtime-data-plane-investigation.md).
 
 A seeded discrete-event simulation of the production ingest topology -

@@ -26,7 +26,7 @@ shape:
   `artist_streams` pieces cheap rather than from-scratch, and its structured-target
   resolution is the same fix (X6) the investigation folds into it.
 - **D3 gets a partial design** (§3): Climate-and-Weather (W1/W2) already has its own
-  approved, unimplemented spec — `docs/superpowers/specs/2026-08-30-weather-index-ingestion-
+  approved, unimplemented spec — `docs/archive/lane-1-kalshi-ingestion/specs/2026-08-30-weather-index-ingestion-
   design.md`, committed hours before this investigation finished. This spec does not
   redesign it; it only states where D1/D2 plug into it. Commodities' Pyth feed (CM1/C3/C4)
   gets a real, concrete design — it's a config flip plus one new discovery call, not a new

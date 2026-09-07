@@ -1,5 +1,5 @@
 """REST-vs-WebSocket trade capture reconciliation by trade_id (realtime
-data-plane investigation task I4, hypothesis H5 in docs/superpowers/
+data-plane investigation task I4, hypothesis H5 in docs/archive/lane-1-kalshi-ingestion/
 research/2026-08-25-realtime-data-plane-known-findings.md).
 
 Every other diagnostic reads the app's own stores, so all of them are blind

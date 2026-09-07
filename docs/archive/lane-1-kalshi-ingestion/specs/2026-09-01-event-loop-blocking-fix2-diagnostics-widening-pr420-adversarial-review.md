@@ -70,7 +70,7 @@ calibration path appears in the diff — the safety invariants are untouched.
   `PHASE_VERIFICATION`/`PHASE_DONE`) — no invented names, which is what
   `.claude/rules/branching-and-ci.md` actually forbids. The rule mandates
   `phase:plan` for a PR carrying a plan doc under `docs/superpowers/`; this PR
-  carries `docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`,
+  carries `docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`,
   so `phase:plan` is required and present. The other two are additive and honest.
 - **Binary files**: none. `git diff --numstat origin/main...HEAD` returns numeric
   add/delete counts for all 23 paths (a binary file would show `-`/`-`).

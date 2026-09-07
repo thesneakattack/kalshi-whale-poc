@@ -118,7 +118,7 @@ incident this traces to.
 ## Benchmark finding, 2026-08-27: `check_exits` scales linearly with open
 position count, and the distinct-ticker case dominates the live crash report
 
-P3.5 Task 17c (`docs/superpowers/plans/2026-08-25-realtime-data-plane-
+P3.5 Task 17c (`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-
 remediation.md`), following `superpowers:systematic-debugging`, quantifies a live-reported
 symptom ("having a large amount of open positions causes things to lag or
 crash," 2026-08-27) before Task 20 fixes it. `tests/test_check_exits_scale_

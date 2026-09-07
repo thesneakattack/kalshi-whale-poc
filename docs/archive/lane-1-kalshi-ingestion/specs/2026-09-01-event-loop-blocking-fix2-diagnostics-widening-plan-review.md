@@ -1,6 +1,6 @@
 # Adversarial Review — Fix 2 (Diagnostics Widening) Implementation Plan
 
-Reviewing: `docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
+Reviewing: `docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
 (found in worktree `.claude/worktrees/aiosqlite-diagnostics-whale-scoring`, branch
 `fix/aiosqlite-diagnostics-widening`; this review was conducted from a separate,
 independent worktree — `.claude/worktrees/agent-a2896d7a6e06ba9c6` — whose `services/`,
@@ -384,7 +384,7 @@ conclusion.
 
 ## Fixes needed before this plan is safe to execute
 
-1. **`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`,
+1. **`docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`,
    Task 1 Step 4 (`_aio_db.py`'s `connection_for()`, plan lines ~197-208) and Task 5 Steps
    4/7/8** — decide and document explicitly whether `_aio_db.connection_for()` should
    replicate `_connect()`'s mkdir/PRAGMA/`CREATE TABLE IF NOT EXISTS` schema-ensuring

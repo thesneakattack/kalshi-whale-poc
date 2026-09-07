@@ -9,7 +9,7 @@ from services.market_watch import milestone_live_data as mld
 
 
 def test_tennis_tournament_singles_is_pure_pass_through():
-    # The census's control case (docs/superpowers/research/2026-08-30-kalshi-
+    # The census's control case (docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-
     # category-data-shape-audit.md S3/S4): 49,764/49,764 payloads carry both
     # fields. Not in _EXTRACTORS - reaches this result via the default path.
     result = mld.extract("tennis_tournament_singles",
@@ -117,7 +117,7 @@ def test_extract_and_snapshot_are_re_exported_from_the_package():
 # 'Dota 2'/'Valorant' (game_state.record's own event_type column is None
 # for these rows - live_status.py:254 never passes it - but the ticker
 # prefix + sport label + exact field shape match the census's
-# independently-derived esports_match key list, docs/superpowers/research/
+# independently-derived esports_match key list, docs/archive/lane-1-kalshi-ingestion/research/
 # 2026-08-30-kalshi-category-data-shape-audit.md line 325).
 #
 # Q1 (status): widget_status is a reliable 3-state field for this type -

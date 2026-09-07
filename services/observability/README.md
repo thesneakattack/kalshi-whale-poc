@@ -749,7 +749,7 @@ value on a low-volume metric can still scan a wide row range.
 ## Reconnect gap duration + per-position ticker cadence (P8 Task 34, 2026-08-27)
 
 Two new metric families, both added because a benchmark planned for the
-realtime data-plane remediation (P8 Task 40, `docs/superpowers/plans/
+realtime data-plane remediation (P8 Task 40, `docs/archive/lane-1-kalshi-ingestion/plans/
 2026-08-25-realtime-data-plane-remediation.md`) needs *measured* input
 distributions rather than assumed ones - and a first research pass had
 wrongly claimed reconnect telemetry didn't exist at all (it did:

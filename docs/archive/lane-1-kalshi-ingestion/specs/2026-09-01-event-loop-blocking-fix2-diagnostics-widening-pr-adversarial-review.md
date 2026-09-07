@@ -442,7 +442,7 @@ rather than an `_aio_db` lifecycle concern is what let it through.
 ## What I verified, and how
 
 **Read in full:** the 4,380-line review diff (code portions line by line), the Fix 2 section of
-`docs/superpowers/specs/2026-09-01-event-loop-blocking-elimination-design.md`, the 1,234-line
+`docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-elimination-design.md`, the 1,234-line
 plan, and the current worktree source of `services/diagnostics/_aio_db.py`,
 `services/diagnostics/diagnostics.py`, `services/diagnostics/routes.py`,
 `services/quality/routes.py`, `services/research/research.py`, `services/series_watcher.py`,

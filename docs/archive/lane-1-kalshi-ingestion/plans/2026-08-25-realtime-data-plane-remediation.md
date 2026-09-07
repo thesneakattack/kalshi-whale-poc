@@ -2509,7 +2509,7 @@ measure** (2026-08-27 direct note) - whether the dashboard's own position-list
 rendering cost also scales with open-position count is a real, unanswered question,
 not one this backend-only benchmark can speak to. Deliberately not pinned to
 specific current frontend file paths here:
-`docs/superpowers/plans/2026-08-25-frontend-modularization.md` is still in
+`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md` is still in
 progress (~5 of 54 tasks done per its own checkboxes), so a path-specific claim
 written today would likely be stale before anyone acts on it. Instead: add one
 line to that plan's own tracking noting this open question, to be picked up once
