@@ -182,18 +182,22 @@ were invisible to classification from the start. Confirmed directly:
 `docs/superpowers/research/2026-08-29-full-settings-table-generator.py`
 (dead code, orphaned from its Lane-4-archived companion, found
 independently by both `49` and `0d`'s adversarial agent — going to
-Lane 4's archive) plus, found by the coordinator checking for more of
-the same shape, **5 total unclassified top-level files**: 3 Kalshi/
-Lane-1-topic kickoff docs (`0d` already had these), 1 Lane-9-topic
-kickoff doc companion to an already-Lane-9-classified plan (`0d` didn't
-have this one — same fix, but in Lane 9's own scope), and
-`INVESTIGATION_PORTFOLIO.md` (a self-described "thin index, not a
-research report" — likely the same "retire, not move" disposition as
-`docs/superpowers/plans/README.md`, `0d`'s call). Confirmed no other
-non-`.md` files exist anywhere in `docs/superpowers/{plans,specs,
-research}/` or already inside `docs/archive/` — isolated cases, not a
-systemic pattern. `0d` fixing D1-D3 + all classification gaps + PR body
-corrections, then consolidation. Not merged yet.
+Lane 4's archive). **Correction (coordinator checked `main`'s working
+tree instead of PR #660's own branch — wrong ref, not staleness; own
+mistake, caught by `0d` and re-verified directly via `gh api
+contents?ref=docs/lane-9-file-move` before accepting):** only 3
+unclassified top-level files remain open, not 5 — the Kalshi/Lane-1-
+topic trio (`kalshi-integration-kickoff.md`, `kalshi-integration-
+bundle-readme.md`, `realtime-data-plane-investigation-kickoff.md`).
+`INVESTIGATION_PORTFOLIO.md` and the AQC kickoff file were already
+moved into Lane 9's own archive hours before the pause (`4bd988d`,
+"Lane 9 scope extension") — confirmed gone from the old path and the
+commit confirmed an ancestor of current HEAD. No step-5-style decision
+needed for either. Confirmed no other non-`.md` files exist anywhere in
+`docs/superpowers/{plans,specs,research}/` or already inside
+`docs/archive/` — isolated, not a systemic pattern. `0d` fixing D1-D3 +
+the 3 remaining classification gaps + PR body corrections, then
+consolidation. Not merged yet.
 
 **Lane 1 update, 2026-09-07 (`ea`, independently verified against the
 pushed branch content, not taken on `0d`'s word alone):** `0d` fixed and
