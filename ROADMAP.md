@@ -272,8 +272,8 @@ which can run in parallel right now.
       rate but loses money" blind spot partway — see
       `docs/roadmap-archive-2026-08-23.md` for the full mechanism).
       **Investigated 2026-08-26**
-      (`docs/superpowers/research/2026-08-26-economic-strategy-
-      effectiveness-status-report.md`): the original 394/88.8% sample and
+      (`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-status-report.md`,
+      moved there 2026-09-06, planning-lanes migration): the original 394/88.8% sample and
       the gate configuration that produced it (dollar-notional, replaced
       by contract-count below) both no longer exist — not root-causable
       in its original form. Under the *current* gate, selection is

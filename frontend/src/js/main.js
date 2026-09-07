@@ -97,8 +97,9 @@ function refreshHistoryInsightsIfActive() {
   loadMarketAnalyst();
 }
 
-// Event-driven push (docs/superpowers/specs/2026-09-03-history-event-
-// driven-design.md, services/history_push.py + polling-and-websocket.js's
+// Event-driven push (docs/archive/lane-8-frontend-dashboard/specs/2026-09-03-
+// history-event-driven-design.md, moved there 2026-09-06, planning-lanes
+// migration; services/history_push.py + polling-and-websocket.js's
 // 'history_updated' WS branch) replaces refresh()'s old unconditional
 // every-poll call into refreshHistoryInsightsIfActive() - History's
 // refresh is now decoupled from /api/state's own cadence entirely. This

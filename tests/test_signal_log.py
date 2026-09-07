@@ -526,8 +526,9 @@ def test_resolve_from_market_results_with_no_rows_returns_zero(tmp_path, monkeyp
     assert log.resolve_from_market_results("NOPE", "yes") == 0
 
 
-# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
-# history-event-driven-design.md §2/§4.3 - loadBacktestSweeps/
+# --- history-push trigger point (docs/archive/lane-8-frontend-dashboard/specs/
+# 2026-09-03-history-event-driven-design.md, moved there 2026-09-06,
+# planning-lanes migration, §2/§4.3 - loadBacktestSweeps/
 # loadCalibrationReport are signal-resolution-driven) -----------------------
 
 

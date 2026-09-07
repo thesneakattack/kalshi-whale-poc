@@ -44,8 +44,9 @@ branch), not a defect count; its own source comment says so.
 `services/advisory/routes.py` and `services/whale_calibration/routes.py`
 also call `current_completeness_state()` directly, and `main.py`'s
 `_maybe_run_auto_apply` uses it to refuse an automatic config write while
-a defect is open - see `docs/superpowers/specs/2026-08-30-self-feeding-
-loop-provenance-design.md`.
+a defect is open - see `docs/archive/lane-4-analytics-advisory-research/specs/
+2026-08-30-self-feeding-loop-provenance-design.md` (moved there 2026-09-06,
+planning-lanes migration).
 
 ## Why this route is safe to call on every tick / poll cheaply
 

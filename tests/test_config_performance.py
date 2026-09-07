@@ -260,8 +260,9 @@ def test_diff_patch_treats_a_field_missing_from_old_cfg_as_none():
     assert cp.diff_patch(old_cfg, patch) == [("strategy.take_profit_pct", None, 0.5)]
 
 
-# --- history-push trigger point (docs/superpowers/specs/2026-09-03-
-# history-event-driven-design.md §2/§4.3 - loadChangeHistory. Fired for
+# --- history-push trigger point (docs/archive/lane-8-frontend-dashboard/specs/
+# 2026-09-03-history-event-driven-design.md, moved there 2026-09-06,
+# planning-lanes migration, §2/§4.3 - loadChangeHistory. Fired for
 # BOTH manual and auto-apply sources - see log_applied_change's own comment
 # for why the design's per-source exemption doesn't apply once the hook
 # lives inside the write function itself) --------------------------------

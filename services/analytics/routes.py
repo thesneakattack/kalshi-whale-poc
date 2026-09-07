@@ -192,8 +192,9 @@ async def get_candidate_log_summary(min_population_samples: int = 30):
         _population_gates_cache["value"] = population_gates
     # population_gates_banded (issue #616 D1) - the banded extension of
     # population_gates above, grouped additionally by unit_cost_band (see
-    # docs/superpowers/research/2026-08-26-economic-gate-marginal-
-    # contribution.md's E4 analysis for what this surfaces: a gate's
+    # docs/archive/lane-4-analytics-advisory-research/research/
+    # 2026-08-26-economic-gate-marginal-contribution.md's (moved there
+    # 2026-09-06, planning-lanes migration) E4 analysis for what this surfaces: a gate's
     # aggregate hypothetical_win_rate can hide a negative-EV band
     # underneath it). Deliberately calls the CACHED wrapper, not
     # population_gate_summary_banded_async() directly - see that wrapper's
