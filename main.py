@@ -1812,10 +1812,34 @@ def _build_state_body() -> dict:
         "trade_tape_last_fetch_ts": state.get("trade_tape_last_fetch_ts"),
         "trade_stream_perf": state.get("trade_stream_perf"),
         "live_status": state["live_status"],
-        "latest_prices": state["latest_prices"],
-        "signal_feed": state["signal_feed"],
-        "decision_feed": state["decision_feed"],
-        "stats": state["stats"],
+        # Shallow-copied, not passed through by reference (adversarial
+        # review of PR #647/issue #634, 2026-09-06): now that get_state's
+        # jsonable_encoder call runs on a worker thread instead of
+        # monopolizing the event loop, these four fields' live containers
+        # can genuinely be mutated in place by the trading loop
+        # concurrently with a worker thread still walking this exact dict -
+        # a race that was structurally impossible before that fix.
+        # services/whale_stream/whale_stream_handlers.py inserts a new
+        # ticker key into state["latest_prices"] in place (reproduced live:
+        # a same-instant dict resize during iteration on another thread
+        # raises RuntimeError: dictionary changed size during iteration -
+        # exactly jsonable_encoder's dict-recursion branch);
+        # services/whale_stream/decision_bridge.py mutates
+        # state["signal_feed"]/state["decision_feed"] in place
+        # (`.insert(0, ...)` on the existing list object, one line before
+        # rebinding to a new sliced object - lists have no iterator version
+        # check, so this doesn't raise, it silently duplicates or drops an
+        # entry in the served JSON instead) and increments
+        # state["stats"][key] in place. A shallow copy here decouples the
+        # dict this function returns from whatever those call sites do
+        # next - cheap, since _build_state_body() itself is already
+        # memoized by generation (this only runs once per generation bump,
+        # not once per request). See
+        # test_state_body_mutable_feed_fields_are_snapshotted_not_live_references.
+        "latest_prices": dict(state["latest_prices"]),
+        "signal_feed": list(state["signal_feed"]),
+        "decision_feed": list(state["decision_feed"]),
+        "stats": dict(state["stats"]),
         "equity_history": state["equity_history"],
         "real_balance_history": state["real_balance_history"],
         "whale_track_record": signal_log.stats(days=30),
