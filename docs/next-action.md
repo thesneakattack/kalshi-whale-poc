@@ -156,9 +156,26 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    the fact. Every sweep from Lane 9 onward counts occurrences
    (`grep -c`-style, not existence), and re-sweeps with occurrence
    counting specifically after any fix-list round, not just presence.
-   **Flagged urgently to `0d`/`49` to re-check #657/#658 for the same
-   defect class**, since a prior GO on either PR didn't test for this
-   bug specifically.
+
+**Meta-lesson, elevated above the numbered list after a second lane hit
+this: a citation-discovery script's blind spots are not a fixed,
+enumerable checklist.** Lane 3's own sweep failed for a *third*,
+genuinely different reason from Lane 2's (occurrence-vs-presence) and
+Lane 5/4/8's original gap (line-wrap across `#`/directory boundaries):
+its wrap-detection regex assumed a comment marker or directory boundary
+at the wrap point and missed a bare-indented continuation line inside a
+plain `"""docstring` with no marker at all — 10 genuine misses across 7
+files, 3 of which the PR's diff never touched at all (confirmed:
+`services/market_catalog/market_catalog.py:393`,
+`tests/test_paper_broker.py`, `tests/test_strategy_engine.py` were
+absent from #658's file list entirely). Also found the PR's own
+"4 deliberate gaps" count was actually 7 across 5 files — the extra 3
+were legitimately deferrable but the count itself was wrong. **The
+standing rule this earns: every lane's sweep gets a genuine adversarial
+pass looking for a NEW blind spot, not a checklist run against the
+specific bugs points 1/7/8 already name** — passing that checklist is
+necessary, not sufficient. Two lanes, two different mechanisms, in a
+row is a pattern, not a coincidence.
 
 **Known, accepted, temporary side effect, still holding:** each batch
 only fixes its own outgoing references; forward-references from
