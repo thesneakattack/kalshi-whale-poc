@@ -47,7 +47,7 @@ _POPULATION_GATES_CACHE_TTL_SEC = 30  # 2026-09-03, Task 6b of docs/archive/lane
 # coordinated, not independently chosen.
 _population_gates_cache: dict = {"cached_at": None, "value": None}
 
-# population_gates_banded (issue #616 D1, docs/superpowers/specs/2026-08-26-
+# population_gates_banded (issue #616 D1, docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-
 # economic-strategy-remediation-design.md) does NOT get its own cache dict
 # here - it shares services.candidate_log.population_gate_summary_banded_
 # cached_async()'s cache instead (see that function's own module-level

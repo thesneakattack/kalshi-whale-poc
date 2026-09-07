@@ -1,6 +1,6 @@
 # Adversarial Review — Strategy Edge Gate Design (2026-09-03)
 
-Reviewing: `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design.md`,
+Reviewing: `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design.md`,
 worktree `agent-a0cfb3e1e724c2431`, commit `3733d73`. Per CLAUDE.md's
 "nothing advances on one pass" HARD RULE, this is a fresh Agent call with no
 memory of the session that wrote the artifact; every load-bearing claim below

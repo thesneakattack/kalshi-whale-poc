@@ -184,7 +184,7 @@ def test_flush_secondary_capture_stores_flushes_all_three_and_prunes(monkeypatch
     }
 
 
-# --- Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+# --- Task 7 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
 # implementation.md: hourly Delta_calibrated recompute-and-cache sweep,
 # wired next to _maybe_prune_capture_stores (same interval-guard idiom,
 # same call site inside _flush_secondary_capture_stores) -----------------
@@ -390,7 +390,7 @@ def test_maybe_capture_markouts_writes_a_row_for_a_due_trade(monkeypatch):
     main.py's sweep actually calls them with real broker/market_catalog/
     market_history data, on its own interval, unconditionally (not gated
     on edge_gate_enabled - design SS5/SS8's stated exception). Task 4 of
-    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md.
+    docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md.
 
     main.broker is the correct reference (a bare module-level name from
     services/app_state.py, never state["broker"] - that key doesn't exist

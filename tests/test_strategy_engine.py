@@ -1619,7 +1619,7 @@ def test_edge_gate_fails_closed_on_flat_fee_type(tmp_path, monkeypatch):
 
 
 def test_evaluate_admitted_decision_includes_edge_gate_fields_when_computed(tmp_path, monkeypatch):
-    """Task 9 (docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    """Task 9 (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md): design §9's informativeness criterion - p_est/
     Δ_calibrated/edge must be inspectable per-signal, not only a boolean
     pass/fail. EntryValidation.observed/.threshold already carry

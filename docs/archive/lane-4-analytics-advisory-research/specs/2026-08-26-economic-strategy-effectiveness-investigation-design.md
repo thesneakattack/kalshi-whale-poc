@@ -147,8 +147,8 @@ claims)
 |---|---|
 | Research report | `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md`, `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-gate-marginal-contribution.md`, `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-advisory-calibration-execution-audit.md` (all moved there 2026-09-06, planning-lanes migration) |
 | Adversarial analysis | `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-adversarial-review.md` (moved there 2026-09-06, planning-lanes migration) |
-| Design/spec | this file, plus `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` (Program 2 candidate design, not yet approved for execution) |
-| Consolidated implementation plan | `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` (candidate task list; execution gated behind Program 1 per execution program §7) |
+| Design/spec | this file, plus `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md` (moved there 2026-09-07, planning-lanes migration; Program 2 candidate design, not yet approved for execution) |
+| Consolidated implementation plan | `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` (moved there 2026-09-07, planning-lanes migration; candidate task list; execution gated behind Program 1 per execution program §7) |
 | Permanent measurement/guard disposition | recorded in the status report (§9 below) and in the remediation plan's own task list — not shipped as code on this branch |
 | Insufficient-sample list | `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-status-report.md` (moved there 2026-09-06, planning-lanes migration) §"Insufficient / open" |
 

@@ -1,6 +1,6 @@
 """services/market_watch/milestone_scan.py - broad, watchlist-independent
-event_ticker -> milestone_id discovery (docs/superpowers/specs/
-2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md, Part
+event_ticker -> milestone_id discovery (docs/archive/
+lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md, Part
 3). Mirrors tests/test_mve_scan.py's shape: a fake KalshiPublicGateway
 stands in for the real gateway, app_state's real `state` dict is reset
 between tests since this module reads/writes it directly."""

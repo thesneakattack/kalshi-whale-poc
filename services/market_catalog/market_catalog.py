@@ -390,7 +390,7 @@ def close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     private async _close_ts_for_tickers - same query, same docstring
     reasoning ('the one store that persists a close time per market
     beyond the rotating watchlist'), added for services/market_history.py's
-    markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    markout-capture sweep (Task 4, docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-
     strategy-edge-gate-implementation.md), which runs synchronously from
     main.py's tick-loop maintenance path, not from an async route."""
     if not tickers:

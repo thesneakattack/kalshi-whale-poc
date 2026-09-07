@@ -119,8 +119,8 @@ class Trade:
     netting_bar_usd: float | None = None
     netting_vol_ratio: float | None = None
     # Real Kalshi exit-taker-fee cost of a locked_loss position_netting
-    # close (services/exits/position_netting.py, docs/superpowers/specs/
-    # 2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md
+    # close (services/exits/position_netting.py, docs/archive/
+    # lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md
     # Part 2) - the module's own docstring argues unwinding a locked
     # position early only adds fee drag versus Kalshi's fee-free
     # settlement; this makes that cost measurable instead of buried in

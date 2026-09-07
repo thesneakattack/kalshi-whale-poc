@@ -80,7 +80,7 @@ positive `selection_delta_pts` will hold up on a larger post-cutover sample (E5'
 adversarial-review caveat, given the regime is only 3 days old).
 
 **No target-design claim is made in this document** — this is an investigation, not a
-remediation. `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` names
+remediation. `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` names
 candidate remediation directions; none is approved for execution by this document.
 
 ## 3. Permanent measurement/guard disposition
@@ -92,7 +92,7 @@ to each real finding class this investigation produced:
 |---|---|---|
 | Banded, cost-aware, sample-size-gated EV per gate (E4) | **Permanent runtime diagnostic** — this is exactly the shape of `services/diagnostics/diagnostics.py`'s existing `check_series_funnel`/`selectivity_curve` checks (offline, local-data-only, already-reviewed pattern) | Program 2, as an extension to `services/candidate_log.py`'s `population_gate_summary()` (add unit-cost banding as a parameter/second function) plus a new `services/diagnostics` check surfacing it in `GET /api/quality/summary`. Not shipped on this research-only branch. |
 | Capture-health tagging for a given analysis window (E3) | **Shared logic, used by runtime and future research alike** — the hourly-density-anomaly detection this investigation hand-rolled should not be re-hand-rolled every time a future investigation needs it | Program 2 candidate: a small `capture_health.tag_window(series, since, until)` helper reusable by both a runtime diagnostic and any future research script, per the design doc's methodology section. Not built here (research-only branch). |
-| Price-impact estimate for entries with insufficient depth (E7) | **Genuinely needs new capture/design work first** — not yet a guard, because the underlying computation (book-walk price-impact estimate) doesn't exist yet | Program 2 design candidate, detailed in `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` |
+| Price-impact estimate for entries with insufficient depth (E7) | **Genuinely needs new capture/design work first** — not yet a guard, because the underlying computation (book-walk price-impact estimate) doesn't exist yet | Program 2 design candidate, detailed in `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md` |
 | `data/backups/`'s retention not reaching back far enough to have helped E2 (adversarial-review finding) | **One-off observation, not a new guard** — this investigation is not the owner of backup retention policy; recorded for `services/backup/`'s own future audit, not acted on here | Noted for `services/backup/CHEATSHEET.md`'s next audit pass, not this investigation's responsibility to fix |
 | Multi-gate interaction schema gap (E8) | **Existing guard/instrumentation limitation, already correctly scoped as future work by ROADMAP.md's own prior note** — not a new finding needing a new disposition, restated for completeness | Program 2, contingent on a cost/benefit call about `rejection_events`' write volume (already ~5.8M rows/3 days) |
 | advisory_engine's entry-side win-rate-only recommendation functions (E6) | **Already covered** — `services/advisory/CHEATSHEET.md` recorded this exact finding 2026-08-22/23; this investigation re-verified it, not re-discovered it. No new disposition needed; the existing CHEATSHEET entry already names it as the top audit priority for a future advisory-module pass. | N/A — already tracked |

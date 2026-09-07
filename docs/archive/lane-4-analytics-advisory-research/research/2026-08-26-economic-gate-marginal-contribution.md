@@ -1,6 +1,6 @@
 # Economic Strategy Effectiveness — Gate Marginal Contribution & Adverse-Selection Root Cause (E4-E5)
 
-Companion: `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
+Companion: `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
 (tasks E4, E5). Read
 `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md`
 (moved there 2026-09-06, planning-lanes migration) first — E4/E5

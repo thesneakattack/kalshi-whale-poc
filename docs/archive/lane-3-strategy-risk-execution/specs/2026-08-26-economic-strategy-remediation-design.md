@@ -13,7 +13,7 @@ merged and this investigation's provisional findings have been re-verified again
 capture-health-controlled sample.
 
 Source evidence: `docs/superpowers/research/2026-08-26-economic-*.md` (four documents) and
-`docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`.
+`docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`.
 
 ## Design candidates, one per finding class
 
@@ -136,5 +136,5 @@ math itself computes — only how much weight to put on any given window's concl
 D2 concern). D2, D3, D4 either directly depend on Program 1's capture-completeness signal
 (D2) or are large enough (D3's book-walk limitation, D4's write-volume decision) to warrant
 their own human sign-off regardless of Program 1's status. See
-`docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` for the task-level
+`docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` for the task-level
 sequencing this maps to.

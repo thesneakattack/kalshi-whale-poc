@@ -3,12 +3,12 @@
 ## Status
 
 Adversarial review (2026-09-03) of
-`docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md`
+`docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md`
 (commit `950ea12`), per CLAUDE.md's "nothing advances on one pass" HARD
 RULE. This is a fresh pass with no memory of the plan's own authoring
 session — every load-bearing claim below was re-derived directly against
 this worktree's current source, `gh`/`git` state, and the design document
-it implements (`docs/superpowers/specs/2026-09-03-strategy-edge-gate-design.md`),
+it implements (`docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design.md`),
 never taken from the plan's own tables or self-review.
 
 ## Method

@@ -134,7 +134,7 @@ market the catalog scan hasn't reached) is a "checked, but the gate
 defaulted" case, not a "checked, genuinely no conflict" case — the same
 distinction `strategy_engine.py`'s `_record_me_gate_unknown` already
 draws for a *different*, not-yet-implemented gate (PR #202's parked
-event-scoped ME gate, `docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md`
+event-scoped ME gate, `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-29-event-scoped-me-gate-design.md`
 — a separate mechanism with its own `me_gate_unknown_total` counter; this
 fix does not touch or reuse it). This fix adds its own small, analogous
 counter in `services/mutual_exclusivity.py` (e.g.
