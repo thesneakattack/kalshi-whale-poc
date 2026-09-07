@@ -1,23 +1,32 @@
+import importlib.util
 from pathlib import Path
 
 from tools.kanban_sync import labels
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_ROOT_ANCHORED_PREFIXES = (
-    "services/", ".claude/", ".github/", ".woodpecker/", "scripts/",
-    "tests/", "bench/", "ui_samples/", "frontend/", "static/", "config/",
-    "tools/", "docs/",
-)
+_HOOK = _REPO_ROOT / ".claude" / "hooks" / "guard_workflow.py"
 
 
 def _resolve_package_path(pkg: str) -> Path:
-    """LANES entries are written the way the design doc's §3 table writes
-    them: a handful (`services/kalshi/`, `services/config/*`) already carry
-    a root-anchored prefix, everything else is a bare name implicitly under
-    `services/` (that's where nearly every lane's code actually lives)."""
-    if pkg.startswith(_ROOT_ANCHORED_PREFIXES):
-        return _REPO_ROOT / pkg
-    return _REPO_ROOT / "services" / pkg
+    """Now a thin wrapper over labels.resolve_lane_package: the tier constant
+    is built from LANES with that same resolver, so a divergence between this
+    test and the constant is impossible by construction."""
+    return _REPO_ROOT / labels.resolve_lane_package(pkg)
+
+
+def _load_hook():
+    spec = importlib.util.spec_from_file_location("guard_workflow", _HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _tier_a_entry_exists(entry: str) -> bool:
+    """An entry resolves to something real: a file, a directory, or - for the
+    two `scripts/` prefix entries - at least one file starting with it."""
+    if (_REPO_ROOT / entry).exists():
+        return True
+    return bool(list(_REPO_ROOT.glob(entry + "*")))
 
 
 def test_status_labels_match_kanban_skill_scheme():
@@ -137,3 +146,68 @@ def test_every_lane_package_path_exists_on_disk():
 
 def test_all_lane_labels_contains_exactly_nine_values():
     assert labels.ALL_LANE_LABELS == {f"lane:{n}" for n in range(1, 10)}
+
+
+def test_every_review_tier_a_path_exists_on_disk():
+    """The same guarantee LANES has (test_every_lane_package_path_exists_on_disk).
+    This is what makes a stale path a blocking CI failure rather than a note:
+    guard_workflow.py carried three entries naming files deleted by the
+    services/kalshi/ migration for weeks without anything noticing."""
+    missing = [e for e in labels.REVIEW_TIER_A_PATHS if not _tier_a_entry_exists(e)]
+    assert not missing, f"REVIEW_TIER_A_PATHS entries not found on disk: {missing}"
+
+
+def test_guard_workflow_path_tuples_are_subsets_of_review_tier_a_paths():
+    """One authoritative list. The hook keeps its own tuples on purpose (spec
+    D4: a hook launched as a bare script would need a sys.path insert to import
+    from tools/, and an import failure would silently disable the Kalshi deny),
+    so CI enforces the containment instead."""
+    hook = _load_hook()
+    covered = set(labels.REVIEW_TIER_A_PATHS)
+    uncovered = [
+        (name, entry)
+        for name in ("KALSHI_PATHS", "HOT_PATHS", "MONEY_UI_PATHS")
+        for entry in getattr(hook, name)
+        if entry not in covered
+    ]
+    assert not uncovered, f"hook path entries missing from REVIEW_TIER_A_PATHS: {uncovered}"
+
+
+def test_review_tier_a_paths_include_the_money_and_decision_inputs_outside_lanes_1_to_3():
+    for entry in (
+        "services/settlement_edge.py", "services/candidate_log.py",
+        "services/history/", "services/app_state.py",
+    ):
+        assert entry in labels.REVIEW_TIER_A_PATHS
+
+
+def test_review_tier_a_paths_include_the_tier_definition_itself():
+    assert "tools/kanban_sync/labels.py" in labels.REVIEW_TIER_A_PATHS
+
+
+def test_review_tier_a_prose_always_covers_the_rule_files_and_pipeline_dirs():
+    assert "CLAUDE.md" in labels.REVIEW_TIER_A_PROSE_ALWAYS
+    assert ".claude/rules/" in labels.REVIEW_TIER_A_PROSE_ALWAYS
+    assert ".claude/skills/" in labels.REVIEW_TIER_A_PROSE_ALWAYS
+    assert "docs/superpowers/" in labels.REVIEW_TIER_A_PROSE_ALWAYS
+    assert labels.REVIEW_TIER_A_PROSE_PATTERN.match(
+        "docs/archive/lane-9-tooling-ci-process-governance/specs/x-design.md"
+    )
+    assert not labels.REVIEW_TIER_A_PROSE_PATTERN.match(
+        "docs/archive/lane-9-tooling-ci-process-governance/README.md"
+    )
+
+
+def test_review_tier_a_diff_pattern_matches_the_four_data_model_forms():
+    for line in (
+        "+    register_schema(_SCHEMA)",
+        "+CREATE TABLE IF NOT EXISTS trades (",
+        "+ALTER TABLE trades ADD COLUMN fee_cents INTEGER",
+        "+PRAGMA user_version = 7",
+    ):
+        assert labels.REVIEW_TIER_A_DIFF_PATTERN.search(line), line
+    assert not labels.REVIEW_TIER_A_DIFF_PATTERN.search("+    # schema notes live in db.py")
+
+
+def test_review_tier_a_labels_is_exactly_concern_hotpath():
+    assert labels.REVIEW_TIER_A_LABELS == frozenset({labels.CONCERN_HOTPATH})

@@ -74,15 +74,13 @@ import time
 from pathlib import Path
 
 KALSHI_PATHS = (
-    "services/kalshi/", "services/kalshi_client.py", "services/kalshi_account_client.py",
-    "services/kalshi_trade_ws.py", "services/kalshi_fees.py", "services/market_catalog/",
+    "services/kalshi/", "services/kalshi_fees.py", "services/market_catalog/",
     "services/market_watch/", "services/market_events/", "services/whale_stream/",
 )
 HOT_PATHS = (
     "services/strategy_engine.py", "services/risk_manager.py", "services/paper_broker.py",
     "services/confidence_scoring.py", "services/shadow_mode.py", "services/advisory/",
     "services/whale_calibration/", "services/exits/", "services/position/",
-    "services/kalshi_client.py", "services/kalshi_account_client.py",
 )
 # The dashboard derives money client-side too - the no-side `1 - price` inversion
 # shipped here, not in services/. static/js is esbuild output, never hand-edited.
