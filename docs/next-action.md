@@ -295,54 +295,41 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status (updated 2026-09-07 by `ea`, post-compaction resync — this file is the durable record, not chat memory)
+## Peer status (rewritten 2026-09-07 ~06:10Z by coordinator `36` — this file is the durable record, not chat memory)
 
 Only Lane 9 remains once Lane 1 lands — it contains the design doc
-governing the whole migration. Lane 3 is done; Lane 1 is now the only
-blocker.
+governing the whole migration. Lanes 2/3 done; Lane 1 (#657) is the
+sole blocker, currently **NOT GO** (see Planning Lanes section above
+for the full, current detail — this block is who's doing what, not the
+PR's technical state).
 
-- **`0d`** — Lane 1 (PR #657, OPEN, head `9f4e1ba`, 2 comments as of
-  last check): two required fixes outstanding, **still not confirmed
-  applied** (head SHA unchanged, no adversarial-review/consolidation
-  comment posted yet — re-verified directly, not relayed):
-  1. Re-check for the Lane-2-style occurrence-vs-presence bug (not yet
-     confirmed either way).
-  2. **Confirmed-real cross-lane back-citation gap, 5 files/7
-     occurrences, re-verified against the branch tip on 2026-09-07**:
-     - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`
-       → cites Lane 8's `2026-08-25-frontend-modularization.md` (1x, ~line 2512)
-     - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-30-kalshi-category-data-completeness-implementation.md`
-       → cites Lane 4's `2026-08-27-backend-services-modularization.md` (1x, ~line 566)
-     - `docs/archive/lane-1-kalshi-ingestion/specs/...diagnostics-widening-plan-consolidation.md`,
-       `...plan-review.md`, `...pr420-adversarial-review.md` (3 files)
-       → all cite Lane 6's `2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
-       (2+2+1 = 5 occurrences)
-  Pinged `0d` directly 2026-09-07 with this exact list (msg `fbc40ade`);
-  no reply received yet as of this writeup.
-- **`49`** — Lane 3 (PR #658): **MERGED** 2026-09-07T05:50:58Z, 3
-  comments (self-review/adversarial/consolidation all present), fixed
-  the 10-miss third-sweep-blind-spot finding and the deliberate-gaps
-  count correction before merging. Also got a late-arriving post-merge
-  corroboration from the originally-dispatched adversarial reviewer's
-  own recheck — fully consistent, nothing further on Lane 3. Now free;
-  **assigned by coordinator (`36`) to independently re-sweep #657**
-  using its own proven shape-agnostic de-wrap method (strip leading
-  whitespace, try both space- and no-space-joined rejoins), read-only
-  against the PR's actual committed tree — specifically hunting the
-  Lane-2-style occurrence-vs-presence bug and any residual wrap-detection
-  blind spot like the one it just found on Lane 3. Not editing the
-  PR/branch; `0d` still owns applying any fixes.
-- **`ea`** (this session) — Lane 2 (PR #656): **MERGED** (`0fe413b`),
-  fully closed out. Re-verified PR #657's outstanding findings live
-  against the branch tip post-compaction (2026-09-07) rather than
-  trusting the prior writeup; independently confirmed #658 merged clean.
-- **`c4`** — standing watch; **assigned by coordinator (`36`) to
-  independently verify the GitHub-issue-citation sweep for Lane 1** — all
-  335 tracked issues (147 open + 188 closed), full-path-vs-bare-filename
-  filter, per standing methodology point 2. This is currently a
-  self-review-only claim (0d says it checked issues, but nobody
-  independent has verified it, unlike the file-citation side `ea` already
-  checked). Read-only against the PR's branch content, not local `main`.
+- **`0d`** — owns Lane 1 (PR #657). Pushed `c08ef9f` fixing the
+  original two required items (occurrence-dedup + the first cross-lane
+  gap), CI now green on all 12 contexts. Has the full current picture
+  as of coordinator's last message: still needs to fix `49`'s 3 new
+  file-citation misses, rebase onto current `main` (branch predates
+  Lane 2/3), re-sweep, then write the **consolidation comment** — the
+  one artifact nobody's posted yet, and the last gate before merge.
+- **`49`** — Lane 3 (#658) merged clean. Completed independent
+  file-citation sweep on #657 (posted directly, `issuecomment-
+  5565762808`): occurrence-dedup confirmed clean, found 3 new misses
+  (methodology point 10) + flagged the stale-branch issue. **Now
+  assigned Lane 9 prep**: preliminary GitHub-issue-citation check for
+  Lane 9's candidate files (mirroring `c4`'s file-side prep below),
+  read-only, reporting before anyone acts.
+- **`c4`** — Completed independent issue-citation sweep on #657 (posted
+  directly, `issuecomment-5565810132`): found and fixed 27 closed
+  issues (31 occurrences) `0d`'s self-review missed (open-issues-only
+  scope vs. the required 335) — coordinator spot-checked 5, confirmed
+  real. **Now assigned Lane 9 prep**: cross-check Lane 9's 79-file list
+  against the plan doc's Appendix A + classification tables, plus a
+  preliminary file-citation sweep against candidate files, read-only,
+  reporting before anyone acts.
+- **`ea`** — Lane 2 (#656) merged clean. Did the post-compaction resync
+  of this file and independently corroborated the coordinator's
+  missing-adversarial-review finding on #657 before either acted on it.
+  No active task assigned as of this writeup; last known state idle/
+  standing by.
 
 ---
 
