@@ -357,6 +357,77 @@ weighing in on this since 2026-09-06 and to summarize the 3 judgment
 calls. Decision (merge now / hold / something else) is his, not
 resolved here.
 
+**`ea`'s findings on the above, 2026-09-07 ~06:35Z — independently
+verified, not relayed:**
+
+1. **Correction: 4 judgment calls, not 3** (the consolidation file
+   itself lists them 1-4). In full, since David may want the short
+   version rather than opening the doc:
+   (1) `PLANS_DIR`/`tools/quality_coordination.py` hard dependency —
+   archiving breaks staleness monitoring for currently-`active` primary
+   plans unless the glob is widened; two fixes proposed, neither
+   applied in the doc itself (out of scope for a file-move plan).
+   (2) Tension: Lane 1 ("Kalshi ingestion first" reading) sits
+   near-last (7th of 8) in the batch order, driven by raw reference-
+   count magnitude overriding its low active-fraction — flagged by the
+   doc's own authors as a reading that may be too narrow, not decided
+   unilaterally.
+   (3) Batch order blends 3 axes (reference count, active-primary-plan
+   count, the Lane-9-last hard constraint) by judgment, not one
+   formula — internally consistent per adversarial review, not claimed
+   to be the only defensible ordering.
+   (4) Self-citations within `docs/superpowers/lanes/` are scoped
+   uniformly across all 3 planning directories rather than only within
+   each file's own home directory.
+
+2. **A real trace of David engaging with this exact document was
+   found — but only for judgment call (1), not for the merge decision
+   itself.** Commit `3fd93b7` ("fix: quality_coordination plan-doc
+   monitoring follows the planning-lanes migration", merged via PR
+   #650, authored directly by David Fernandez, 2026-09-06 20:01:56 —
+   14 minutes after `b388fa1` was pushed at 19:47:29) fixes exactly
+   judgment call (1)'s functional regression, and its own commit
+   message explicitly cites `docs/superpowers/lanes/step4-file-move-
+   plan.md` by name as the source of the finding. So: David has read
+   and acted on part of this document's content, concretely and on
+   `main`, the same night — but nothing found (no PR, no branch
+   activity past the single push, no reflog trace, no mention in
+   `docs/open-decisions.md`) shows he weighed in on judgment calls
+   (2)-(4) or on the actual "merge this doc, yes/no" question. That
+   question is still genuinely open, not just unasked.
+
+3. **GO verdict re-confirmed by reading the raw self-review and
+   adversarial-review files directly, not just the consolidation's
+   summary of them** (matching the actual ask — the consolidation's
+   characterization holds up under inspection, not simply trusted):
+   self-review recomputed every summed total independently, found and
+   fixed one real arithmetic error (Lane 9's primary-plan count, 12→11)
+   *before* the adversarial pass, and manually spot-checked 3 file
+   reference counts. Adversarial review was a genuinely fresh Agent
+   call that re-derived the 248-file total, 3 full lanes plus a 9-lane
+   cross-tally, both stale-table findings, the hard-dependency's exact
+   line numbers, live GitHub issue counts (catching its own `--limit 30`
+   truncation trap along the way and fixing it), and the batch-order
+   logic — zero errors found, explicit GO. No daylight between what the
+   consolidation claims and what the underlying artifacts actually
+   contain.
+
+4. **New consideration for David's decision, not previously flagged:**
+   `main` has drifted substantially since `b388fa1` was cut — 6 of the
+   8 lane-move PRs have since merged independently (using this
+   branch's Appendix A as a live reference, per the fleet's own stated
+   practice, not by merging the branch). `git diff main
+   origin/docs/step4-file-move-plan` now shows 246 files touched,
+   almost entirely rename/path churn from lanes that already moved on
+   `main` through separate PRs. **Merging this branch as-is now would
+   not be a clean fast-forward** — it would try to reintroduce
+   already-superseded paths for 6 of 9 lanes. If David wants this
+   document's history preserved on `main`, the practical option is a
+   fresh, narrow commit carrying just the 4
+   `docs/superpowers/lanes/step4-file-move-plan*.md` files (as
+   historical record of the plan actually executed against), not a
+   merge of the stale branch — his call, not decided here.
+
 ---
 
 ## Peer status (rewritten 2026-09-07 ~06:10Z by coordinator `36` — this file is the durable record, not chat memory)
