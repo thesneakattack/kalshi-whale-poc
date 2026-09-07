@@ -758,7 +758,7 @@ async def check_confidence_input_coverage(cfg: dict, since_ts: float | None = No
     )
 
 
-# issue #616 D1's own spec (docs/superpowers/specs/2026-08-26-economic-
+# issue #616 D1's own spec (docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-
 # strategy-remediation-design.md) asks check_gate_cost_bands to flag any
 # (gate, band) with "n >= min_samples and ev_per_contract meaningfully
 # negative" without saying what "meaningfully" means numerically - this is

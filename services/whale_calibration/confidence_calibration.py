@@ -461,7 +461,7 @@ def generate_calibration_report(rows: list[dict], min_resolved_signals: int, cur
     }
 
 
-# --- Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+# --- Task 7 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
 # implementation.md: hourly recompute-and-cache + the gate's own lookup ---
 
 _delta_cache: dict[tuple[str, str], float] = {}

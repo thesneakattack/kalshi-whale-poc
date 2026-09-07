@@ -1,7 +1,7 @@
 # Economic Strategy Remediation — Candidate Implementation Plan (Program 2)
 
 **Status: NOT approved for execution.** Candidate task list only, per
-`docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md`'s own status
+`docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md`'s own status
 line. Do not begin implementing any task below without: (1) explicit human review/approval
 of the design doc, and (2) Program 1 (realtime data-plane remediation,
 `feat/realtime-data-plane-remediation`) merged, since D2/D3/D4's ordering and several
@@ -91,7 +91,7 @@ Re-verify E3/E4/E5's provisional findings against a capture-health-controlled sa
 ```
 
 **Re-verification ran 2026-08-27** —
-`docs/superpowers/research/2026-08-27-economic-e3-e5-reverification.md`. Outcome: E4
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-27-economic-e3-e5-reverification.md`. Outcome: E4
 reproduces and strengthens under a genuinely capture-health-controlled sample (no design
 change indicated for P2-1). E3's open questions (the 08-14 gap, the 08-18–08-22 trough)
 remain unresolved, but a real capture-health signal (`loop_watchdog.stall_max_ms`) now

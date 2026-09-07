@@ -10,10 +10,10 @@ the design's own success criteria (§9) require — in that order, because
 each later piece depends on data or plumbing the earlier ones create.
 
 **Design basis (GO, cleared for this stage):**
-`docs/superpowers/specs/2026-09-03-strategy-edge-gate-design.md` (design,
-post-fix), `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design-review.md`
+`docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design.md` (design,
+post-fix), `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design-review.md`
 (independent adversarial review, verdict GO-AFTER-FIXES, all must-fix items
-applied), `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design-consolidation.md`
+applied), `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design-consolidation.md`
 (verdict GO). Per CLAUDE.md's "nothing advances on one pass" HARD RULE,
 "implementation plan" is this pipeline's third, separate stage — this
 document, not the code it describes. **Zero code/config/data changed while
@@ -278,7 +278,7 @@ current.
 Insert, immediately before `risk:`:
 
 ```yaml
-  # Strategy edge gate (docs/superpowers/plans/2026-09-03-strategy-edge-
+  # Strategy edge gate (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-
   # gate-implementation.md) - compares this app's own belief about a
   # market (p_est) to the price it would actually pay (ask_now + fees),
   # instead of gating entry on confidence alone. Every field below
@@ -650,7 +650,7 @@ def test_close_ts_for_tickers_returns_persisted_close_times(tmp_path, monkeypatc
     async _close_ts_for_tickers - see its own docstring: 'the one store
     that persists a close time per market beyond the rotating watchlist.'
     This is the sync, public sibling the markout sweep needs (Task 4 of
-    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md) -
+    docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md) -
     it did not exist before this task (confirmed: grep -n '^def '
     services/market_catalog/market_catalog.py before writing this plan)."""
     from services.market_catalog import market_catalog as mc
@@ -1758,7 +1758,7 @@ that changed meaning, only new fields that default to `None`/absent.
 **Not a code task** — the empirical confirmation every prior task's
 claims hold together, and that `edge_gate_enabled: false` genuinely means
 zero behavior change end to end, matching every precedent plan's own
-final task (e.g. `docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`'s
+final task (e.g. `docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`'s
 Task 10).
 
 - [ ] **Step 1: Run the full local test suite**

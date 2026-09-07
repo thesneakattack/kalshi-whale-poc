@@ -593,8 +593,8 @@ def test_resolved_signals_with_factors_since_ts_scopes_the_window(tmp_path, monk
 
 # --- strategy-edge-gate-implementation Task 5: Delta_calibrated's whole
 # resolved-signal input population, NOT filtered to factors_json IS NOT NULL
-# like resolved_signals_with_factors above (docs/superpowers/plans/
-# 2026-09-03-strategy-edge-gate-implementation.md Task 5 - deliberately
+# like resolved_signals_with_factors above (docs/archive/
+# lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md Task 5 - deliberately
 # broader than its sibling per the design's Sec2.1 completeness argument).
 
 def test_resolved_signals_for_edge_calibration_includes_rows_without_factors(tmp_path, monkeypatch):

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python, FastAPI, sqlite3 (stdlib), pytest, asyncio.
 
-**Spec:** `docs/superpowers/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md`
+**Spec:** `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md`
 
 ## Global Constraints
 
@@ -146,8 +146,8 @@ def find_open_confirmed_conflict(
     market_titles/event_titles: the persisted, catalog-wide caches
     (services/title_cache.py) that decision_bridge.py already reads for
     every signal regardless of watchlist membership. Works for a candidate
-    ticker that has never been on the watchlist - see docs/superpowers/
-    specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
+    ticker that has never been on the watchlist - see docs/archive/
+    lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
 
     Scoped to open_position_tickers (small, already computed once per tick
     at main.py's open_position_tickers) rather than scanning the full
@@ -519,8 +519,8 @@ Add the field to the `Trade` dataclass, right after `netting_vol_ratio: float | 
 ```python
     netting_vol_ratio: float | None = None
     # Real Kalshi exit-taker-fee cost of a locked_loss position_netting
-    # close (services/exits/position_netting.py, docs/superpowers/specs/
-    # 2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md
+    # close (services/exits/position_netting.py, docs/archive/
+    # lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md
     # Part 2) - the module's own docstring argues unwinding a locked
     # position early only adds fee drag versus Kalshi's fee-free
     # settlement; this makes that cost measurable instead of buried in
@@ -639,8 +639,8 @@ Create `tests/test_milestone_scan.py`:
 
 ```python
 """services/market_watch/milestone_scan.py - broad, watchlist-independent
-event_ticker -> milestone_id discovery (docs/superpowers/specs/
-2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md, Part
+event_ticker -> milestone_id discovery (docs/archive/
+lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md, Part
 3). Mirrors tests/test_mve_scan.py's shape: a fake KalshiPublicGateway
 stands in for the real gateway, app_state's real `state` dict is reset
 between tests since this module reads/writes it directly."""
@@ -753,7 +753,7 @@ Add near the existing `"mve_scan"` / `"mve_series_cache"` entries:
 ```python
 """
 Broad, watchlist-independent event_ticker -> milestone_id discovery
-(docs/superpowers/specs/2026-08-30-entry-gate-me-pairing-and-netting-
+(docs/archive/lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-
 remediation-design.md, Part 3). services/kalshi/public.py's
 get_milestones_bulk (category-scoped, batched - live-verified 2026-08-15:
 one call covered 1,483 distinct related_event_tickers) has been

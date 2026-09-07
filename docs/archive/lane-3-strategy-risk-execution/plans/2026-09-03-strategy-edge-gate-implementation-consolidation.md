@@ -1,8 +1,8 @@
 # Consolidation — Strategy Edge Gate Implementation Plan (2026-09-03)
 
-Reconciling `docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md` (commit
+Reconciling `docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md` (commit
 `950ea12`), its embedded Plan self-review, and the independent adversarial review
-(`docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation-review.md`, commit
+(`docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation-review.md`, commit
 `2cebc34`, a fresh Agent call with no memory of the authoring session) per CLAUDE.md's
 "nothing advances on one pass" HARD RULE.
 

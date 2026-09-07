@@ -1049,7 +1049,7 @@ def test_gate_summary_async_yields_to_the_event_loop():
 
 # --- population_gate_summary_banded (issue #616 D1) ------------------------
 #
-# docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md's
+# docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md's
 # D1: population_gate_summary() above averages hypothetical_win_rate/
 # avg_unit_cost across every unit_cost a gate ever rejected, hiding the real
 # 0.60-0.95-band negative-EV pattern

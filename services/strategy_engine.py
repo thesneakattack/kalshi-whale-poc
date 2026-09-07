@@ -318,7 +318,7 @@ def _edge_gate_check(
 # mutually_exclusive=False, wrapped in a bare `except Exception: pass` -
 # no fault, no counter, for either case. This is the exact input the
 # position-netting/hedge-conflict risk and the event-scoped ME gate design
-# (docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md) both
+# (docs/archive/lane-3-strategy-risk-execution/specs/2026-08-29-event-scoped-me-gate-design.md) both
 # depend on, so the gap needed to be visible even though its fail-open
 # behavior (the codebase's uniform rule for missing data) does not change.
 #

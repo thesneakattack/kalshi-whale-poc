@@ -11,7 +11,7 @@ review again. Origin: direct question ("why when positions enter
 netting/hedge mode, almost 100% of the time, conflicting positions are
 made, and BOTH lose") answered with a full mechanism investigation the
 same session; this spec is the fix's design. Evidence and reconstruction:
-`docs/superpowers/research/2026-08-29-trade-performance-analysis.md`
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-29-trade-performance-analysis.md`
 (§3, §13) plus the pair-reconstruction run recorded below.
 
 ## 1. The problem, mechanically (verified, not hypothesized)
