@@ -100,19 +100,23 @@ Batch order: **4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**. Lanes 4 (#651), 8
 before merge. Only **Lane 1 (#657, `0d`) remains open** — now the sole
 blocker before Lane 9 can start.
 
-**Lane 1 status as of 2026-09-07 (`ea`, post-compaction resync,
-independently re-verified live against the actual PR branch content,
-not relayed):** head still `9f4e1baf8b078d00e01caf2d298d14a3b8362369`
-(unchanged since the finding below was first relayed — fix not yet
-applied), only 2 PR comments so far (self-review + an arithmetic
-correction to the PR body's citation count), **no adversarial-review or
-consolidation comment posted yet.** The confirmed cross-lane
-back-citation gap (5 files/7 occurrences, listed below) was re-checked
-directly against the branch tip and is still present, unfixed. Pinged
-`0d` directly with the exact file/line list (msg `fbc40ade`); no reply
-yet. Do not re-derive this finding again if resuming after another
-compaction — re-check `gh pr view 657` fresh instead, per the lesson
-below about re-asking after compaction.
+**Lane 1 update, 2026-09-07 (`ea`, independently verified against the
+pushed branch content, not taken on `0d`'s word alone):** `0d` fixed and
+pushed at `c08ef9f`. Re-checked all 5 previously-flagged files directly
+— the stale `docs/superpowers/...` citations are gone from all of them
+and the corrected `docs/archive/lane-{6,8,4}-.../...` paths are present
+(1/1/2/2/1 occurrences respectively, matching the original finding
+exactly). `0d` also reported a rewritten non-deduping sweep
+(`lane1_sweep_v2.py`) caught 13 further sites the original sweep
+silently dropped (9 outside Lane 1, 4 Lane-1-internal self-citations),
+corroborated by a third independent regex scan finding zero remaining
+stale citations outside the 14 already-known DEFER cases. Confirmed via
+`gh pr view 657 --json comments`: all 3 comments genuinely posted
+(self-review, arithmetic correction, and the full writeup at
+`issuecomment-5565722451`, body length 5751 chars — not a stub).
+**CI was still `pending` at the time of this check** (not yet green);
+`0d` said it will confirm green before merging — don't treat this as
+merged until `gh pr view 657 --json state,mergedAt` says so.
 
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
