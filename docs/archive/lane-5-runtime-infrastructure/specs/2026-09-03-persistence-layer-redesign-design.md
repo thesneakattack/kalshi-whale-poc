@@ -11,7 +11,8 @@ persistence module, finishing the `aiosqlite` migration, the `raw_trades`/`index
 engine decision, `candidate_log.db` lock contention, and small-file consolidation. It does
 not cover Tier 0 (the live fd-exhaustion incident — separate, in-flight, tracked as GitHub
 milestone/issue #448 with sub-issues #449–458, plan doc
-`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`, merged as PR #441, moved there 2026-09-06, planning-lanes migration)
+`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`
+(moved there 2026-09-06, planning-lanes migration), merged as PR #441)
 or any other Tier 1/2/3 item.
 
 **Verified against live source at HEAD `fffe972` (branch

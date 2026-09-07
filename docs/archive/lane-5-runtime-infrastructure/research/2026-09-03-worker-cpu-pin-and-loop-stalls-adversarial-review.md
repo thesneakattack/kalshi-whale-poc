@@ -123,7 +123,9 @@ matching the doc's §5.1 claim exactly.
 By contrast, `services/market_history.py`'s `_connect()` (line 106) **is** a
 proper `@contextlib.contextmanager` with `finally: conn.close()` (line 130),
 per its own docstring citing "2026-09-03, Task 2 of
-docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md (moved there 2026-09-06, planning-lanes migration)." I
+docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md, moved there 2026-09-06, planning-lanes migration)..." (path
+updated by the planning-lanes migration's own citation-fix sweep; the
+docstring's own text continues past this point). I
 independently re-pulled `gh pr view 499` ("fix: Tier 0 live-incident
 remediation — close connection leaks, bound probes, unblock faults route,"
 touches `market_history.py` among others) and `gh pr view 501` ("fix: close
