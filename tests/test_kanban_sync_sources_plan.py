@@ -262,6 +262,34 @@ def test_build_plan_items_has_acceptance_criteria():
     assert len(items[0].acceptance_criteria) >= 1
 
 
+def test_build_plan_items_cites_the_plan_by_filename_not_a_hardcoded_directory():
+    """Adversarial-review finding on this fix's own PR (a third instance of the
+    "hardcoded stale docs/superpowers/plans/ location" bug class, alongside
+    decompose_plan's sub-issue body - see test_kanban_sync_plan_tasks.py): a
+    plan-tracking issue's body is set once at create_issue time
+    (sync_pass_one) and never re-rendered on a later sync - only labels and
+    Project status get touched for an existing issue (sync.py's own
+    reconcile/sync_pass_one, verified directly). Baking a directory path into
+    context_body/acceptance_criteria would therefore go permanently stale the
+    next time the planning-lanes migration (or any future reorganization -
+    this repo has already done this once, 2026-08-27's backend-services-
+    modularization) moves the cited plan doc, with nothing to correct it
+    afterward. A bare filename stays a valid, stable identifier forever -
+    only directories move, never filenames."""
+    items = build_plan_items({
+        "2026-08-30-example-plan.md": {"status": "not-started", "note": ""},
+    })
+
+    context_body = items[0].context_body
+    acceptance_criteria = items[0].acceptance_criteria[0]
+    assert "2026-08-30-example-plan.md" in context_body
+    assert "docs/superpowers/plans/" not in context_body
+    assert "docs/archive/" not in context_body
+    assert "2026-08-30-example-plan.md" in acceptance_criteria
+    assert "docs/superpowers/plans/" not in acceptance_criteria
+    assert "docs/archive/" not in acceptance_criteria
+
+
 def test_build_plan_items_not_started_and_in_progress_are_phase_plan():
     """Every not-started/in-progress item reaching build_plan_items already
     has a real plan doc - that's how it became a candidate at all

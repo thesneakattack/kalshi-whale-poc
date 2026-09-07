@@ -125,7 +125,17 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     when its tracking issue was first created, then later actually finished,
     would never get that issue auto-closed. Found live 2026-08-27 (issue #96,
     docs/superpowers/plans/2026-08-27-backend-services-modularization.md) and
-    fixed here instead of by hand every time it recurs."""
+    fixed here instead of by hand every time it recurs.
+
+    context_body/acceptance_criteria cite the plan by filename only, never a
+    directory path (2026-09-06, planning-lanes migration adversarial
+    review): sync_pass_one sets an issue's body once at create_issue time and
+    never re-renders it for an already-existing issue (only labels/Project
+    status get touched on a later sync - confirmed directly against sync.py),
+    so baking in a specific docs/superpowers/plans/ or docs/archive/lane-N/
+    plans/ path would go permanently stale the next time the plan doc moves,
+    with nothing to correct it afterward. A bare filename stays valid
+    forever - only directories move, never filenames."""
     items: list[SyncItem] = []
     for filename, info in classifications.items():
         done = info["status"] == "done"
@@ -137,7 +147,7 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
             status_label=labels.STATUS_DONE if done else labels.STATUS_CLAIMABLE,
             type_label=labels.TYPE_PLAN_TASK,
             context_body=(
-                f"## Context\nTracks `docs/superpowers/plans/{filename}` "
+                f"## Context\nTracks the plan doc `{filename}` "
                 f"as a whole, not per-task (see kanban-board-sync-design.md "
                 f"§5 on why plan-doc checkboxes aren't a reliable per-task "
                 f"signal in this repo).\n\nCode classification: {info['status']} "
@@ -146,7 +156,7 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"\n{note}"
             ),
             acceptance_criteria=(
-                f"`docs/superpowers/plans/{filename}` is reclassified "
+                f"Plan doc `{filename}` is reclassified "
                 f"'done' on a future sync run.",
             ),
             done=done,
