@@ -123,20 +123,54 @@ commit → push → Woodpecker → PR → merge → delete branch
   `gh pr merge`, and `review-tier` records that it did — that is rigor,
   not approval ceremony.
 
-**GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05,
-#615):** `gh api repos/thesneakattack/kalshi-whale-poc/branches/main` reports
-`protected: false`, `enforcement_level: off`; whether it lapsed via a plan
-change or the repo going private is not recoverable from the API. Until #615
-is decided (GitHub Pro, a public repo, or accepting this as permanent), the
-six contexts below are enforced by the merging session reading
-`commits/<sha>/status` and treating any state other than `success` on any of
-them as not merged: `ci/woodpecker/pr/tests-pytest-app`,
+**GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05, #615;
+restored 2026-09-07):**
+`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` reports
+`enforce_admins: true`, `allow_force_pushes: false`, `allow_deletions: false`,
+`required_pull_request_reviews: null`, `required_status_checks.strict: false`,
+and `required_status_checks.contexts` = `ci/woodpecker/pr/tests-pytest-app`,
 `.../tests-pytest-tooling`, `.../tests-dependency-audit`,
 `.../quality-architecture-audit`, `.../quality-browser-e2e`,
-`.../kalshi-contract-fixtures`. `quality-frontend-build` is path-filtered to
-`frontend/**` and posts no status when skipped, so it is read only when it
-ran. If protection is re-enabled, restore the 2026-09-03 contexts list with
-`gh api -X PUT .../protection --input <file>` and rewrite this paragraph.
+`.../kalshi-contract-fixtures` — the 2026-09-03 list, restored unchanged.
+Deliberately excludes `ci/woodpecker/pr/quality-frontend-build`: it is
+path-filtered to `frontend/**` and posts no status when skipped, so requiring
+it would block every non-frontend PR. Update with
+`gh api -X PUT .../protection --input <file>` when a required pipeline is added.
+
+**The gap this closes, and why the manual practice stays anyway.** There was no
+server-side gate at all for roughly two days: the repo was `private: true` on a
+Free plan, so the protection endpoint returned 403 *"Upgrade to GitHub Pro or
+make this repository public"*. **Dated precisely, because "lapsed 2026-09-05" is
+more than the evidence supports:** the last live read showing protection present
+is a 2026-09-03 16:38 doc, and `0356b2e` recorded the 403 at 2026-09-05 04:31,
+so the lapse began somewhere in that window and 2026-09-04 is not excluded.
+`0356b2e` also attributes a contemporaneous CI outage in which a PR sat at
+`mergeStateStatus: CLEAN` with zero checks having run — cited from that commit,
+not independently reproduced here.
+
+Protection exists again, but **`mergeStateStatus` is still not evidence** and the
+merging session still reads `commits/<sha>/status` itself and confirms each of
+the six contexts is `success` for the PR head. Kept deliberately: the enforcement
+it substitutes for has now vanished once and stayed gone for two days.
+`required_pull_request_reviews: null` also means a green PR head can still be
+pushed straight to `main`, bypassing `gh pr merge` and the `review-tier` artifact
+count — the branch model, not the server, is what prevents that.
+`required_status_checks.strict: false` means a branch need not be up to date with
+`main` before merging; that was already the 2026-08-25 setting and is restored
+unchanged, not a new choice. Re-verify with the `.../branches/main/protection`
+call above rather than assuming this paragraph is current: it was wrong for two
+days without anyone noticing, and a session's copy of this file is a snapshot
+from its own start that any mid-session `git pull` invalidates.
+
+**A second enforcement surface exists and is currently a no-op.** Ruleset
+`22360419` ("Protection", `enforcement: active`, created 2026-09-06) carries
+`deletion` + `non_fast_forward` rules but its `conditions.ref_name.include` is
+`[]`, which targets **no branches** — `gh api .../rules/branches/main` returns
+empty. It also lists the "Claude" GitHub App as a bypass actor with
+`bypass_mode: always`. It is doing nothing today; if it is ever pointed at a
+branch, it becomes a second, differently-configured gate. Check it alongside
+classic protection (`gh api .../rulesets`) rather than assuming the branch API
+tells the whole story.
 
 ## Git history
 

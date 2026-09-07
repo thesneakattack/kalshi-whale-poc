@@ -76,7 +76,7 @@ Woodpecker cron scheduling is ever configured for this project.
 **A path-filtered workflow (`quality-frontend-build`) posts no status at
 all when skipped** — if branch protection ever marks it "required," a
 backend-only PR would block on a check that never runs. Don't mark it
-required; the other four aren't path-filtered and are safe to require.
+required; the other five aren't path-filtered and are safe to require.
 
 **A manually triggered pipeline (`scripts/woodpecker-trigger`, the "Run
 pipeline" UI button, or a raw `POST /api/repos/{id}/pipelines`) carries
@@ -319,13 +319,18 @@ only — selenium is a 9.1MB wheel), `requirements-playwright.txt`
   independently re-verifiable by number — don't follow either number as a
   live link.)
 - `main` has real GitHub branch protection, configured 2026-08-25 (was
-  unconfigured/404 before that) — see
-  `.claude/rules/branching-and-ci.md`'s "Integration lifecycle" section
-  for the exact settings and how to change them. The five required
-  status-check contexts are the `ci/woodpecker/pr/*` names (not
-  `ci/woodpecker/push/*`) since PR-triggered runs are what actually gate
-  a PR's merge button; `quality-frontend-build` is deliberately excluded
-  since it's path-filtered and posts nothing when skipped.
+  unconfigured/404 before that), off between 2026-09-05 and 2026-09-07
+  while the repo was private (#615), restored 2026-09-07 — see
+  `.claude/rules/branching-and-ci.md`'s "GitHub-side enforcement"
+  paragraph for the exact settings, the lapse, and how to change them.
+  The **six** required status-check contexts are the `ci/woodpecker/pr/*`
+  names (not `ci/woodpecker/push/*`) since PR-triggered runs are what
+  actually gate a PR's merge button; `quality-frontend-build` is
+  deliberately excluded since it's path-filtered and posts nothing when
+  skipped. (It said "five" from 2026-08-25 until 2026-09-07: the
+  2026-09-03 split of `tests-pytest` into `tests-pytest-app` +
+  `tests-pytest-tooling` updated the rules file and the live protection
+  config but not this line.)
 
 ## Repo activation in Woodpecker — done
 
