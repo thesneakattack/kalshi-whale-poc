@@ -100,14 +100,41 @@ with one that resolves and verifies **all 231** `LANES` paths against
 the real tree — the right response to a fabrication bug is a
 structural test, not just fixing the two known instances.
 
-**Step 4 (move files in lane-sized batches) — PLANNING, not executing
-yet.** Assigned to `49`: produce a concrete batching plan (order,
-target directory structure, a freshly re-derived reference-fix count per
-batch — not the ~260/118 estimate from hours ago, since issue/file state
-has kept moving all night) before touching any file. That plan gets its
-own self-review + adversarial review + consolidation, same as every
-other stage — a process/design decision, in scope for the full cycle.
-**No file moves until that plan reports GO.**
+**Step 4 (move files in lane-sized batches) — EXECUTING.** Plan (GO,
+full review cycle) covers 246 files across 8 populated lanes, moving to
+`docs/archive/lane-N-<slug>/{plans,specs,research}/`. Prerequisite
+`kanban_sync`/`quality_coordination` `PLANS_DIR` fix landed first (PR
+#650) — took 3 full review rounds to get right, each round catching a
+real, previously-unseen bug (a second hardcoded call site, then a third
+in a genuinely different category — string literals baked into written
+GitHub issue text, not filesystem reads; the bug that let the original
+version through was the regression test mocking away the exact function
+whose output text needed checking).
+
+**Batch order (decided): 4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**, smallest/
+lowest-risk first to prove the process, Lane 9 forced last (contains the
+design doc governing the whole migration). Lane 1 deliberately near the
+end despite "Kalshi first" — that instruction was about substantive
+engineering priority (honored all night via real `#605`/`#634`/`#642`
+work), not file-archival sequencing, which doesn't advance or delay any
+actual engineering outcome either way.
+
+**Known, accepted, temporary side effect — not a bug if you see it:**
+each batch only fixes its own outgoing references, not incoming
+citations from not-yet-moved lanes. A file in a later batch citing an
+already-moved file will have a stale path until *its own* batch runs.
+**Currently affects 2 active Lane-3 plans**
+(`economic-strategy-effectiveness-investigation.md`,
+`economic-strategy-remediation.md`), which cite Lane 4's now-moved
+files — self-heals when Lane 3's batch runs (5th in order). Decided
+deliberately: proactively fixing forward-references would mean every
+batch also edits files outside its own lane's scope, real complexity
+and cross-batch merge-collision risk for a low-severity, self-healing,
+loudly-failing (not silent) inconvenience. Not worth it.
+
+**Lane 4 (11 files): DONE, PR #651.** Lane 8 in progress. `c4`
+independently verifying each batch as it lands, same role `ea` played
+for step 2.
 
 **Step 5 (retire `plans/README.md`)** — not started, low-risk, can
 follow step 4's first batch.
