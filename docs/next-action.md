@@ -89,16 +89,28 @@ do here.
 
 ---
 
-## Planning lanes — 6 of 8 batches done (4, 8, 5, 6, 2, 3); only Lane 1 open
+## Planning lanes — 7 of 8 batches MERGED (4, 8, 5, 6, 2, 3, 1); only Lane 9 left
+
+167 of 246 files moved (67.9%); Lane 9 (79 files, 32.1%) is the only
+one remaining. **`0d` assigned to execute it**, using `49`'s and `c4`'s
+already-completed prep (below) as a running start.
 
 **On `main`:** design (PR #640), all 3 step-1 classification tables (PRs
 #643/#644 + a direct commit), step 3 `kanban_sync` retooling (PR #645),
 `LANES`/`CONCERNS` infrastructure + full step-2 labeling (PR #646).
 Batch order: **4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**. Lanes 4 (#651), 8
-(#652), 5 (#653), 6 (#655), 2 (#656), and now **3 (#658, `49`) — MERGED
-2026-09-07T05:50:58Z**, confirmed clean by `ea`'s independent sweep
-before merge. Only **Lane 1 (#657, `0d`) remains open** — now the sole
-blocker before Lane 9 can start.
+(#652), 5 (#653), 6 (#655), 2 (#656), 3 (#658, MERGED
+2026-09-07T05:50:58Z, confirmed clean by `ea`'s independent sweep before
+merge), and now **1 (#657, `0d`) — MERGED 2026-09-07T06:18:21Z**
+(`96361be`, independently verified via `gh pr view 657
+--json state,mergedAt` before accepting). Lane 1 went through the most
+thorough review cycle of the night: self-review, a fix-list recheck, an
+independent file-citation sweep (`49`), an independent issue-citation
+sweep (`c4`, 27 issues fixed), a dispatched adversarial-review agent
+(found 5 more real defects including the new mutual-deferral hazard,
+methodology point 11), and a final consolidation — 7 distinct PR
+comments total, all independently verified before the merge went ahead.
+**Only Lane 9 remains.**
 
 **Lane 1 update, 2026-09-07 (`ea`, independently verified against the
 pushed branch content, not taken on `0d`'s word alone):** `0d` fixed and
@@ -262,6 +274,26 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
     `ROADMAP.md:114-116` — both still citing a Lane 1 file by old path.
     Apply this check on Lane 9 (the last lane) against ALL 7 already-
     merged lanes, not just the ones it happens to cite.
+11. **Mutual-deferral race: two lanes open/executing close together can
+    each correctly defer to the other, and then neither ever gets
+    fixed** — found by `0d`'s dispatched adversarial-review agent on
+    #657 (2026-09-07 ~06:10Z, verdict NO-GO as submitted). Lane 3
+    (#658) merged into `main` *after* Lane 1's original citation sweep
+    but *before* Lane 1 itself merged. At Lane 3's sweep time, Lane 1
+    hadn't moved yet, so Lane 3 correctly deferred its Lane-1 citations;
+    at Lane 1's sweep time, Lane 3 hadn't moved yet either, so Lane 1
+    correctly deferred its Lane-3 citations. Both deferrals were correct
+    when made — but both lanes now consider it "the other lane's job,"
+    and neither's original sweep will ever re-run, so both citations go
+    permanently stale unless something explicitly re-checks. Only
+    detectable by simulating the actual merge (`git checkout -b sim
+    origin/main && git merge <pr-branch>`) and re-sweeping the merged
+    tree, not either branch alone. **Standing fix: any PR whose citation
+    sweep predates another lane's later merge must re-sweep a simulated
+    merge with current `main` before its own merge**, not just rebase
+    and trust the old sweep. Distinct from point 10 (which is about an
+    already-*merged* lane's stale archive) — this is two lanes *racing*,
+    both still in flight relative to each other at sweep time.
 
 **Meta-lesson, elevated above the numbered list after a second lane hit
 this: a citation-discovery script's blind spots are not a fixed,
@@ -430,41 +462,36 @@ verified, not relayed:**
 
 ---
 
-## Peer status (rewritten 2026-09-07 ~06:10Z by coordinator `36` — this file is the durable record, not chat memory)
+## Peer status (rewritten 2026-09-07 ~06:22Z by coordinator `36` — this file is the durable record, not chat memory)
 
-Only Lane 9 remains once Lane 1 lands — it contains the design doc
-governing the whole migration. Lanes 2/3 done; Lane 1 (#657) is the
-sole blocker, currently **NOT GO** (see Planning Lanes section above
-for the full, current detail — this block is who's doing what, not the
-PR's technical state).
+7 of 8 lanes merged. **Only Lane 9 remains** (79 files, tooling/CI/
+process governance — also physically contains `step4-file-move-plan.md`
+and the design doc governing the whole migration).
 
-- **`0d`** — owns Lane 1 (PR #657). Pushed `c08ef9f` fixing the
-  original two required items (occurrence-dedup + the first cross-lane
-  gap), CI now green on all 12 contexts. Has the full current picture
-  as of coordinator's last message: still needs to fix `49`'s 3 new
-  file-citation misses, rebase onto current `main` (branch predates
-  Lane 2/3), re-sweep, then write the **consolidation comment** — the
-  one artifact nobody's posted yet, and the last gate before merge.
-- **`49`** — Lane 3 (#658) merged clean. Completed independent
-  file-citation sweep on #657 (posted directly, `issuecomment-
-  5565762808`): occurrence-dedup confirmed clean, found 3 new misses
-  (methodology point 10) + flagged the stale-branch issue. **Now
-  assigned Lane 9 prep**: preliminary GitHub-issue-citation check for
-  Lane 9's candidate files (mirroring `c4`'s file-side prep below),
-  read-only, reporting before anyone acts.
-- **`c4`** — Completed independent issue-citation sweep on #657 (posted
-  directly, `issuecomment-5565810132`): found and fixed 27 closed
-  issues (31 occurrences) `0d`'s self-review missed (open-issues-only
-  scope vs. the required 335) — coordinator spot-checked 5, confirmed
-  real. **Now assigned Lane 9 prep**: cross-check Lane 9's 79-file list
-  against the plan doc's Appendix A + classification tables, plus a
-  preliminary file-citation sweep against candidate files, read-only,
-  reporting before anyone acts.
-- **`ea`** — Lane 2 (#656) merged clean. Did the post-compaction resync
-  of this file and independently corroborated the coordinator's
-  missing-adversarial-review finding on #657 before either acted on it.
-  No active task assigned as of this writeup; last known state idle/
-  standing by.
+- **`0d`** — Lane 1 (#657) MERGED (`96361be`, 06:18:21Z), full 7-comment
+  review cycle, independently verified before merge went ahead.
+  **Assigned to execute Lane 9**, using `49`/`c4`'s prep below as a
+  running start; same self-review → independent-review division of
+  labor that worked on Lane 1.
+- **`49`** — Lane 3 (#658) merged clean. Completed Lane 9 GitHub-issue-
+  citation prep: 53 distinct issues (54 citation-rows) will need
+  re-pointing (see Planning Lanes section above for detail) — full list
+  in scratchpad, regenerate fresh at execution time. Awaiting `0d`'s
+  first Lane 9 commit to shift into independent-review role.
+- **`c4`** — Completed Lane 9 file-list/file-citation prep: 79 files
+  triangulated independently against `49`'s count, plus 10 pre-existing
+  citation-debt sites into Lanes 3/4/8 found proactively (full list in
+  Planning Lanes section above). Awaiting `0d`'s first Lane 9 commit to
+  shift into independent-review role.
+- **`ea`** — Lane 2 (#656) merged clean. Investigated why
+  `step4-file-move-plan.md` was never merged to `main` (see the section
+  above) — found David already engaged with part of it (commit
+  `3fd93b7`/PR #650, same night), re-confirmed the GO verdict from the
+  raw review files, and caught that `main` has drifted too far for a
+  clean merge of the branch (246 files, would redo 6 already-completed
+  lane moves) — recommended a narrow 4-file commit instead. Coordinator
+  independently verified both load-bearing claims. Question now with
+  David directly; no active task assigned as of this writeup.
 
 ---
 
