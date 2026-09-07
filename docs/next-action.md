@@ -576,12 +576,26 @@ David rather than passing it along: answer was **lean execution**
 (small but real self-review/adversarial-review/consolidation artifacts,
 genuinely independent adversarial pass required), not a full skip —
 the existing 2026-09-05 allowance, not a further exception. Relayed
-back to `ea`, which is proceeding on that basis. **Not yet merged as of
-this writeup** — full content will be communicated to the fleet once
-it lands. Memory-worthy pattern: "the user's own word, relayed by a
-peer" doesn't change the receiving session's epistemic position from
-"secondhand and unverifiable" — check directly rather than accept on
-trust, same as any other unverifiable claim.
+back to `ea`, which is proceeding on that basis. Memory-worthy pattern:
+"the user's own word, relayed by a peer" doesn't change the receiving
+session's epistemic position from "secondhand and unverifiable" — check
+directly rather than accept on trust, same as any other unverifiable
+claim.
+
+**MERGED, 2026-09-07T06:44:52Z (`c164d8c`).** The lean cycle paid for
+itself: self-review caught a real loophole in the original wording (its
+closing sentence read as an unlisted skip-condition, in tension with
+the rule's own "applies to every... PR" line) and fixed it (`576a534`)
+before the adversarial pass even ran; the independent adversarial pass
+(fresh Agent, verified against the 5 cited skills' actual `SKILL.md`
+files, not assumed) then caught a second real issue — the PR body's
+"Review cycle" section said "Skipped" when lean execution was what was
+actually authorized and run. Final bullet text (verbatim, now on
+`main` right after the rule's main paragraph) and its practical
+reading — the cycle still runs in full every time, this only redirects
+where the *effort* concentrates, not a new skip condition — relayed to
+`49`/`c4`/`0d` directly. **Full text is now in CLAUDE.md itself** — read
+it there for the authoritative version rather than this summary.
 
 **Also worth noting for future sessions:** `git worktree add` was used
 here (`.claude/worktrees/coordinator-main`, tracking `main`) after
@@ -593,6 +607,11 @@ inherit uncommitted changes from other checkouts (this one's
 not touched here), and the git stash stack is shared across ALL
 worktrees and the primary — bare `git stash`/`git stash pop` (this
 session's pattern all night for `config/settings.yaml`) risks popping
-another session's concurrent stash. Switched to stash-free
-fetch+merge for this worktree since it has nothing to stash; the
-primary checkout's established stash pattern should be revisited too.
+another session's concurrent stash. Memory:
+`stash-stack-shared-across-worktrees`. Worktree released and removed
+once `ea` confirmed it was done (`ExitWorktree` couldn't remove it
+directly — session wasn't the registered "owner" since it was created
+via raw `git worktree add` then entered via `EnterWorktree({path})`
+rather than `EnterWorktree({name})`; used `action: "keep"` then a plain
+`git worktree remove` instead), primary is back on `main` at `c164d8c`,
+safety config re-verified intact. This whole thread is closed.
