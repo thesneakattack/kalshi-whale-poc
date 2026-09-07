@@ -25,6 +25,69 @@ replay harnesses this initiative built (`tools/realtime_pipeline_replay.py`,
 **Spec:** `docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-remediation-design.md`
 **Root cause:** `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-root-cause-report.md`
 
+## Verified task state (2026-08-29, migrated here 2026-09-07 from the now-retired `docs/superpowers/plans/README.md`)
+
+**Do not read completion out of the checkboxes below — they lie.** This is
+the only task-by-task-verified status for this plan; everything else in
+this document is the plan as originally written, not a live status report.
+
+- **Shipped:** Tasks 1–13 (P0–P2, untagged, predating the tag convention;
+  confirmed in source by their plan-named interfaces `candidate_ledger`,
+  `whale_gate`, `tick_executor`, `capture_writer`, `loop_watchdog`,
+  `candidate_retry`), 14–17 (P3), 17a/17b/17c (P3.5), 29, 30, 33 (P7),
+  34–39 (P8).
+- **Task 20** (`check_exits` per-tick memoization) also shipped, out of
+  phase and with no phase tag on its commit — `check_exits` takes
+  `tick_cache` at `services/exits/exit_engine.py:111`. The plan had
+  deliberately relocated it ahead of Tasks 18/19 after a live crash report.
+- **Shipped 2026-08-29 (PR #198):** Tasks **18**, **19** and **24** — the
+  critical/market queue split (behind
+  `realtime_data_plane.two_consumer_mode`), ticker coalescing, and the
+  batched deferred settlement resolver (`services/settlement_resolver.py`)
+  — after the settlement-cascade drop root cause was confirmed.
+  Boundary-verified live the same day.
+- **Never implemented:** Tasks **21–23**, **25–28** (the rest of
+  P4/P5/P6) plus **31**, **32**, **40**.
+
+Checked individually, by each task's own named deliverable, not by
+assuming a range: `_critical_queue`/`_consume_market` (18),
+`services/settlement_resolver.py` (19, 24), `_connection_generation` (21),
+limiter priority queues (22), `trip_brake` (23),
+`services/milestone_cache.py` (25), the `trade_tape_poll` caller class
+(26), `on_loss_event` (27), `services/position/ws_state_verify.py` (28) —
+all absent from `services/` and `main.py`. A first pass here generalized
+"18–28 unshipped" from three spot checks and got Task 20 wrong; the
+phase-tag sweep alone is not sufficient, because tags were applied
+inconsistently.
+
+Each remaining absence is independently decisive:
+
+- Task 22 (critical-first waiter queues) is absent —
+  `_TokenBucketRateLimiter` in `services/http_client.py` has a flat
+  `waiters` counter and no priority queues.
+- Task 31 is absent — `_fetch_account_snapshot`'s periodic REST poll
+  still runs unconditionally inside the tick gather (`main.py`).
+
+P4/P5 are where the competing solution families for the message-drop
+bottleneck are already written: A isolate the consumer (18), B evict REST
+from it (19, 24), C fix limiter scheduling (22, 23), D cut REST demand
+(25, 26, 27). Raising queue capacity is the anti-move `CLAUDE.md`'s hard
+rule names. One family is already falsified in place:
+`services/http_client.py:246` records that a global `asyncio.Semaphore`
+bounding REST concurrency was tried for this exact bottleneck and did not
+work, down to `Semaphore(5)`.
+
+Those phases stalled because their empirical input never arrived: Task
+17b's live stress test failed all three attempts, root-caused in the plan
+itself to concurrent Claude Code worktree sessions triggering `uvicorn
+--reload` mid-experiment.
+
+Live GitHub tracking issues exist for Tasks 21–23 and 25–27
+(#134/#135/#136/#138/#139/#140, open) and 24 (#137, closed, shipped).
+Tasks 28, 31, and 32 have no individual tracking issue as of this
+migration — this section is the only place their never-implemented
+status is currently recorded.
+
 ## Global Constraints
 
 - Real trading stays disabled; `kalshi_account.trading_enabled` and the typed
