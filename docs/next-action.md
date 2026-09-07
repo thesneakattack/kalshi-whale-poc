@@ -1,8 +1,19 @@
 # Next action
 
 **Coordinator:** `autotrade-36`, one continuous session since `1f`.
-Fleet active. Verify identity by direct reply before trusting a name,
-in either direction.
+**Fleet PAUSED on David's instruction (2026-09-07 ~03:50)** — all 4
+peers confirmed holding, nothing mid-merge. Resume on his signal, not on
+a timer. Verify identity by direct reply before trusting a name, in
+either direction.
+
+**Nothing is one step from a merge right now** (David asked explicitly):
+PR #654 (Lane 4/8 wrap-citation follow-up) failed its own adversarial
+review (body undercounted the fix scope 11/8 vs. real 23/11, plus 4 of
+16 fixes recreated the exact line-wrap defect being fixed) and is mid a
+narrow fix-list recheck, not done. PR #655 (Lane 6) has zero review-cycle
+comments yet, ~28 min into its own dispatch. Both in-flight subagents
+will finish their current step (can't be frozen mid-turn) but `49` is
+holding both short of `gh pr merge` until told to resume.
 
 ---
 
@@ -155,21 +166,26 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status
+## Peer status (all PAUSED, confirmed holding as of 2026-09-07 ~03:50)
 
-- **`49`** — Lane 5 (#653) merged. Running the 14-file wrap-citation
-  retroactive fix (Lane 4+8) and Lane 6's file-move in parallel now.
-- **`c4`** — confirmed #634's live deploy; completed retroactive
-  review-cycle artifacts for PR #651 (full cycle) and PR #652 (missing
-  comment + addendum), then generalized the #54 finding across all 147
-  open issues (see above). Available for next assignment.
-- **`0d`** — `#642` adversarial review still pending, status re-requested,
-  no reply yet.
-- **`ea`** — standing watch. Resolved its own labeling-count concern
-  (9 unlabeled = 8 stable, deliberately-declined `RULE-GAP` cases +
-  1 brand-new untriaged issue, not a stuck cohort) by checking two
-  directly rather than trusting the count — correct instinct, no action
-  needed.
+- **`49`** — PR #654 mid fix-list recheck (not merge-ready, see above);
+  PR #655/Lane 6 in early dispatch (not merge-ready). Neither pushed
+  toward merge; holding both short of `gh pr merge`.
+- **`c4`** — clean, nothing mid-flight. Completed retroactive review-cycle
+  artifacts for PR #651/#652 and generalized the #54 finding across all
+  147 open issues (found + fixed #621, #613 too) before this pause.
+- **`0d`** — `#642`'s adversarial review was already posted (00:20:26Z,
+  well before this session resumed) — reframes the original ~90s stall
+  as likely just one instance of this app's already-documented 4-21/hr
+  unattributed stall pattern, not backup-caused; `tick_phase_timings`
+  named as the right tool if it recurs. **Coordinator error, corrected**:
+  asked `0d` for this status 3 times after it was already answered,
+  across a compaction boundary — memory:
+  `verify-status-before-reasking-peer-after-compaction`. Nothing further
+  needed on #642.
+- **`ea`** — clean, standing watch. Resolved its own labeling-count
+  concern earlier (9 unlabeled = 8 stable `RULE-GAP` cases + 1 brand-new
+  untriaged issue, not a stuck cohort).
 
 ---
 
