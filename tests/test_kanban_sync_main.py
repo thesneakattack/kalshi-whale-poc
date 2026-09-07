@@ -231,6 +231,37 @@ class _FakeParentIssueClient:
         return IssueState(number=number, open=True, labels=frozenset())
 
 
+def test_decompose_plan_subcommand_finds_a_plan_already_moved_to_an_archived_lane(
+    monkeypatch, tmp_path,
+):
+    """Regression test for a gap this fix's own PR adversarial review found:
+    decompose-plan used to hard-fail with "plan doc not found" for any plan
+    doc that had already moved to ARCHIVE_ROOT/lane-N-<slug>/plans/ as part
+    of the 2026-09-06 planning-lanes migration - resolve_plan_path() fixes
+    this by searching both locations."""
+    monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeParentIssueClient())
+    live_plans = tmp_path / "plans"
+    live_plans.mkdir()
+    monkeypatch.setattr(cli, "PLANS_DIR", live_plans)
+    archive_root = tmp_path / "archive"
+    lane_plans = archive_root / "lane-2-whale-signal-calibration" / "plans"
+    lane_plans.mkdir(parents=True)
+    (lane_plans / "moved-plan.md").write_text("# Moved plan\n")
+    monkeypatch.setattr(cli, "ARCHIVE_ROOT", archive_root)
+    calls = []
+    monkeypatch.setattr(
+        cli, "decompose_plan",
+        lambda plan_filename, plan_text, parent_number, client, *, dry_run, start_from_task=1:
+            calls.append((plan_filename, plan_text))
+            or {"tasks_found": 0, "sub_issues_created": [], "milestone": plan_filename},
+    )
+
+    cli.main(["decompose-plan", "--plan", "moved-plan.md", "--parent-issue", "75"])
+
+    assert calls == [("moved-plan.md", "# Moved plan\n")]
+
+
 def test_decompose_plan_subcommand_uses_parent_issue_directly_when_given(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_check_project_scope", lambda: None)
     monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeParentIssueClient())

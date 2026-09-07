@@ -21,7 +21,7 @@ from tools.kanban_sync.live_status import resolve_project_status
 from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
 from tools.kanban_sync.plan_tasks import decompose_plan
-from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
+from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates, resolve_plan_path
 from tools.kanban_sync.sources_roadmap import parse_roadmap_items
 from tools.kanban_sync.sources_worktree import (
     collect_worktree_items, live_worktree_branches, parse_worktree_list,
@@ -34,6 +34,12 @@ from tools.kanban_sync.sync import (
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
 PLANS_DIR = Path("docs/superpowers/plans")
+# 2026-09-06 planning-lanes migration target (docs/superpowers/specs/2026-09-06-
+# planning-lanes-design.md): decompose-plan (_cmd_decompose_plan) must keep finding
+# a named plan doc's content via resolve_plan_path() even after it moves to
+# ARCHIVE_ROOT/lane-<N>-<slug>/plans/ - see resolve_plan_path's own docstring for
+# why this differs from list_plan_candidates()'s "no change needed" finding.
+ARCHIVE_ROOT = Path("docs/archive")
 KNOWN_SOURCES = frozenset({"worktree", "roadmap", "plan"})
 
 
@@ -253,7 +259,7 @@ def _cmd_decompose_plan(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    plan_path = PLANS_DIR / args.plan
+    plan_path = resolve_plan_path(PLANS_DIR, ARCHIVE_ROOT, args.plan)
     if not plan_path.exists():
         print(f"error: plan doc not found: {plan_path}", file=sys.stderr)
         sys.exit(1)

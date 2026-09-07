@@ -74,6 +74,44 @@ def list_plan_candidates(plans_dir: Path) -> list[str]:
     )
 
 
+def resolve_plan_path(plans_dir: Path, archive_root: Path, filename: str) -> Path:
+    """Locates a single named plan doc's current file for decompose-plan
+    (`_cmd_decompose_plan`), wherever it lives during the 2026-09-06
+    planning-lanes migration (docs/superpowers/specs/2026-09-06-planning-
+    lanes-design.md, docs/superpowers/lanes/step4-file-move-plan.md): still
+    in `plans_dir` (not yet moved - the common case, and correct for every
+    call before/outside this migration), or already relocated to
+    `archive_root/lane-<N>-<slug>/plans/`.
+
+    Unlike list_plan_candidates() above (whose "no code change needed" this
+    migration finding does not apply here - see the docstring split), this
+    genuinely needs to search both locations: decompose-plan specifically
+    targets not-started/in-progress plans using `### Task N:` headings
+    (kanban-board-sync/SKILL.md step 7) - exactly the still-`active`
+    population docs/superpowers/lanes/step1-plans-classification.md
+    identifies as subject to being archived while still needing this
+    lookup to keep working (found by this fix's own PR adversarial review,
+    not by the original investigation).
+
+    Checks `plans_dir` first (cheapest, and correct for the overwhelming
+    majority of calls), then searches every `lane-*/plans/` subdirectory
+    under `archive_root` for an exact filename match - never hardcoding a
+    lane number/slug, tolerating `archive_root` (or any specific lane's
+    `plans/` subdirectory) not existing yet. Falls back to
+    `plans_dir / filename` when the file is found nowhere, so the caller's
+    existing "plan doc not found: <path>" error keeps reporting exactly the
+    path it always has for a filename that genuinely doesn't exist
+    anywhere - unchanged prior behavior for that case."""
+    live_path = plans_dir / filename
+    if live_path.exists():
+        return live_path
+    if archive_root.exists():
+        matches = sorted(archive_root.glob(f"lane-*/plans/{filename}"))
+        if matches:
+            return matches[0]
+    return live_path
+
+
 def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     """`classifications` maps filename -> {"status": "done"|"in-progress"|
     "not-started", "note": str}, produced by the kanban-board-sync skill's

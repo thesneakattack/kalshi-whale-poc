@@ -1,5 +1,5 @@
 from tools.kanban_sync import labels
-from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
+from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates, resolve_plan_path
 
 
 def test_list_plan_candidates_excludes_readme(tmp_path):
@@ -146,6 +146,84 @@ def test_list_plan_candidates_does_not_need_to_track_moved_already_classified_pl
     result = list_plan_candidates(tmp_path)
 
     assert result == ["2026-09-10-new-plan.md"]
+
+
+def test_resolve_plan_path_finds_file_in_the_live_plans_dir(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    (plans_dir / "x.md").write_text("# X\n")
+
+    result = resolve_plan_path(plans_dir, archive_root, "x.md")
+
+    assert result == plans_dir / "x.md"
+
+
+def test_resolve_plan_path_finds_a_file_already_moved_to_an_archived_lane(tmp_path):
+    """A genuine gap found by adversarial review of this fix's own PR:
+    decompose-plan (_cmd_decompose_plan) reads a named plan doc's content
+    directly off PLANS_DIR, independently of list_plan_candidates -
+    unrelated to that function's "no code change needed" conclusion.
+    decompose-plan specifically targets not-started/in-progress plans
+    (kanban-board-sync/SKILL.md step 7) - exactly the population
+    docs/superpowers/lanes/step4-file-move-plan.md flags as still `active`
+    and therefore subject to being archived while still needing this
+    lookup to keep working."""
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    lane_plans = archive_root / "lane-2-whale-signal-calibration" / "plans"
+    lane_plans.mkdir(parents=True)
+    (lane_plans / "2026-08-30-whale-confidence-scoring-remediation-implementation.md").write_text(
+        "# Plan\n"
+    )
+
+    result = resolve_plan_path(
+        plans_dir, archive_root, "2026-08-30-whale-confidence-scoring-remediation-implementation.md",
+    )
+
+    assert result == (
+        lane_plans / "2026-08-30-whale-confidence-scoring-remediation-implementation.md"
+    )
+
+
+def test_resolve_plan_path_prefers_the_live_plans_dir_when_present_in_both(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    lane_plans = archive_root / "lane-1-kalshi-ingestion" / "plans"
+    lane_plans.mkdir(parents=True)
+    (plans_dir / "x.md").write_text("live copy\n")
+    (lane_plans / "x.md").write_text("stale archived copy\n")
+
+    result = resolve_plan_path(plans_dir, archive_root, "x.md")
+
+    assert result == plans_dir / "x.md"
+
+
+def test_resolve_plan_path_falls_back_to_the_live_path_when_found_nowhere(tmp_path):
+    """Preserves prior behavior for a filename that genuinely doesn't exist
+    anywhere: the caller's existing "plan doc not found: <path>" error
+    keeps reporting the live-plans-dir path it looked for, unchanged from
+    before this fix."""
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+
+    result = resolve_plan_path(plans_dir, archive_root, "does-not-exist.md")
+
+    assert result == plans_dir / "does-not-exist.md"
+    assert not result.exists()
+
+
+def test_resolve_plan_path_tolerates_archive_root_not_existing_yet(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"  # never created
+
+    result = resolve_plan_path(plans_dir, archive_root, "missing.md")
+
+    assert result == plans_dir / "missing.md"
 
 
 def test_build_plan_items_emits_done_item_for_done_classification():
