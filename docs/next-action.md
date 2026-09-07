@@ -1,8 +1,35 @@
 # Next action
 
-**No active task.** PR #665 merged 2026-09-07 22:25Z (`e7f89a0`), pulled into
-the primary, worktree and branches cleaned up. David has not given a new
-instruction since. Don't self-assign — report status and let him decide.
+**No active task.** Three PRs merged and deployed 2026-09-07: **#665**
+(`e7f89a0`) the two-hop tier scan, **#666** (`aa0ca42`) the branch-protection
+restore, and a peer's **#667** (`afd52f2`). All pulled into the primary;
+branches and worktrees cleaned up. Don't self-assign — report status and let
+David decide.
+
+---
+
+## `main` is protected again — #615 CLOSED
+
+Restored 2026-09-07 (David's explicit go-ahead) once the repo was public:
+`enforce_admins: true`, force-push and deletion blocked, and the six
+`ci/woodpecker/pr/*` contexts required. It had been **off since somewhere in
+(2026-09-03 16:38, 2026-09-05 04:31]** — the repo was private on a Free plan and
+the endpoint returned 403. Documented in `.claude/rules/branching-and-ci.md`'s
+"GitHub-side enforcement" paragraph; PR #666.
+
+**Three things that did not change and should not be "tidied up" later:**
+- **The manual check stays.** Still read `commits/<sha>/status` and confirm all
+  six contexts before every merge. `mergeStateStatus: CLEAN` is not evidence.
+  This enforcement vanished once and went unnoticed for two days.
+- **Configured is not blocking.** No safe test exists; merging a green PR proves
+  nothing. Falsifier: if a direct push to `main` ever succeeds, reopen #615.
+- **Ruleset `22360419`** is a second, currently no-op enforcement surface
+  (`include: []`) carrying the Claude app as an `always` bypass actor. Check
+  `.../rulesets` too, not just the branch API.
+
+A process note worth keeping: a direct `git push origin main` succeeded earlier
+this session (`d9e068d`, a next-action.md rewrite) because there was no gate.
+That was a rule violation on my part; it is what surfaced the missing protection.
 
 ---
 
