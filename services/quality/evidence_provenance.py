@@ -2,11 +2,12 @@
 loop (#214). Composes three already-existing, already-public defect
 counters into one "is a known data-completeness defect currently active in
 this process" read - no new instrumentation, no persistence, no network
-I/O. See docs/archive/lane-4-analytics-advisory-research/specs/2026-08-30-self-feeding-loop-provenance-
-design.md (moved there 2026-09-06, planning-lanes migration) for why these three fields specifically (settlement_resolver's
-dropped_total is a conservation sum, not a defect count - its own comment
-says so) and why this reads current process state rather than a historical
-per-trade window.
+I/O. See docs/archive/lane-4-analytics-advisory-research/specs/
+2026-08-30-self-feeding-loop-provenance-design.md (moved there 2026-09-06,
+planning-lanes migration) for why these three fields specifically
+(settlement_resolver's dropped_total is a conservation sum, not a defect
+count - its own comment says so) and why this reads current process state
+rather than a historical per-trade window.
 """
 import time
 
