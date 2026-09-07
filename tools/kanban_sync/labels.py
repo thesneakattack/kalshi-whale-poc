@@ -1,9 +1,10 @@
 """Canonical label constants (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md §7). status:* values are copied verbatim from the
 installed github-issues-kanban skill's assets/label-scheme.json - do not
-invent new status values. type:* is this repo's own extension, already
-established by docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md (Task 15's note); type:tracking is this plan's own addition
-to that same repo-local family, for issues that track a worktree rather
-than represent claimable work.
+invent new status values. type:* is this repo's own extension, originally
+established by a since-scrapped autonomous-engineering-mode design (never
+implemented, its docs removed 2026-09-07); type:tracking is this plan's own
+addition to that same repo-local family, for issues that track a worktree
+rather than represent claimable work.
 """
 from __future__ import annotations
 
