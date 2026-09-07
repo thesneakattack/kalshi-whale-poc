@@ -184,7 +184,7 @@ cannot pass while `KALSHI_PATHS` names three files that no longer exist (they
 cannot be added to a constant whose every entry must exist on disk). Removing
 them and adding the constant is one coherent change.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_kanban_sync_labels.py`, replace the existing
 `_ROOT_ANCHORED_PREFIXES` tuple and `_resolve_package_path` helper (lines
@@ -287,12 +287,12 @@ def test_review_tier_a_labels_is_exactly_concern_hotpath():
     assert labels.REVIEW_TIER_A_LABELS == frozenset({labels.CONCERN_HOTPATH})
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_kanban_sync_labels.py -v`
 Expected: FAIL — `AttributeError: module 'tools.kanban_sync.labels' has no attribute 'resolve_lane_package'`, and `REVIEW_TIER_A_PATHS` missing on the six new tests.
 
-- [ ] **Step 3: Add the resolver and the constants to `labels.py`**
+- [x] **Step 3: Add the resolver and the constants to `labels.py`**
 
 Add `import re` under `from __future__ import annotations`, then append after
 `ALL_LANE_LABELS`:
@@ -414,7 +414,7 @@ REVIEW_TIER_A_DIFF_PATTERN = re.compile(
 REVIEW_TIER_A_LABELS = frozenset({CONCERN_HOTPATH})
 ```
 
-- [ ] **Step 4: Remove the three dead hook entries**
+- [x] **Step 4: Remove the three dead hook entries**
 
 In `.claude/hooks/guard_workflow.py`, `KALSHI_PATHS` and `HOT_PATHS` become:
 
@@ -442,13 +442,13 @@ and `.claude/hooks/run_tests.py:60`. All of those carry the deleted names as
 strings on purpose — legacy-import detection and test-name maps — and none is
 affected by this edit. Leave them alone.)
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_labels.py tests/test_guard_workflow.py -v`
 Expected: PASS, including the pre-existing
 `test_every_lane_package_path_exists_on_disk` through its rewritten helper.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Stage `tools/kanban_sync/labels.py`, `tests/test_kanban_sync_labels.py`, and
 `.claude/hooks/guard_workflow.py`, then commit with:
@@ -477,7 +477,7 @@ Every entry must exist on disk, the same guarantee LANES already has.
   repo-relative paths (`"services/app_state.py"`, `"services/exits/"`), not
   dotted names
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_kanban_sync_review_tier.py`:
 
@@ -564,12 +564,12 @@ def test_lane3_direct_imports_on_the_real_repo_is_not_vacuous():
     assert len(targets) >= 25
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
 Expected: FAIL — `ImportError: cannot import name 'review_tier' from 'tools.kanban_sync'`.
 
-- [ ] **Step 3: Create `tools/kanban_sync/review_tier.py`**
+- [x] **Step 3: Create `tools/kanban_sync/review_tier.py`**
 
 ```python
 """Review-tier classification (docs/archive/lane-9-tooling-ci-process-governance/
@@ -655,7 +655,7 @@ def lane3_direct_imports(repo_root: Path) -> set[str]:
     return targets
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
 Expected: PASS (6 tests). If
@@ -665,7 +665,7 @@ not loosen the test — decide the named path on its merits and add it to
 exists to produce, and it has already produced one: the six paths Task 1 adds
 beyond `app_state.py` were invisible to the regex this scanner replaced.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage `tools/kanban_sync/review_tier.py` and
 `tests/test_kanban_sync_review_tier.py`, then commit with:
@@ -714,7 +714,7 @@ code-typed 70 / 14, unreviewed 24 / 6.** Exactly two PRs move, #614 and #498.
 derived by the same incomplete scan Task 2 replaces; the spec carries a dated
 correction saying so. The fixture in step 1 uses the corrected set.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_kanban_sync_review_tier.py`:
 
@@ -881,12 +881,12 @@ def test_reasons_name_the_rule_and_the_path_that_fired_it():
     assert reasons == ["path: services/risk_manager.py (under services/risk_manager.py)"]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
 Expected: FAIL — `AttributeError: module 'tools.kanban_sync.review_tier' has no attribute 'review_tier'` on all fifteen new tests.
 
-- [ ] **Step 3: Implement the classifier**
+- [x] **Step 3: Implement the classifier**
 
 Append to `tools/kanban_sync/review_tier.py`:
 
@@ -994,12 +994,12 @@ def review_tier(
     return ("A" if reasons else "B"), reasons
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
 Expected: PASS — the six tests from Task 2 plus the sixteen here.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage `tools/kanban_sync/review_tier.py` and
 `tests/test_kanban_sync_review_tier.py`, then commit with:
@@ -1037,7 +1037,7 @@ the window is by one GitHub login, so a fabricated adversarial pass is not
 mechanically detectable. The failure that actually recurred four times is
 absence, and that is what this catches.
 
-- [ ] **Step 1: Generate the fixture snapshot**
+- [x] **Step 1: Generate the fixture snapshot**
 
 The regex has to be validated against what this repo's review comments
 actually look like, not against what they ought to look like — the stricter
@@ -1076,7 +1076,7 @@ Add a first line to the file, before committing it, marking what it is:
 # deliberately, never to make a test pass.
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Append to `tests/test_kanban_sync_review_tier.py`:
 
@@ -1199,7 +1199,7 @@ def test_count_review_artifacts_ignores_an_empty_or_whitespace_comment():
     assert count == 0
 ```
 
-- [ ] **Step 3: Implement the counter**
+- [x] **Step 3: Implement the counter**
 
 Append to `tools/kanban_sync/review_tier.py`:
 
@@ -1263,7 +1263,7 @@ def count_review_artifacts(comments: Sequence[str]) -> tuple[int, list[str]]:
     return len(matched), matched
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_review_tier.py -v`
 Expected: PASS — every test in the file. If
@@ -1272,7 +1272,7 @@ counts, the snapshot differs from the one measured here — update both numbers
 from the new file and say so in the commit message, rather than changing the
 regex.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage `tools/kanban_sync/review_tier.py`,
 `tests/fixtures/review_artifact_first_lines.tsv`, and
@@ -1321,7 +1321,7 @@ Two shapes matter here and were both verified live on 2026-09-07:
   one). It goes through `_invoke` directly, exactly as `graphql_rate_limit`
   already does, keeping the transient-retry policy.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_kanban_sync_github_client.py`:
 
@@ -1395,12 +1395,12 @@ def test_list_pr_comments_returns_bodies_in_order():
     ]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_kanban_sync_github_client.py -v -k "pr_files or pr_diff or pr_labels or pr_comments"`
 Expected: FAIL — `AttributeError: 'GithubClient' object has no attribute 'get_pr_files'`.
 
-- [ ] **Step 3: Implement the readers**
+- [x] **Step 3: Implement the readers**
 
 Insert into `tools/kanban_sync/github_client.py` after `find_pr_state`:
 
@@ -1453,12 +1453,12 @@ Insert into `tools/kanban_sync/github_client.py` after `find_pr_state`:
         return [comment["body"] for comment in json.loads(stdout)["comments"]]
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_github_client.py -v`
 Expected: PASS (the existing tests plus the five new ones).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage `tools/kanban_sync/github_client.py` and
 `tests/test_kanban_sync_github_client.py`, then commit with:
@@ -1494,7 +1494,7 @@ pass is worse than no check.
 It does **not** call `_check_project_scope()`: that gate exists for the
 Projects V2 board calls, and nothing here touches the board.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_kanban_sync_main.py` (add `import json` and
 `from tools.kanban_sync.github_client import GithubCliError` to its imports):
@@ -1638,12 +1638,12 @@ def test_review_tier_subcommand_requires_a_pr_number():
         cli.main(["review-tier"])
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_kanban_sync_main.py -v -k review_tier`
 Expected: FAIL — `AttributeError: module 'tools.kanban_sync.__main__' has no attribute '_cmd_review_tier'`.
 
-- [ ] **Step 3: Implement the subcommand**
+- [x] **Step 3: Implement the subcommand**
 
 Replace the existing import line
 `from tools.kanban_sync.github_client import GithubClient` in
@@ -1749,12 +1749,12 @@ Register the subparser in `main()`, after the `plan-candidates` parser:
     review_tier_parser.set_defaults(func=_cmd_review_tier)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_kanban_sync_main.py -v`
 Expected: PASS (existing tests plus the ten new ones).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Stage `tools/kanban_sync/__main__.py` and `tests/test_kanban_sync_main.py`,
 then commit with:
@@ -1784,13 +1784,13 @@ exact text; nothing is paraphrased. Re-verify each line number with
 `awk 'NR==<n>' CLAUDE.md` before editing — the anchors were confirmed at
 `a39d5f9` but a merge could move them.
 
-- [ ] **Step 1: Append principle P6 to the header paragraph (line 3)**
+- [x] **Step 1: Append principle P6 to the header paragraph (line 3)**
 
 At the end of line 3, after "…not here.", append one sentence:
 
 > A new rule, hook, or tool names the failure it prevents and what would retire it.
 
-- [ ] **Step 2: Tier the rule's preamble (line 38)**
+- [x] **Step 2: Tier the rule's preamble (line 38)**
 
 Replace the phrase
 "and neither does a PR carrying a claim, design decision, new logic, or a process/rule change to `main`: submission is not the final gate, merge is."
@@ -1798,11 +1798,11 @@ with:
 
 > and neither does a **Tier A** PR (the Scope bullet below defines the tiers): submission is not the final gate, merge is. A Tier B PR owes one persisted self-review and green CI, never nothing.
 
-- [ ] **Step 3: Replace the Scope bullet in full (line 40)**
+- [x] **Step 3: Replace the Scope bullet in full (line 40)**
 
 > - Scope: a mechanical/trivial change (typo fix, CI re-trigger, a config value edited exactly as the user dictated, a revert) is exempt — decided first, reason recorded by `review-tier --exempt`. Everything else is **Tier A** or **Tier B** by what it touches (`REVIEW_TIER_A_PATHS` in `tools/kanban_sync/labels.py`; `python -m tools.kanban_sync review-tier --pr N` decides it; tiered by consequence by David's decision, 2026-09-07 — `git log -S'review-tier'`). Tier A — Lanes 1–3 and 7, the Kalshi/hot-path/money-UI lists, modules Lane 3 imports, `settlement_edge`/`candidate_log`/`history`, `main.py`, `db.py` and any schema change, auth, reset, `config/settings.yaml`, `.ddev/`, CLAUDE.md/rules/hooks/skills/CI, the tier definition and tests of Tier A code, `concern:hotpath`, and every planning-pipeline stage — is in scope regardless of diff size, including this rule's own PR: each stage boundary in the planning pipeline, plus the PR once, before merge — never an individual commit or push inside a branch; implementation-time work (writing the code a gated plan already called for) is covered by TDD, systematic-debugging, and verification-before-completion instead. Tier B — everything else — owes one persisted `Tier B self-review` PR comment (tier, change, evidence, falsifier, left undone) plus green CI; no adversarial pass, no consolidation. Doubt escalates to A, never down. Do not invent an extra gate at commit or push granularity.
 
-- [ ] **Step 4: Scope the artifact requirement to Tier A (line 43)**
+- [x] **Step 4: Scope the artifact requirement to Tier A (line 43)**
 
 Replace the opening phrase
 "Every in-scope stage produces its own artifact, then three more before the next stage starts"
@@ -1810,19 +1810,19 @@ with:
 
 > Every planning-pipeline stage and every Tier A PR produces its own artifact, then three more before the next stage (or the merge)
 
-- [ ] **Step 5: Add #613's decided bullet after the Consolidation bullet (after line 46)**
+- [x] **Step 5: Add #613's decided bullet after the Consolidation bullet (after line 46)**
 
 > - A finding first raised in an adversarial review is a new claim, not a verdict: it meets the same evidence standard (primary source, falsifier stated) before consolidation adopts it (decided 2026-09-05, #613; a wrong finding entered a consolidated report at exactly that step on 2026-09-02).
 
-- [ ] **Step 6: Replace the in-scope-PR bullet in full (line 48)**
+- [x] **Step 6: Replace the in-scope-PR bullet in full (line 48)**
 
 > - For a Tier A PR: after it's pushed and opened, one more full review cycle of the same shape (self-review, adversarial review, consolidation, each its own artifact) runs against the PR as submitted before `gh pr merge` runs. For a Tier B PR the one `Tier B self-review` comment is that cycle. `.claude/rules/branching-and-ci.md`'s "read the PR body before merging" step is a floor, not a substitute for either.
 
-- [ ] **Step 7: Add the merge-check bullet (after line 48)**
+- [x] **Step 7: Add the merge-check bullet (after line 48)**
 
 > - Before `gh pr merge` on any PR, the merging session runs `python -m tools.kanban_sync review-tier --pr N` (with `--exempt "<reason>"` for a mechanical change, `--tier A` to escalate) and merges only on `PASS` or `EXEMPT`: Tier A needs three distinct persisted artifacts as **PR comments**, Tier B one; a comment counts only if its first line begins with what it is (`Self-review`, `Adversarial review`, `Consolidation`, `Tier B self-review`, optionally prefixed — `Independent`, `PR-stage`, `Tier B`, a stage number), because a comment that merely *narrates* a review counts for nothing (12 of the 24 unreviewed code PRs in the 2026-09-07 research narrated one in the body; the four dated recurrences behind memory `persist-code-pr-reviews-as-comments` are the same shape, and eight comments in the last 200 PRs talk about a review in their first line without being one). A planning stage's committed `-self-review.md`/`-consolidation.md` documents belong to that stage and never count toward the PR's own cycle. `review-tier` is enabled on day one rather than earning its place first — the stated exception to the Toolchain section's handspun-tool default, with its own retirement test dated 2026-10-05 in `docs/open-decisions.md`.
 
-- [ ] **Step 8: Tier the lean-execution clause (line 49)**
+- [x] **Step 8: Tier the lean-execution clause (line 49)**
 
 Replace the phrase
 "every required artifact — self-review, adversarial review, consolidation — still exists as its own document or PR comment, and the adversarial pass still runs from a context genuinely independent of the one that produced the artifact under review."
@@ -1830,34 +1830,34 @@ with:
 
 > every artifact the tier requires — three for Tier A (self-review, adversarial review, consolidation), one for Tier B — still exists as its own document or PR comment, and a Tier A adversarial pass still runs from a context genuinely independent of the one that produced the artifact under review.
 
-- [ ] **Step 9: Close #613's second decided edit (line 60)**
+- [x] **Step 9: Close #613's second decided edit (line 60)**
 
 Replace from "not yet by the hook" to the end of the line with:
 
 > deliberately session-enforced, not by the hook (decided 2026-09-05, #613: a hook cannot recognize arithmetic without firing on nearly every edit, and a nudge that always fires trains sessions to dismiss the money/probability nudge that has real incidents behind it).
 
-- [ ] **Step 10: Fix the stale path in the safety invariants (line 100)**
+- [x] **Step 10: Fix the stale path in the safety invariants (line 100)**
 
 Replace `services/kalshi_account_client.py` with `services/kalshi/account_client.py`
 — the file moved under `services/kalshi/` and the old path does not exist
 (the same migration Task 1 cleaned out of the hook).
 
-- [ ] **Step 11: Add principle P7 after the last safety-invariants bullet (after line 103)**
+- [x] **Step 11: Add principle P7 after the last safety-invariants bullet (after line 103)**
 
 > - Review tiering (the Scope bullet above) never lowers a safety gate; `KALSHI_PATHS` stays a deny in every tier, and nothing about Tier B touches `trading_enabled`, the kill switch, or `data/*.db` handling.
 
-- [ ] **Step 12: Add principles P2 and P5 (after line 107)**
+- [x] **Step 12: Add principles P2 and P5 (after line 107)**
 
 > - A Tier A change to pricing, P&L, fees, sizing, or settlement cites in its PR one read-only query or replay over recorded `data/*.db` history that exercises the changed path, and what it showed; fixtures alone are not evidence (the no-side cost inversion and the 2026-09-04 NO-side exit valuation both passed the suite and were found in recorded data).
 > - For Tier A tests and PR evidence, name where the expected value comes from — a `docs/kalshi/` page, a recorded row, an invariant, an independent calculation — never the code's own output.
 
-- [ ] **Step 13: Correct the branch-protection claim (line 117)**
+- [x] **Step 13: Correct the branch-protection claim (line 117)**
 
 Replace the opening clause "`main` is protected;" with:
 
 > `main` takes no direct work (server-side protection is off — #615, David's open call, cause not recoverable from the API — so the six required contexts are read from `commits/<sha>/status` before every merge);
 
-- [ ] **Step 14: Tier the peer-ping clause (line 120)**
+- [x] **Step 14: Tier the peer-ping clause (line 120)**
 
 Replace the phrase
 "not a substitute for the "nothing advances on one pass" adversarial-review requirement (2026-08-31)"
@@ -1865,7 +1865,7 @@ with:
 
 > not a substitute for the "nothing advances on one pass" requirement — a Tier A PR's fresh-Agent adversarial review, a Tier B PR's self-review comment (2026-08-31, tiered 2026-09-07)
 
-- [ ] **Step 15: Verify no unqualified statement of the old rule survives**
+- [x] **Step 15: Verify no unqualified statement of the old rule survives**
 
 This is spec §10's own NO-GO trigger: a rule edit that contradicts a line the
 PR does not also change. Run:
@@ -1891,7 +1891,7 @@ The last two greps return nothing. Any *other* hit that states the
 three-artifact requirement unconditionally is a real defect — fix it here,
 do not leave it for the PR review. This is spec §10's fourth NO-GO trigger.
 
-- [ ] **Step 16: Commit**
+- [x] **Step 16: Commit**
 
 Stage `CLAUDE.md` and commit with:
 
@@ -1919,7 +1919,7 @@ the moved kalshi_account_client path, and main being server-side protected
   vocabulary (Task 7)
 - Produces: nothing code-level
 
-- [ ] **Step 1: Insert the merge check before "Read the PR body" (line 63)**
+- [x] **Step 1: Insert the merge check before "Read the PR body" (line 63)**
 
 Immediately before "Read the PR body before merging":
 
@@ -1937,7 +1937,7 @@ Immediately before "Read the PR body before merging":
 > **Left undone:** <anything noticed and not done, or "nothing">
 > ```
 
-- [ ] **Step 2: Tier the peer-ping parenthetical (lines 76–78)**
+- [x] **Step 2: Tier the peer-ping parenthetical (lines 76–78)**
 
 The phrase below **wraps across lines 77–78** in the file, so a single-line
 search will not find it — match it with the line break, or edit the two lines
@@ -1947,7 +1947,7 @@ with:
 
 > (a Tier A PR still needs its own fresh, memory-less Agent call regardless of what a peer says; a Tier B PR still needs its `Tier B self-review` comment)
 
-- [ ] **Step 3: Tier the single-developer bullet (lines 88–94)**
+- [x] **Step 3: Tier the single-developer bullet (lines 88–94)**
 
 This phrase also **wraps, across lines 92–94**. Replace
 "but the AI-executed self-review/adversarial-review/consolidation cycle still runs before `gh pr merge` — that is rigor, not approval ceremony."
@@ -1955,7 +1955,7 @@ with:
 
 > but the AI-executed review its tier requires — the self-review/adversarial-review/consolidation cycle for Tier A, the one self-review comment for Tier B — still runs before `gh pr merge`, and `review-tier` records that it did — that is rigor, not approval ceremony.
 
-- [ ] **Step 4: Replace the GitHub-side enforcement paragraph in full (lines 96–116)**
+- [x] **Step 4: Replace the GitHub-side enforcement paragraph in full (lines 96–116)**
 
 > **GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05, #615):** `gh api repos/thesneakattack/kalshi-whale-poc/branches/main` reports `protected: false`, `enforcement_level: off`; whether it lapsed via a plan change or the repo going private is not recoverable from the API. Until #615 is decided (GitHub Pro, a public repo, or accepting this as permanent), the six contexts below are enforced by the merging session reading `commits/<sha>/status` and treating any state other than `success` on any of them as not merged: `ci/woodpecker/pr/tests-pytest-app`, `.../tests-pytest-tooling`, `.../tests-dependency-audit`, `.../quality-architecture-audit`, `.../quality-browser-e2e`, `.../kalshi-contract-fixtures`. `quality-frontend-build` is path-filtered to `frontend/**` and posts no status when skipped, so it is read only when it ran. If protection is re-enabled, restore the 2026-09-03 contexts list with `gh api -X PUT .../protection --input <file>` and rewrite this paragraph.
 
@@ -1970,7 +1970,7 @@ If it reports `protected: true`, do **not** make this edit; restore the
 original paragraph's meaning, note the discrepancy in the PR body, and say so
 in the commit message.
 
-- [ ] **Step 5: Add the check to the checkpoint skill's step 9**
+- [x] **Step 5: Add the check to the checkpoint skill's step 9**
 
 In `.claude/skills/checkpoint/SKILL.md`, step 9 currently reads "…when CI is
 green and the diff is reviewed, `gh pr merge --merge`, then:". Insert before
@@ -1981,7 +1981,7 @@ green and the diff is reviewed, `gh pr merge --merge`, then:". Insert before
 Step 8 is left alone: the `outcomes` line the spec's §5.3 called for belongs to
 the report this plan does not build (see "Deviations", item 5).
 
-- [ ] **Step 6: Verify the rule files agree with CLAUDE.md**
+- [x] **Step 6: Verify the rule files agree with CLAUDE.md**
 
 ```bash
 grep -n 'self-review/adversarial-review/consolidation' .claude/rules/branching-and-ci.md
@@ -1992,7 +1992,7 @@ grep -rn 'main` is protected' .claude/rules/
 Expected: the first hit is the Tier-A-scoped sentence from step 3; `review-tier`
 appears in both files; the third returns nothing.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Stage `.claude/rules/branching-and-ci.md` and
 `.claude/skills/checkpoint/SKILL.md`, then commit with:
@@ -2019,7 +2019,7 @@ line, which is the session reading the six contexts.
 - Consumes: everything above
 - Produces: the evidence that goes in the PR body
 
-- [ ] **Step 1: Dry-run `review-tier` against the last ten merged PRs**
+- [x] **Step 1: Dry-run `review-tier` against the last ten merged PRs**
 
 ```bash
 for n in $(gh pr list --repo thesneakattack/kalshi-whale-poc --state merged --limit 10 --json number --jq '.[].number'); do
@@ -2036,7 +2036,7 @@ these are the PRs merged *before* the rule existed, so most will read `FAIL`
 on the artifact count. That is the research's finding reproduced by the tool,
 not a defect in the tool.
 
-- [ ] **Step 2: Regenerate the project manifest**
+- [x] **Step 2: Regenerate the project manifest**
 
 Three new files and three new test files change the counts the architecture
 audit checks, so `quality-architecture-audit` goes red without this.
@@ -2049,7 +2049,7 @@ python -m tools.project_manifest --write static/project-manifest.json --repo-roo
 Run it from the host, not `ddev exec`: a container run has produced a null
 `generated_from_head` before.
 
-- [ ] **Step 3: Replace the tiering line in `docs/open-decisions.md`**
+- [x] **Step 3: Replace the tiering line in `docs/open-decisions.md`**
 
 The branch already carries a "Decided 2026-09-07 — spec in progress (remove
 when the spec's PR merges)" section. Replace that whole section with two
@@ -2081,12 +2081,12 @@ question this plan deliberately did not build.
 >    size band, never by volume, and never by human hours (only David can
 >    supply that one) — holds either way.
 
-- [ ] **Step 4: Rewrite `docs/next-action.md`**
+- [x] **Step 4: Rewrite `docs/next-action.md`**
 
 Name the merged state, the one command sessions must now run before merging,
 and the 2026-10-05 decision above. Do not leave it describing this work.
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 Stage `static/project-manifest.json`, `docs/open-decisions.md`, and
 `docs/next-action.md`, then commit with:
@@ -2108,7 +2108,7 @@ gh api repos/thesneakattack/kalshi-whale-poc/commits/<sha>/status
 Read each context's `state` independently. All six required contexts must be
 `success`.
 
-- [ ] **Step 6: Open the PR and run its own review cycle**
+- [x] **Step 6: Open the PR and run its own review cycle**
 
 ```bash
 gh pr create --title "..." --body "..."
