@@ -565,7 +565,7 @@ def test_review_tier_fails_a_tier_a_pr_with_one_artifact(monkeypatch, capsys):
 
 def test_review_tier_passes_a_tier_b_pr_with_one_artifact(monkeypatch, capsys):
     monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
-        ["services/diagnostics/routes.py"], comments=["Tier B self-review\n..."],
+        ["tools/historical_data_backfill.py"], comments=["Tier B self-review\n..."],
     ))
     args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
 
@@ -581,7 +581,7 @@ def test_review_tier_fails_a_tier_b_pr_whose_only_review_is_narrated_in_prose(
     """The failure this command exists for: text that describes a review
     instead of being one. 12 of the 24 unreviewed code PRs did exactly that."""
     monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
-        ["services/diagnostics/routes.py"],
+        ["tools/historical_data_backfill.py"],
         comments=["Merging - I reviewed this carefully and CI is green."],
     ))
     args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
@@ -614,7 +614,7 @@ def test_review_tier_rejects_an_empty_exemption_reason(monkeypatch):
 
 def test_review_tier_escalation_overrides_a_computed_b(monkeypatch, capsys):
     monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
-        ["services/diagnostics/routes.py"],
+        ["tools/historical_data_backfill.py"],
         comments=["## Self-review\nx", "## Adversarial\nx", "## Consolidation\nx"],
     ))
     args = argparse.Namespace(pr=1, exempt=None, tier="A", json=False)

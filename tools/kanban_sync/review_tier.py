@@ -54,30 +54,85 @@ def _imported_dotted_names(tree: ast.Module) -> Iterator[str]:
                     yield alias.name[len("services."):]
 
 
-def lane3_direct_imports(repo_root: Path) -> set[str]:
-    """Repo-relative paths of every module a Lane 3 source imports directly.
+# How many import hops out from Lane 3 count as Lane 3's blast radius.
+#
+# Two, decided 2026-09-07 (David) after measuring every option against the
+# recorded 200-PR window. The curve, in new Tier A paths / PRs reclassified /
+# code PRs left at Tier B out of 111:
+#
+#   depth 1     0 /  0 / 16      the original, too narrow: it missed
+#                                stats_power.py (money arithmetic) and
+#                                diagnostics/ (opens paper_broker.DB_PATH)
+#   depth 2     8 /  4 / 12   <- here
+#   depth 3    20 / 10 /  6
+#   depth 4    27 / 10 /  6
+#   closure    27 / 10 /  6
+#
+# Depth 3 is the closure in everything but name - identical PRs, identical
+# window, and the seven paths the closure adds beyond it are mostly files
+# inside directories depth 3 already covers as prefixes. It would leave 5% of
+# code PRs on the light path, which is roughly where the repo was before the
+# tiering existed.
+#
+# The reason two is the boundary and not an arbitrary cut: at the third hop the
+# traversal reaches observability/, research/, storage_health/ and alerting/
+# through app_state and fault_log, which nearly everything touches. A defect in
+# research/routes.py does not propagate into a trading decision - the graph
+# reached it, the risk did not. In a codebase where everything eventually
+# touches shared state, transitive reachability stops being a proxy for blast
+# radius around hop three.
+#
+# What would retire this number: a Tier B PR that breaks something a third hop
+# would have caught. Recorded in docs/open-decisions.md.
+LANE3_SCAN_DEPTH = 2
+
+
+def _services_sources(repo_root: Path, prefix: str) -> list[Path]:
+    base = repo_root / prefix
+    if base.is_dir():
+        return sorted(p for p in base.rglob("*.py") if "__pycache__" not in p.parts)
+    if base.exists() and base.suffix == ".py":
+        return [base]
+    return []
+
+
+def _direct_imports_of(repo_root: Path, prefix: str) -> set[str]:
+    found: set[str] = set()
+    for source in _services_sources(repo_root, prefix):
+        try:
+            tree = ast.parse(source.read_text(), filename=str(source))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for dotted in _imported_dotted_names(tree):
+            resolved = _resolve_import_target(repo_root, dotted)
+            if resolved is not None:
+                found.add(resolved)
+    return found
+
+
+def lane3_dependencies(repo_root: Path, *, depth: int = LANE3_SCAN_DEPTH) -> set[str]:
+    """Repo-relative paths of every module Lane 3 depends on within `depth` hops.
 
     The 2026-09-03 memory's "widely-used code deserves the deeper review"
-    criterion, made mechanical: strategy, risk, and execution are where a
-    defect costs money, so what they depend on is Tier A too - computed from
-    the source on every run, not from a list someone must remember to update.
-    Returns 27 targets at a39d5f9.
+    criterion, made mechanical: strategy, risk, and execution are where a defect
+    costs money, so what they depend on is Tier A too - computed from the source
+    on every run, not from a list someone must remember to update.
+
+    `depth` is a hard bound, not a suggestion; see LANE3_SCAN_DEPTH above for
+    why it is 2 and what the alternatives cost. 62 targets at depth 2, 27 at
+    depth 1 (2026-09-07).
     """
+    seeds = {labels.resolve_lane_package(pkg) for pkg in labels.LANES[3]["packages"]}
     targets: set[str] = set()
-    for pkg in labels.LANES[3]["packages"]:
-        base = repo_root / labels.resolve_lane_package(pkg)
-        if base.is_dir():
-            sources = sorted(base.rglob("*.py"))
-        elif base.exists():
-            sources = [base]
-        else:
-            sources = []
-        for source in sources:
-            tree = ast.parse(source.read_text(), filename=str(source))
-            for dotted in _imported_dotted_names(tree):
-                resolved = _resolve_import_target(repo_root, dotted)
-                if resolved is not None:
-                    targets.add(resolved)
+    frontier = seeds
+    for _ in range(max(0, depth)):
+        reached: set[str] = set()
+        for prefix in frontier:
+            reached |= _direct_imports_of(repo_root, prefix)
+        frontier = (reached - targets) - seeds
+        targets |= reached
+        if not frontier:
+            break
     return targets
 
 

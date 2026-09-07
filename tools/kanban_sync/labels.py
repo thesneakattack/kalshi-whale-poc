@@ -218,10 +218,12 @@ _REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
     "services/settlement_edge.py",
     "services/candidate_log.py",
     "services/history/",
-    # every module a Lane 3 module imports directly that no other rule covers
-    # (review_tier.lane3_direct_imports() is the CI check that keeps this true).
-    # Derived with ast over all 16 Lane 3 sources, 2026-09-07: 27 direct
-    # services.* imports, of which these seven are covered by no other rule.
+    # every module Lane 3 depends on within two import hops that no other rule
+    # covers (review_tier.lane3_dependencies() is the CI check that keeps this
+    # true). Derived with ast over all 16 Lane 3 sources, 2026-09-07: 27 targets
+    # at one hop and 62 at two, of which these are covered by no other rule.
+    # The depth is LANE3_SCAN_DEPTH, and the comment there records what every
+    # other depth costs - depth 3 is the transitive closure in all but name.
     # fault_log is the data plane's own completeness evidence; http_client
     # carries the REST backoff and rate limits; index_feed is Lane 1 ingestion
     # (two of its files were already Tier A); market_analyst_agent and
@@ -263,6 +265,29 @@ _REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
     # the autouse isolation that keeps a pytest run from writing into the live
     # paper_broker.db - it did exactly that on 2026-08-23. Named explicitly
     # rather than widening the stem rule (2026-09-07 PR-stage review, N1).
+    # second-hop Lane 3 dependencies (2026-09-07, depth 2). stats_power is
+    # money/probability arithmetic; diagnostics/ opens paper_broker.DB_PATH and
+    # signal_log.DB_PATH; ws_manager and latency_agg are the data plane's push
+    # path and its timeliness metric; trade_category classifies Kalshi-sourced
+    # trades. Reached through app_state and fault_log, not named by any Lane 3
+    # file directly.
+    "services/backtest/",
+    "services/diagnostics/",
+    "services/latency_agg.py",
+    "services/ml_feed.py",
+    "services/quality/",
+    "services/stats_power.py",
+    "services/trade_category.py",
+    "services/ws_manager.py",
+    # dangerous for what they do, not for who imports them - the import graph
+    # cannot express this, and only the rejected transitive closure reaches
+    # them. Same reason services/reset/, services/db.py and services/auth.py are
+    # hand-listed above. backup/ runs shutil.rmtree over data/backups/;
+    # data_quarantine decides what recorded data to set aside; candidate_ledger
+    # persists the candidate history the sample-size gates depend on.
+    "services/backup/",
+    "services/candidate_ledger.py",
+    "services/data_quarantine.py",
     "tests/conftest.py",
     "tests/support/",
     "tests/test_kanban_sync_labels.py",

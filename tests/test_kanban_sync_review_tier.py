@@ -7,16 +7,16 @@ from tools.kanban_sync import labels, review_tier
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_lane3_direct_imports_finds_a_from_import(tmp_path):
+def test_lane3_dependencies_finds_a_from_import(tmp_path):
     (tmp_path / "services").mkdir(parents=True)
     (tmp_path / "services" / "app_state.py").write_text("STATE = {}\n")
     (tmp_path / "services" / "strategy_engine.py").write_text(
         "from services.app_state import STATE\nimport os\n"
     )
-    assert review_tier.lane3_direct_imports(tmp_path) == {"services/app_state.py"}
+    assert review_tier.lane3_dependencies(tmp_path, depth=1) == {"services/app_state.py"}
 
 
-def test_lane3_direct_imports_finds_a_dotted_module_and_a_package(tmp_path):
+def test_lane3_dependencies_finds_a_dotted_module_and_a_package(tmp_path):
     (tmp_path / "services" / "position").mkdir(parents=True)
     (tmp_path / "services" / "position" / "account_positions.py").write_text("")
     (tmp_path / "services" / "exits").mkdir(parents=True)
@@ -24,12 +24,12 @@ def test_lane3_direct_imports_finds_a_dotted_module_and_a_package(tmp_path):
     (tmp_path / "services" / "strategy_engine.py").write_text(
         "import services.position.account_positions\nfrom services.exits import run\n"
     )
-    assert review_tier.lane3_direct_imports(tmp_path) == {
+    assert review_tier.lane3_dependencies(tmp_path, depth=1) == {
         "services/position/account_positions.py", "services/exits/",
     }
 
 
-def test_lane3_direct_imports_finds_the_bare_from_services_form(tmp_path):
+def test_lane3_dependencies_finds_the_bare_from_services_form(tmp_path):
     """The form Lane 3 actually uses, and the one a `from services\\.` regex
     cannot see: `from services import a, b, c` at services/strategy_engine.py:9,
     services/exits/exit_engine.py:17, services/settlement_resolver.py:38-39.
@@ -41,12 +41,12 @@ def test_lane3_direct_imports_finds_the_bare_from_services_form(tmp_path):
     (tmp_path / "services" / "strategy_engine.py").write_text(
         "from services import fault_log, market_lookup\n"
     )
-    assert review_tier.lane3_direct_imports(tmp_path) == {
+    assert review_tier.lane3_dependencies(tmp_path, depth=1) == {
         "services/fault_log.py", "services/market_lookup.py",
     }
 
 
-def test_lane3_direct_imports_ignores_a_commented_out_import(tmp_path):
+def test_lane3_dependencies_ignores_a_commented_out_import(tmp_path):
     """Parsing rather than pattern-matching also removes a whole class of false
     positive the regex had: a docstring line beginning `from services.x`."""
     (tmp_path / "services").mkdir(parents=True)
@@ -55,7 +55,52 @@ def test_lane3_direct_imports_ignores_a_commented_out_import(tmp_path):
         '# from services.app_state import STATE\n'
         '"""from services.app_state import STATE"""\n'
     )
-    assert review_tier.lane3_direct_imports(tmp_path) == set()
+    assert review_tier.lane3_dependencies(tmp_path, depth=1) == set()
+
+
+def test_lane3_dependencies_follows_a_second_hop(tmp_path):
+    """The depth-2 change (David's decision, 2026-09-07). strategy_engine imports
+    app_state, app_state imports stats_power - so stats_power is Tier A even
+    though no Lane 3 file names it. Measured before adopting: depth 2 adds 8
+    paths and moves 4 PRs in the recorded 200-PR window; depth 3 adds 20 and
+    moves 10, and is identical to the full transitive closure on every outcome,
+    leaving only 6 of 111 code PRs at Tier B."""
+    (tmp_path / "services").mkdir(parents=True)
+    (tmp_path / "services" / "stats_power.py").write_text("")
+    (tmp_path / "services" / "app_state.py").write_text(
+        "from services import stats_power\n"
+    )
+    (tmp_path / "services" / "strategy_engine.py").write_text(
+        "from services import app_state\n"
+    )
+    assert review_tier.lane3_dependencies(tmp_path, depth=1) == {
+        "services/app_state.py",
+    }
+    assert review_tier.lane3_dependencies(tmp_path, depth=2) == {
+        "services/app_state.py", "services/stats_power.py",
+    }
+
+
+def test_lane3_dependencies_stops_at_the_configured_depth(tmp_path):
+    """Depth is a bound, not a suggestion: a third hop is not followed. Without
+    this the traversal would silently become the closure the measurement
+    rejected."""
+    (tmp_path / "services").mkdir(parents=True)
+    (tmp_path / "services" / "third.py").write_text("")
+    (tmp_path / "services" / "second.py").write_text("from services import third\n")
+    (tmp_path / "services" / "first.py").write_text("from services import second\n")
+    (tmp_path / "services" / "strategy_engine.py").write_text(
+        "from services import first\n"
+    )
+    found = review_tier.lane3_dependencies(tmp_path, depth=2)
+    assert found == {"services/first.py", "services/second.py"}
+    assert "services/third.py" not in found
+
+
+def test_lane3_scan_depth_is_two_by_default():
+    """The default is the decision. Changing it is a decision to re-measure -
+    see docs/open-decisions.md."""
+    assert review_tier.LANE3_SCAN_DEPTH == 2
 
 
 def test_every_lane3_direct_import_is_covered_by_review_tier_a_paths():
@@ -64,22 +109,24 @@ def test_every_lane3_direct_import_is_covered_by_review_tier_a_paths():
     Tier B module from strategy/risk/execution code fails CI here rather than
     shipping as a Tier B PR that changes trading behaviour."""
     uncovered = sorted(
-        target for target in review_tier.lane3_direct_imports(_REPO_ROOT)
+        target for target in review_tier.lane3_dependencies(_REPO_ROOT)
         if not any(target == p or target.startswith(p) for p in labels.REVIEW_TIER_A_PATHS)
     )
     assert not uncovered, f"Lane 3 imports these, but they are not Tier A: {uncovered}"
 
 
-def test_lane3_direct_imports_on_the_real_repo_is_not_vacuous():
+def test_lane3_dependencies_on_the_real_repo_is_not_vacuous():
     """A liveness check on the scan itself: if the parse or the LANES[3]
     resolution breaks, the coverage test above passes on an empty set and
-    reports nothing. The ast scan finds 27 targets at a39d5f9; the floor is set
-    below that so a real removal does not fail CI, but well above the 13 the
-    superseded regex found."""
-    targets = review_tier.lane3_direct_imports(_REPO_ROOT)
+    reports nothing. The depth-2 scan finds 62 targets (27 at depth 1); the
+    floor is set below that so a real removal does not fail CI, but well above
+    the depth-1 population, so a silent regression to one hop fails here."""
+    targets = review_tier.lane3_dependencies(_REPO_ROOT)
     assert "services/app_state.py" in targets
     assert "services/fault_log.py" in targets      # only visible via `from services import`
-    assert len(targets) >= 25
+    assert "services/stats_power.py" in targets    # second hop, via app_state
+    assert "services/diagnostics/" in targets      # second hop; opens paper_broker.DB_PATH
+    assert len(targets) >= 55
 
 
 # Real changed-file lists, taken from the merged PRs themselves (spec §3.2 and
@@ -90,18 +137,18 @@ def test_tier_b_the_six_unreviewed_low_blast_radius_prs():
     genuinely excuses: a test tightening, a backup-overlap guard, a container
     image line, a gitignore, a comment fix, and a one-off backfill tool.
 
-    Six, not the seven spec §3.2 lists: #498 (tests/test_index_feed_backfill.py)
-    moved to Tier A once services/index_feed/ was added as a Lane 3 dependency
-    (2026-09-07 adversarial review). #273 is Tier B on its *file list* and Tier
+    Four, down from six: the 2026-09-07 depth-2 decision moved #308
+    (services/backup/, now Tier A explicitly - it runs shutil.rmtree over
+    data/backups/) and #623 (services/diagnostics/, a second-hop Lane 3
+    dependency that opens paper_broker.DB_PATH). Both are named as Tier A
+    fixtures below. Earlier the same day #498 left this set when
+    services/index_feed/ was added. #273 is Tier B on its *file list* and Tier
     A on its diff - it adds recovered `raw_trades` rows, which rule 3 catches -
     so this fixture exercises the file rules only."""
     corpus = {
         301: ["tests/test_e2e_terminal_static_and_api.py"],
-        308: ["services/backup/backup.py", "services/backup/routes.py",
-              "tests/test_backup.py", "tests/test_backup_routes.py"],
         415: ["Dockerfile", "docs/open-decisions.md"],
         445: [".gitignore"],
-        623: ["services/diagnostics/routes.py"],
         273: ["static/project-manifest.json", "tests/test_historical_data_backfill.py",
               "tools/historical_data_backfill.py"],
     }
@@ -117,6 +164,41 @@ def test_pr_498_is_tier_a_through_the_lane_3_dependency_index_feed():
     tier, reasons = review_tier.review_tier(["tests/test_index_feed_backfill.py"])
     assert tier == "A"
     assert any("index_feed" in r for r in reasons)
+
+
+def test_pr_623_is_tier_a_through_the_second_hop_dependency_diagnostics():
+    """The depth-2 decision's first reclassification. services/diagnostics/ is
+    not imported by any Lane 3 file directly; it is reached in two hops, and its
+    _aio_db.py opens paper_broker.DB_PATH and signal_log.DB_PATH."""
+    tier, reasons = review_tier.review_tier(["services/diagnostics/routes.py"])
+    assert tier == "A"
+    assert any("diagnostics" in r for r in reasons)
+
+
+def test_pr_308_is_tier_a_because_backup_deletes_recorded_history():
+    """Named explicitly rather than reached by the scan. services/backup/ runs
+    shutil.rmtree over data/backups/; it is dangerous because of what it does,
+    not because of who imports it, which is the same reason services/reset/ and
+    services/db.py are hand-listed. Only the full transitive closure reaches it,
+    and the measurement rejected the closure."""
+    tier, reasons = review_tier.review_tier([
+        "services/backup/backup.py", "services/backup/routes.py",
+        "tests/test_backup.py", "tests/test_backup_routes.py",
+    ])
+    assert tier == "A"
+    assert any("backup" in r for r in reasons)
+
+
+def test_the_destructive_modules_are_tier_a_whoever_imports_them():
+    """The import graph answers "does a defect here reach a decision"; it cannot
+    answer "does this module destroy data". These three are listed for the
+    second reason."""
+    for path in (
+        "services/backup/backup.py",
+        "services/data_quarantine.py",
+        "services/candidate_ledger.py",
+    ):
+        assert review_tier.review_tier([path])[0] == "A", path
 
 
 def test_tier_a_via_main_py_and_its_test():
@@ -198,9 +280,14 @@ def test_a_data_model_string_in_an_unchanged_context_line_does_not_fire():
 
 
 def test_the_hotpath_label_alone_is_tier_a():
-    tier, reasons = review_tier.review_tier(
-        ["services/quality/report.py"], pr_labels=[labels.CONCERN_HOTPATH]
-    )
+    """*Alone* is the point: the file list must be Tier B on its own, or this
+    test passes without the label doing anything. services/quality/report.py
+    was the example until the 2026-09-07 depth-2 change made it Tier A by
+    path - it kept passing and stopped proving anything, which is why the
+    assertion below checks the unlabelled tier first."""
+    files = ["tools/historical_data_backfill.py"]
+    assert review_tier.review_tier(files)[0] == "B"
+    tier, reasons = review_tier.review_tier(files, pr_labels=[labels.CONCERN_HOTPATH])
     assert tier == "A"
     assert any(labels.CONCERN_HOTPATH in r for r in reasons)
 
