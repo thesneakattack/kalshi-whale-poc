@@ -219,9 +219,13 @@ interceptor.
 ## 5. Verbatim rule edits
 
 Each edit replaces or inserts exactly the text shown. Line numbers are at
-`6a63309`; the plan re-anchors them at the commit the branch merges
-`origin/main` at (§8). Where a long line is edited, the replaced phrase
-is quoted so the edit is checkable with `grep`.
+`a39d5f9`, the commit at which this branch merged `origin/main` (§8), and
+every one was re-verified there with `awk` after that merge: the three
+intervening `origin/main` commits touched neither `CLAUDE.md` nor
+`.claude/rules/branching-and-ci.md`, so all fourteen CLAUDE.md anchors and
+all four `branching-and-ci.md` anchors are unchanged from `6a63309`. Where
+a long line is edited, the replaced phrase is quoted so the edit is
+checkable with `grep`.
 
 ### 5.1 `CLAUDE.md`
 
@@ -470,9 +474,9 @@ YYYY-MM-DD [--json]`, read-only:
 
 ## 8. Rollout and coordination
 
-- Before the PR opens, the branch merges `origin/main` (in its own
-  worktree; never a rebase of shared history) and the plan re-anchors §5
-  line numbers at that commit.
+- Done 2026-09-07 before the plan stage: the branch merged `origin/main`
+  in its own worktree (`a39d5f9`; never a rebase of shared history) and §5's
+  line anchors were re-verified at that commit.
 - One PR, `lane:9`, labels `phase:research` + `phase:spec` now and
   `phase:plan` when the plan doc joins it; the mechanism and the rule
   text land **together** because the rule text names the command.
