@@ -309,6 +309,51 @@ def collect_ledger_signals(ledger_paths: list[Path], *, at: datetime) -> list[Si
 _CHECKBOX_RE = re.compile(r"^\s*- \[( |x|X)\] (.*)$")
 
 
+def _discover_plan_doc_paths(repo_root: Path) -> list[Path]:
+    """Every plan doc path collect_plan_doc_signals should monitor for
+    staleness/activity, across both of the two places a plan doc can live
+    during the 2026-09-06 planning-lanes migration
+    (docs/superpowers/specs/2026-09-06-planning-lanes-design.md,
+    docs/superpowers/lanes/step4-file-move-plan.md §2/§4/§6): the live
+    docs/superpowers/plans/ directory (not-yet-moved plans, plus any
+    genuinely new plan doc written after this fix ships - that directory
+    keeps being used going forward, it doesn't retire) and, once a lane's
+    batch has moved, docs/archive/lane-<N>-<slug>/plans/.
+
+    This is deliberately an ongoing-monitoring fix, distinct from
+    tools/kanban_sync/sources_plan.list_plan_candidates(): that function's
+    job is one-time discovery of a plan doc that has never been classified,
+    which every currently-moving file already has been (a row in the
+    checked-in docs/superpowers/lanes/step1-plans-classification.md table,
+    and a closed/tracked GitHub issue for anything already tracked) - see
+    test_kanban_sync_sources_plan.py's
+    test_list_plan_candidates_does_not_need_to_track_moved_already_
+    classified_plans for that separate finding. collect_plan_doc_signals,
+    by contrast, is AQC's ongoing staleness/activity monitoring, which an
+    actively-worked plan doc still needs after a purely archival file move -
+    it's still active work, just relocated.
+
+    The batches move over multiple separate commits/checkpoints, not all at
+    once (step4 plan's own batch order), and a lane with zero plan docs
+    (e.g. Lane 7) never gets a directory created for it at all - so this
+    never hardcodes the 9 lane numbers/slugs, globs defensively, and must
+    not crash when docs/archive/, a specific lane-*/ directory, or its
+    plans/ subdirectory doesn't exist yet.
+
+    Scoped to each lane's plans/ subdirectory specifically (lane-*/plans/,
+    never lane-*/specs/ or lane-*/research/) so a lane's specs/research
+    docs - which don't use this domain's `- [ ]` task-checkbox convention -
+    never get mis-monitored as plan docs; the design's own directory layout
+    keeps that split as a path segment for exactly this reason (step4 plan
+    §2)."""
+    live_plans_dir = repo_root / "docs" / "superpowers" / "plans"
+    paths = list(live_plans_dir.glob("*.md")) if live_plans_dir.exists() else []
+    archive_root = repo_root / "docs" / "archive"
+    if archive_root.exists():
+        paths += archive_root.glob("lane-*/plans/*.md")
+    return sorted(paths)
+
+
 def collect_plan_doc_signals(
     plan_paths: list[Path], *, repo_root: Path, git_runner: Runner, at: datetime,
 ) -> list[Signal]:
@@ -594,8 +639,7 @@ def run_detect_cycle(
         ledger_paths = sorted((repo_root / ".superpowers" / "sdd").glob("*/progress.md")) \
             if (repo_root / ".superpowers" / "sdd").exists() else []
         ledger_signals = collect_ledger_signals(ledger_paths, at=at)
-        plans_dir = repo_root / "docs" / "superpowers" / "plans"
-        plan_paths = sorted(plans_dir.glob("*.md")) if plans_dir.exists() else []
+        plan_paths = _discover_plan_doc_paths(repo_root)
         ledger_signals += collect_plan_doc_signals(
             plan_paths, repo_root=repo_root, git_runner=git_runner, at=at,
         )

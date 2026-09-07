@@ -1,5 +1,5 @@
 from tools.kanban_sync import labels
-from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates
+from tools.kanban_sync.sources_plan import build_plan_items, list_plan_candidates, resolve_plan_path
 
 
 def test_list_plan_candidates_excludes_readme(tmp_path):
@@ -102,6 +102,130 @@ def test_list_plan_candidates_keeps_file_that_is_companion_shaped_only_in_conten
     assert result == ["2026-08-25-z.md", "2026-09-03-z-freshness-check.md"]
 
 
+def test_list_plan_candidates_does_not_need_to_track_moved_already_classified_plans(tmp_path):
+    """Investigation finding from the 2026-09-06 planning-lanes migration
+    (docs/superpowers/lanes/step4-file-move-plan.md §4/§6): unlike
+    tools/quality_coordination.py's collect_plan_doc_signals (ongoing
+    staleness/activity monitoring - see
+    test_quality_coordination_plan_docs.py's
+    test_discover_finds_plans_already_moved_into_an_archived_lane),
+    list_plan_candidates() needs NO code change for the migration that moves
+    plan docs out of docs/superpowers/plans/ into
+    docs/archive/lane-N-<slug>/plans/.
+
+    Why: this function is a one-time discovery mechanism for a plan doc that
+    has never been classified (done/in-progress/not-started) at all - every
+    call site that consumes its output (_cmd_plan_candidates, and the
+    kanban-board-sync skill's step 3/4) uses it purely to build a fresh
+    classification JSON by hand; the actual GitHub-issue create/update/close
+    logic (sync --sources plan) reads that already-built classification
+    JSON directly and never calls this function. Every one of the ~246 files
+    this migration moves is already classified - a row in the checked-in
+    docs/superpowers/lanes/step1-plans-classification.md table, and, for
+    anything already tracked on GitHub, a `Plan: <filename>` issue whose
+    open/closed state persists independently of this function (confirmed:
+    sync.py's close_completed_plan_parents closes on sub-issue completion,
+    never on this function's output; there is no close-on-file-disappearance
+    pass here the way close_stale_worktree_issues/close_stale_roadmap_issues
+    exist for those other two sources).
+
+    So a file leaving plans_dir (because it moved, already permanently
+    recorded) correctly and silently stops being returned - re-surfacing it
+    would ask a human to re-do a classification judgment that's already
+    made and recorded elsewhere, not fill a real gap. Only a genuinely new,
+    never-classified file written into plans_dir after the migration (this
+    directory keeps being used for new plan docs going forward - it doesn't
+    retire) should appear here; that is exactly this function's existing,
+    unchanged contract."""
+    # Simulates the post-move state directly: "already-moved.md" was never
+    # written into plans_dir at all in this test, standing in for a file
+    # that has already relocated to docs/archive/lane-N/plans/. Only a
+    # genuinely new plan doc lives here now.
+    (tmp_path / "2026-09-10-new-plan.md").write_text("x")
+
+    result = list_plan_candidates(tmp_path)
+
+    assert result == ["2026-09-10-new-plan.md"]
+
+
+def test_resolve_plan_path_finds_file_in_the_live_plans_dir(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    (plans_dir / "x.md").write_text("# X\n")
+
+    result = resolve_plan_path(plans_dir, archive_root, "x.md")
+
+    assert result == plans_dir / "x.md"
+
+
+def test_resolve_plan_path_finds_a_file_already_moved_to_an_archived_lane(tmp_path):
+    """A genuine gap found by adversarial review of this fix's own PR:
+    decompose-plan (_cmd_decompose_plan) reads a named plan doc's content
+    directly off PLANS_DIR, independently of list_plan_candidates -
+    unrelated to that function's "no code change needed" conclusion.
+    decompose-plan specifically targets not-started/in-progress plans
+    (kanban-board-sync/SKILL.md step 7) - exactly the population
+    docs/superpowers/lanes/step4-file-move-plan.md flags as still `active`
+    and therefore subject to being archived while still needing this
+    lookup to keep working."""
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    lane_plans = archive_root / "lane-2-whale-signal-calibration" / "plans"
+    lane_plans.mkdir(parents=True)
+    (lane_plans / "2026-08-30-whale-confidence-scoring-remediation-implementation.md").write_text(
+        "# Plan\n"
+    )
+
+    result = resolve_plan_path(
+        plans_dir, archive_root, "2026-08-30-whale-confidence-scoring-remediation-implementation.md",
+    )
+
+    assert result == (
+        lane_plans / "2026-08-30-whale-confidence-scoring-remediation-implementation.md"
+    )
+
+
+def test_resolve_plan_path_prefers_the_live_plans_dir_when_present_in_both(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+    lane_plans = archive_root / "lane-1-kalshi-ingestion" / "plans"
+    lane_plans.mkdir(parents=True)
+    (plans_dir / "x.md").write_text("live copy\n")
+    (lane_plans / "x.md").write_text("stale archived copy\n")
+
+    result = resolve_plan_path(plans_dir, archive_root, "x.md")
+
+    assert result == plans_dir / "x.md"
+
+
+def test_resolve_plan_path_falls_back_to_the_live_path_when_found_nowhere(tmp_path):
+    """Preserves prior behavior for a filename that genuinely doesn't exist
+    anywhere: the caller's existing "plan doc not found: <path>" error
+    keeps reporting the live-plans-dir path it looked for, unchanged from
+    before this fix."""
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"
+
+    result = resolve_plan_path(plans_dir, archive_root, "does-not-exist.md")
+
+    assert result == plans_dir / "does-not-exist.md"
+    assert not result.exists()
+
+
+def test_resolve_plan_path_tolerates_archive_root_not_existing_yet(tmp_path):
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir()
+    archive_root = tmp_path / "archive"  # never created
+
+    result = resolve_plan_path(plans_dir, archive_root, "missing.md")
+
+    assert result == plans_dir / "missing.md"
+
+
 def test_build_plan_items_emits_done_item_for_done_classification():
     """A 'done' classification must still produce a SyncItem (with done=True)
     so sync_pass_one's existing close-on-done logic can close an already-open
@@ -136,6 +260,34 @@ def test_build_plan_items_has_acceptance_criteria():
     items = build_plan_items({"x.md": {"status": "not-started", "note": ""}})
 
     assert len(items[0].acceptance_criteria) >= 1
+
+
+def test_build_plan_items_cites_the_plan_by_filename_not_a_hardcoded_directory():
+    """Adversarial-review finding on this fix's own PR (a third instance of the
+    "hardcoded stale docs/superpowers/plans/ location" bug class, alongside
+    decompose_plan's sub-issue body - see test_kanban_sync_plan_tasks.py): a
+    plan-tracking issue's body is set once at create_issue time
+    (sync_pass_one) and never re-rendered on a later sync - only labels and
+    Project status get touched for an existing issue (sync.py's own
+    reconcile/sync_pass_one, verified directly). Baking a directory path into
+    context_body/acceptance_criteria would therefore go permanently stale the
+    next time the planning-lanes migration (or any future reorganization -
+    this repo has already done this once, 2026-08-27's backend-services-
+    modularization) moves the cited plan doc, with nothing to correct it
+    afterward. A bare filename stays a valid, stable identifier forever -
+    only directories move, never filenames."""
+    items = build_plan_items({
+        "2026-08-30-example-plan.md": {"status": "not-started", "note": ""},
+    })
+
+    context_body = items[0].context_body
+    acceptance_criteria = items[0].acceptance_criteria[0]
+    assert "2026-08-30-example-plan.md" in context_body
+    assert "docs/superpowers/plans/" not in context_body
+    assert "docs/archive/" not in context_body
+    assert "2026-08-30-example-plan.md" in acceptance_criteria
+    assert "docs/superpowers/plans/" not in acceptance_criteria
+    assert "docs/archive/" not in acceptance_criteria
 
 
 def test_build_plan_items_not_started_and_in_progress_are_phase_plan():

@@ -104,7 +104,8 @@ class _FakeDecomposeClient:
         number = self._next_number
         self._next_number += 1
         self.created_issues.append({
-            "number": number, "title": title, "parent": parent, "milestone": milestone,
+            "number": number, "title": title, "body": body,
+            "parent": parent, "milestone": milestone,
         })
         return IssueState(number=number, open=True, labels=frozenset(labels_))
 
@@ -162,6 +163,33 @@ def test_decompose_plan_creates_one_sub_issue_per_canonical_task():
     assert client.created_issues[0]["parent"] == 42
     assert client.created_issues[0]["milestone"] == "x.md"
     assert client.created_issues[1]["title"] == "Task 2: Second thing"
+
+
+def test_decompose_plan_sub_issue_body_cites_the_plan_by_filename_not_a_hardcoded_directory():
+    """Adversarial-review finding on this fix's own PR (a third instance of the
+    "hardcoded stale docs/superpowers/plans/ location" bug class): decompose_plan
+    is a one-time action (confirmed via its own docstring/get_sub_issues_summary
+    short-circuit and sync_pass_one - a sub-issue's body is set once at creation
+    and never re-synced), so baking a *directory path* into it recreates the
+    exact staleness risk the 2026-09-06 planning-lanes migration exists to fix:
+    the very next time the cited plan moves (this migration, or any future
+    reorganization - this repo has already done this once, 2026-08-27's backend-
+    services-modularization), the citation would be permanently wrong with no
+    resync to correct it. A bare filename stays a valid, stable identifier
+    forever (files keep their names across this migration - only directories
+    move; docs/superpowers/lanes/step1-plans-classification.md or a repo-wide
+    filename search always finds the current location). This test observes the
+    real produced body text directly (via the fake client's now-captured `body`
+    field) rather than mocking decompose_plan away, which is exactly how the
+    original bug escaped every prior test in this file."""
+    client = _FakeDecomposeClient()
+
+    decompose_plan("2026-08-30-example-plan.md", _CANONICAL_PLAN, 42, client, dry_run=False)
+
+    body = client.created_issues[0]["body"]
+    assert "2026-08-30-example-plan.md" in body
+    assert "docs/superpowers/plans/" not in body
+    assert "docs/archive/" not in body
 
 
 def test_decompose_plan_chains_depends_on_between_consecutive_tasks():

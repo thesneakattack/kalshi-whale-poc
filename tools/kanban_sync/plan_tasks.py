@@ -95,7 +95,17 @@ def decompose_plan(
     repo has no reliable automated "is task N done" signal; a human/Claude
     judgment pass, same discipline as plan-doc classification, determines
     the cutoff). The first included task starts a fresh depends-on chain -
-    it never references a skipped, never-created earlier task's issue."""
+    it never references a skipped, never-created earlier task's issue.
+
+    Each sub-issue's body cites the plan by filename only, never a
+    directory path (2026-09-06, planning-lanes migration adversarial
+    review): this is a one-time write (see "Safe to call repeatedly"
+    above - a sub-issue's body is set once at creation and never
+    re-synced), so baking in a specific docs/superpowers/plans/ or
+    docs/archive/lane-N/plans/ path would go permanently stale the next
+    time the plan doc moves, with nothing to correct it afterward. A bare
+    filename stays valid forever - only directories move, never
+    filenames."""
     completed, total = client.get_sub_issues_summary(parent_number)
     if total > 0:
         return {"skipped": "already decomposed", "existing_sub_issues": total}
@@ -117,7 +127,7 @@ def decompose_plan(
         for task_number, task_title in tasks:
             issue = client.create_issue(
                 f"Task {task_number}: {task_title}",
-                f"## Context\nPart of `docs/superpowers/plans/{plan_filename}`.",
+                f"## Context\nPart of the plan doc `{plan_filename}`.",
                 [labels.STATUS_CLAIMABLE, labels.TYPE_PLAN_TASK],
                 parent=parent_number,
                 milestone=milestone_title,

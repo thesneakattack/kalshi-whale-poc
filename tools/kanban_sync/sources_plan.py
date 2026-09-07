@@ -74,6 +74,44 @@ def list_plan_candidates(plans_dir: Path) -> list[str]:
     )
 
 
+def resolve_plan_path(plans_dir: Path, archive_root: Path, filename: str) -> Path:
+    """Locates a single named plan doc's current file for decompose-plan
+    (`_cmd_decompose_plan`), wherever it lives during the 2026-09-06
+    planning-lanes migration (docs/superpowers/specs/2026-09-06-planning-
+    lanes-design.md, docs/superpowers/lanes/step4-file-move-plan.md): still
+    in `plans_dir` (not yet moved - the common case, and correct for every
+    call before/outside this migration), or already relocated to
+    `archive_root/lane-<N>-<slug>/plans/`.
+
+    Unlike list_plan_candidates() above (whose "no code change needed" this
+    migration finding does not apply here - see the docstring split), this
+    genuinely needs to search both locations: decompose-plan specifically
+    targets not-started/in-progress plans using `### Task N:` headings
+    (kanban-board-sync/SKILL.md step 7) - exactly the still-`active`
+    population docs/superpowers/lanes/step1-plans-classification.md
+    identifies as subject to being archived while still needing this
+    lookup to keep working (found by this fix's own PR adversarial review,
+    not by the original investigation).
+
+    Checks `plans_dir` first (cheapest, and correct for the overwhelming
+    majority of calls), then searches every `lane-*/plans/` subdirectory
+    under `archive_root` for an exact filename match - never hardcoding a
+    lane number/slug, tolerating `archive_root` (or any specific lane's
+    `plans/` subdirectory) not existing yet. Falls back to
+    `plans_dir / filename` when the file is found nowhere, so the caller's
+    existing "plan doc not found: <path>" error keeps reporting exactly the
+    path it always has for a filename that genuinely doesn't exist
+    anywhere - unchanged prior behavior for that case."""
+    live_path = plans_dir / filename
+    if live_path.exists():
+        return live_path
+    if archive_root.exists():
+        matches = sorted(archive_root.glob(f"lane-*/plans/{filename}"))
+        if matches:
+            return matches[0]
+    return live_path
+
+
 def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     """`classifications` maps filename -> {"status": "done"|"in-progress"|
     "not-started", "note": str}, produced by the kanban-board-sync skill's
@@ -87,7 +125,17 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
     when its tracking issue was first created, then later actually finished,
     would never get that issue auto-closed. Found live 2026-08-27 (issue #96,
     docs/superpowers/plans/2026-08-27-backend-services-modularization.md) and
-    fixed here instead of by hand every time it recurs."""
+    fixed here instead of by hand every time it recurs.
+
+    context_body/acceptance_criteria cite the plan by filename only, never a
+    directory path (2026-09-06, planning-lanes migration adversarial
+    review): sync_pass_one sets an issue's body once at create_issue time and
+    never re-renders it for an already-existing issue (only labels/Project
+    status get touched on a later sync - confirmed directly against sync.py),
+    so baking in a specific docs/superpowers/plans/ or docs/archive/lane-N/
+    plans/ path would go permanently stale the next time the plan doc moves,
+    with nothing to correct it afterward. A bare filename stays valid
+    forever - only directories move, never filenames."""
     items: list[SyncItem] = []
     for filename, info in classifications.items():
         done = info["status"] == "done"
@@ -99,7 +147,7 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
             status_label=labels.STATUS_DONE if done else labels.STATUS_CLAIMABLE,
             type_label=labels.TYPE_PLAN_TASK,
             context_body=(
-                f"## Context\nTracks `docs/superpowers/plans/{filename}` "
+                f"## Context\nTracks the plan doc `{filename}` "
                 f"as a whole, not per-task (see kanban-board-sync-design.md "
                 f"§5 on why plan-doc checkboxes aren't a reliable per-task "
                 f"signal in this repo).\n\nCode classification: {info['status']} "
@@ -108,7 +156,7 @@ def build_plan_items(classifications: dict[str, dict]) -> list[SyncItem]:
                 f"\n{note}"
             ),
             acceptance_criteria=(
-                f"`docs/superpowers/plans/{filename}` is reclassified "
+                f"Plan doc `{filename}` is reclassified "
                 f"'done' on a future sync run.",
             ),
             done=done,
