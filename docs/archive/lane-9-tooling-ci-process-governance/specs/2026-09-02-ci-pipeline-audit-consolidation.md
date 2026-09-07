@@ -1,6 +1,6 @@
 # Consolidation — CI pipeline audit (2026-09-02)
 
-Reconciles the research artifact (`docs/superpowers/research/2026-09-02-ci-pipeline-audit*.md`,
+Reconciles the research artifact (`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit*.md`,
 4 documents), its same-session self-review
 (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-02-ci-pipeline-audit-self-review.md`), and
 an independent adversarial review (fresh Agent call, no memory of this

@@ -82,7 +82,7 @@ Changed on `chore/realtime-dp-investigation` vs `origin/main` (`git diff --name-
   10 new `tests/test_*.py` files.
 
 Paths the realtime plan will **still create** (I7–I14, from its plan's `**Create**` blocks) [E1]:
-`docs/superpowers/research/2026-08-25-{realtime-live-baseline,rest-demand-study,realtime-solution-research,ws-solution-comparison,rest-solution-comparison,realtime-architecture-review,realtime-root-cause-report}.md`,
+`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-{realtime-live-baseline,rest-demand-study,realtime-solution-research,ws-solution-comparison,rest-solution-comparison,realtime-architecture-review,realtime-root-cause-report}.md`,
 `docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-remediation-design.md`,
 `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`,
 `tools/kalshi_rate_limit_probe.py`, `tests/test_kalshi_rate_limit_probe.py`. None collide with this
@@ -103,7 +103,7 @@ contested version. Reading them is fine.
 | `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | this initiative (bundle) | copied, committed |
 | `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-coordination-known-findings.md` | this initiative (bundle) | copied, committed |
 | `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-25-autonomous-quality-coordination-investigation-design.md` | this initiative (bundle) | copied, committed |
-| `START_AUTONOMOUS_QUALITY_COORDINATION.md` | this initiative (bundle) | committed as `docs/superpowers/autonomous-quality-coordination-investigation-kickoff.md`, matching PR #10's `realtime-data-plane-investigation-kickoff.md` precedent (root stays uncluttered) |
+| `START_AUTONOMOUS_QUALITY_COORDINATION.md` | this initiative (bundle) | committed as `docs/archive/lane-9-tooling-ci-process-governance/plans/autonomous-quality-coordination-investigation-kickoff.md`, matching PR #10's `realtime-data-plane-investigation-kickoff.md` precedent (root stays uncluttered) |
 | `INSTALL_AUTONOMOUS_QUALITY_COORDINATION.md`, `PACKAGE_MANIFEST.json` | bundle install artifacts | **not committed** (same treatment PR #10 gave `BUNDLE_README.md`); left untracked in the primary checkout for the user to delete |
 | `BUNDLE_README.md` | **realtime** bundle's leftover (its file list is the realtime initiative's) | untouched; not this initiative's |
 | `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-live-baseline.md`, `…/2026-08-25-rest-demand-study.md` | realtime session, in flight (I7/I8) | untouched |

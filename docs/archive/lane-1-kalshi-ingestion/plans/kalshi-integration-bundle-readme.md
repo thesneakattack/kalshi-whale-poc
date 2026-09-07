@@ -11,7 +11,7 @@ This bundle contains planning/orchestration files only. It does not implement th
 - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md`
 - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md`
 - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md`
-- `docs/superpowers/kalshi-integration-kickoff.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/kalshi-integration-kickoff.md`
 
 ## Install
 
@@ -34,8 +34,8 @@ git add \
   docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md \
   docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md \
   docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md \
-  docs/superpowers/kalshi-integration-kickoff.md \
-  docs/superpowers/kalshi-integration-bundle-readme.md
+  docs/archive/lane-1-kalshi-ingestion/plans/kalshi-integration-kickoff.md \
+  docs/archive/lane-1-kalshi-ingestion/plans/kalshi-integration-bundle-readme.md
 
 git diff --cached --check
 git diff --cached --stat
@@ -44,4 +44,4 @@ git push
 ```
 
 Then start a fresh Claude session and paste the prompt in
-`docs/superpowers/kalshi-integration-kickoff.md`.
+`docs/archive/lane-1-kalshi-ingestion/plans/kalshi-integration-kickoff.md`.

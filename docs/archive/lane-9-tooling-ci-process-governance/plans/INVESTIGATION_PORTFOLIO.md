@@ -180,7 +180,7 @@ inside any plan file itself.
 | Autonomous Quality Coordination Investigation (P1) | PR #15 + PR #18 merged; 10 research artifacts, a design spec, and a 9-task production implementation plan now on `main` | The not-yet-started AQC production implementation (§3, §4); P2 (Claude/AI Control-Plane Bloat), once created |
 | Production-readiness doctrine reconciliation | PR #17 merged; `CLAUDE.md`/`ROADMAP.md` now carry verified (not assumed) facts about `shadow_trades` row count, `risk.max_daily_loss_pct`, and `auto_apply_enabled` | Any future production-risk/shadow-readiness investigation — these verified facts are its starting evidence, not something it needs to re-derive |
 
-P1/AQC's own artifacts (`docs/superpowers/research/2026-08-25-autonomous-quality-coordination-*.md`,
+P1/AQC's own artifacts (`docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-coordination-*.md`,
 `...-quality-finding-identity-audit.md`, `...-quality-coordination-cadence.md`,
 `...-quality-coordinator-simulation.md`, `...-autonomous-quality-threat-model.md`,
 `...-autonomous-quality-architecture-decision.md`) are themselves a
