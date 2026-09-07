@@ -97,6 +97,31 @@ def test_lane3_dependencies_stops_at_the_configured_depth(tmp_path):
     assert "services/third.py" not in found
 
 
+def test_lane3_dependencies_raises_on_an_unparseable_source(tmp_path):
+    """The scan must fail closed. A source it cannot parse contributes zero
+    dependencies, so swallowing the error shrinks the Tier A set silently -
+    the gate failing open, which "doubt escalates to A, never down" forbids.
+    An earlier revision of the depth-2 change caught SyntaxError and continued;
+    only one of the 16 files that change the count would have tripped the
+    non-vacuous floor, so 15 could have gone dark unnoticed."""
+    lane3 = tmp_path / "services" / "strategy_engine.py"
+    lane3.parent.mkdir(parents=True)
+    lane3.write_text("def broken(:\n")
+    with pytest.raises(SyntaxError):
+        review_tier.lane3_dependencies(tmp_path, depth=1)
+
+
+def test_whale_pipeline_perf_is_tier_a_on_the_hot_path():
+    """Named in docs/open-decisions.md question 3 as one of the eight that
+    matter, imported by whalewatchers/kalshi_trade_tape.py and
+    whale_stream/whale_stream_handlers.py, and NOT reachable in two hops - so
+    only the explicit entry keeps it Tier A. Dropped silently by the first
+    draft of the depth-2 change (2026-09-07 adversarial review, finding 2)."""
+    assert "services/whale_pipeline_perf.py" in labels.REVIEW_TIER_A_PATHS
+    tier, reasons = review_tier.review_tier(["services/whale_pipeline_perf.py"])
+    assert tier == "A", reasons
+
+
 def test_lane3_scan_depth_is_two_by_default():
     """The default is the decision. Changing it is a decision to re-measure -
     see docs/open-decisions.md."""

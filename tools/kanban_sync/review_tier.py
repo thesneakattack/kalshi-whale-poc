@@ -68,19 +68,37 @@ def _imported_dotted_names(tree: ast.Module) -> Iterator[str]:
 #   depth 4    27 / 10 /  6
 #   closure    27 / 10 /  6
 #
+# Re-measured independently over #256-#664 (one PR later than the study, and
+# applying the diff rule the gate really runs, which the study did not): 149/51
+# before, 153/47 shipped, 156/44 at depth 3; code-typed 100/12 -> 104/8 -> 107/5.
+# The rows above are the study's own figures, kept as recorded.
+#
 # Depth 3 is the closure in everything but name - identical PRs, identical
 # window, and the seven paths the closure adds beyond it are mostly files
 # inside directories depth 3 already covers as prefixes. It would leave 5% of
 # code PRs on the light path, which is roughly where the repo was before the
 # tiering existed.
 #
-# The reason two is the boundary and not an arbitrary cut: at the third hop the
-# traversal reaches observability/, research/, storage_health/ and alerting/
-# through app_state and fault_log, which nearly everything touches. A defect in
-# research/routes.py does not propagate into a trading decision - the graph
-# reached it, the risk did not. In a codebase where everything eventually
-# touches shared state, transitive reachability stops being a proxy for blast
-# radius around hop three.
+# Read the hop counts as coarse, not module-precise. _resolve_import_target
+# resolves `from services.<pkg> import <submodule>` to the whole package (140
+# such lines under services/), so one import can pull a directory's entire
+# contents into the next hop. That widening, not a genuine fan-out through
+# shared state, is what makes hop 3 jump: a file-precise resolver gives
+# 28/70/87/90/91 instead of 27/62/90/105/105, and observability/, research/ and
+# storage_health/ never appear at all. An earlier version of this comment
+# claimed hop 3 "reaches observability/, research/, storage_health/ and
+# alerting/ through app_state and fault_log"; that was an artifact of the
+# resolver - fault_log reaches none of the eight second-hop paths, and the
+# hop-3 growth traces mostly to services/whale_calibration/routes.py:20
+# widening to all of services/quality/. Corrected 2026-09-07 by this PR's
+# adversarial review.
+#
+# What survives that correction is the part the decision actually rested on:
+# the PR-outcome difference is real and was measured end to end. Depth 3 moves
+# four further PRs, all of them services/observability/ - see the deferred
+# follow-up in docs/open-decisions.md. Depth is a proxy for blast radius, and a
+# coarse one; where it fails, the explicit path list below is the remedy, which
+# is why whale_pipeline_perf.py and the destructive modules are hand-listed.
 #
 # What would retire this number: a Tier B PR that breaks something a third hop
 # would have caught. Recorded in docs/open-decisions.md.
@@ -99,10 +117,14 @@ def _services_sources(repo_root: Path, prefix: str) -> list[Path]:
 def _direct_imports_of(repo_root: Path, prefix: str) -> set[str]:
     found: set[str] = set()
     for source in _services_sources(repo_root, prefix):
-        try:
-            tree = ast.parse(source.read_text(), filename=str(source))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
+        # Deliberately not guarded. A source this cannot parse would contribute
+        # zero dependencies and quietly shrink the Tier A set - the gate failing
+        # *open*, which is the one direction "doubt escalates to A, never down"
+        # forbids. An earlier revision caught SyntaxError/UnicodeDecodeError and
+        # continued; of the 52 files scanned, 16 change the target count and only
+        # one (app_state.py, -17) would have tripped the non-vacuous floor, so 15
+        # could have gone dark silently. Raising is the correct failure.
+        tree = ast.parse(source.read_text(), filename=str(source))
         for dotted in _imported_dotted_names(tree):
             resolved = _resolve_import_target(repo_root, dotted)
             if resolved is not None:

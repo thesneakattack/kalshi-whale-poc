@@ -279,12 +279,31 @@ _REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
     "services/stats_power.py",
     "services/trade_category.py",
     "services/ws_manager.py",
+    # Named, not scanned: whale_pipeline_perf is imported by
+    # whalewatchers/kalshi_trade_tape.py:36 and
+    # whale_stream/whale_stream_handlers.py:23 - the whale hot path - and it was
+    # one of the eight modules docs/open-decisions.md question 3 called out as
+    # mattering. Two hops do not reach it and the earlier draft of this PR
+    # dropped it without a word (2026-09-07 adversarial review, finding 2).
+    "services/whale_pipeline_perf.py",
+    # Disclosure, because it is collateral rather than intent: services/quality/
+    # also brings the test stem `quality`, so 15 test files belonging to Tier B
+    # tooling (test_quality_coordination_*, test_quality_ratchet*, ...) become
+    # Tier A through the stem rule. PRs #561 and #650 move on that, not on a
+    # Lane 3 dependency. Accepted - escalation is the safe direction - but it is
+    # a consequence of the stem rule, not of the import graph.
     # dangerous for what they do, not for who imports them - the import graph
-    # cannot express this, and only the rejected transitive closure reaches
-    # them. Same reason services/reset/, services/db.py and services/auth.py are
-    # hand-listed above. backup/ runs shutil.rmtree over data/backups/;
-    # data_quarantine decides what recorded data to set aside; candidate_ledger
-    # persists the candidate history the sample-size gates depend on.
+    # cannot express this. Same reason services/reset/, services/db.py and
+    # services/auth.py are hand-listed above. backup/ runs shutil.rmtree over
+    # data/backups/; data_quarantine decides what recorded data to set aside.
+    # candidate_ledger is here for a different reason than the other two and the
+    # earlier wording got it wrong: it does not destroy anything (it is an
+    # INSERT-OR-IGNORE claim table), but claim() gates whether a signal is ever
+    # evaluated, so a defect there silently drops candidates - a data-plane
+    # completeness failure, which CLAUDE.md's HARD RULE weighs the same.
+    # ("only the transitive closure reaches them" was also wrong: backup/ and
+    # data_quarantine are reached at hop 3, candidate_ledger at hop 4.)
+    # Corrected 2026-09-07 by this PR's adversarial review, finding 3.
     "services/backup/",
     "services/candidate_ledger.py",
     "services/data_quarantine.py",

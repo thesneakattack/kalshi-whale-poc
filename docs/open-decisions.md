@@ -51,7 +51,16 @@ artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
    **Decided 2026-09-07 (David): yes, depth 2.** Measured over the recorded
    200-PR window before choosing — new Tier A paths / PRs reclassified / code
    PRs left at Tier B out of 111: depth 1 → 0/0/16, **depth 2 → 8/4/12**,
-   depth 3 → 20/10/6, depth 4 → 27/10/6, closure → 27/10/6. Depth 3 is the
+   depth 3 → 20/10/6, depth 4 → 27/10/6, closure → 27/10/6. Those are the
+   **scan-only** figures; what shipped is the scan *plus* four hand-named
+   modules, so the real total is **11 paths / 6 PRs reclassified / 10 left**.
+   Re-measured independently over #256–#664 while reviewing the PR, applying
+   the diff rule the gate actually runs (the study did not): 149/51 → 153/47
+   shipped → 156/44 at depth 3; code-typed 100/12 → 104/8 → 107/5. The
+   measurement script was never committed and the window is not a fixture, so
+   these are point-in-time observations reproducible only by re-running the
+   classification against live `gh` data — which the review did, matching
+   within the one-PR shift. Depth 3 is the
    closure in everything but name (identical PRs, identical window; the seven
    paths closure adds beyond it are mostly files inside directories depth 3
    already covers as prefixes) and would leave 5% of code PRs on the light
@@ -68,6 +77,31 @@ artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
    carries the full curve. **What would retire it:** a Tier B PR that breaks
    something a third hop would have caught — if one appears, re-measure rather
    than assuming depth 3.
+
+   **Two corrections from the PR's own adversarial review, recorded rather than
+   quietly absorbed.** (a) The rejection rationale first shipped as "hop 3
+   reaches `observability/`, `research/`, `storage_health/` and `alerting/`
+   through `app_state` and `fault_log`". That was an artifact of the resolver
+   widening `from services.<pkg> import <sub>` to the whole package, not a real
+   fan-out; a file-precise resolver never reaches those three at all. The
+   outcome measurement stands, the mechanism claim did not, and both the
+   constant's comment and CLAUDE.md now say so. (b)
+   `services/whale_pipeline_perf.py` — named in this very question as one of
+   the eight that matter, and imported by `kalshi_trade_tape.py` and
+   `whale_stream_handlers.py` on the whale hot path — was dropped from the
+   answer without a word. It is now hand-listed.
+
+4. *Should `services/observability/` be Tier A?* Opened 2026-09-07 by the same
+   review, deliberately **not** folded into the depth-2 PR because adding it
+   reclassifies PRs that PR never measured. `observability/observability.py`'s
+   `prune()` runs `DELETE FROM metric_samples` on a retention cutoff, which is
+   the same "destroys recorded data" test that put `backup/` and
+   `data_quarantine` on the list — yet it is Tier B, and it is the *only*
+   module behind all four PRs depth 3 would have moved. Either the destructive
+   clause should name it, or the clause's boundary needs stating (retention
+   pruning of derived metrics is not the same asset as `data/*.db` history).
+   Test before deciding: does a defect in observability retention lose data any
+   sample-size-gated heuristic depends on?
 
 **Follow-up, not a decision** (same review, N9): `services/kalshi/` is in
 `guard_workflow.py`'s `KALSHI_PATHS` but not `HOT_PATHS`, so the
