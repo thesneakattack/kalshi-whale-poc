@@ -466,9 +466,19 @@ byte-identical (checksum) to reviewed commit `b388fa1`, zero other
 changes, not a merge of the branch. The document is now durable,
 on-`main` history — `0d` can cite it directly for Lane 9 without
 reaching into the stray worktree. Judgment calls 2-4 remain open but
-undecided-not-blocking (David didn't ask to revisit them); the branch
-`docs/step4-file-move-plan` and its worktree are now safe to clean up
-whenever convenient, not urgent.
+undecided-not-blocking (David didn't ask to revisit them).
+
+**Closed out, 2026-09-07 ~06:35Z (`ea`, coordinator independently
+confirmed):** verified `2d56b03`'s 4 files byte-identical to `b388fa1`
+a second time (separately from the coordinator's own check), then
+cleaned up — checked no live session occupied the worktree first
+(`0d` had already moved on to a fresh `lane9-tooling-ci-process`
+worktree), confirmed clean status matching the branch tip, removed
+`.claude/worktrees/agent-a4006042ebd399799`, deleted
+`docs/step4-file-move-plan` locally and on `origin`. Coordinator
+confirmed via `git ls-remote`/`git branch --list`/`git worktree list`:
+all three genuinely gone. **This entire thread is closed** — nothing
+further to do.
 
 ---
 
