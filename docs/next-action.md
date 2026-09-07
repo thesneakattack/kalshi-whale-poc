@@ -89,17 +89,30 @@ do here.
 
 ---
 
-## Planning lanes — 5 of 8 batches done (4, 8, 5, 6, 2); Lanes 1 and 3 in final review
+## Planning lanes — 6 of 8 batches done (4, 8, 5, 6, 2, 3); only Lane 1 open
 
 **On `main`:** design (PR #640), all 3 step-1 classification tables (PRs
 #643/#644 + a direct commit), step 3 `kanban_sync` retooling (PR #645),
 `LANES`/`CONCERNS` infrastructure + full step-2 labeling (PR #646).
 Batch order: **4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**. Lanes 4 (#651), 8
-(#652), 5 (#653), 6 (#655), 2 (#656) are merged and independently
-verified. Lane 1 (#657, `0d`) and Lane 3 (#658, `49`) have open PRs,
-both re-checking for the occurrence-count bug below before merge. `ea`
-is doing an independent third-party occurrence-count check on both as
-well, alongside each session's own self-check.
+(#652), 5 (#653), 6 (#655), 2 (#656), and now **3 (#658, `49`) — MERGED
+2026-09-07T05:50:58Z**, confirmed clean by `ea`'s independent sweep
+before merge. Only **Lane 1 (#657, `0d`) remains open** — now the sole
+blocker before Lane 9 can start.
+
+**Lane 1 status as of 2026-09-07 (`ea`, post-compaction resync,
+independently re-verified live against the actual PR branch content,
+not relayed):** head still `9f4e1baf8b078d00e01caf2d298d14a3b8362369`
+(unchanged since the finding below was first relayed — fix not yet
+applied), only 2 PR comments so far (self-review + an arithmetic
+correction to the PR body's citation count), **no adversarial-review or
+consolidation comment posted yet.** The confirmed cross-lane
+back-citation gap (5 files/7 occurrences, listed below) was re-checked
+directly against the branch tip and is still present, unfixed. Pinged
+`0d` directly with the exact file/line list (msg `fbc40ade`); no reply
+yet. Do not re-derive this finding again if resuming after another
+compaction — re-check `gh pr view 657` fresh instead, per the lesson
+below about re-asking after compaction.
 
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
@@ -198,44 +211,40 @@ follow once step 4 finishes.
 
 ---
 
-## Peer status (both this session and `ea` compacting ~2026-09-07 05:50 — this file is the durable record, not chat memory)
+## Peer status (updated 2026-09-07 by `ea`, post-compaction resync — this file is the durable record, not chat memory)
 
-Only Lane 9 remains after Lanes 1 and 3 land, blocked until both are
-confirmed **merged** (not just done) — it contains the design doc
-governing the whole migration.
+Only Lane 9 remains once Lane 1 lands — it contains the design doc
+governing the whole migration. Lane 3 is done; Lane 1 is now the only
+blocker.
 
-- **`49`** — Lane 3 (PR #658, OPEN, 1 comment): fixing a confirmed
-  fix-list of 10 real misses (a *third*, distinct sweep-blind-spot
-  mechanism — bare-indented continuation inside a `"""docstring` with no
-  comment marker) plus correcting a mis-stated deliberate-gaps count
-  (7 real, reported as 4). `ea`'s independent sweep found #658
-  otherwise clean (no cross-lane back-citation gap). Not merged.
-- **`0d`** — Lane 1 (PR #657, OPEN, 2 comments as of last check, head
-  SHA `9f4e1ba` at last check): two required fixes outstanding, **not
-  yet confirmed applied as of this writeup** — if this session resumes
-  after compaction and hasn't heard back, check `gh pr view 657` fresh
-  rather than assume either is done:
+- **`0d`** — Lane 1 (PR #657, OPEN, head `9f4e1ba`, 2 comments as of
+  last check): two required fixes outstanding, **still not confirmed
+  applied** (head SHA unchanged, no adversarial-review/consolidation
+  comment posted yet — re-verified directly, not relayed):
   1. Re-check for the Lane-2-style occurrence-vs-presence bug (not yet
      confirmed either way).
   2. **Confirmed-real cross-lane back-citation gap, 5 files/7
-     occurrences, exact list** (one hit — the first below — independently
-     verified directly against the PR's own branch content, not just
-     relayed):
+     occurrences, re-verified against the branch tip on 2026-09-07**:
      - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`
-       → cites Lane 8's `2026-08-25-frontend-modularization.md` (1x)
+       → cites Lane 8's `2026-08-25-frontend-modularization.md` (1x, ~line 2512)
      - `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-30-kalshi-category-data-completeness-implementation.md`
-       → cites Lane 4's `2026-08-27-backend-services-modularization.md` (1x)
+       → cites Lane 4's `2026-08-27-backend-services-modularization.md` (1x, ~line 566)
      - `docs/archive/lane-1-kalshi-ingestion/specs/...diagnostics-widening-plan-consolidation.md`,
        `...plan-review.md`, `...pr420-adversarial-review.md` (3 files)
        → all cite Lane 6's `2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md`
        (2+2+1 = 5 occurrences)
-- **`ea`** — Lane 2 (PR #656): **MERGED** (`0fe413b`), fully closed out,
-  nothing pending. Also ran the independent post-merge sweeps on #657/
-  #658 above before compacting; said it will re-derive the file list
-  from `step4-file-move-plan.md`'s Appendix A again rather than trust
-  its own memory of this if asked to re-verify after compaction.
+  Pinged `0d` directly 2026-09-07 with this exact list (msg `fbc40ade`);
+  no reply received yet as of this writeup.
+- **`49`** — Lane 3 (PR #658): **MERGED** 2026-09-07T05:50:58Z, 3
+  comments (self-review/adversarial/consolidation all present), fixed
+  the 10-miss third-sweep-blind-spot finding and the deliberate-gaps
+  count correction before merging. Nothing pending.
+- **`ea`** (this session) — Lane 2 (PR #656): **MERGED** (`0fe413b`),
+  fully closed out. Re-verified PR #657's outstanding findings live
+  against the branch tip post-compaction (2026-09-07) rather than
+  trusting the prior writeup; independently confirmed #658 merged clean.
 - **`c4`** — standing watch, independent-verification role continues
-  for whichever of Lane 1/3 lands first.
+  for Lane 1's landing.
 
 ---
 
