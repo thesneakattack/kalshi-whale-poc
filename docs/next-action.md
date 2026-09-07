@@ -89,14 +89,17 @@ do here.
 
 ---
 
-## Planning lanes — 4 of 8 batches done (4, 8, 5, 6); Lane 3 now executing
+## Planning lanes — 5 of 8 batches done (4, 8, 5, 6, 2); Lanes 1 and 3 in final review
 
 **On `main`:** design (PR #640), all 3 step-1 classification tables (PRs
 #643/#644 + a direct commit), step 3 `kanban_sync` retooling (PR #645),
 `LANES`/`CONCERNS` infrastructure + full step-2 labeling (PR #646).
 Batch order: **4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**. Lanes 4 (#651), 8
-(#652), 5 (#653), 6 (#655) are merged and independently verified. `49`
-started Lane 3 2026-09-07 ~05:00.
+(#652), 5 (#653), 6 (#655), 2 (#656) are merged and independently
+verified. Lane 1 (#657, `0d`) and Lane 3 (#658, `49`) have open PRs,
+both re-checking for the occurrence-count bug below before merge. `ea`
+is doing an independent third-party occurrence-count check on both as
+well, alongside each session's own self-check.
 
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
