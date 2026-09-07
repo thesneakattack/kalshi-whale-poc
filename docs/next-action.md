@@ -238,13 +238,27 @@ blocker.
 - **`49`** — Lane 3 (PR #658): **MERGED** 2026-09-07T05:50:58Z, 3
   comments (self-review/adversarial/consolidation all present), fixed
   the 10-miss third-sweep-blind-spot finding and the deliberate-gaps
-  count correction before merging. Nothing pending.
+  count correction before merging. Also got a late-arriving post-merge
+  corroboration from the originally-dispatched adversarial reviewer's
+  own recheck — fully consistent, nothing further on Lane 3. Now free;
+  **assigned by coordinator (`36`) to independently re-sweep #657**
+  using its own proven shape-agnostic de-wrap method (strip leading
+  whitespace, try both space- and no-space-joined rejoins), read-only
+  against the PR's actual committed tree — specifically hunting the
+  Lane-2-style occurrence-vs-presence bug and any residual wrap-detection
+  blind spot like the one it just found on Lane 3. Not editing the
+  PR/branch; `0d` still owns applying any fixes.
 - **`ea`** (this session) — Lane 2 (PR #656): **MERGED** (`0fe413b`),
   fully closed out. Re-verified PR #657's outstanding findings live
   against the branch tip post-compaction (2026-09-07) rather than
   trusting the prior writeup; independently confirmed #658 merged clean.
-- **`c4`** — standing watch, independent-verification role continues
-  for Lane 1's landing.
+- **`c4`** — standing watch; **assigned by coordinator (`36`) to
+  independently verify the GitHub-issue-citation sweep for Lane 1** — all
+  335 tracked issues (147 open + 188 closed), full-path-vs-bare-filename
+  filter, per standing methodology point 2. This is currently a
+  self-review-only claim (0d says it checked issues, but nobody
+  independent has verified it, unlike the file-citation side `ea` already
+  checked). Read-only against the PR's branch content, not local `main`.
 
 ---
 
