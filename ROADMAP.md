@@ -55,8 +55,8 @@ trading-decision change) but not yet started; the settlement-cascade root
 cause behind the historical drop episodes was found and fixed 2026-08-29
 (queue split + deferred batched resolver, PR #198) and is mid-soak behind
 `realtime_data_plane.two_consumer_mode` — see
-`docs/superpowers/plans/README.md`'s realtime-plan row for exactly which
-P4-P6 tasks still remain), economic/strategy validation (investigated 2026-08-26 — the originally-
+`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`
+for exactly which P4-P6 tasks still remain), economic/strategy validation (investigated 2026-08-26 — the originally-
 reported entry-gate adverse-selection defect below turned out not to
 reproduce in its original form, replaced by a different, still-open,
 currently-unimplemented finding), and canonical decision/execution
