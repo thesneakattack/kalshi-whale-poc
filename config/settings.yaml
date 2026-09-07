@@ -181,7 +181,7 @@ strategy:
   # cadence data is the owner of re-tuning it. 0 disables the staleness
   # trigger (deviation-only, as before).
   price_staleness_corroborate_sec: 120.0
-  # Strategy edge gate (docs/superpowers/plans/2026-09-03-strategy-edge-
+  # Strategy edge gate (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-
   # gate-implementation.md) - compares this app's own belief about a
   # market (p_est) to the price it would actually pay (ask_now + fees),
   # instead of gating entry on confidence alone. Every field below

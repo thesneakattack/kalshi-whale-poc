@@ -43,7 +43,7 @@ def test_close_ts_for_tickers_returns_persisted_close_times(tmp_path, monkeypatc
     async _close_ts_for_tickers - see its own docstring: 'the one store
     that persists a close time per market beyond the rotating watchlist.'
     This is the sync, public sibling the markout sweep needs (Task 4 of
-    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md) -
+    docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md) -
     it did not exist before this task (confirmed: grep -n '^def '
     services/market_catalog/market_catalog.py before writing this plan).
     Uses this file's own _market() helper (not the plan's hand-built dict)

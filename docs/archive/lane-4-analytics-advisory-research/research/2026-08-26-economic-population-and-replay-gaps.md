@@ -1,6 +1,6 @@
 # Economic Strategy Effectiveness — Population Staleness, Replay Gaps, Capture-Health Tagging (E1-E3)
 
-Companion: `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
+Companion: `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
 (tasks E1, E2, E3). Evidence classes per that plan's design doc §4.
 
 All queries below ran read-only against a scratchpad copy of `signal_log.db` and

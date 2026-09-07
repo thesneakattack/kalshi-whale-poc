@@ -192,8 +192,8 @@ _POPULATION_GATE_SQL = """
 """
 
 
-# population_gate_summary_banded()'s bands - issue #616 D1 (docs/superpowers/
-# specs/2026-08-26-economic-strategy-remediation-design.md). Reproduces
+# population_gate_summary_banded()'s bands - issue #616 D1 (docs/archive/
+# lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md). Reproduces
 # docs/archive/lane-4-analytics-advisory-research/research/
 # 2026-08-26-economic-gate-marginal-contribution.md's (moved there
 # 2026-09-06, planning-lanes migration) own E4 results table exactly

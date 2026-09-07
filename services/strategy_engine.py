@@ -234,7 +234,7 @@ def _edge_gate_check(
     side: str, price: float, ticker: str, category: str | None,
     as_of: float | None, strat_cfg: dict,
 ) -> tuple[EntryValidation | None, dict | None]:
-    """The edge/EV gate (docs/superpowers/specs/2026-09-03-strategy-edge-
+    """The edge/EV gate (docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-
     gate-design.md §3.2), appended inside _validate_entry_price rather
     than called separately from evaluate() so a resting limit order's
     fill-time re-check is held to the same bar (validate_pending_fill's
@@ -318,7 +318,7 @@ def _edge_gate_check(
 # mutually_exclusive=False, wrapped in a bare `except Exception: pass` -
 # no fault, no counter, for either case. This is the exact input the
 # position-netting/hedge-conflict risk and the event-scoped ME gate design
-# (docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md) both
+# (docs/archive/lane-3-strategy-risk-execution/specs/2026-08-29-event-scoped-me-gate-design.md) both
 # depend on, so the gap needed to be visible even though its fail-open
 # behavior (the codebase's uniform rule for missing data) does not change.
 #

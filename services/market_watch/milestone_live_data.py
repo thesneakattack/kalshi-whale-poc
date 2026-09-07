@@ -336,7 +336,7 @@ def default_path_types_snapshot() -> dict:
     default pass-through path this process (Task 5 own use only - the
     `state`/`GET /api/observability/summary` plumbing, if a future task
     wires it in, follows the `me_gate_snapshot()` precedent from
-    docs/superpowers/plans/2026-08-29-event-scoped-me-gate.md Task 5; not
+    docs/archive/lane-3-strategy-risk-execution/plans/2026-08-29-event-scoped-me-gate.md Task 5; not
     required for D2 to ship correctly since fault_log already durably
     records every new type regardless)."""
     if not _default_path_types_seen:

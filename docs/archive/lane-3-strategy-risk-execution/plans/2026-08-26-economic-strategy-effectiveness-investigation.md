@@ -1,6 +1,6 @@
 # Economic Strategy Effectiveness & Execution Realism — Investigation Execution Plan
 
-Companion: `docs/superpowers/specs/2026-08-26-economic-strategy-effectiveness-investigation-design.md`
+Companion: `docs/archive/lane-4-analytics-advisory-research/specs/2026-08-26-economic-strategy-effectiveness-investigation-design.md`
 (read that first — constraints, evidence classes, methodology, deliverable map).
 
 Task numbering: `E0`-`E12`. Status marked per task. A future session resuming this work
@@ -63,7 +63,7 @@ resolved-count/accuracy for `series='KXBTC15M'`, unfiltered and split by `source
 62.8% accuracy — no `source`/`excluded` filter reproduces 394 or 88.8%. The 394-signal
 figure predates the 2026-08-23 whale-gate cutover (dollar-notional → contract-count, commit
 `080a37b`) by 6 days and is roughly **6.4% of today's population**. Full detail:
-`docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md`.
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md`.
 
 ## E2 — Replay-gap analysis: what data actually survived
 
@@ -105,7 +105,7 @@ history (2026-08-12 to present), looking for troughs/regime shifts; cross-refere
 completeness figures.
 
 **Result (full table + interpretation):**
-`docs/superpowers/research/2026-08-26-economic-population-and-replay-gaps.md`. Two distinct
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-population-and-replay-gaps.md`. Two distinct
 regimes found:
 
 1. A **~4-day near-zero trough, 2026-08-18 (afternoon) through 2026-08-22 (afternoon)**
@@ -152,7 +152,7 @@ copied — 1 GB), grouping `rejection_events` by `(strategy, gate_name, unit_cos
 the same sample-size gate `population_gate_summary()` already uses (`n >= 30` per group).
 
 **Result:** full table and interpretation in
-`docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md`. Headline:
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-gate-marginal-contribution.md`. Headline:
 every gate with enough samples to band shows a **strongly cost-band-dependent EV**, not a
 uniform one — the unbanded `population_gate_summary()` figures materially understate how
 gate-tightening/loosening decisions should actually be made. The clearest pattern: rejected
@@ -179,7 +179,7 @@ cutover commit (`080a37b`, 1787463902 epoch): `[data_start, cutover)` and
 `[cutover, now]`.
 
 **Result:** full output in
-`docs/superpowers/research/2026-08-26-economic-gate-marginal-contribution.md`. The
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-gate-marginal-contribution.md`. The
 pre-cutover window shows **zero paper-broker entries** (consistent with E2's reset finding —
 that window's real trades are gone). The post-cutover window (the only one with real trades
 today, n=90) shows `selection_delta_pts: +12.2` (isolated to the post-cutover 76.7h window)
@@ -204,7 +204,7 @@ accuracy-calibration-only / unknown.
 (already-existing audit findings from 2026-08-22/23, cited not re-derived).
 
 **Result:** all three classified in
-`docs/superpowers/research/2026-08-26-economic-advisory-calibration-execution-audit.md`.
+`docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-advisory-calibration-execution-audit.md`.
 Headline: `advisory_engine.py`'s suggestion-generating functions compare win rate alone
 (confirmed via the CHEATSHEET's own prior finding, re-verified by grep) —
 **accuracy/win-rate-only, not economically aligned**, with the one partial exception of
@@ -224,7 +224,7 @@ what is honestly absent?
 **Evidence class:** 1 (current persisted data) via the existing, reviewed
 `book_context_at_entry()` function (not reimplemented).
 
-**Result:** `docs/superpowers/research/2026-08-26-economic-advisory-calibration-execution-audit.md`.
+**Result:** `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-advisory-calibration-execution-audit.md`.
 74/90 (82%) of current KXBTC15M entries matched a book snapshot within the existing 30 s
 window; mean spread 0.98 cents, mean depth ratio 8.44 (resting size at the crossed side ÷
 position size), **12/74 matched entries (16%) had depth ratio < 1.0** — the position size
@@ -262,7 +262,7 @@ only currently-buildable proxy, and only from 2026-08-19 onward, and only as an 
 *price impact if executed against the visibly resting book*, not a true fill-probability
 model (Kalshi's real matching/queue behavior is not observable from a REST/WS book
 snapshot). Recorded as a Program 2 design candidate in
-`docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md`, not attempted here.
+`docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md`, not attempted here.
 
 ## E10 — Direct reconstruction of the original 12-trade sample — CLOSED (infeasible)
 
@@ -275,14 +275,14 @@ without first confirming the backup mechanism's own read-safety).
 
 ## E11 — Adversarial self-review
 
-**Result:** `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-adversarial-review.md`.
+**Result:** `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-adversarial-review.md`.
 Attacks each E1-E7 conclusion directly (alternative explanations, what would falsify it,
 what wasn't checked).
 
 ## E12 — Deliverables synthesis
 
-**Result:** `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-status-report.md`
+**Result:** `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-status-report.md`
 (root-cause status, guard disposition, insufficient-sample list) plus
-`docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` and
-`docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 candidate
+`docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md` and
+`docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 candidate
 design/plan, not approved for execution — see that plan's own header).
