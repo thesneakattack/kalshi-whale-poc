@@ -1,5 +1,59 @@
 # Next action
 
+## ⏸ FLEET PAUSED — do not resume active work before 2026-09-07T10:05Z
+
+David's direct URGENT instruction, issued 2026-09-07T07:05:27Z UTC
+(02:06 CDT local): checkpoint and pause, sleep 3 hours. Fleet-wide, not
+just the coordinator (established precedent from earlier tonight).
+**If you are reading this at session start/resume, check real current
+time (`date -u`) against the `2026-09-07T10:05Z` target before doing
+anything else** — do not trust a wakeup firing, a resumed conversation,
+or any internal counter as proof the window has passed; this file is
+the durable source of truth if any scheduling mechanism failed silently
+(see memory `chained-wakeups-silently-die`).
+
+Coordinator's own wake mechanism: one-shot `CronCreate` job `73bde554`
+at local `05:07` (`7 5 7 9 *`), prompted to re-verify time and re-read
+this file fresh before resuming — not chained `ScheduleWakeup` calls,
+specifically to avoid the known chaining-fragility failure mode. Session-
+only (lost if this session exits before firing) — the written target
+above is the real fallback, not the cron job itself.
+
+**Peer checkpoint status, all confirmed no-earlier-than-10:05Z:**
+- `49` — checkpointed, nothing to commit (all work already merged/
+  persisted). Last unit: verified/approved Lane 1 (#657) merge. First
+  incomplete: Lane 9 review — noted PR #660 exists but deliberately
+  did not start reviewing it before pausing.
+- `c4` — checkpointed, nothing to commit (all work already posted as
+  GitHub comments/issue edits). Last unit: Lane 9 file-list + citation-
+  debt prep. Nothing queued.
+- `0d` — checkpointed, HEAD `6337a87` on `docs/lane-9-file-move`,
+  pushed, CI green (12/12). Last unit: Lane 9 file moves (81 files, 3
+  commits) + citation fixes (223 inbound + 25 outbound + 53 issues),
+  PR #660 open with self-review posted. First incomplete: a dispatched
+  adversarial-review subagent was already running read-only in the
+  background when the pause arrived — left running (no risk, no
+  action taken on its result), consolidation/merge not started. Not
+  self-scheduling a wakeup (not a `/loop` session) — waiting to be
+  resumed directly.
+- `ea` — checkpointed, nothing to commit (working tree clean besides
+  the standing safety override). Last unit: PR #659 merge/closeout
+  (already covered by coordinator's `51c6afd`). Nothing queued.
+  Scheduled its own session-local cron backstop toward ~10:05Z.
+
+**All four peers confirmed checkpointed and paused as of 07:07Z** — no
+gaps, nothing left mid-task.
+
+**Coordinator's own checkpoint:** on `main`, `51c6afd`, fully pushed
+(`git log origin/main..HEAD` empty), CI `success`. Nothing uncommitted
+besides the standing `config/settings.yaml` safety override (correct,
+must stay uncommitted). Last completed unit: PR #659 (CLAUDE.md scope
+clarification) merged and fully closed out, 7 of 8 lanes merged. First
+incomplete unit (not started, per the pause): independent review of
+Lane 9 / PR #660 — explicitly not begun, matching the fleet-wide hold.
+
+---
+
 **Coordinator:** `autotrade-36`, one continuous session since `1f`.
 Fleet active (`49`, `c4`, `0d`, `ea`). Verify identity by direct reply
 before trusting a name, in either direction — this isn't hypothetical
