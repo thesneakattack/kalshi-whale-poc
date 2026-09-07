@@ -1,10 +1,12 @@
 import argparse
+import json
 import subprocess
 
 import pytest
 
 from tools.kanban_sync import __main__ as cli
 from tools.kanban_sync import labels
+from tools.kanban_sync.github_client import GithubCliError
 
 
 def test_check_project_scope_exits_when_scope_missing(monkeypatch):
@@ -521,3 +523,141 @@ def test_push_status_subcommand_errors_when_status_labels_are_ambiguous(monkeypa
 
     assert exc.value.code == 1
     assert client.ensure_on_project_calls == []
+
+
+class _FakeReviewClient:
+    def __init__(self, files, diff="", labels=frozenset(), comments=()):
+        self._files, self._diff = files, diff
+        self._labels, self._comments = labels, list(comments)
+
+    def get_pr_files(self, number): return list(self._files)
+    def get_pr_diff(self, number): return self._diff
+    def get_pr_labels(self, number): return self._labels
+    def list_pr_comments(self, number): return list(self._comments)
+
+
+def test_review_tier_passes_a_tier_a_pr_with_three_artifacts(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/risk_manager.py"],
+        comments=["## Self-review\nx", "## Adversarial review\nx", "## Consolidation — GO\nx"],
+    ))
+    args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
+
+    cli._cmd_review_tier(args)
+
+    out = capsys.readouterr().out
+    assert "Tier A" in out and "PASS" in out
+    assert "3 of 3" in out
+
+
+def test_review_tier_fails_a_tier_a_pr_with_one_artifact(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/risk_manager.py"], comments=["## Self-review\nx"],
+    ))
+    args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._cmd_review_tier(args)
+
+    assert exc.value.code == 1
+    assert "FAIL" in capsys.readouterr().out
+
+
+def test_review_tier_passes_a_tier_b_pr_with_one_artifact(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/diagnostics/routes.py"], comments=["Tier B self-review\n..."],
+    ))
+    args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
+
+    cli._cmd_review_tier(args)
+
+    out = capsys.readouterr().out
+    assert "Tier B" in out and "PASS" in out
+
+
+def test_review_tier_fails_a_tier_b_pr_whose_only_review_is_narrated_in_prose(
+    monkeypatch, capsys
+):
+    """The failure this command exists for: text that describes a review
+    instead of being one. 12 of the 24 unreviewed code PRs did exactly that."""
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/diagnostics/routes.py"],
+        comments=["Merging - I reviewed this carefully and CI is green."],
+    ))
+    args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._cmd_review_tier(args)
+
+    assert exc.value.code == 1
+
+
+def test_review_tier_exempt_records_the_reason_and_requires_no_artifact(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient([]))
+    args = argparse.Namespace(pr=1, exempt="CI re-trigger, no diff", tier=None, json=False)
+
+    cli._cmd_review_tier(args)
+
+    out = capsys.readouterr().out
+    assert "EXEMPT" in out and "CI re-trigger, no diff" in out
+
+
+def test_review_tier_rejects_an_empty_exemption_reason(monkeypatch):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient([]))
+    args = argparse.Namespace(pr=1, exempt="   ", tier=None, json=False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._cmd_review_tier(args)
+
+    assert exc.value.code == 1
+
+
+def test_review_tier_escalation_overrides_a_computed_b(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/diagnostics/routes.py"],
+        comments=["## Self-review\nx", "## Adversarial\nx", "## Consolidation\nx"],
+    ))
+    args = argparse.Namespace(pr=1, exempt=None, tier="A", json=False)
+
+    cli._cmd_review_tier(args)
+
+    out = capsys.readouterr().out
+    assert "Tier A" in out and "escalat" in out
+
+
+def test_review_tier_exits_2_on_a_fetch_failure_and_never_prints_pass(monkeypatch, capsys):
+    """A silent PASS on an unreadable PR is worse than no check at all."""
+    class _Broken:
+        def get_pr_files(self, number):
+            raise GithubCliError("HTTP 502: Bad Gateway")
+
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _Broken())
+    args = argparse.Namespace(pr=1, exempt=None, tier=None, json=False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._cmd_review_tier(args)
+
+    assert exc.value.code == 2
+    assert "PASS" not in capsys.readouterr().out
+
+
+def test_review_tier_json_output_carries_the_decision_fields(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "GithubClient", lambda repo: _FakeReviewClient(
+        ["services/risk_manager.py"], comments=["## Self-review\nx"],
+    ))
+    args = argparse.Namespace(pr=7, exempt=None, tier=None, json=True)
+
+    with pytest.raises(SystemExit):
+        cli._cmd_review_tier(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pr"] == 7
+    assert payload["tier"] == "A"
+    assert payload["required"] == 3
+    assert payload["artifacts"] == 1
+    assert payload["verdict"] == "FAIL"
+
+
+def test_review_tier_subcommand_requires_a_pr_number():
+    with pytest.raises(SystemExit):
+        cli.main(["review-tier"])
