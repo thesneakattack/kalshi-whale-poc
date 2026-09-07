@@ -1,5 +1,6 @@
 """The History tab's event-driven push mechanism
-(docs/superpowers/specs/2026-09-03-history-event-driven-design.md).
+(docs/archive/lane-8-frontend-dashboard/specs/2026-09-03-history-event-driven-design.md,
+moved there 2026-09-06, planning-lanes migration).
 
 Replaces the History tab's old fixed-interval frontend polling with a
 push-triggered notification: a real write to trade_log/signal_log/

@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-25.
 **Status:** research record backing
-`docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`. Every number below was
+`docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md`
+(moved there 2026-09-06, planning-lanes migration). Every number below was
 measured against `a0c1569` (`origin/main` at the time) with the commands in Appendix A/B;
 library sizes come from real scratch esbuild builds, not vendor prose. Nothing in this
 document is a design decision — the spec is authoritative for those; this file records the

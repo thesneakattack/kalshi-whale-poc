@@ -1,5 +1,6 @@
 """services/history_push.py - the History tab's event-driven push
-mechanism (docs/superpowers/specs/2026-09-03-history-event-driven-design.md).
+mechanism (docs/archive/lane-8-frontend-dashboard/specs/2026-09-03-history-event-driven-design.md,
+moved there 2026-09-06, planning-lanes migration).
 
 Three groups of tests, per the implementation task's own rigor bar for this
 module (a genuinely new mechanism on a path adjacent to trading-critical
