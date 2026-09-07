@@ -76,7 +76,7 @@ def test_uncommitted_plan_reports_no_commit_age(tmp_path):
 
 
 """_discover_plan_doc_paths tests: the 2026-09-06 planning-lanes migration
-(docs/superpowers/specs/2026-09-06-planning-lanes-design.md,
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md,
 docs/superpowers/lanes/step4-file-move-plan.md §4/§6) moves ~246 plan/spec/
 research docs out of docs/superpowers/plans/ into
 docs/archive/lane-N-<slug>/{plans,specs,research}/, in lane-sized batches

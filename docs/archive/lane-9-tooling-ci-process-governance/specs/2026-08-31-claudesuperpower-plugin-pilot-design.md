@@ -7,7 +7,7 @@ consolidation complete, 4 fixes applied in place — see
 ## Input
 
 Research stage, reviewed and consolidated GO:
-`docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
 + `...-review.md` + `...-consolidation.md`. That cycle's authoritative
 recommendation: pilot 4 `claude-plugins-official` plugins, in priority
 order — `pr-review-toolkit`, `claude-security`, `claude-md-management`,

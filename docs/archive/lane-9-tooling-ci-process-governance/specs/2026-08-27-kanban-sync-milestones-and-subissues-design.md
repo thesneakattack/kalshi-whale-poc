@@ -12,7 +12,7 @@ implementation follows via a separate plan, not this document itself.
 `tools/kanban_sync`'s "plan" source (`sources_plan.py`) tracks one
 GitHub issue per numbered plan doc (`docs/superpowers/plans/*.md`),
 covering the whole plan as a single unit — deliberately: the original
-design (`docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md`
+design (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md`
 §5) proved a plan doc's own checkboxes are not a reliable per-task
 signal in this repo, so per-task completion was never attempted.
 
@@ -51,18 +51,18 @@ worktree/track/roadmap):
 
 ## 3. Prior art and constraints this design must respect
 
-- `docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md` §5's
+- `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md` §5's
   finding that plan-doc checkboxes are unreliable — this design doesn't
   reopen that question, it sidesteps it entirely by not trying to detect
   task completion from the plan doc's own text at all (§4.3).
 - **Three distinct task-heading conventions found in real use, confirmed
   by grepping actual plan docs, not assumed:**
-  - `### Task N: <title>` (`docs/superpowers/plans/2026-08-27-backend-services-modularization.md`)
+  - `### Task N: <title>` (`docs/archive/lane-4-analytics-advisory-research/plans/2026-08-27-backend-services-modularization.md`)
     — `writing-plans`' own official template (`### Task N: [Component Name]`).
     This is the canonical, going-forward convention.
-  - `## Task N: <title>` (`docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`)
+  - `## Task N: <title>` (`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md`)
     — one heading level shallower, an older/manually-written variant.
-  - `## T1a — <title>` (`docs/superpowers/plans/2026-08-25-frontend-modularization.md`)
+  - `## T1a — <title>` (`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`)
     — a completely different PR-group/lettered-subtask scheme for a large
     multi-PR initiative, no "Task N" text at all.
 

@@ -1,7 +1,7 @@
 # Consolidation — PR #443 as submitted (2026-09-03)
 
 Reconciles the PR-stage self-review
-(`docs/superpowers/specs/2026-09-03-ci-pipeline-audit-tier1-fixes-pr-self-review.md`)
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-03-ci-pipeline-audit-tier1-fixes-pr-self-review.md`)
 and an independent adversarial review (fresh Agent call, no memory of this
 session, full findings summarized below) against PR #443 as it existed on
 GitHub, per CLAUDE.md's "nothing advances on one pass" HARD RULE — the

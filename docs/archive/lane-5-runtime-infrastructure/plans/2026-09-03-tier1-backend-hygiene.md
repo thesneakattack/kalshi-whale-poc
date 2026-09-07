@@ -12,7 +12,7 @@ the audit's own "7-14" numbering is cited inline where it helps trace a
 claim back to its source.
 
 **Research basis:**
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
 §8 "Revised prioritized plan," Tier 1 (items 7-14), and the sections it
 cites: §3.3 (dashboard polling), §4.2 (`/api/health/faults` `hours=`
 mislabel — not this plan's scope, background only), §4.3 (unattributed
@@ -20,8 +20,7 @@ stalls), §4.4 (`config/settings.yaml` comment-wipe mechanism), §4.5
 (`record_snapshot_from_ticker` on the loop), §6.3 (hand-rolled-vs-proven
 re-score), §8.2/§8.3 (n/a — the second audit has no numbered §8.2/§8.3
 subsections; the two DRY-fix citations actually needed,
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-
-considerations.md` §9.1 and its own Tier-1 items #3/#4, are read directly
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §9.1 and its own Tier-1 items #3/#4, are read directly
 below — see Task 3's and Task 6's own headers for why the citation moved).
 Tier 0 (`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`,
 moved there 2026-09-06, planning-lanes migration, PR #441, **plan merged, its code not yet implemented** —
@@ -405,7 +404,7 @@ def test_stall_captures_a_stack_and_records_it_off_the_loop(monkeypatch):
     """The 2026-09-02 incident had zero attribution for what was blocking
     the loop - services/loop_watchdog.py's own docstring already tracks
     magnitude/count but nothing about *what*. This is the fix (§4.3 of
-    docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md):
+    docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md):
     capture the main thread's stack on the stall path itself and record it
     via fault_log's existing traceback slot, off the event loop so the
     diagnostic write can never become a new instance of the #210 blocking-
@@ -471,8 +470,7 @@ Add module-level helpers:
 
 ```python
 def _capture_stall_traceback() -> str:
-    """Cheap (microseconds - §4.3 of docs/superpowers/research/2026-09-02-
-    architecture-audit-second-pass.md), runs only on the stall path, never
+    """Cheap (microseconds - §4.3 of docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md), runs only on the stall path, never
     on the hot 0.1s sample tick. sys._current_frames() is a snapshot of
     every live thread's current frame, safe to call from any thread; this
     app runs its event loop on the process's main thread, so
@@ -793,8 +791,7 @@ alone.
 
 **Research basis for this task specifically:** the second-pass audit's §8
 Tier-1 item 9 points at "(§9.1 of the FIRST audit — read
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-
-considerations.md`'s §9.1 directly for full detail)" — read directly
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`'s §9.1 directly for full detail)" — read directly
 below, not re-derived from the second audit's own one-line summary.
 
 #### Task 3a: `generate_recommendations()`'s 3 call sites missing `declined_ids`
@@ -1947,8 +1944,7 @@ incident's actual shape):
 ```python
 def test_update_preserves_a_comment_trailing_a_nested_dict_field(tmp_path):
     """The real incident (docs/open-decisions.md, 3 documented comment
-    wipes; §4.4 of docs/superpowers/research/2026-09-02-architecture-audit-
-    second-pass.md): a comment sitting immediately after a NESTED dict
+    wipes; §4.4 of docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md): a comment sitting immediately after a NESTED dict
     field's last entry (not a top-level scalar - the two existing comment
     tests above don't cover this shape) was destroyed because update()'s
     one-level dict.update() replaces that nested dict's VALUE wholesale
@@ -2131,8 +2127,7 @@ audit documents and found to be the WRONG citation (the second audit's own
 §8 Tier-1 item 12 itself points at "= #3, #4" of the FIRST audit's own
 Tier-1 list, not that document's separate §9.2 DRY-findings table, which
 has an unrelated finding #3). The correct citation, read directly:
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-
-considerations.md` lines 1410-1411 ("Bound `resolved_signals_with_factors()`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` lines 1410-1411 ("Bound `resolved_signals_with_factors()`
 and `candidate_log`'s `population_gate_summary()` reads (§5.2) — the same
 pattern PR #424 already used for a sibling function") and its own §5.2
 (lines 638-657). **Verified via `gh pr view 424 --json title,body`

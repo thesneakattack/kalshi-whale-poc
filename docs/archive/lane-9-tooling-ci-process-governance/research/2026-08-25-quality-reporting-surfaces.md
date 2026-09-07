@@ -1,6 +1,6 @@
 # Quality Reporting Surfaces — I5 (surfaces and noise economics)
 
-**Task:** I5 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I5 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `a4521e7` (worktree
 `.claude/worktrees/aqc-investigation`, base `origin/main` @ `8d1796b`). No open PRs.
 

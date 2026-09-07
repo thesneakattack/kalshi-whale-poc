@@ -2,7 +2,7 @@
 
 Reconciles the research artifact (`docs/superpowers/research/2026-09-02-ci-pipeline-audit*.md`,
 4 documents), its same-session self-review
-(`docs/superpowers/specs/2026-09-02-ci-pipeline-audit-self-review.md`), and
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-02-ci-pipeline-audit-self-review.md`), and
 an independent adversarial review (fresh Agent call, no memory of this
 session, full transcript below) per CLAUDE.md's "nothing advances on one
 pass" HARD RULE.
@@ -70,7 +70,7 @@ per the reviewer's ask.
 
 ## Fix applied
 
-`docs/superpowers/research/2026-09-02-ci-pipeline-audit-pytest-profile.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit-pytest-profile.md`
 §3.1: corrected `tests/support/runtime_isolation.py:207-216` →
 `tests/support/runtime_isolation.py:245-250`. Verified post-fix: the only
 remaining occurrence of `:245-250` in that file is the corrected line, and
@@ -136,6 +136,6 @@ One process point for the consolidation stage to note explicitly (not a factual 
 
 ### Fixes required before merge
 
-1. Correct the stale `runtime_isolation.py:207-216` citation in `docs/superpowers/research/2026-09-02-ci-pipeline-audit-pytest-profile.md` §3.1 to `:245-250` (the location the main doc already cites correctly).
+1. Correct the stale `runtime_isolation.py:207-216` citation in `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit-pytest-profile.md` §3.1 to `:245-250` (the location the main doc already cites correctly).
 
 No other corrections needed. I did not find grounds to reproduce or verify anything beyond what's listed here that would change the verdict — the two named "could not answer" gaps (cron token scope, the never-started-workflow edge case) are honestly disclosed as blocked on a higher-scoped token, not glossed over.

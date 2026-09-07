@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 (stdlib only — `json`, `dataclasses`, `enum`, `datetime`, `fnmatch`, `re`, `argparse`, `pathlib`), `pytest`, the installed `github-issues-kanban` Claude Code skill (label/lock/event-bus protocol, `gh` CLI auth), Claude Code's `Agent`/`TaskStop` tools. No new dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md` — this plan implements every numbered section of that spec; see the Self-Review at the end for the section-by-section coverage check.
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md` — this plan implements every numbered section of that spec; see the Self-Review at the end for the section-by-section coverage check.
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 6. **Every module in `tools/autonomous_mode/` is pure.** No network I/O, no `subprocess`, no `gh` invocation, no `os.system`, and no filesystem write other than `.claude/autonomous-mode.json`. Verdicts in, verdicts out — the agent performs the actual `gh`/git operations itself. This is `tools/quality_coordination_sim/`'s established shape in this repo, and it is what makes every gate testable with zero credentials.
 7. **The marker file is plain JSON at `.claude/autonomous-mode.json` (§8) — deliberately NOT this repo's SQLite `DB_PATH`/`_connect()` persistence idiom.** CLAUDE.md's "Persistence idiom" governs *application* state under `data/*.db` that the running FastAPI process reads and writes; this is per-worktree developer-tooling session state written once by a launcher and cleared by `TaskStop`. Do not "upgrade" it to sqlite3. This constraint exists because a future implementer reading CLAUDE.md will be tempted to.
 8. **The kanban skill's claim lock is optimistic, not atomic (§3, §8).** The re-verify-after-acquire mitigation catches the common race window; it is a partial mitigation and an accepted residual risk. No task may document, name, test, or describe it as a guarantee.
-9. **Issue-source wiring is out of scope (§11).** No task in this plan creates an adapter exporting `services/quality_coordination.py`'s `escalation_eligible` items, `ROADMAP.md` items, or `docs/superpowers/plans/2026-08-26-active-tracks-board.md`'s tracks into the issue queue. This plan assumes issues already exist.
+9. **Issue-source wiring is out of scope (§11).** No task in this plan creates an adapter exporting `services/quality_coordination.py`'s `escalation_eligible` items, `ROADMAP.md` items, or `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`'s tracks into the issue queue. This plan assumes issues already exist.
 10. **Nothing here touches real-money safety (§2).** No task modifies `kalshi_account.trading_enabled`, the daily-loss kill switch, CORS, `services/quality_coordination.py`, or resumes AQC's paused Tasks 4-9.
 11. **Branching policy (§3, `.claude/rules/branching-and-ci.md`):** this plan's tasks land on a `feat/autonomous-engineering-mode` branch off `main`, one task per commit; Claude runs the targeted tests locally, Woodpecker owns exhaustive verification. Tests never touch a real `data/*.db` file and never call `gh`.
 
@@ -46,8 +46,7 @@
 ```python
 # tests/test_autonomous_mode.py
 """Gate-level tests for tools/autonomous_mode — the deterministic safety gates behind
-autonomous engineering mode (docs/superpowers/specs/2026-08-26-autonomous-engineering-
-mode-design.md). Every module under test is pure: no network, no subprocess, no gh call,
+autonomous engineering mode (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md). Every module under test is pure: no network, no subprocess, no gh call,
 no filesystem write except the marker file, which every test here redirects to tmp_path.
 """
 import json
@@ -141,7 +140,7 @@ Every module in this package is pure: no network I/O, no subprocess, no `gh` inv
 and no filesystem write other than `.claude/autonomous-mode.json`. The agent running
 autonomous mode performs the real `gh`/git operations; this package only tells it whether
 an operation is allowed, so each safety claim in
-docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md §6-§8 is a tested
+docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md §6-§8 is a tested
 function rather than something the agent has to remember mid-loop.
 """
 ```
@@ -720,8 +719,8 @@ PROTECTED_DOMAINS: tuple[ProtectedDomain, ...] = (
         ".claude/skills/autonomous-mode/**",
         ".claude/autonomous-mode.json",
         "tests/test_autonomous_mode*.py",
-        "docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md",
-        "docs/superpowers/plans/2026-08-26-autonomous-engineering-mode.md",
+        "docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md",
+        "docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-engineering-mode.md",
     )),
 )
 
@@ -3088,7 +3087,7 @@ description: This skill should be used when the user asks to "turn on autonomous
 
 # Autonomous engineering mode
 
-Implements `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`.
+Implements `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`.
 Autonomous mode changes **when** work happens. It never changes **what's allowed**.
 
 Every safety decision below is a command that returns JSON and an **exit code**
@@ -3489,7 +3488,7 @@ capabilities" list:
   `tools/autonomous_mode/` (protected-domain refusal at claim time, the
   brainstorming human-approval stop, a `docs/**`/`tests/**`-only merge allowlist,
   unconditional CI-green, outer-loop halt). Design:
-  `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`.
+  `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`.
   It empowers, it never relaxes — every gate binds inside autonomous mode exactly
   as it binds an interactive session.
 ```
@@ -3591,7 +3590,7 @@ place this plan chose to depart from it:
   tests under `tests/`). Putting it in `services/` would put it on the app's import graph
   for no benefit and would trip the architecture audit's expectations for that package.
 
-**1. Spec coverage** (against `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`):
+**1. Spec coverage** (against `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`):
 
 | Spec section | Task |
 |---|---|

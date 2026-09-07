@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `tools/coordination_engine.py` (a shared, signal-shape-agnostic identity/fingerprint/persistence-floor/suppression/resolution state machine) and `tools/quality_coordination.py` (AQC itself: four signal-domain gatherers, a read-only trading-application diagnostics client used as context rather than an audited target, and a three-action git/filesystem cleanup layer) — the standalone workflow tool that acts as an automated project manager and janitor over this repository's own engineering workflow (branch/PR/CI lifecycle, `superpowers` plan/ledger execution health, standing-rule and process hygiene), per the corrected scope in `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`. "AQC" now names, and only names, this tool; the prior implementation under that name is kept, already renamed to `tools/quality_ratchet.py` (`main`@`440da36`, confirmed merged), and is not touched by this plan.
+**Goal:** Build `tools/coordination_engine.py` (a shared, signal-shape-agnostic identity/fingerprint/persistence-floor/suppression/resolution state machine) and `tools/quality_coordination.py` (AQC itself: four signal-domain gatherers, a read-only trading-application diagnostics client used as context rather than an audited target, and a three-action git/filesystem cleanup layer) — the standalone workflow tool that acts as an automated project manager and janitor over this repository's own engineering workflow (branch/PR/CI lifecycle, `superpowers` plan/ledger execution health, standing-rule and process hygiene), per the corrected scope in `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`. "AQC" now names, and only names, this tool; the prior implementation under that name is kept, already renamed to `tools/quality_ratchet.py` (`main`@`440da36`, confirmed merged), and is not touched by this plan.
 
 **Architecture:** Two new pure-Python flat modules under `tools/`, matching the spec's own §4 diagram exactly (not a subpackage — a deliberate choice, see Self-Review): `tools/coordination_engine.py` owns the SQLite store (`tools/quality_coordination_data/quality_coordination.db`) and the domain-agnostic `Signal`/`apply_observation` state machine, modeled on `tools/quality_ratchet.py`'s already-proven identity/fingerprint/persistence-floor/suppression/resolution contract but generalized past `QualityFinding`. `tools/quality_coordination.py` is AQC itself: four signal-domain gatherers (branch/PR/CI lifecycle, plan/ledger health, standing-rule hygiene, docs/ROADMAP drift — the last of which never routes through the engine), a read-only app-diagnostics client used as context, a three-action deterministic cleanup layer, and the `python -m tools.quality_coordination` CLI. Every `git`/`gh`/Woodpecker-CLI subprocess call and every app-diagnostics HTTP call goes through an injectable runner, following `tools/kanban_sync/github_client.py`'s established pattern in this repo, so no test in this plan ever shells out or makes a network call for real.
 
 **Tech Stack:** Python 3.13 (stdlib only — `argparse`, `dataclasses`, `sqlite3`, `json`, `hashlib`, `subprocess`, `urllib.request`, `pathlib`, `datetime`, `re`, `typing`), `pytest`, the `gh` CLI and `scripts/woodpecker-status` (already used elsewhere in this repo), a disposable synthetic git repository fixture for the cleanup-action fault-injection suite (§10 point 3 — never this repository). No new dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` (read in full before starting — this plan implements it section by section, §1-§15; the Global Constraints below quote its load-bearing decisions verbatim, but the spec has the reasoning). `main`@`440da36` already merged §12's rename — `tools/quality_coordination.py` and `tools/quality_coordination_data/` are free names again before this plan starts (re-confirm with `git log --oneline -- tools/quality_ratchet.py` if this ever needs re-checking).
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` (read in full before starting — this plan implements it section by section, §1-§15; the Global Constraints below quote its load-bearing decisions verbatim, but the spec has the reasoning). `main`@`440da36` already merged §12's rename — `tools/quality_coordination.py` and `tools/quality_coordination_data/` are free names again before this plan starts (re-confirm with `git log --oneline -- tools/quality_ratchet.py` if this ever needs re-checking).
 
 ## Global Constraints
 
@@ -277,7 +277,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'tools.coordination_eng
 # tools/coordination_engine.py
 """coordination_engine — shared, signal-shape-agnostic identity/fingerprint/
 persistence-floor/suppression/resolution state machine
-(docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
 §7, §9). Reused deliberately from tools/quality_ratchet.py's already-proven
 identity/fingerprint/persistence-floor/suppression/resolution contract (spec §3) rather
 than re-derived - generalized past QualityFinding to an arbitrary caller-supplied Signal.
@@ -582,7 +582,7 @@ tool that acts as an automated project manager and janitor over THIS REPOSITORY'
 engineering workflow (branch/PR/CI lifecycle, superpowers plan/ledger execution health,
 standing-rule and process hygiene) - informed by, but never auditing, the trading
 application's own self-reported diagnostics
-(docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md).
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md).
 
 "AQC" now names, and only names, this tool. The prior implementation under this name
 audited the trading application's own static code findings instead - a real, corrected
@@ -1560,7 +1560,7 @@ _WORD_RE = re.compile(r"[a-z]{4,}")
 def _open_roadmap_bullets(text: str) -> list[str]:
     """Collects each top-level `- [ ]` bullet's full text, including 6-space-indented
     continuation lines up to the next top-level bullet or a blank line - mirroring
-    docs/superpowers/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
+    docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-kanban-board-sync.md's own proven `_iter_bullets`
     approach for the identical problem. A bare single-line regex (found in review,
     2026-08-27) truncates virtually every real ROADMAP.md bullet to its first physical line
     - this repo's bullets routinely wrap onto continuation lines, confirmed against
@@ -1671,7 +1671,7 @@ path" caution generalized to "never guesses a mapping it can't confirm."
 ```python
 # tests/support/synthetic_git_repo.py
 """A disposable, throwaway git repository fixture for AQC's cleanup-action fault-injection
-suite (docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
+suite (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
 §10 point 3: "run against a disposable synthetic git repository fixture, never this
 repository"). Every git call here is real (not injected/faked) precisely because this
 fixture's whole point is to give the cleanup actions a real repo to act on without ever
@@ -2314,7 +2314,7 @@ existing bullet list:
 (deterministic, path-contained, idempotent, independently verifiable, outside protected
 domains) apply unchanged to local git/filesystem mutation authority, not only GitHub write
 authority — see `tools/quality_coordination.py`'s three cleanup actions
-(`docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`
 §8), which this rule now also governs. The credential/event topology sections above remain
 GitHub-specific (there is no GitHub credential in this tool at all — see that spec's §2 and
 §11), but the core principle ("Automation may observe broadly, but it earns authority to
@@ -2326,7 +2326,7 @@ to this tool's own three actions.
 
 Update the existing "autonomous-quality-coordination-investigation" bullet's final sentence
 (currently ending "...not yet implemented") to read "...implemented — see
-`docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-workflow.md`," and add a
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-autonomous-quality-coordination-workflow.md`," and add a
 new bullet immediately after the existing **quality-ratchet** bullet:
 
 ```markdown
@@ -2342,9 +2342,7 @@ new bullet immediately after the existing **quality-ratchet** bullet:
   fault-injection-tested against a synthetic repo fixture, never this repository. Manual
   invocation only: `python -m tools.quality_coordination` (detect + report) /
   `python -m tools.quality_coordination --clean` (also executes eligible cleanup actions).
-  Design: `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-
-  design.md`. Plan: `docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
-  workflow.md`.
+  Design: `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`. Plan: `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-autonomous-quality-coordination-workflow.md`.
 ```
 
 - [ ] **Step 3: Point `CLAUDE.md`'s "Quick file map" at both new modules**
@@ -2355,8 +2353,7 @@ Add to `CLAUDE.md`'s "Quick file map", immediately after the existing `tools/` b
 ```markdown
   `coordination_engine.py` + `quality_coordination.py` (the tool "Autonomous Quality
   Coordination" now names — a project-manager/janitor over this repo's own engineering
-  workflow, not the trading app's code; see `docs/superpowers/specs/2026-08-27-autonomous-
-  quality-coordination-workflow-design.md`), and others.
+  workflow, not the trading app's code; see `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`), and others.
 ```
 
 - [ ] **Step 4: Verify the CI claim rather than assuming it (same check as Global Constraint 12)**
@@ -2445,8 +2442,7 @@ PUBLIC_PATHS = {
     "/login", "/auth/login", "/auth/callback",
     # Read-only operational diagnostics, deliberately public even once real auth is
     # configured (2026-08-27): no trading data, no credentials, no order/position detail.
-    # See docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-
-    # design.md §6.4 for the tool that reads these and the full justification/trade-off.
+    # See docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md §6.4 for the tool that reads these and the full justification/trade-off.
     "/api/quality/summary", "/api/health/pipeline", "/api/health/faults",
 }
 ```
@@ -2476,8 +2472,7 @@ return `200` without a session while every other protected route's behavior is u
 git add services/auth.py
 git commit -m "feat: allow unauthenticated reads of three operational-diagnostics routes for AQC
 
-Explicit, live-confirmed change (see docs/superpowers/plans/2026-08-27-autonomous-quality-
-coordination-workflow.md Task 11) - not inferred from the design spec's own approval alone.
+Explicit, live-confirmed change (see docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-autonomous-quality-coordination-workflow.md Task 11) - not inferred from the design spec's own approval alone.
 Narrow, reversible: three already-read-only, non-sensitive routes only (no trading data,
 no credentials, no order/position detail); every other route's auth requirement, the
 trading gate, and the kill switch are untouched."
@@ -2550,7 +2545,7 @@ discipline the spec's own §15 self-review applied, and the AEM plan's own Self-
   extra justification paragraph) is designed so a future session can't skim past it the way
   a routine doc-only step could be skimmed.
 
-**1. Spec coverage** (against `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`):
+**1. Spec coverage** (against `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md`):
 
 | Spec section | Task |
 |---|---|

@@ -13,7 +13,7 @@
 # else) are PROVEN non-interacting by this repo's own pytest-profile audit
 # doc ("An app-code change cannot affect the 79.8s of (c); a tools/hooks/
 # scripts change cannot affect the 365.6s of (a)",
-# docs/superpowers/research/2026-09-02-ci-pipeline-audit-pytest-profile.md)
+# docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit-pytest-profile.md)
 # - unlike the file-level path-to-test mapping this repo's own tests-pytest.yml
 # history already documents rejecting for good reason ("a change anywhere
 # in services/ or main.py can regress any other module"), this split

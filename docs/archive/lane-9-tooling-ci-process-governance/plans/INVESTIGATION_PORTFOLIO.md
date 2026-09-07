@@ -85,8 +85,8 @@ actual findings — those stay in the investigation's own artifacts.
 | Frontend Modularization — implementation | QUEUED — confirmed not started | none | `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md` (moved there 2026-09-06, planning-lanes migration) via `.claude/skills/frontend-modularization-task/SKILL.md` | High (direct file check: `frontend/src/js/` is still the pre-migration flat layout — `advisory-calibration.js`, `config-panel.js`, etc. — no `core/`/`panels/`/`legacy/` split the plan's T1c calls for) |
 | Realtime Kalshi Data-Plane Investigation (research+root cause) | COMPLETED — MERGED (PR #10, PR #12) | (folded into `main`) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-investigation.md` | High |
 | Realtime Kalshi Data-Plane Remediation (implementation) | **ACTIVE — IMPLEMENTATION** | `feat/realtime-data-plane-remediation` / `.claude/worktrees/agent-a77b293d25b099924` (locked) | `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md` (7 phases, P0–P6) | High — 2 commits observed (`36ca1f9` event-loop stall watchdog, `dcc9816` durable candidate-ledger table, both P0) |
-| Autonomous Quality Coordination Investigation ("P1") | **COMPLETED — MERGED** (PR #15, checklist close-out PR #18) | (folded into `main`) | `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | High |
-| Autonomous Quality Coordination — production implementation | QUEUED — not started; **two autonomous attempts this session, both aborted before any commit** | none (branches `chore/autonomous-quality-coordination-implementation` and a stray `worktree-agent-*` were created and deleted, zero commits on either) | `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md` (9 tasks) | High |
+| Autonomous Quality Coordination Investigation ("P1") | **COMPLETED — MERGED** (PR #15, checklist close-out PR #18) | (folded into `main`) | `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | High |
+| Autonomous Quality Coordination — production implementation | QUEUED — not started; **two autonomous attempts this session, both aborted before any commit** | none (branches `chore/autonomous-quality-coordination-implementation` and a stray `worktree-agent-*` were created and deleted, zero commits on either) | `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md` (9 tasks) | High |
 | Claude/AI Control-Plane Bloat Investigation ("P2") | QUEUED — not yet created | none | none exists | High (absence re-confirmed by repo-wide grep this baseline) |
 | Autonomous Assignment Execution Investigation ("P3") | QUEUED — not yet created | none | none exists | High (absence re-confirmed by repo-wide grep this baseline) |
 | CI fast-path for docs-only pushes | COMPLETED — MERGED (PR #13) | (folded into `main`) | n/a (single-PR perf fix, not a numbered investigation) | High |
@@ -109,7 +109,7 @@ inside any plan file itself.
   D, report-only** — no GitHub write authority, no new credentials, a
   persisted observation series only), specified it (I11), and wrote a
   9-task production implementation plan (I12,
-  `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`).
+  `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md`).
   Merged via PR #15 (`79ea790`); its checklist was retroactively closed out
   via PR #18 (`34f2633`).
   - **The production implementation plan is written but has zero

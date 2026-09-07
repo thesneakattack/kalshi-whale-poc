@@ -3,7 +3,7 @@ label -> Status-option mapping. Labels cannot drive Projects V2 board/table
 grouping at all (confirmed against GitHub's own current docs 2026-08-27) -
 only a project's own field, like this one, can. This is the mechanism
 that actually produces the board's visible columns - see
-docs/superpowers/specs/2026-08-27-kanban-sync-project-status-field-design.md.
+docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-kanban-sync-project-status-field-design.md.
 
 Project: thesneakattack/kalshi-whale-poc - Personal Todo Board (project #3).
 IDs below are this project's real GraphQL node IDs, confirmed live

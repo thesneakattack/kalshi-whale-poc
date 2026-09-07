@@ -18,7 +18,7 @@ answer that is *not* "yes."
 this document — re-deriving its conclusions under the rule set as it
 stands after PR #429 and PR #436, re-measuring the live app, and adding
 what happened after this document's monitor window — is
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`.
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`.
 Read it alongside this one: it corrects Tier-1 item 3 and §5.2's
 `raw_trades` finding (a lifetime fault row misread as 24 h — the last
 occurrence was 2026-08-30), separates the event-loop stalls from the
@@ -160,7 +160,7 @@ for the full review-cycle record):
    `_scoring_pool` as call sites drain onto it — this is subtraction, not a
    new library, and directly addresses the pool-contention root cause.
 4. Execute the already-designed, already-approved, never-started Preact
-   frontend migration (`docs/superpowers/plans/2026-08-25-frontend-modularization.md`)
+   frontend migration (`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`)
    — it is not a new decision, it is 8-day-old unstarted work.
 5. Add a pre-whale-price anchor and an explicit EV gate (`p_est − price −
    fee > threshold`) to the entry path — the single highest-leverage
@@ -724,7 +724,7 @@ flagged explicitly in §14 rather than silently assumed away.
 ## 6. Polling inventory — "there's still way too much polling" is correct, and specific
 
 Prior art exists and was re-verified rather than inherited:
-`docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`.
+`docs/archive/lane-1-kalshi-ingestion/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`.
 Two of its findings are now stale (fixed) and are corrected below; four are
 confirmed still open.
 
@@ -979,7 +979,7 @@ was answered 2026-08-25 (Preact 10 + `@preact/signals` + `htm`, strangler-
 fig migration, uPlot for charts) — and it has not started.**
 `frontend/src/js/` has zero subdirectories (13 flat files); `package.json`
 has no `preact`/`@preact/signals`/`htm` dependency; the task plan
-(`docs/superpowers/plans/2026-08-25-frontend-modularization.md`) has 50
+(`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`) has 50
 unchecked tasks and 5 checked. This is not a fresh architectural question —
 it's 8-day-old, fully-designed, unstarted work.
 
@@ -1012,8 +1012,7 @@ HARD RULE exists to prevent, and it was also imprecise on its own terms:
 this repo already has a build step (`frontend/package.json`: "esbuild
 bundles \[`src/js/`\] into `static/js/dashboard.bundle.js`... edits need a
 rebuild"). Corrected, narrower, and actually cited: the frontend-
-modularization spec (`docs/superpowers/specs/2026-08-25-frontend-
-modularization-design.md` §10, "JSX escape hatch (documented, not used)")
+modularization spec (`docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md` §10, "JSX escape hatch (documented, not used)")
 chose `htm` specifically so `.js` files stay plain JavaScript processable
 by the *existing* esbuild bundle, without adding a *second*,
 framework-specific compiler/transform stage (JSX, or a Vue/Svelte SFC
@@ -1434,7 +1433,7 @@ this document.
 12. Add markout measurement for realized-edge tracking (§3.3 #3) — pure
     measurement, do before #11 or alongside it.
 13. Execute the already-designed Preact frontend migration
-    (`docs/superpowers/plans/2026-08-25-frontend-modularization.md`, §8.4)
+    (`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`, §8.4)
     — sequenced after Tier 1's backend fixes given the causal link between
     the two.
 14. Adopt `prometheus_client` for observability instrumentation only,
@@ -1539,7 +1538,7 @@ one-line-plus-next-action convention when that happens.
   should it skip peer-session worktrees by default, or is manual filtering
   an acceptable/deliberate cost? Small, standalone tooling question,
   separate from the app architecture itself.
-- **`docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`
+- **`docs/archive/lane-1-kalshi-ingestion/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`
   is now partially stale** (§6.1) — two of its findings are fixed; worth a
   dated addendum or supersession note the next time someone works from it,
   so a future reader doesn't re-investigate what's already resolved.
@@ -1620,4 +1619,4 @@ live `curl`, direct SQLite queries, `git log`, in-container library
 source) found 21 confirmed claims, 9 falsified, 9 overstated/unverifiable,
 and 8 real scope gaps; every one is reflected in this revision. The merged
 fix list and GO decision are recorded in the companion document,
-`docs/superpowers/research/2026-09-02-architecture-audit-consolidation.md`.
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-consolidation.md`.

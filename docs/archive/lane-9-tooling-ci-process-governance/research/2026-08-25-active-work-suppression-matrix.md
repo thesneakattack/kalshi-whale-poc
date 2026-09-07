@@ -1,6 +1,6 @@
 # Active-Work Suppression Matrix — I3 (detection and suppression strategies)
 
-**Task:** I3 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I3 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `39f0655` (worktree
 `.claude/worktrees/aqc-investigation`, base `origin/main` @ `8d1796b`). Re-ground 02:12Z: no open PRs;
 `origin/chore/realtime-dp-investigation` at `4cb0f0b` ("regenerate project manifest from a clean

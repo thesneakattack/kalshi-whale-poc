@@ -3,11 +3,11 @@
 Per `superpowers:writing-plans`' own self-review checklist and CLAUDE.md's
 "nothing advances on one pass" HARD RULE (self-review layer, before
 independent adversarial review), run against
-`docs/superpowers/plans/2026-09-03-ci-pipeline-audit-tier1-fixes.md`.
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-09-03-ci-pipeline-audit-tier1-fixes.md`.
 
 ## Spec coverage
 
-The spec (`docs/superpowers/research/2026-09-02-ci-pipeline-audit.md`'s
+The spec (`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md`'s
 Tier 1 list) has exactly 4 items. Each has a task:
 
 1. Fix testmon selection (`--testmon-forceselect`) → Task 1.

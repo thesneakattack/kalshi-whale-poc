@@ -1,7 +1,7 @@
 """I8 scenario matrix for the throwaway no-write quality coordination simulator.
 
 Prototype status: EXPERIMENTAL / THROWAWAY, per
-docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md I8. Not wired
+docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md I8. Not wired
 into production CI or any GitHub API. Encodes the policies I1 (identity), I2 (persistence floors),
 and I3 (suppression precedence) already derived from real repo evidence -- this test file is the
 executable proof those policies compose into an explainable, non-duplicating, no-write coordinator
@@ -280,8 +280,7 @@ def test_idempotent_on_repeated_identical_audit():
 
 
 def test_i2_historical_replay_no_false_escalation():
-    """Real repo evidence, not synthetic: docs/superpowers/research/2026-08-25-quality-
-    coordination-cadence.md Section 6 + the actual PR #12 merge timestamp. Hours since a fixed
+    """Real repo evidence, not synthetic: docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-coordination-cadence.md Section 6 + the actual PR #12 merge timestamp. Hours since a fixed
     origin of 2026-08-24T00:00Z.
 
     Episode A: config-unread:alerting.crash_auto_resolve_after_sec -- first seen 08-24 20:57Z

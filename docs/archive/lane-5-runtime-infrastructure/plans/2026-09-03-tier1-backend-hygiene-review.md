@@ -43,7 +43,7 @@ confirmed at `git status --short` empty except this new file).
 | `alerting.py` task-handle mechanism | `grep -rn "create_task\|ensure_future" services/alerting/`; read `task_supervisor.py`'s `supervise()`; read all 3 call sites in `alerting.py` | Confirm the plan's own correction of the audit's citation (real hits are zero, mechanism is one layer removed) |
 | `resolved_signals_with_factors()` / `population_gate_summary()` | Read both functions' full docstrings and every call site (`grep -rn`) | Test the plan's central "cannot be `since_ts`-bounded" claim and its call-site counts |
 | PR #424 citation | `git log --all --oneline \| grep 424` (the plan's own method) **and** `gh pr view 424 --json title,body,...` (a cheaper, more authoritative check the plan didn't run) | Test whether the plan's "flagged as unreliable" correction is itself accurate |
-| Citation `§9.2 #3` vs `§8 Tier-1 item 12` | Read both exact passages in `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` | Confirm the plan's other citation correction |
+| Citation `§9.2 #3` vs `§8 Tier-1 item 12` | Read both exact passages in `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` | Confirm the plan's other citation correction |
 | ~25 individual line-number/signature/call-site claims | `grep -n`/`sed -n` against `main.py`, `services/fault_log.py`, `services/loop_watchdog.py`, `services/risk_manager.py`, `services/shadow_mode.py`, `services/advisory/advisory_engine.py`, `services/analytics/market_analyst_orchestrator.py`, `services/analytics/routes.py`, `services/whale_calibration/routes.py`, `services/alerting/alerting.py`, `services/task_supervisor.py`, `services/market_watch/event_metadata.py`, `services/state_view.py`, and the 7 pagination-target route files | Spot-check the plan's "confirmed by direct read" transcriptions |
 | Tier 0 PR status | `gh pr view 441 --json state,mergedAt,title` | Confirm the plan's premise that PR #441 (Tier 0's plan) is merged as a document |
 
@@ -167,7 +167,7 @@ right), but worth a one-line fix.
 
 ### F8 — CONFIRMED: the `§9.2 #3` → first-audit `Tier-1 #3/#4` citation correction is accurate
 
-Read `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+Read `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
 directly: `§8`'s Tier-1 item 12 literally reads "= #3, #4 Bound
 `resolved_signals_with_factors()` and `population_gate_summary()`..."
 (line 1185), and the document's own `§9.2 #3` (line 681) is "the

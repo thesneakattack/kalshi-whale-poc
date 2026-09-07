@@ -22,7 +22,7 @@ plan docs are still open, since their own checkboxes are proven unreliable
 `github-issues-kanban` Claude Code skill's label/event conventions. No new
 dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md`
 (read in full before starting — this plan implements it section by section;
 the Global Constraints below quote its load-bearing decisions verbatim, but
 the spec has the reasoning).
@@ -41,7 +41,7 @@ the spec has the reasoning).
    `assets/label-scheme.json`
    (`status:claimable`/`claimed`/`in-progress`/`ready-for-review`/`blocked`/
    `done`). The only repo-local additions are `type:*` (already defined by
-   `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`
+   `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`
    Task 15 as a repo-local extension) and a new `type:tracking` this plan
    introduces for worktree issues. (Spec §7.)
 4. **`## Acceptance criteria` is always populated; `## Scope` only when
@@ -159,8 +159,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'tools.kanban_sync'`
 
 ```python
 # tools/kanban_sync/__init__.py
-"""Kanban board sync (docs/superpowers/specs/2026-08-26-kanban-board-sync-
-design.md): reflects worktrees, ROADMAP.md, active-tracks-board.md's
+"""Kanban board sync (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md): reflects worktrees, ROADMAP.md, active-tracks-board.md's
 tracks, and open numbered plan docs onto real GitHub Issues, built to the
 installed github-issues-kanban skill's claimable-work contract. Entry
 point: `python -m tools.kanban_sync`.
@@ -169,12 +168,10 @@ point: `python -m tools.kanban_sync`.
 
 ```python
 # tools/kanban_sync/labels.py
-"""Canonical label constants (docs/superpowers/specs/2026-08-26-kanban-
-board-sync-design.md §7). status:* values are copied verbatim from the
+"""Canonical label constants (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md §7). status:* values are copied verbatim from the
 installed github-issues-kanban skill's assets/label-scheme.json - do not
 invent new status values. type:* is this repo's own extension, already
-established by docs/superpowers/specs/2026-08-26-autonomous-engineering-
-mode-design.md (Task 15's note); type:tracking is this plan's own addition
+established by docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md (Task 15's note); type:tracking is this plan's own addition
 to that same repo-local family, for issues that track a worktree rather
 than represent claimable work.
 """
@@ -1148,7 +1145,7 @@ git commit -m "feat: add ROADMAP.md source for kanban sync"
 - Consumes: `labels.*`, `models.SyncItem` (Task 1).
 - Produces: `sources_tracks.parse_track_items(text: str) -> list[SyncItem]`
   — called directly by `__main__.py` (Task 9) with
-  `Path("docs/superpowers/plans/2026-08-26-active-tracks-board.md").read_text()`.
+  `Path("docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md").read_text()`.
   Each returned item's `depends_on_keys` uses `("track", "<letter>")` pairs.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1933,8 +1930,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'tools.kanban_sync.__ma
 
 ```python
 # tools/kanban_sync/__main__.py
-"""CLI entrypoint for the kanban board sync (docs/superpowers/specs/
-2026-08-26-kanban-board-sync-design.md). `python -m tools.kanban_sync sync
+"""CLI entrypoint for the kanban board sync (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md). `python -m tools.kanban_sync sync
 --sources worktree,roadmap,track` runs the fully mechanical sources (used
 by the /checkpoint skill integration, Task 12); `--sources plan`
 additionally needs `--plan-classifications <path-to-json>`, produced by
@@ -1959,7 +1955,7 @@ from tools.kanban_sync.sync import reconcile
 
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
-ACTIVE_TRACKS_BOARD_PATH = Path("docs/superpowers/plans/2026-08-26-active-tracks-board.md")
+ACTIVE_TRACKS_BOARD_PATH = Path("docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md")
 PLANS_DIR = Path("docs/superpowers/plans")
 
 
@@ -2082,7 +2078,7 @@ description: This skill should be used when the user asks to "sync the kanban bo
 # Kanban board sync
 
 Reflects this repo's current state onto real GitHub Issues, per
-`docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md`. One-way:
+`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md`. One-way:
 repo state is always authoritative, nothing here ever edits a repo file.
 Uses `tools/kanban_sync` for every deterministic part; this skill's own
 job is the one judgment call that tool can't make on its own (spec §5) -

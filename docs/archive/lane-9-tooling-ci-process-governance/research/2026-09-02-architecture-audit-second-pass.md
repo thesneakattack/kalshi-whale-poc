@@ -1,7 +1,7 @@
 # Architecture audit — second pass (2026-09-02)
 
 A second, independent pass over
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
 (PR #430, with follow-ups #431/#433/#434 — "the first audit" below). Direct
 request: "review the architectural audit that was done today and do another
 pass on it, especially now that Claude's understanding of project rules has
@@ -1352,7 +1352,7 @@ difference is `_connect(DB_PATH)`-style calls, not a change in the code);
 `'closing('` = 0; files defining `_connect` with no `close()` = 26;
 `'def _add_column_if_missing'` = 11; `'CREATE TABLE IF NOT EXISTS'` = 67;
 `'sqlite3.connect('` = 67; `requirements.txt` runtime pins = 14;
-`docs/superpowers/plans/2026-08-25-frontend-modularization.md` unchecked
+`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md` unchecked
 tasks = 50, checked = 5 (unchanged since the first audit).
 
 **Not done in this pass, on purpose:** no subagent research for the
@@ -1367,12 +1367,12 @@ posture, and the 9 unclassified SQLite files remain unaudited.
 
 **Review-cycle record:** per the "nothing advances on one pass" HARD RULE,
 this artifact went through self-review
-(`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-self-review.md`,
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass-self-review.md`,
 8 corrections applied before the next step) and an independent adversarial
 review (a genuinely separate Agent call, no memory of this session,
 re-deriving every checked claim from the live app, `docker exec`/`/proc`,
 `git`/`gh`, and source —
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-adversarial-review.md`):
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass-adversarial-review.md`):
 verdict GO-AFTER-FIXES, every mechanical count in this Appendix reproduced
 exactly, one factual error found and fixed (the PR #436 merge timestamp,
 §2), one overstated claim found and softened (the "2.5-hour steady state"
@@ -1380,4 +1380,4 @@ recurrence framing, §4.1), and two new live findings surfaced and folded
 in (the `market_history.db` corruption signature and the `markets_watched:
 0` incident, §4.1/§4.7). The merged fix list and final GO are recorded in
 the companion document,
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-consolidation.md`.
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass-consolidation.md`.

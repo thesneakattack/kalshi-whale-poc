@@ -49,7 +49,7 @@ track's own order below, Phase P2.5 stops here — CH4/CH5 do not run.
 Re-grounded against current live config/watchlist (12 tickers, same
 filters CH1 measured under) before writing the classification — nothing
 had shifted. Full reconciliation: H11 in
-`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`.
+`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md`.
 This classification is explicitly provisional pending Phase P3.5's
 larger-scale churn measurement (see the P3.5 bullet below), not final.
 **Task 14 (Phase P3) is next, not started** — per the order below, CH3's
@@ -57,7 +57,7 @@ larger-scale churn measurement (see the P3.5 bullet below), not final.
 CH4/CH5 first.
 
 **Canonical doc — single file (merged 2026-08-27):**
-`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`. The
+`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`. The
 former standalone `2026-08-26-subscription-churn-investigation.md` is
 retired — its content now lives there as **Phase P2.5** (CH1 → CH2 → CH3 →
 conditional CH4 → CH5), sequenced right before Phase P3, matching this
@@ -65,7 +65,7 @@ track's own established execution order below. Folded in because the two
 had become tightly, bidirectionally cross-linked (P3.5 reuses CH1's own
 churn counters and feeds a classification addendum back to CH3) rather than
 independent initiatives that happened to touch the same subsystem.
-- Prior findings both phases build on: `docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`,
+- Prior findings both phases build on: `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md`,
   Hypothesis H11.
 - **P3 = Tasks 14–17** (writer thread → reader-side capture contract →
   sub-threshold rejection aggregation → the live reader-gate flip).
@@ -116,13 +116,13 @@ technically blocked*. A separate session or worktree can pick up Program
 
 **Canonical docs**
 - Investigation (substantially complete — E1–E7, E11–E12 done with real
-  evidence): `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`.
+  evidence): `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`.
 - Current findings snapshot — **provisional**, needs a fresh re-run
   against then-current data before anything is built on it:
-  `docs/superpowers/research/2026-08-26-economic-strategy-effectiveness-status-report.md`.
+  `docs/archive/lane-4-analytics-advisory-research/research/2026-08-26-economic-strategy-effectiveness-status-report.md`.
 - Remediation design + plan — **not approved for execution**:
-  `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md`
-  / `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md`.
+  `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md`
+  / `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md`.
 
 **Entry gate — Program 2R re-run:** enough elapsed time/trade volume
 since the realtime P0–P2 fix (`main`@`22d1a79`, 2026-08-26) to make a
@@ -163,8 +163,7 @@ issue. Program 5 remains available for the same reason if there's ever
 a reason to parallelize further.
 
 **Program 7 status (2026-08-27): implemented.** All 10 tasks of
-`docs/superpowers/plans/2026-08-27-autonomous-quality-coordination-
-workflow.md` (`tools/quality_coordination.py` + `tools/coordination_engine.py`)
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-autonomous-quality-coordination-workflow.md` (`tools/quality_coordination.py` + `tools/coordination_engine.py`)
 merged via PR #86, with a same-day follow-up fix (git dubious-ownership
 under `ddev exec`, PR #87) and a CLAUDE.md/capability-router pointer
 update (PR #85). The plan file's own per-task checkboxes were never
@@ -184,16 +183,14 @@ newest first:
   renamed `tools/quality_ratchet.py` (PR #43) — a legitimate, working,
   differently-scoped capability, no longer Program 7. The real Program 7
   was freshly designed at
-  `docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-
-  workflow-design.md` — brainstormed and approved in chat, then planned
+  `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md` — brainstormed and approved in chat, then planned
   and implemented the same day (see above).
 - **2026-08-26 — the write-lane gate below was resolved, not left open.**
   The user's mid-Task-4 request (install GitHub Issues Kanban + dispatch
   write-capable remediation) was generalized during brainstorming into
   **Autonomous Engineering Mode** (AEM) — a separate, source-agnostic
   background-agent mechanism, merged as design docs
-  (`docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-
-  design.md`, PR #42). AEM explicitly defers *which* sources feed its
+  (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`, PR #42). AEM explicitly defers *which* sources feed its
   GitHub Issues queue (§11) — whether AQC's own findings ever do is its
   own separate, still-undecided question, deliberately not resolved by
   either design.

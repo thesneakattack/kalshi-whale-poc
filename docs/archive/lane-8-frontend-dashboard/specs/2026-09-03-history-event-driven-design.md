@@ -5,9 +5,9 @@
 Design document (2026-09-03). Builds directly on
 `docs/archive/lane-2-whale-signal-calibration/research/2026-09-03-trade-stream-decoupling-and-history-event-driven-research.md`
 (moved there 2026-09-07, planning-lanes migration; §2, §3, §4's Tier-3-related findings) and
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md` §6.6/§8 (item 26,
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md` §6.6/§8 (item 26,
 "push more state over the dashboard WebSocket") and its predecessor
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §13
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md` §13
 item 5. Per CLAUDE.md's "nothing advances on one pass" HARD RULE this is the design stage
 only: self-review is appended below; a separate adversarial review (a fresh Agent call with
 no memory of this session) and consolidation still need to run before an implementation
@@ -194,7 +194,7 @@ trading-critical code can be made to wait.
 
 **Conclusion: reuse the existing `ws_manager`/`/api/ws` connection.** This is also literally
 what the audit's own item 26 named ("push more state over the *existing* dashboard
-WebSocket" — `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md:846`),
+WebSocket" — `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md:846`),
 not a new connection — and the research doc's §2 point 4 explicitly merges History-push into
 that same mechanism rather than treating it as a separate initiative.
 
@@ -554,7 +554,7 @@ implementation-stage work:**
 - No live/browser verification was performed (no `chrome-devtools` MCP session against the
   running app) — this is a design document built entirely from static source reading, which
   is appropriate for the design stage but means every "current behavior" claim in §1 is a
-  source-code read, not an observed live network trace. `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`'s
+  source-code read, not an observed live network trace. `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`'s
   own §3.3 nginx-log methodology would be the natural falsifier for §1's polling-frequency
   claims at implementation time, not repeated here.
 

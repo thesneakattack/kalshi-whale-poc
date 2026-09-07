@@ -1,6 +1,6 @@
 """coordination_engine — shared, signal-shape-agnostic identity/fingerprint/
 persistence-floor/suppression/resolution state machine
-(docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
+(docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
 §7, §9). Reused deliberately from tools/quality_ratchet.py's already-proven
 identity/fingerprint/persistence-floor/suppression/resolution contract (spec §3) rather
 than re-derived - generalized past QualityFinding to an arbitrary caller-supplied Signal.

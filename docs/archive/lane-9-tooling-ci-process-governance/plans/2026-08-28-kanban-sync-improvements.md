@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pytest, `gh` CLI (injected via `FakeRunner` / fake-client pattern).
 
-**Spec:** `docs/superpowers/specs/2026-08-28-kanban-sync-improvements-design.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-28-kanban-sync-improvements-design.md`
 
 ## Global Constraints
 
@@ -142,7 +142,7 @@ Run `pytest tests/test_kanban_sync_github_client.py tests/test_kanban_sync_main.
 ```bash
 git add tools/kanban_sync/github_client.py tools/kanban_sync/__main__.py \
   tests/test_kanban_sync_github_client.py tests/test_kanban_sync_main.py \
-  docs/superpowers/plans/2026-08-28-kanban-sync-improvements.md
+  docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-28-kanban-sync-improvements.md
 git commit -m "fix: decompose-plan refuses a closed parent issue (#96 → sub-issues #169-172 incident)"
 git push
 gh api repos/thesneakattack/kalshi-whale-poc/commits/$(git rev-parse HEAD)/status \
@@ -290,5 +290,5 @@ git push
 gh api repos/thesneakattack/kalshi-whale-poc/commits/$(git rev-parse HEAD)/status \
   --jq '.statuses[] | "\(.context): \(.state)"'
 gh pr create --title "fix: kanban sync improvements (closed-parent guard, classification guidance, mismatch comment)" \
-  --body "Three targeted fixes from the 2026-08-28 live sync run failures. Spec: docs/superpowers/specs/2026-08-28-kanban-sync-improvements-design.md"
+  --body "Three targeted fixes from the 2026-08-28 live sync run failures. Spec: docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-28-kanban-sync-improvements-design.md"
 ```

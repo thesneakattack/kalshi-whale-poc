@@ -39,7 +39,7 @@ was run; no package was installed; nothing under `data/` was touched.
   `next-action.md`/`open-decisions.md`/pointer-note companions, as
   expected for a not-yet-merged research PR).
 - 01:07Z `date -u` (established review clock).
-- 01:08Z `git -C <worktree> diff docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md docs/next-action.md docs/open-decisions.md` (confirmed the pointer note and the next-action/open-decisions rewrites exist and match the artifact's description of them).
+- 01:08Z `git -C <worktree> diff docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md docs/next-action.md docs/open-decisions.md` (confirmed the pointer note and the next-action/open-decisions rewrites exist and match the artifact's description of them).
 - 01:08–01:09Z `stat`/`git diff config/settings.yaml` in the **primary**
   checkout (not the worktree, per the task).
 - 01:09–01:13Z source reads: `services/diagnostics/routes.py:470-510`,
@@ -87,7 +87,7 @@ was run; no package was installed; nothing under `data/` was touched.
   GitHub's own record, the authoritative source for merge time — not
   inferred from a local commit's author timestamp).
 - 01:31–01:33Z grep of the first audit
-  (`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`)
+  (`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`)
   for the specific strings the second pass claims to be quoting/correcting
   (`237`, `855 KB/s`, `zero DB access`, `Runtime dependencies are deliberately minimal`,
   `A shared _connect()`, `followed consistently`).

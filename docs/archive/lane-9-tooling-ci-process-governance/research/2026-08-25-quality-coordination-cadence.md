@@ -1,6 +1,6 @@
 # Quality Coordination Cadence — I2 (repository concurrency and persistence candidates)
 
-**Task:** I2 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I2 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `07398bd` (worktree
 `.claude/worktrees/aqc-investigation`, base `origin/main` @ `8d1796b`). Re-ground: no open PRs;
 `origin/chore/realtime-dp-investigation` advanced to `da865ba` (12 commits, still no PR); this branch does

@@ -15,8 +15,8 @@ settlement, or auth code.
 **Research/design basis (all GO, per this project's "nothing advances on one
 pass" HARD RULE):**
 
-- `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
-  and `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+  and `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
   (Tier 2 items 15/16/23/24/28)
 - `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`
   (commit `bb64a7c`, then fixed post-review at `1b44cb0`) — the design this

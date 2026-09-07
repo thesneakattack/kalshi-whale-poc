@@ -1,6 +1,6 @@
 # Autonomous Quality Coordination — Production Design Specification (I11)
 
-**Task:** I11 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I11 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `6526eee`,
 merged forward with `origin/main` @ `09a6abd` (PR #14, the "personal-use, real-money production"
 standing-goal directive — CLAUDE.md-only, no conflict with this branch, merge clean). This spec is
@@ -9,7 +9,7 @@ per the plan's own instruction ("using the actual completion date if it differs 
 investigation date"), this file is dated `2026-08-26`.
 
 **Architecture under specification:** Candidate D (report-only), as decided in I10
-(`docs/superpowers/research/2026-08-25-autonomous-quality-architecture-decision.md`), extended with
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-architecture-decision.md`), extended with
 exactly one active capability: a persisted, read-only coordinator observation series. **No write
 lane, no GitHub credential, no issue/PR authority is specified here** — I10 §2 items 2–4 explicitly
 deferred SARIF, issue escalation, and draft-PR remediation to a future decision with its own
@@ -65,7 +65,7 @@ diffing against the original text below:**
   that check entirely, for the same reason.
 - See `CLAUDE.md`'s "workflow and tooling should never overlap with app code" standing
   rule (added the same day) for the durable version of this principle, and
-  `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`'s addendum
+  `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md`'s addendum
   (Task 15) for the full list of changed files.
 
 Sections §1, §2, §6, and §11 below still contain the original, now-superseded design —

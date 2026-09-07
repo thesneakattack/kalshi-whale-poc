@@ -1,6 +1,6 @@
 # Deterministic Remediation Candidate Inventory (I7)
 
-**Task:** I7 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I7 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `c8fe088`
 (worktree `.claude/worktrees/aqc-investigation`). Merged `origin/main` @ `fed3fee` (PR #13, the CI
 fast-path fix, plus PR #12's realtime-data-plane investigation) forward into this branch first —

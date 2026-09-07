@@ -1,7 +1,7 @@
 """I9: a minimal, documentation-faithful evaluator of Woodpecker's `when:` condition semantics.
 
 Source: https://woodpecker-ci.org/docs/usage/workflow-syntax (fetched 2026-08-25). Quoted directly
-in docs/superpowers/research/2026-08-25-quality-event-fault-injection.md: a `when:` block is a
+in docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-event-fault-injection.md: a `when:` block is a
 list of condition entries; a pipeline step runs if ANY entry matches (OR across list entries); an
 entry matches if ALL of its keys match (AND within one entry). The docs' own example states this
 exact hazard: "The step now triggers on main branch, but also if the target branch of a pull

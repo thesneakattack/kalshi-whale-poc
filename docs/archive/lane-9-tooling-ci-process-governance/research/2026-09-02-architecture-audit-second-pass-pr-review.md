@@ -195,7 +195,7 @@ three.
 
 However, **all four** occurrences of the `kalshi.categories` narrowing
 claim — `docs/next-action.md:31`, `docs/open-decisions.md:50`, and
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`
 at lines 636 and 1257 — state the list was "narrowed from **ten**
 entries... to two". Independently re-counting from
 `git show HEAD:config/settings.yaml`'s committed `kalshi.categories` list
@@ -219,9 +219,9 @@ Four call sites need the same one-word fix (ten → eleven).
 
 `gh pr view 439 --json files` lists exactly:
 `docs/next-action.md`, `docs/open-decisions.md`,
-`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`
 (+14/-0, a short forward-pointer paragraph, read and confirmed accurate),
-`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-adversarial-review.md`,
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass-adversarial-review.md`,
 `-consolidation.md`, `-self-review.md`, and the main `-second-pass.md`
 (+1364/-0). `config/settings.yaml` does not appear. The primary checkout's
 `git diff config/settings.yaml` (read-only check, untouched) shows exactly
@@ -283,7 +283,7 @@ Two concrete issues came out of this pass that the prior cycle missed:
 1. "Narrowed from ten entries to two" → should read "eleven entries to
    two" in all four locations: `docs/next-action.md:31`,
    `docs/open-decisions.md:50`,
-   `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md:636`
+   `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md:636`
    and `:1257`. Confirmed by direct count of the enumerated list, by
    `git show HEAD:config/settings.yaml`, and by an independent,
    already-resolved decision entry elsewhere in the same file that states

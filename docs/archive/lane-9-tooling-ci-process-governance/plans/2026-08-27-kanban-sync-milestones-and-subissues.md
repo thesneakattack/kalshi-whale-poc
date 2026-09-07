@@ -23,7 +23,7 @@ folded into the ordinary `sync` reconciliation loop).
 flags on `issue create`/`issue edit`, `gh api` for milestone CRUD), the
 existing `FakeRunner`/`FakeGithubClient` test doubles.
 
-**Spec:** `docs/superpowers/specs/2026-08-27-kanban-sync-milestones-and-subissues-design.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-kanban-sync-milestones-and-subissues-design.md`
 
 ## Global Constraints
 
@@ -127,8 +127,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'tools.kanban_sync.pla
 ```python
 """Canonical `### Task N: <title>` heading parser for numbered plan docs,
 and the one-time milestone/sub-issue decomposition action for
-plan-tracked kanban_sync issues (spec: docs/superpowers/specs/
-2026-08-27-kanban-sync-milestones-and-subissues-design.md).
+plan-tracked kanban_sync issues (spec: docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-kanban-sync-milestones-and-subissues-design.md).
 
 Only the canonical writing-plans template heading
 (`### Task N: <title>`) is parsed - this repo's own plan docs are

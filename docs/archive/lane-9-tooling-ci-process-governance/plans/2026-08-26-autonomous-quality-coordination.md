@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `sqlite3` (stdlib), FastAPI (routes), `pytest` (tests), `urllib.request` or the repo's existing HTTP client for the two anonymous GitHub reads — no new dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md` — this plan implements every numbered section of that spec; see the Self-Review at the end for the section-by-section coverage check.
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md` — this plan implements every numbered section of that spec; see the Self-Review at the end for the section-by-section coverage check.
 
 ## Global Constraints
 
@@ -71,8 +71,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'services.quality_coor
 """Read-only autonomous quality coordination — persisted observation series only.
 
 No GitHub write credential, no issue/PR authority, no write path outside this module's own
-data/quality_coordination.db. See docs/superpowers/specs/2026-08-26-autonomous-quality-
-coordination-design.md for the full design; this module implements that spec exactly.
+data/quality_coordination.db. See docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md for the full design; this module implements that spec exactly.
 """
 from __future__ import annotations
 
@@ -868,8 +867,7 @@ git commit -m "feat: fetch branch suppression signals from anonymous GitHub API"
 > **synchronously, inline, directly inside the trading-critical tick** —
 > the exact failure shape the realtime data-plane investigation
 > independently root-caused as the cause of event-loop stalls/backlog in
-> this app (`docs/superpowers/research/2026-08-25-realtime-root-cause-
-> report.md`; see also `.claude/rules/realtime-data-plane-evidence.md`'s
+> this app (`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-root-cause-report.md`; see also `.claude/rules/realtime-data-plane-evidence.md`'s
 > "Hot-path rule"). Flagged during the personal-production execution
 > program's plan-safety review
 > (`docs/kalshi-personal-production-execution-program-2026-08-26.md` §5.3)
@@ -1777,7 +1775,7 @@ else changing, must reach `escalation_eligible` on the second call. Updated
 import became lazy).
 
 Also corrected the design spec itself
-(`docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md` §10) —
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md` §10) —
 struck through, not deleted, per this project's own documentation convention — since
 the spec explicitly mandated the now-reversed short-circuit design.
 
@@ -1807,8 +1805,7 @@ Direct instruction, verbatim: "workflow and tooling should never overlap with ap
 approach (an in-process scheduler, an app-config entry, two app-owned read routes) is
 reversed in full, not patched.
 
-**What changed (see `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-
-design.md`'s own Amendment for the full design-level correction):**
+**What changed (see `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md`'s own Amendment for the full design-level correction):**
 1. `services/quality_coordination.py` → `tools/quality_coordination.py` — code lives with
    this repo's other workflow tooling (`tools/quality_audit/`), not application code.
 2. `DB_PATH` moved to `tools/quality_coordination_data/quality_coordination.db` —
@@ -1910,7 +1907,7 @@ smoothed over (same discipline the spec's own self-review, §12, already applied
   explicit "Step 5: Noninterference measurement" that must pass before ever setting `enabled: true`
   outside a disposable dev check.
 
-**1. Spec coverage** (against `docs/superpowers/specs/2026-08-26-autonomous-quality-coordination-design.md`):
+**1. Spec coverage** (against `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-quality-coordination-design.md`):
 
 | Spec section | Task |
 |---|---|

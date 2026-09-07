@@ -38,7 +38,7 @@ engineering workflow* — branch/PR/CI lifecycle, `superpowers` plan/ledger
 execution health, standing-rule and process hygiene, and (as a data feed,
 not an audited target) the trading application's own self-reported
 diagnostics. It formalizes, and automates a version of, what
-`docs/superpowers/plans/2026-08-26-active-tracks-board.md` already does by
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md` already does by
 hand.
 
 ## 2. Non-goals
@@ -46,8 +46,7 @@ hand.
 - Does not audit the trading application's code quality. That is
   `tools/quality_ratchet.py`'s job, unchanged, and out of scope here.
 - Does not implement, require, or depend on Autonomous Engineering Mode
-  (AEM, `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-
-  design.md`) or the `github-issues-kanban` skill. Whether AQC's
+  (AEM, `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`) or the `github-issues-kanban` skill. Whether AQC's
   escalation-eligible findings ever feed AEM's issue queue is explicitly
   deferred — this mirrors AEM's own §11 deferral of "which sources feed
   the queue," and was an explicit decision in this brainstorm (see §13).
@@ -75,17 +74,15 @@ hand.
   unchanged; only its GitHub-specific framing needs a documentation
   update, tracked as an implementation task (§14), not resolved by
   reinterpretation here.
-- **`docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-
-  design.md`** — sibling mechanism, explicitly source-agnostic. This
+- **`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`** — sibling mechanism, explicitly source-agnostic. This
   design does not wire into it (§2).
-- **`docs/superpowers/plans/2026-08-26-active-tracks-board.md`** — the
+- **`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`** — the
   hand-maintained artifact whose job AQC automates a version of. AQC's
   branch/PR/ledger signal domain (§6.1-§6.2) should be read as "what would
   it take to keep this board's *concurrency ground truth* and *track
   status* sections accurate without a human re-deriving them each
   session."
-- **The original AQC investigation** (`docs/superpowers/plans/2026-08-25-
-  autonomous-quality-coordination-investigation.md`, its architecture
+- **The original AQC investigation** (`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`, its architecture
   decision, spec, and Program 7 plan) — retained as historical record of a
   real but mistargeted effort. Its *methodology* — mutation-based identity
   stability testing (I1), repo-cadence-derived persistence thresholds

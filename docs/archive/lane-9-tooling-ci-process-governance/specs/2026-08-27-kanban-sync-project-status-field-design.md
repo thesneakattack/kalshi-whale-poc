@@ -10,7 +10,7 @@ via the already-approved plan, not this document itself.
 
 ## 1. Purpose
 
-`tools/kanban_sync` (`docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md`)
+`tools/kanban_sync` (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md`)
 reflects worktrees, `ROADMAP.md`, `active-tracks-board.md`, and numbered
 plan docs onto real GitHub Issues via `status:*`/`type:*`/`phase:*` labels.
 Three related gaps close here:
@@ -62,7 +62,7 @@ Three related gaps close here:
 
 ## 3. Prior art and constraints this design must respect
 
-- `docs/superpowers/specs/2026-08-26-kanban-board-sync-design.md` — the
+- `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md` — the
   parent design. §7's `status:*`/`type:*` label scheme, §9's closure
   semantics ("closure follows the same direction... the reverse case — an
   issue closed on GitHub while its repo source still shows open — is not

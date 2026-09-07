@@ -18,11 +18,11 @@ testable and independently revertible; none depends on another.
 **Tech Stack:** pytest / pytest-testmon 2.2.0, sqlite3, POSIX shell
 (Woodpecker `commands:`), Markdown.
 
-**Spec:** `docs/superpowers/research/2026-09-02-ci-pipeline-audit.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md`
 (merged PR #440) — the "Prioritized action plan / Tier 1" section is the
 design specification this plan implements; each task below cites the
 specific bullet it comes from. That document's own adversarial review
-(`docs/superpowers/specs/2026-09-02-ci-pipeline-audit-consolidation.md`)
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-02-ci-pipeline-audit-consolidation.md`)
 already independently re-derived and confirmed the mechanism behind every
 fix here from primary sources (installed package source, live CI logs, a
 live container `mount` check, and reproduced measurements) — this plan
@@ -196,7 +196,7 @@ git commit -m "fix: restore real pytest-testmon selection on feature-branch push
 (configure.py:65-85 in the installed testmon==2.2.0), confirmed against
 27/27 sampled push-event CI logs showing zero selections since this
 script shipped 2026-08-26. --testmon-forceselect re-enables selection
-while keeping the marker exclusion. docs/superpowers/research/2026-09-02-ci-pipeline-audit.md
+while keeping the marker exclusion. docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md
 Tier 1 #1."
 ```
 
@@ -342,7 +342,7 @@ raw tmpfs basetemp. Scoped to _guarded_connect, which only ever returns
 test connections (real data/ paths are hard-refused immediately above);
 locking/SQLITE_BUSY semantics are governed by transaction mode, not this
 pragma, so test_capture_writer's lock-retention tests are unaffected.
-docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #2."
+docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md Tier 1 #2."
 ```
 
 ---
@@ -352,7 +352,7 @@ docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #2."
 **Correction (2026-09-03, found during this task's own review):** only 2
 of these 4 tests turned out to be genuinely duplicated by required CI
 coverage — see
-`docs/superpowers/research/2026-09-02-ci-pipeline-audit.md`'s Tier 1 #3
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md`'s Tier 1 #3
 addendum and this plan's own SDD ledger
 (`.superpowers/sdd/2026-09-03-ci-pipeline-audit-tier1-fixes/progress.md`,
 gitignored) for the full account. The task's steps below are preserved as
@@ -500,7 +500,7 @@ verbatim and duplicate checks quality-architecture-audit.yml's
 required, independent job already runs on every push/PR
 (tools.quality_audit's kalshi_boundary/unit_cost scanners) - recovers
 43.6s of pytest suite time for zero coverage loss.
-docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #3."
+docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md Tier 1 #3."
 ```
 
 ---
@@ -611,8 +611,8 @@ Manual-trigger section was stale for tests-pytest since 2026-08-28
 (event: manual added then); trusted.network is live-false, not true;
 pipeline numbers 240/241 no longer resolve after the 2026-08-31 server
 reset. All three confirmed against the live API in the CI pipeline
-audit (PR #440, docs/superpowers/research/2026-09-02-ci-pipeline-audit-woodpecker-mechanics.md).
-docs/superpowers/research/2026-09-02-ci-pipeline-audit.md Tier 1 #4."
+audit (PR #440, docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit-woodpecker-mechanics.md).
+docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md Tier 1 #4."
 ```
 
 ---

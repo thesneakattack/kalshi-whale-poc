@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, existing `services.quality`/`tools.quality_audit`, git/GitHub CLI, Woodpecker CI, Claude Code/Superpowers, GitNexus where justified, Context7/official docs, optional Chrome DevTools only if a browser-facing question emerges.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-autonomous-quality-coordination-investigation-design.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-25-autonomous-quality-coordination-investigation-design.md`
 
 ## Global Constraints
 
@@ -31,7 +31,7 @@
 ## I0 — Re-ground the repository, concurrency map, and toolchain
 
 **Create**
-- `docs/superpowers/research/2026-08-25-autonomous-quality-coordination-baseline.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-coordination-baseline.md`
 
 **Read/inspect**
 - `CLAUDE.md`
@@ -68,7 +68,7 @@ A cold reviewer can see exactly what is active, what is contested, which tools a
 ## I1 — Audit every QCP finding for durable automation identity
 
 **Create**
-- `docs/superpowers/research/2026-08-25-quality-finding-identity-audit.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-finding-identity-audit.md`
 
 **Potential temporary test/prototype work**
 - use a temp directory or explicit investigation worktree; do not change production identity yet.
@@ -96,7 +96,7 @@ The investigation can state exactly which existing IDs are safe for durable stat
 ## I2 — Measure repository concurrency and derive persistence candidates
 
 **Create**
-- `docs/superpowers/research/2026-08-25-quality-coordination-cadence.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-coordination-cadence.md`
 
 **Capabilities**
 - GitHub/`gh` and git history
@@ -121,7 +121,7 @@ Any recommended persistence/grace policy is derived from this repo's observed ca
 ## I3 — Compare active-work detection and suppression strategies
 
 **Create**
-- `docs/superpowers/research/2026-08-25-active-work-suppression-matrix.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-active-work-suppression-matrix.md`
 
 **Capabilities**
 - GitHub/`gh`
@@ -148,7 +148,7 @@ The selected coordination signals have known false-positive/false-negative behav
 ## I4 — Compare event and credential control-plane topologies
 
 **Create**
-- `docs/superpowers/research/2026-08-25-quality-control-plane-topologies.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-control-plane-topologies.md`
 
 **Capabilities**
 - current official GitHub App, GitHub Actions, SARIF/code-scanning, and Woodpecker documentation
@@ -178,7 +178,7 @@ There is no unexamined assumption that Woodpecker+App, GitHub Actions, or autono
 ## I5 — Compare reporting surfaces and noise economics
 
 **Create**
-- `docs/superpowers/research/2026-08-25-quality-reporting-surfaces.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-reporting-surfaces.md`
 
 **Capabilities**
 - GitHub code-scanning/SARIF official docs
@@ -202,7 +202,7 @@ GitHub issues, if retained, represent durable actionable work rather than becomi
 ## I6 — Threat-model the proposed authority boundary
 
 **Create**
-- `docs/superpowers/research/2026-08-25-autonomous-quality-threat-model.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-threat-model.md`
 
 **Capabilities**
 - `ci-cd-guardrails`
@@ -230,7 +230,7 @@ No architecture can win merely by averaging well while retaining a fatal credent
 ## I7 — Inventory and prove deterministic remediation candidates
 
 **Create**
-- `docs/superpowers/research/2026-08-25-deterministic-remediation-inventory.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-deterministic-remediation-inventory.md`
 
 **Capabilities**
 - GitNexus only for candidate blast radius where useful
@@ -257,7 +257,7 @@ Every proposed fixer has executable proof of determinism/idempotence/path scope;
 **Create in an explicit isolated investigation worktree**
 - `tools/quality_coordination_sim/` or another narrowly named prototype location selected after re-grounding
 - `tests/` fixtures for the prototype
-- `docs/superpowers/research/2026-08-25-quality-coordinator-simulation.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-coordinator-simulation.md`
 
 **Important**
 This is throwaway/experimental until I10 selects architecture. Do not wire it into production CI or GitHub APIs.
@@ -287,7 +287,7 @@ The coordination policy survives the scenario matrix without GitHub write author
 
 **Create/modify only after current active branches are reconciled**
 - temporary/synthetic Woodpecker workflow fixture or dedicated no-secret investigation workflow if justified
-- research report `docs/superpowers/research/2026-08-25-quality-event-fault-injection.md`
+- research report `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-event-fault-injection.md`
 
 **Capabilities**
 - `ci-cd-guardrails`
@@ -310,7 +310,7 @@ The event/credential design is proven with failure cases before any real write c
 ## I10 — Architecture decision and adversarial retort
 
 **Create**
-- `docs/superpowers/research/2026-08-25-autonomous-quality-architecture-decision.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-architecture-decision.md`
 
 **Capabilities**
 - Superpowers `brainstorming`
@@ -402,7 +402,7 @@ The production plan is executable by a fresh agent and grants authority incremen
 - [x] Perform a final fresh-eyes review of credential assumptions, event filters, active-work handling, stable identity, protected paths, outage semantics, and rollout gates. (Cross-checked across I1/I3/I4/I6/I7/I9/I10/I11/I12 — verified doc §5, no drift found.)
 - [x] Sync ROADMAP/status/appropriate capability router only where repo conventions require and no parallel branch owns those files. (ROADMAP.md gains one P4 entry; `.claude/rules/quality-capabilities.md`'s router entry updated to complete; `static/status.html` deliberately left untouched, matching the confirmed precedent of the comparable prior investigation — verified doc §6.)
 - [x] Merge the **investigation** PR only after green CI and review. This does not activate the future autonomous system. (PR #15, merged `79ea790`; all 5 required PR contexts and all 5 required post-merge push contexts green. No write lane, credential, or autonomous system activated by the merge — confirmed by the integration audit above.)
-- [x] Use `session-handoff` to leave the chosen production spec/plan and exact next implementation step reconstructable. (Handoff delivered: next unit is Task 1 of `docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md`, no bespoke orchestrator required.)
+- [x] Use `session-handoff` to leave the chosen production spec/plan and exact next implementation step reconstructable. (Handoff delivered: next unit is Task 1 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md`, no bespoke orchestrator required.)
 
 **Acceptance**
 The repository contains a validated research record, architecture decision, production spec, and production implementation plan, while autonomous write/remediation authority remains disabled until that separate implementation initiative begins.

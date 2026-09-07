@@ -1,6 +1,6 @@
 # Self-review — architecture audit second pass (2026-09-02)
 
-Artifact: `docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`.
+Artifact: `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`.
 Same author and context as the artifact, per the "nothing advances on one
 pass" rule's first layer: a consistency and unaddressed-scope check before
 independent effort is spent. Every number in the artifact was re-read

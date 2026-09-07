@@ -1,8 +1,7 @@
 """Sync-identity marker and title/slug derivation (spec §6). The marker is
 deliberately decoupled from anything that shifts under ordinary editing
 (line numbers, surrounding prose) - see spec §6's reference to the
-identity-stability concern in docs/superpowers/research/
-2026-08-25-quality-finding-identity-audit.md, applied here to sync sources
+identity-stability concern in docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-finding-identity-audit.md, applied here to sync sources
 instead of scanner findings.
 """
 from __future__ import annotations

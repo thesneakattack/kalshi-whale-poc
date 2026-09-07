@@ -3,7 +3,7 @@ services.* or main - the two roots CLAUDE.md's own file map names as
 application code) or "tooling" (does not) - the one split boundary the CI
 pipeline audit's pytest-profile doc already measured as safe: "An app-code
 change cannot affect the 79.8s of (c); a tools/hooks/scripts change cannot
-affect the 365.6s of (a)" (docs/superpowers/research/2026-09-02-ci-pipeline-audit-pytest-profile.md,
+affect the 365.6s of (a)" (docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit-pytest-profile.md,
 category (c) membership list, 2026-09-02).
 
 Deliberately import-based, not name-based or a hand-maintained list: a test

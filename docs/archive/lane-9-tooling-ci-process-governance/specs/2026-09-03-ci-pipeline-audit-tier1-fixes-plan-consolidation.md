@@ -1,9 +1,9 @@
 # Consolidation — CI pipeline audit Tier 1 fixes implementation plan (2026-09-03)
 
 Reconciles the plan artifact
-(`docs/superpowers/plans/2026-09-03-ci-pipeline-audit-tier1-fixes.md`), its
+(`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-09-03-ci-pipeline-audit-tier1-fixes.md`), its
 same-session self-review
-(`docs/superpowers/specs/2026-09-03-ci-pipeline-audit-tier1-fixes-plan-self-review.md`),
+(`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-03-ci-pipeline-audit-tier1-fixes-plan-self-review.md`),
 and an independent adversarial review (fresh Agent call, no memory of this
 session, full findings below) per CLAUDE.md's "nothing advances on one
 pass" HARD RULE — this is the implementation-plan stage gate.

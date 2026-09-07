@@ -1,6 +1,6 @@
 # No-Write Quality Coordination Simulator (I8)
 
-**Task:** I8 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I8 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `78da66e`
 (worktree `.claude/worktrees/aqc-investigation`). No open PRs; `origin/chore/realtime-data-plane-
 investigation` exists remotely but is stale (tip `f59dac9`, dated before the real realtime

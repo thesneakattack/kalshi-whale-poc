@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash hooks, Python 3.13 hook script + pytest, Markdown skills/rules.
 
-**Spec:** `docs/superpowers/specs/2026-08-27-workflow-audit.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-workflow-audit.md`
 
 **Branch / worktree:** `chore/workflow-remediation` in `.claude/worktrees/chore-workflow-remediation`, off `origin/main` @ `a9bab31`. Another session (autotrade-73, notified 2026-08-28) owns `feat/realtime-data-plane-remediation` in the primary checkout: `main.py`, `services/{exits,observability,strategy_engine,whale_stream,market_watch,diagnostics}`, `tests/`, `services/*/README.md`. **Do not touch those paths.** It will message before editing `ROADMAP.md`.
 
@@ -210,7 +210,7 @@ in the same session it is written.
 - Keep the per-edit test hook at all · this plan Task 9 → decision · you · 2026-08-27
 - Six failing tests on `feat/realtime-data-plane-remediation` (test_quality_coordination_cleanup_actions + 5) · read CI, fix or reassign · me · 2026-08-27
 - `advisory_engine` suggests on win rate alone, never cost/P&L · implement cost-aware suggestion or close · you (design approval) · 2026-08-22
-- Banded cost-aware gate EV diagnostic (0.60–0.95 band negative-EV) · approve `docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md` or close · you · 2026-08-26
+- Banded cost-aware gate EV diagnostic (0.60–0.95 band negative-EV) · approve `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md` or close · you · 2026-08-26
 - Shadow-mode evaluation stretch has never run · schedule a dated stretch · you · 2026-08-26
 - Path-based CI test selection for code changes · find the original rejection incident, then decide · me → you · 2026-08-26
 - Trade-stream consumer liveness watchdog (queue at capacity, no drain) · implement in realtime branch · other session · 2026-08-27

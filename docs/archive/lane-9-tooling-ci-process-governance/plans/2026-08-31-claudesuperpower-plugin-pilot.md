@@ -9,7 +9,7 @@ its own authority.
 ## Input
 
 Design stage, reviewed and consolidated GO:
-`docs/superpowers/specs/2026-08-31-claudesuperpower-plugin-pilot-design.md`
+`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-31-claudesuperpower-plugin-pilot-design.md`
 + `...-design-review.md` + `...-design-consolidation.md`. This plan turns
 that design directly into ordered, executable tasks — no new decisions are
 made here beyond sequencing and exact file diffs.

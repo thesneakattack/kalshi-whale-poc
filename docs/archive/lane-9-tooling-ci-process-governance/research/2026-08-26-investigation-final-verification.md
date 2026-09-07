@@ -1,6 +1,6 @@
 # Autonomous Quality Coordination Investigation — Final Verification (I13)
 
-**Task:** I13 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I13 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 — the investigation's final task.
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `c73371e`.
 Re-grounded: synced with `origin/main`, no open PRs, no other active branch touching any file this

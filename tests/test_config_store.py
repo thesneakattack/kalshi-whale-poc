@@ -229,8 +229,7 @@ def test_update_preserves_comments_on_an_untouched_section(tmp_path):
 
 def test_update_preserves_a_comment_trailing_a_nested_dict_field(tmp_path):
     """The real incident (docs/open-decisions.md, 3 documented comment
-    wipes; §4.4 of docs/superpowers/research/2026-09-02-architecture-audit-
-    second-pass.md): a comment sitting immediately after a NESTED dict
+    wipes; §4.4 of docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md): a comment sitting immediately after a NESTED dict
     field's last entry (not a top-level scalar - the two existing comment
     tests above don't cover this shape) was destroyed because update()'s
     one-level dict.update() replaces that nested dict's VALUE wholesale

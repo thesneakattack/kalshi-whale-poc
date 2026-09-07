@@ -1,14 +1,14 @@
 """Pure, in-memory, no-write quality-finding coordination state machine.
 
 Encodes, executably, the policies already derived from real repo evidence in:
-  - I1 (docs/superpowers/research/2026-08-25-quality-finding-identity-audit.md #9):
+  - I1 (docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-finding-identity-audit.md #9):
     identity is `automation_key`, location-free; resolution only via absence from a fresh
     integrated-`main` audit; recurrence is a reopen of the same key, not a new item; rename is a
     new key (out of scope for this prototype -- no rename detection is implemented).
-  - I2 (docs/superpowers/research/2026-08-25-quality-coordination-cadence.md #9): persistence
+  - I2 (docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-quality-coordination-cadence.md #9): persistence
     floors, de-bursted observation counts, and branch-signal staleness expiry, all derived from
     this repo's measured commit/PR/branch cadence, not chosen by intuition.
-  - I3 (docs/superpowers/research/2026-08-25-active-work-suppression-matrix.md #11): the
+  - I3 (docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-active-work-suppression-matrix.md #11): the
     precedence order exact-claim > path-overlap(PR or branch, merged excluded, expiry-bounded) >
     persistence-floor > escalation-eligible, and the invariant that a live signal only ever
     *extends* the wait (escalation time = max(floor, end_of_suppression), never min).

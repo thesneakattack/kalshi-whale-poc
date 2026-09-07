@@ -1,6 +1,6 @@
 # Autonomous Quality Coordination — Architecture Decision (I10)
 
-**Task:** I10 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I10 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `a3e6cc9`
 (worktree `.claude/worktrees/aqc-investigation`). Re-grounded: synced with `origin/main`, no open
 PRs, `origin/chore/realtime-data-plane-investigation` remains the same stale, inactive tip noted in

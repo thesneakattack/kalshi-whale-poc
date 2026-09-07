@@ -23,7 +23,7 @@ This originated as a narrower request — "factor GitHub Issues Kanban into
 the AQC implementation" — but was explicitly broadened during brainstorming
 (2026-08-26) into this general-purpose mechanism. AQC's own
 `quality_coordination.py` (Program 7, paused after Task 3 — see
-`docs/superpowers/plans/2026-08-26-autonomous-quality-coordination.md` and
+`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-quality-coordination.md` and
 its ledger) is one *possible* future source of work items for this
 mechanism, not what it's built around. Wiring a specific source (AQC
 findings, `ROADMAP.md` items, the `active-tracks-board.md` tracks) into
@@ -275,7 +275,7 @@ proving the safety claims above, not a unit-test suite over trading logic.
   already exist (filed by the user via the kanban skill's Triage mode, or
   by some future adapter). Whether/how `services/quality_coordination.py`'s
   `escalation_eligible` items, `ROADMAP.md`'s open items, or
-  `docs/superpowers/plans/2026-08-26-active-tracks-board.md`'s tracks ever
+  `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`'s tracks ever
   get exported into this queue is a separate, later decision — each with
   its own eligibility-filter question, same shape as protected-domain
   filtering but potentially source-specific.

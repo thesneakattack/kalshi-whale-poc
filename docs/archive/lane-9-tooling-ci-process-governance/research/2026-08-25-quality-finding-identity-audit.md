@@ -1,6 +1,6 @@
 # Quality Finding Identity Audit — I1 (durable automation identity)
 
-**Task:** I1 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I1 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `8403660`
 (worktree `.claude/worktrees/aqc-investigation`, base `origin/main` @ `8d1796b`). Re-ground: no open PRs;
 `origin/chore/realtime-dp-investigation` advanced to `c3e3d11` (still owns `tools/quality_audit/baseline.json`,

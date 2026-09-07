@@ -1,6 +1,6 @@
 # Autonomous Quality Coordination — I0 Baseline (re-ground, concurrency map, toolchain)
 
-**Task:** I0 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I0 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Orchestrator:** `.claude/skills/autonomous-quality-coordination-investigation/SKILL.md`
 **Re-grounded:** 2026-08-25, 18:42–18:55 local (`-05:00`); all times below are local unless suffixed `Z`.
 **Investigation branch:** `chore/autonomous-quality-coordination-investigation`, created from
@@ -50,9 +50,9 @@ This is not hypothetical concurrency. At 18:46 [E4]:
   ≈18:32, i.e. right after that branch's last commit) and a shell loop waiting for
   `i7_samples.jsonl` to reach 161 lines. The scratchpad UUID (`8712c31b-…`) is a different Claude
   session from this one (`7c6a9033-…`).
-- Untracked files being written by that session: `docs/superpowers/research/2026-08-25-realtime-live-baseline.md`
+- Untracked files being written by that session: `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-live-baseline.md`
   (mtime 18:37:41) and `…/2026-08-25-rest-demand-study.md` (18:39:01). Per the realtime plan those are the
-  **I7** and **I8** deliverables (`docs/superpowers/plans/2026-08-25-realtime-data-plane-investigation.md`
+  **I7** and **I8** deliverables (`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-investigation.md`
   lines 277–305) [E1].
 - Its last two pushes (Woodpecker pipelines 131 `killed` → 132 `success`) were 18:30 and 18:32.
 
@@ -77,14 +77,14 @@ Changed on `chore/realtime-dp-investigation` vs `origin/main` (`git diff --name-
   `services/whalewatchers/kalshi_trade_tape.py`, `services/market_watch/*`, `services/account_positions.py`,
   `services/market_events/event_schedule.py`, `main.py` (+2/−1).
 - **Docs/tools:** `docs/kalshi/CHEATSHEET.md`, `services/kalshi/CHEATSHEET.md`,
-  `docs/superpowers/research/2026-08-25-realtime-data-plane-baseline.md`,
-  `docs/superpowers/research/2026-08-25-realtime-replay-baseline.md`, `tools/realtime_pipeline_replay.py`,
+  `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-baseline.md`,
+  `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-replay-baseline.md`, `tools/realtime_pipeline_replay.py`,
   10 new `tests/test_*.py` files.
 
 Paths the realtime plan will **still create** (I7–I14, from its plan's `**Create**` blocks) [E1]:
 `docs/superpowers/research/2026-08-25-{realtime-live-baseline,rest-demand-study,realtime-solution-research,ws-solution-comparison,rest-solution-comparison,realtime-architecture-review,realtime-root-cause-report}.md`,
-`docs/superpowers/specs/2026-08-25-realtime-data-plane-remediation-design.md`,
-`docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`,
+`docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-remediation-design.md`,
+`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`,
 `tools/kalshi_rate_limit_probe.py`, `tests/test_kalshi_rate_limit_probe.py`. None collide with this
 initiative's planned outputs (all named `…autonomous-quality-…`, `…quality-coordination-…`,
 `…quality-control-plane-topologies…`, etc.; prototype location `tools/quality_coordination_sim/`).
@@ -100,13 +100,13 @@ contested version. Reading them is fine.
 |---|---|---|
 | `.claude/rules/autonomous-quality-coordination-evidence.md` | this initiative (bundle) | copied into worktree, committed |
 | `.claude/skills/autonomous-quality-coordination-investigation/` | this initiative (bundle) | copied, committed |
-| `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | this initiative (bundle) | copied, committed |
-| `docs/superpowers/research/2026-08-25-autonomous-quality-coordination-known-findings.md` | this initiative (bundle) | copied, committed |
-| `docs/superpowers/specs/2026-08-25-autonomous-quality-coordination-investigation-design.md` | this initiative (bundle) | copied, committed |
+| `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md` | this initiative (bundle) | copied, committed |
+| `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-autonomous-quality-coordination-known-findings.md` | this initiative (bundle) | copied, committed |
+| `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-25-autonomous-quality-coordination-investigation-design.md` | this initiative (bundle) | copied, committed |
 | `START_AUTONOMOUS_QUALITY_COORDINATION.md` | this initiative (bundle) | committed as `docs/superpowers/autonomous-quality-coordination-investigation-kickoff.md`, matching PR #10's `realtime-data-plane-investigation-kickoff.md` precedent (root stays uncluttered) |
 | `INSTALL_AUTONOMOUS_QUALITY_COORDINATION.md`, `PACKAGE_MANIFEST.json` | bundle install artifacts | **not committed** (same treatment PR #10 gave `BUNDLE_README.md`); left untracked in the primary checkout for the user to delete |
 | `BUNDLE_README.md` | **realtime** bundle's leftover (its file list is the realtime initiative's) | untouched; not this initiative's |
-| `docs/superpowers/research/2026-08-25-realtime-live-baseline.md`, `…/2026-08-25-rest-demand-study.md` | realtime session, in flight (I7/I8) | untouched |
+| `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-live-baseline.md`, `…/2026-08-25-rest-demand-study.md` | realtime session, in flight (I7/I8) | untouched |
 
 All seven bundle files verified byte-for-byte against `PACKAGE_MANIFEST.json` SHA-256s both in the primary
 checkout and after copying into the worktree [E3]. The originals were deliberately **copied, not moved**,

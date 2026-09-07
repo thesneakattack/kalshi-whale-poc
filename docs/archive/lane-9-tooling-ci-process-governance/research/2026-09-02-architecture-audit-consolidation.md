@@ -1,7 +1,7 @@
 # Consolidation — architecture audit review cycle (2026-09-02)
 
 Reconciles the audit artifact
-(`docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`),
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-and-rewrite-considerations.md`),
 its self-review (caught one dropped "Top"-ranked finding — duplicated table
 DDL — and one commit-hash typo, both fixed inline before adversarial review),
 and an independent adversarial review (fresh Agent call, no memory of the

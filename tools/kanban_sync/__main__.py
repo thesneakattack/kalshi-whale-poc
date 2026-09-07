@@ -1,5 +1,4 @@
-"""CLI entrypoint for the kanban board sync (docs/superpowers/specs/
-2026-08-26-kanban-board-sync-design.md). `python -m tools.kanban_sync sync
+"""CLI entrypoint for the kanban board sync (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-kanban-board-sync-design.md). `python -m tools.kanban_sync sync
 --sources worktree,roadmap` runs the fully mechanical sources (used
 by the /checkpoint skill integration, Task 12); `--sources plan`
 additionally needs `--plan-classifications <path-to-json>`, produced by
@@ -34,8 +33,7 @@ from tools.kanban_sync.sync import (
 REPO = "thesneakattack/kalshi-whale-poc"
 ROADMAP_PATH = Path("ROADMAP.md")
 PLANS_DIR = Path("docs/superpowers/plans")
-# 2026-09-06 planning-lanes migration target (docs/superpowers/specs/2026-09-06-
-# planning-lanes-design.md): decompose-plan (_cmd_decompose_plan) must keep finding
+# 2026-09-06 planning-lanes migration target (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md): decompose-plan (_cmd_decompose_plan) must keep finding
 # a named plan doc's content via resolve_plan_path() even after it moves to
 # ARCHIVE_ROOT/lane-<N>-<slug>/plans/ - see resolve_plan_path's own docstring for
 # why this differs from list_plan_candidates()'s "no change needed" finding.

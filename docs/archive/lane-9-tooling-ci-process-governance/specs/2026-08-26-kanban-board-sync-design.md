@@ -29,8 +29,8 @@ spec is that decision.
 
 - Does not turn on `autonomous-engineering-mode`'s claim loop. That
   mechanism is separately specified and planned
-  (`docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`,
-  `docs/superpowers/plans/2026-08-26-autonomous-engineering-mode.md`) and
+  (`docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`,
+  `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-autonomous-engineering-mode.md`) and
   has not been implemented. This spec only makes the issue queue real;
   starting a background agent to claim from it is a separate action.
 - Does not write anything back into a repo file. `ROADMAP.md`, every plan
@@ -59,7 +59,7 @@ spec is that decision.
   sync is observation-and-reflection, not remediation, but the same
   caution about *where a write credential lives* applies regardless of
   what the write does.
-- `docs/superpowers/specs/2026-08-26-autonomous-engineering-mode-design.md`
+- `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-26-autonomous-engineering-mode-design.md`
   — this repo's only prior design for issue-driven work. §5's `type:*`
   label extension, §6's protected-domain list, and the `## Scope`
   fail-closed body requirement (that spec's Task 7 note) are reused

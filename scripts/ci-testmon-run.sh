@@ -68,7 +68,7 @@ if [ "${CI_PIPELINE_EVENT:-}" = "pull_request" ] || [ "${CI_PIPELINE_EVENT:-}" =
   # suite's wall time for zero coverage beyond what that dedicated job
   # already enforces (corrected 2026-09-03: two other candidate tests in
   # tests/test_kalshi_census.py were found NOT to be duplicated and were
-  # left unmarked - see docs/superpowers/research/2026-09-02-ci-pipeline-audit.md's
+  # left unmarked - see docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md's
   # Tier 1 #3 addendum). That job is
   # unaffected by this change; it doesn't invoke pytest at all.
   # shellcheck disable=SC2086

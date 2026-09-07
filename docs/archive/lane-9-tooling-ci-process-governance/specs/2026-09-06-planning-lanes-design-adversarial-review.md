@@ -6,7 +6,7 @@ below was re-derived from the working tree, `git`, and `gh`, never from
 the design doc's own tables or the self-review's summary. Where I could
 not re-derive something, I say so.
 
-Reviewed: `docs/superpowers/specs/2026-09-06-planning-lanes-design.md`
+Reviewed: `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-09-06-planning-lanes-design.md`
 (the design) and `...-design-self-review.md` (stage 1).
 
 ## 0. Method
@@ -143,7 +143,7 @@ a package already has an internal split — handles `whale_stream/` and
 
 ### B. Track A/B/C retirement — the concept can go, but the design's account of where its content lives is wrong in two places
 
-- **Path.** The board is `docs/superpowers/plans/2026-08-26-active-tracks-board.md`
+- **Path.** The board is `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`
   (`git log --all --name-status` shows it was created there, `c385f9a`,
   and never lived at `docs/superpowers/active-tracks-board.md`). The
   design cites the wrong path in §1 and §2; `next-action.md:346` has the
@@ -439,7 +439,7 @@ is a revision-and-re-review, not a fix-list recheck.
    `docs/kalshi-personal-production-execution-program-2026-08-26.md`
    (Program 3R at line 861), not ROADMAP.md; route "Standing human
    decisions" to `docs/open-decisions.md`.
-7. **Fix the board path** (`docs/superpowers/plans/2026-08-26-active-tracks-board.md`)
+7. **Fix the board path** (`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`)
    in §1/§2 and in `next-action.md:346`.
 
 ### Required, non-blocking

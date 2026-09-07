@@ -1,7 +1,7 @@
 # Consolidation: claudesuperpower.com toolkit assessment research stage (2026-08-31)
 
 Reconciles the self-review and the independent adversarial review of
-`docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
+`docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
 per CLAUDE.md's "nothing advances on one pass" HARD RULE, before the
 design/spec stage starts.
 

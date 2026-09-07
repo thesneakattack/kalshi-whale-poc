@@ -1,7 +1,7 @@
 # Consolidation — architecture audit second-pass review cycle (2026-09-02/03)
 
 Reconciles the second-pass artifact
-(`docs/superpowers/research/2026-09-02-architecture-audit-second-pass.md`),
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass.md`),
 its self-review, and an independent adversarial review, per CLAUDE.md's
 "nothing advances on one pass" HARD RULE.
 
@@ -142,7 +142,7 @@ git, `gh`, and source.
 7 intended files, `config/settings.yaml` untouched.
 
 **Adversarial review**
-(`docs/superpowers/research/2026-09-02-architecture-audit-second-pass-pr-review.md`):
+(`docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-architecture-audit-second-pass-pr-review.md`):
 **verdict GO-AFTER-FIXES.** Both of the artifact's most time-pressured,
 most-recently-added claims — the `market_history.db` corruption fault and
 the `markets_watched: 0`/stuck-tick incident — were independently

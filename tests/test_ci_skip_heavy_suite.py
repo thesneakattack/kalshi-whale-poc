@@ -3,7 +3,7 @@ disposable synthetic repository (tests/support/synthetic_git_repo.py) - not this
 repo. Focused on the 2026-09-03 fix (a real PR touching only .gitignore paid the
 full suite because SAFE_PATTERN never covered it) rather than re-verifying the
 whole script's pre-existing docs/.claude-only logic, which predates this file and
-was manually verified in docs/superpowers/research/2026-08-25-ci-skip-heavy-suite-verification.md.
+was manually verified in docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-25-ci-skip-heavy-suite-verification.md.
 Needs real git and sh (host, CI - the fastapi container has git but this still
 skips gracefully if either binary is ever absent, matching test_cleanup_worktrees.py's
 own convention)."""

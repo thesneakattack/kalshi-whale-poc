@@ -1,6 +1,6 @@
 # Quality Control-Plane Topologies — I4 (event and credential comparison)
 
-**Task:** I4 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I4 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `4fb265e` (worktree
 `.claude/worktrees/aqc-investigation`, base `origin/main` @ `8d1796b`). No open PRs; the realtime branch
 is unchanged since I3's re-ground.

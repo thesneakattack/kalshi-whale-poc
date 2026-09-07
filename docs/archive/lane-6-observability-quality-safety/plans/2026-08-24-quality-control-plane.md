@@ -22,7 +22,7 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLite, pytest 9, Selenium 4.47, JavaScript ES modules, esbuild, ESLint, GitHub Actions, DDEV, Python stdlib AST/JSON/hashlib/sqlite3/subprocess utilities, existing `ruamel.yaml` dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-24-quality-control-plane-design.md`
+**Spec:** `docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-24-quality-control-plane-design.md`
 
 ## Global Constraints
 

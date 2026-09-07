@@ -1,6 +1,6 @@
 # Quality Control Event/Credential Fault Injection (I9)
 
-**Task:** I9 of `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
+**Task:** I9 of `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`
 **Branch / HEAD at start:** `chore/autonomous-quality-coordination-investigation` @ `f720e89`
 (worktree `.claude/worktrees/aqc-investigation`). Re-grounded: `git fetch origin` then
 `git log HEAD..origin/main` empty (still fully synced with `main` from I7's merge-forward); no open

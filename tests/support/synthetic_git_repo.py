@@ -1,5 +1,5 @@
 """A disposable, throwaway git repository fixture for AQC's cleanup-action fault-injection
-suite (docs/superpowers/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
+suite (docs/archive/lane-9-tooling-ci-process-governance/specs/2026-08-27-autonomous-quality-coordination-workflow-design.md
 §10 point 3: "run against a disposable synthetic git repository fixture, never this
 repository"). Every git call here is real (not injected/faked) precisely because this
 fixture's whole point is to give the cleanup actions a real repo to act on without ever

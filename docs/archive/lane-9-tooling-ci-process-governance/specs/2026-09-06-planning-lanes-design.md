@@ -20,7 +20,7 @@ before PR #635, 47 after), **146 open issues** (fix #7 — not 155; 14
 closed 2026-09-06 between PM `#585 #586 #629 #398 #488 #401`-`#406 #408
 #322 #326`, dated so this number is checked against a date, not treated
 as permanent), and a "Track A/B/C" concept
-(`docs/superpowers/plans/2026-08-26-active-tracks-board.md`) that is 9+
+(`docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`) that is 9+
 days stale.
 
 David's ask, unchanged: fixed non-overlapping **lanes**; every plan/
@@ -150,7 +150,7 @@ lane and would break non-overlap as a lane (round 1's actual mistake).
 
 ### Reconciling "Track A/B/C" — restored (the fix-list recheck found this section silently dropped in the round-2 rewrite after the round-2 review had confirmed it correct; that is the "revision drops a requested fix" defect CLAUDE.md names, so it is restored here, not re-argued)
 
-Board: `docs/superpowers/plans/2026-08-26-active-tracks-board.md`.
+Board: `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-26-active-tracks-board.md`.
 Retiring "Track" as a vocabulary stands. Where its content goes:
 
 - **Track C is not ROADMAP.md's Program sequencing.** The Program 3R→8

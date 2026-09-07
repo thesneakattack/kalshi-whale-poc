@@ -204,7 +204,7 @@ sentence in the note would close it.
 
 SR-1 CONFIRMED (S9). SR-2 CONFIRMED: `.claude/skills/checkpoint/SKILL.md:83`,
 `.claude/hooks/orient.sh:40`, `.claude/rules/branching-and-ci.md:86` — none
-mentions local `main`; neither does `docs/superpowers/plans/2026-08-27-workflow-remediation.md:283`.
+mentions local `main`; neither does `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-27-workflow-remediation.md:283`.
 SR-4 CONFIRMED and then some (7, not 3 — see Claim 3). SR-5 CONFIRMED as far
 as it goes: `gh pr list --head <b> --state all` returns `[]` for
 `feat/candlestick-volatility`, `fix/tier0-live-incident-remediation`, and

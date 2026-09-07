@@ -1,6 +1,6 @@
 # Claude start directive — Autonomous Quality Coordination Investigation
 
-Use the repository skill `.claude/skills/autonomous-quality-coordination-investigation/SKILL.md` as the authoritative orchestrator and execute **I0 only** from `docs/superpowers/plans/2026-08-25-autonomous-quality-coordination-investigation.md`.
+Use the repository skill `.claude/skills/autonomous-quality-coordination-investigation/SKILL.md` as the authoritative orchestrator and execute **I0 only** from `docs/archive/lane-9-tooling-ci-process-governance/plans/2026-08-25-autonomous-quality-coordination-investigation.md`.
 
 Before doing anything substantive, re-ground against the current repository: read `CLAUDE.md`, all `.claude/rules/*.md`, this initiative's research/spec/plan, relevant existing Quality Control Plane code/tests, recent git history, current local worktrees, remote branches, open PRs, and Woodpecker status. Treat current code/tests/git as implementation truth and treat the known-findings document as hypotheses/evidence, not conclusions.
 

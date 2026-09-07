@@ -1,6 +1,6 @@
 # Self-review — CI pipeline audit (2026-09-02)
 
-Same-session review of `docs/superpowers/research/2026-09-02-ci-pipeline-audit.md`
+Same-session review of `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-02-ci-pipeline-audit.md`
 and its three companion documents, per CLAUDE.md's "nothing advances on one
 pass" HARD RULE (self-review layer: internal consistency + unaddressed
 scope, before independent adversarial review).

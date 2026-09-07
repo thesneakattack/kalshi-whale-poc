@@ -1,6 +1,6 @@
 # Self-review: claudesuperpower.com toolkit assessment (2026-08-31)
 
-Reviews `docs/superpowers/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
+Reviews `docs/archive/lane-9-tooling-ci-process-governance/research/2026-08-31-claudesuperpower-toolkit-assessment.md`
 (the merged PR #312 copy) for internal consistency and unaddressed scope, per
 CLAUDE.md's "nothing advances on one pass" HARD RULE. This is the cheap,
 same-author pass — primary-source re-verification of the load-bearing claims
