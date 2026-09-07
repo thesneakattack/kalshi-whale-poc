@@ -169,7 +169,31 @@ sweep (`c4`, 27 issues fixed), a dispatched adversarial-review agent
 (found 5 more real defects including the new mutual-deferral hazard,
 methodology point 11), and a final consolidation — 7 distinct PR
 comments total, all independently verified before the merge went ahead.
-**Only Lane 9 remains.**
+**Only Lane 9 remains** — in progress, PR #660 (`0d`, 81 files, head
+`6337a87`), 2 comments as of the pause (self-review + `49`'s
+independent review, both clean on citations — first lane tonight with
+zero citation defects on the sweep dimension). `0d`'s own dispatched
+adversarial review (ran through the pause, no risk, read-only)
+completed NO-GO with fix list D1-D8: 4 real citation misses in its own
+sweep, plus independent corroboration of a genuine new finding class —
+**classification-completeness gaps, not citation-sweep gaps**: step1's
+tables are `.md`-only, so a handful of non-`.md` or top-level files
+were invisible to classification from the start. Confirmed directly:
+`docs/superpowers/research/2026-08-29-full-settings-table-generator.py`
+(dead code, orphaned from its Lane-4-archived companion, found
+independently by both `49` and `0d`'s adversarial agent — going to
+Lane 4's archive) plus, found by the coordinator checking for more of
+the same shape, **5 total unclassified top-level files**: 3 Kalshi/
+Lane-1-topic kickoff docs (`0d` already had these), 1 Lane-9-topic
+kickoff doc companion to an already-Lane-9-classified plan (`0d` didn't
+have this one — same fix, but in Lane 9's own scope), and
+`INVESTIGATION_PORTFOLIO.md` (a self-described "thin index, not a
+research report" — likely the same "retire, not move" disposition as
+`docs/superpowers/plans/README.md`, `0d`'s call). Confirmed no other
+non-`.md` files exist anywhere in `docs/superpowers/{plans,specs,
+research}/` or already inside `docs/archive/` — isolated cases, not a
+systemic pattern. `0d` fixing D1-D3 + all classification gaps + PR body
+corrections, then consolidation. Not merged yet.
 
 **Lane 1 update, 2026-09-07 (`ea`, independently verified against the
 pushed branch content, not taken on `0d`'s word alone):** `0d` fixed and
