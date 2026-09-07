@@ -137,6 +137,23 @@ so the missing artifact gets filled by a genuinely independent check
 either way. A consolidation comment (explicit GO/no-go) still has to
 land before merge regardless of how the adversarial-review gap resolves.
 
+**`49`'s independent sweep posted directly to #657** (`issuecomment-
+5565762808`, 2026-09-07T06:00:03Z — genuinely fills part of the missing
+adversarial-review artifact): occurrence-vs-presence bug **confirmed
+NOT present** in this PR's own fix (3 count>1 hits exist but are all
+inside not-yet-moved Lane 9 files this PR never touches — legitimate
+deferred forward-refs, not a dedup miss). Wrap-detection blind spot
+**confirmed present, 3 real new misses** — see methodology point 10
+above for the mechanism and exact locations (Lane 4's merged archive +
+`services/market_watch/CHEATSHEET.md` + `ROADMAP.md`, none previously
+known). Separately: this branch predates Lane 2/3's merges and hasn't
+been rebased — one more hit the sweep flagged is a staleness artifact
+of that (not a real defect, resolves on rebase), but the PR's own
+"swept everything" claim was necessarily computed against a stale
+`main`, so **rebase before the final re-sweep and merge**. `0d` still
+owns applying fixes; waiting on `c4`'s issue-citation check and then a
+consolidation comment before this is mergeable.
+
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
 1. **Full-repo de-wrapping citation sweep**, not slug-substring or
@@ -201,6 +218,23 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    and that citation is fixable right now, not deferrable. Sweep for
    this explicitly on every remaining lane, don't rely on the
    already-moved lanes having self-corrected it themselves.
+10. **Mirror image of point 9: check whether OTHER already-merged lanes'
+    archives cite a file in THIS lane, about to move** — found by `49`'s
+    independent sweep of #657 (2026-09-07 ~06:00Z): Lane 4's already-
+    merged archive (`docs/archive/lane-4-.../specs/2026-08-26-economic-
+    strategy-effectiveness-investigation-design.md:121-122`) has a
+    wrapped citation to a Lane 1 file, correct when Lane 4 merged (Lane 1
+    hadn't moved yet) but stale the moment Lane 1 moves it — and Lane 4
+    won't be revisited by anything once merged. Unlike point 9 (this
+    lane's own outgoing refs, fixable in this lane's own commit), THIS
+    direction requires checking every already-merged lane's archive for
+    forward references into the lane currently moving, since nothing
+    else will ever re-sweep an already-merged lane. Also found in the
+    same sweep: 2 live, actively-read docs never touched by any lane's
+    diff so far — `services/market_watch/CHEATSHEET.md:260-261` and
+    `ROADMAP.md:114-116` — both still citing a Lane 1 file by old path.
+    Apply this check on Lane 9 (the last lane) against ALL 7 already-
+    merged lanes, not just the ones it happens to cite.
 
 **Meta-lesson, elevated above the numbered list after a second lane hit
 this: a citation-discovery script's blind spots are not a fixed,
