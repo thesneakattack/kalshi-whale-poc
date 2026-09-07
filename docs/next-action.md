@@ -144,6 +144,18 @@ remaining lane (3, 2, 1, 9) without re-deriving:**
    add` calls, and check `git status`/`--stat` immediately after every
    commit — don't trust a non-erroring `git commit` actually staged
    everything intended.
+8. **A citation sweep must count occurrences per file, not just presence
+   per file** — Lane 2's sweep recorded "did this file match at all,"
+   so a file citing the same moved doc **twice** (two separate
+   docstrings, same filename) only got its first occurrence fixed; the
+   second sat stale, undetected by its own adversarial review's first
+   pass. Caught only by a dedicated occurrence-counting re-sweep after
+   the fact. Every sweep from Lane 9 onward counts occurrences
+   (`grep -c`-style, not existence), and re-sweeps with occurrence
+   counting specifically after any fix-list round, not just presence.
+   **Flagged urgently to `0d`/`49` to re-check #657/#658 for the same
+   defect class**, since a prior GO on either PR didn't test for this
+   bug specifically.
 
 **Known, accepted, temporary side effect, still holding:** each batch
 only fixes its own outgoing references; forward-references from
