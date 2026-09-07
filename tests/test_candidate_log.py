@@ -689,7 +689,7 @@ def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, m
 
 
 def test_population_gate_summary_includes_edge_gate_rejections(tmp_path, monkeypatch):
-    """Task 9 (docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    """Task 9 (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md): confirms design §3.3/§6's claim that
     candidate_log's existing counterfactual-tracking machinery picks up
     edge_gate rejections with zero new plumbing - a real test of that

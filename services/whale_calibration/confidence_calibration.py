@@ -469,7 +469,7 @@ _delta_cache: dict[tuple[str, str], float] = {}
 
 def delta_calibrated_for(category: str | None, q_pre: float) -> float:
     """The gate's own lookup (services/strategy_engine.py's edge-gate
-    check, Task 8 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    check, Task 8 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md). 0.0 (design §2.4's stated neutral 'no measurable
     edge yet' default) whenever category is unknown or this exact
     (category, price_band) cell has never accumulated enough resolved

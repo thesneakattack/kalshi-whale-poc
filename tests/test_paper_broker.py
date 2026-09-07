@@ -21,7 +21,7 @@ def test_fresh_broker_uses_starting_bankroll(tmp_path, monkeypatch):
 
 
 def test_trades_since_returns_trades_after_the_given_timestamp(tmp_path, monkeypatch):
-    """Task 4 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    """Task 4 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md - the markout-capture sweep's own read of "what
     entries exist to capture markouts for". Uses this file's own _broker()
     helper (matches its existing DB_PATH-isolation convention)."""

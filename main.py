@@ -210,7 +210,7 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
 
 
 def _maybe_capture_markouts(cfg: dict, now: float) -> None:
-    """Markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    """Markout-capture sweep (Task 4, docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-
     strategy-edge-gate-implementation.md): for every real entry trade,
     records the market price at each configured offset after entry
     (edge_gate_markout_offsets_sec) once that offset comes due, so the

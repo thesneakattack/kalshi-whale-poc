@@ -771,7 +771,7 @@ def close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     private async _close_ts_for_tickers - same query, same docstring
     reasoning ('the one store that persists a close time per market
     beyond the rotating watchlist'), added for services/market_history.py's
-    markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    markout-capture sweep (Task 4, docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-
     strategy-edge-gate-implementation.md), which runs synchronously from
     main.py's tick-loop maintenance path, not from an async route."""
     if not tickers:
@@ -1250,7 +1250,7 @@ _delta_cache: dict[tuple[str, str], float] = {}
 
 def delta_calibrated_for(category: str | None, q_pre: float) -> float:
     """The gate's own lookup (services/strategy_engine.py's edge-gate
-    check, Task 8 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    check, Task 8 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md). 0.0 (design §2.4's stated neutral 'no measurable
     edge yet' default) whenever category is unknown or this exact
     (category, price_band) cell has never accumulated enough resolved
@@ -1406,7 +1406,7 @@ def _edge_gate_check(
     side: str, price: float, ticker: str, category: str | None,
     as_of: float | None, strat_cfg: dict,
 ) -> EntryValidation | None:
-    """The edge/EV gate (docs/superpowers/specs/2026-09-03-strategy-edge-
+    """The edge/EV gate (docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-
     gate-design.md §3.2), appended inside _validate_entry_price rather
     than called separately from evaluate() so a resting limit order's
     fill-time re-check is held to the same bar (validate_pending_fill's
