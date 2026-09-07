@@ -16,147 +16,143 @@ stay uncommitted and unchanged. `kalshi_account.trading_enabled` stays
 **Real incident, 2026-09-06:** both lines were found silently reverted
 to their unsafe defaults with **zero git diff** — a bare `git checkout
 <branch>` on the primary (for read-only inspection, not a commit) can
-drop them if unstashed. Fixed, verified live, impact confirmed nil
-(zero open paper positions during the window). Memory:
-`bare-checkout-can-drop-uncommitted-safety-config`. **Standing check:**
-`grep -n 'auto_exit_enabled\|max_daily_loss_pct' config/settings.yaml`
-after any checkout on the primary — a clean `git status` is not proof
-these survived.
+drop them if unstashed. Fixed, verified live, impact confirmed nil.
+Memory: `bare-checkout-can-drop-uncommitted-safety-config`. **Standing
+check:** `grep -n 'auto_exit_enabled\|max_daily_loss_pct'
+config/settings.yaml` after any checkout on the primary — a clean `git
+status` is not proof these survived. Re-confirmed still correct as of
+`c4`'s pull just now (2026-09-07 ~03:00).
 
 ---
 
 ## `#532`/`candlestick-volatility`/VACUUM — all CLOSED
 
-`#532`: 31.4M-row purge done, independently verified. `#642`:
-`candlestick-volatility` (#641) decided — kept as reference, re-implement
-when prioritized. VACUUM done (6.4GB→146MB) on David's go-ahead.
+`#532`: 31.4M-row purge done, independently verified. `#642` sub-decision:
+`candlestick-volatility` (#641) — kept as reference, re-implement when
+prioritized. VACUUM done (6.4GB→146MB) on David's go-ahead.
 
 ---
 
-## `#605` — one fix away from closing
+## `#605` — NOT closing yet; all 4 found contributors fixed+live, magnitude gap still open
 
-Root-caused to 3 distinct mechanisms; 2 fixed and live (`#636`, `#637`).
-Third (`#634`, `/api/state`'s 60s periodic full-repoll spike from
-`event_metadata.py`'s `_EVENT_LIVE_DATA_REPOLL_SEC`) is **pinned via real
-production log evidence** (verified against source) and its fix is
-**dispatched, in progress** (`c4`) — competing-solutions comparison,
-ETag/304 preservation, standalone review artifacts, careful issue-
-reference phrasing all specified up front. **Once this lands and is
-confirmed live, `#605` closes** — that's my call once deploy is
-confirmed, not automatic on merge.
+Four real contributors found tonight, **all fixed and confirmed deployed
+live** (`c4` independently confirmed #634/PR #647's live deploy
+2026-09-07 ~03:00 — commit `780a44b` is an ancestor of synced HEAD, plus
+a real `/api/state` ETag/Content-Length check, not inferred):
+diagnostic itself (#632), `resolve_window()` sync-on-loop (#637),
+`gate_summary()` unbounded scan (#636), `GET /api/state` JSON-encoding-
+on-the-loop (#647, closes #634).
 
----
+**Do not close on that basis.** The issue's own most recent comment
+(2026-09-07T00:51, already posted, don't duplicate it) already reasoned
+this through carefully: #634's fix measures ~164ms worst case, an order
+of magnitude short of the original ~9.3-9.6s stall that opened this
+investigation. A prior comment speculatively pinned the residual gap on
+#150's "leaked ThreadPoolExecutor worker" — checked directly against
+#150's own closing text, which explicitly says **"that link is a lead,
+not a mechanism"** and falsifies the permanent-leak framing. So: real
+contributors fixed, magnitude still not fully explained, issue correctly
+stays open on that unconfirmed basis. Nothing to do here right now — no
+active investigation thread, just don't close it on deploy-confirmation
+alone if that instinct comes up again.
 
-## `#642` — mechanism still genuinely unexplained, actively narrowing
-
-Event-loop-blocking ruled out by source. SQLite lock contention weakened
-by SQLite's own docs (the backup API is documented non-blocking even as
-a single-step full copy) — a deliberately-designed live-lock-hold test
-was correctly declined (`0d`) because it would have caused real data
-loss via `capture_writer`'s 1s retry budget, and wouldn't have tested
-the right mechanism anyway. Two zero-risk synthetic tests (GIL
-contention, disk I/O contention) both came back negative against an
-isolated tick monitor; against the *live app's own* `last_tick_duration
-_sec` the result was confusingly non-clean (baseline higher than either
-load phase) until `0d` traced the metric to its actual definition
-(`main.py:1366`: full wall-clock tick including real Kalshi network
-calls, not a tight event-loop probe) — reframing the noisy baseline as
-ordinary variance, not a symptom. **All three tested mechanisms now
-weakened.** A memory-pressure hypothesis (the backup's data volume
-causing OS-level paging that slows real syscalls generally, a different
-mechanism than either synthetic test) is being folded into the write-up
-as a named, untested candidate. **Independent adversarial review of this
-whole interpretation is running now** — `0d` correctly held rather than
-post a counter-intuitive result without extra scrutiny. Report pending.
+Two unassigned follow-ons filed, not blocking, not yet picked up:
+**`#639`** (same unbounded-`gate_summary()`-on-loop defect class, found
+during #636's own fix, in `services/advisory/routes.py` (2 routes) +
+`market_analyst_orchestrator.py`, deliberately left out of #636's scope)
+and **`#648`** (audit remaining `_build_state_body()` fields for the
+same thread-safety hazard #634/PR #647 fixed, found during that PR's own
+review).
 
 ---
 
-## Planning lanes — design + migration steps 1-3 ALL DONE, step 4 in planning
+## `#642` — mechanism still genuinely unexplained, adversarial review pending from `0d`
 
-**On `main`:** design (PR #640), all 3 step-1 classification tables
-(issues/plans/specs+research — PRs #643/#644 + a direct commit), step 3
-`kanban_sync` retooling (PR #645), and the `LANES`/`CONCERNS`
-infrastructure + full step-2 labeling (PR #646).
+All three tested mechanisms (SQLite lock contention, GIL contention, disk
+I/O contention) weakened; `last_tick_duration_sec` baseline reframed as
+ordinary variance once traced to its real definition
+(`main.py:1366`). A memory-pressure hypothesis is an untested named
+candidate. `0d` was holding an independent adversarial review of this
+whole interpretation before posting — status re-requested this session,
+no reply yet as of this writeup. Report pending; nothing to do until it
+lands.
 
-**Step 2 (label all 147 issues) is DONE and verified three independent
-ways**: `49`'s own two-method check (12-issue sample + full per-label
-count match), the coordinator's direct `gh issue list --label` spot-
-check (3 counts, all exact), and `ea`'s from-scratch re-derivation (one
-issue per lane, all 9 correct, 2 cross-checked against the table itself
-to confirm the copy step). 138 issues carry a lane label, 9 carry a
-`RULE-GAP` tracking comment instead of a forced label, 17 carry
-`concern:hotpath`. The 8 stale `area:*` definitions and the
-`phase:implementation-plan` mislabel (found on 6 issues, not the 3
-originally named — `49` fixed the full extent, verified nothing lost)
-are both gone.
+---
 
-**A real fabrication bug was found and generalized while building the
-`LANES` constant**: 3 paths wrongly listed as nested under
-`whalewatchers/` (adversarial review's catch), plus a second instance of
-the *same defect class* `49` found on its own follow-up sweep
-(`config_performance.py`, actually under `services/config/`) that the
-review missed. Fixed both, then replaced the weak 9-item spot-check test
-with one that resolves and verifies **all 231** `LANES` paths against
-the real tree — the right response to a fabrication bug is a
-structural test, not just fixing the two known instances.
+## Planning lanes — design + migration steps 1-3 done; step 4 executing (Lane 5 of 8 in flight)
 
-**Step 4 (move files in lane-sized batches) — EXECUTING.** Plan (GO,
-full review cycle) covers 246 files across 8 populated lanes, moving to
-`docs/archive/lane-N-<slug>/{plans,specs,research}/`. Prerequisite
-`kanban_sync`/`quality_coordination` `PLANS_DIR` fix landed first (PR
-#650) — took 3 full review rounds to get right, each round catching a
-real, previously-unseen bug (a second hardcoded call site, then a third
-in a genuinely different category — string literals baked into written
-GitHub issue text, not filesystem reads; the bug that let the original
-version through was the regression test mocking away the exact function
-whose output text needed checking).
+**On `main`:** design (PR #640), all 3 step-1 classification tables (PRs
+#643/#644 + a direct commit), step 3 `kanban_sync` retooling (PR #645),
+`LANES`/`CONCERNS` infrastructure + full step-2 labeling (PR #646,
+independently verified 3 ways). Batch order (decided):
+**4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**.
 
-**Batch order (decided): 4 → 8 → 5 → 6 → 3 → 2 → 1 → 9**, smallest/
-lowest-risk first to prove the process, Lane 9 forced last (contains the
-design doc governing the whole migration). Lane 1 deliberately near the
-end despite "Kalshi first" — that instruction was about substantive
-engineering priority (honored all night via real `#605`/`#634`/`#642`
-work), not file-archival sequencing, which doesn't advance or delay any
-actual engineering outcome either way.
+**Lane 4 (PR #651) and Lane 8 (PR #652): merged, files correctly moved**
+(`c4` spot-checked #652's reference-fix mechanics — sound), **but both
+have a real, confirmed review-cycle compliance gap, currently being
+retroactively remediated by `c4`:**
+- PR #651: `gh pr view --json comments,reviews` returns **zero and
+  zero** — no self-review, no adversarial review, no consolidation exist
+  as artifacts at all. Needs the full 3-stage cycle from scratch,
+  retroactive, against current `main` state.
+- PR #652: self-review + consolidation are real, but the consolidation's
+  own text only *asserts* "an independent adversarial review" happened —
+  no standalone comment for it exists. Needs just that missing artifact
+  plus a short addendum.
+- This is the **third/fourth occurrence** of the same defect shape
+  (memory: `persist-code-pr-reviews-as-comments`, now generalized past
+  "code PRs" to docs/migration PRs too). **New standing gate as a direct
+  result, effective immediately for Lane 6 onward and any future
+  in-scope PR:** before `gh pr merge`, the merging session runs `gh pr
+  view <n> --json comments` itself and confirms 3 distinct, separately-
+  posted stage comments exist — never infers compliance from the PR
+  body's own narrative. `49` already independently re-verified this
+  standard against PR #653 (3 distinct comments, confirmed) before this
+  gate was even communicated to it.
 
-**Known, accepted, temporary side effect — not a bug if you see it:**
-each batch only fixes its own outgoing references, not incoming
-citations from not-yet-moved lanes. A file in a later batch citing an
-already-moved file will have a stale path until *its own* batch runs.
-**Currently affects 2 active Lane-3 plans**
-(`economic-strategy-effectiveness-investigation.md`,
-`economic-strategy-remediation.md`), which cite Lane 4's now-moved
-files — self-heals when Lane 3's batch runs (5th in order). Decided
-deliberately: proactively fixing forward-references would mean every
-batch also edits files outside its own lane's scope, real complexity
-and cross-batch merge-collision risk for a low-severity, self-healing,
-loudly-failing (not silent) inconvenience. Not worth it.
+**Lane 5 (PR #653): MERGED** 2026-09-07T03:15, 89 files (52 renames + 37
+modified — grew from the pre-merge 76 as the adversarial review found
+more real citation sites before merge, a sign the cycle worked, not a
+discrepancy). Full 3-comment review cycle confirmed, CI green, `49`
+independently spot-checked diff scope + one citation + one issue edit
+post-merge.
 
-**Lane 4 (11 files): DONE, PR #651.** Lane 8 in progress. `c4`
-independently verifying each batch as it lands, same role `ea` played
-for step 2.
+**Real methodological finding from Lane 5's own adversarial review,
+already being acted on**: the slug-substring grep approach used for
+citation discovery is blind to citations wrapped across a line break. A
+full-repo de-wrapping sweep against the already-merged Lane 4 + Lane 8
+tips found **14 more stale files (6 + 8)** missed by their original
+sweeps. `49` has dispatched a retroactive fix for those 14 (own full
+review cycle, explicitly told to verify 3 *posted* comments before
+reporting done) running in parallel with Lane 6 (disjoint file sets).
+**Full-repo de-wrapping sweep is now the standing citation-discovery
+method for Lanes 6/3/2/1/9**, not slug-substring or exact-string grep.
+
+**Known, accepted, temporary side effect, still holding:** each batch
+only fixes its own outgoing references; forward-references from
+not-yet-moved lanes into already-moved ones self-heal when their own
+batch runs. Currently affects 2 active Lane-3 docs (cite Lane 4) and
+several Lane-9/unlaned docs (cite Lane 5) — expected, not a bug.
 
 **Step 5 (retire `plans/README.md`)** — not started, low-risk, can
-follow step 4's first batch.
-
-**Hard gates, proven necessary in practice tonight, not just in
-principle:** every one of the three step-1 tables needed real correction
-after independent review; the `LANES` constant needed two rounds of
-fixes for the same defect class. Step 4's much larger blast radius gets
-at least the same rigor, not less because the pattern is now familiar.
+follow once step 4 finishes.
 
 ---
 
 ## Peer status
 
-- **`49`** — steps 1-3 + step 2 done and merged. Now planning step 4
-  (not executing).
-- **`c4`** — `#634` fix in progress (dispatched, full cycle).
-- **`0d`** — `#642` synthetic-test interpretation in independent
-  adversarial review, holding before posting.
-- **`ea`** — standing watch, nominal. Queued a second labeling
-  spot-check into its next regular cycle (not urgent, first sample was
-  clean).
+- **`49`** — Lane 5 (#653) merged. Running the 14-file wrap-citation
+  retroactive fix (Lane 4+8) and Lane 6's file-move in parallel now.
+- **`c4`** — confirmed #634's live deploy; now producing retroactive
+  review-cycle artifacts for PR #651 (full cycle) and PR #652 (missing
+  adversarial-review comment + addendum).
+- **`0d`** — `#642` adversarial review still pending, status re-requested,
+  no reply yet.
+- **`ea`** — standing watch. Resolved its own labeling-count concern
+  (9 unlabeled = 8 stable, deliberately-declined `RULE-GAP` cases +
+  1 brand-new untriaged issue, not a stuck cohort) by checking two
+  directly rather than trusting the count — correct instinct, no action
+  needed.
 
 ---
 
@@ -165,25 +161,24 @@ at least the same rigor, not less because the pattern is now familiar.
 - **A real safety violation can hide behind a clean `git status`** — see
   Safety section above.
 - **A conditional authorization is scoped to its condition, not to
-  whenever the result eventually lands** — confirmed twice tonight from
-  different angles (`0d`'s resume-ping-isn't-authorization, `49`'s
-  paused-review-isn't-still-authorized-to-merge).
+  whenever the result eventually lands.**
 - **Before authorizing a deliberate hold/contention test against a live
   shared resource, check every OTHER component's own retry/timeout
-  budget** — a hold longer than the shortest one causes the real harm
-  the test was trying to explain, not a simulation of it. Memory:
+  budget.** Memory:
   `think-through-third-party-retry-behavior-before-authorizing-hold-tests`.
 - **A confusing result deserves more scrutiny, not a forced clean
-  narrative** — check what a metric actually measures at its source
-  before interpreting a counter-intuitive pattern.
+  narrative** — check what a metric actually measures at its source.
 - **A found bug is a prompt to look for the same defect class
-  elsewhere**, not just fix the reported instance — `49` did this twice
-  tonight (`phase:implementation-plan`'s real scope, the second
-  `LANES`-path fabrication) and both times found more than what was
-  originally reported.
-- **An unverified "fix" is worse than an honest open gap** — three times
-  in one stretch, a correction that only edited prose (never the
-  underlying data/column/value) was caught by a peer checking the actual
-  artifact, not the claim about it.
+  elsewhere**, not just fix the reported instance.
+- **An unverified "fix" is worse than an honest open gap** — check the
+  actual artifact, not the claim about it.
+- **A PR body's narrative claiming the review cycle happened is not
+  itself evidence it happened** — count the actual comments. Now a
+  mechanical pre-merge gate, not just a reminder. Memory:
+  `persist-code-pr-reviews-as-comments` (4 occurrences now).
+- **A stale plan can be overtaken by a more careful pass already on
+  record** — #605's own latest comment had already reasoned past the
+  "close once #634 deploys" plan recorded earlier; read the actual
+  latest state before acting on a remembered plan.
 - **Ancestry checks lie about supersession — compare content.**
 - **This file holds the single next action — rewrite it, don't append.**
