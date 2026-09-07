@@ -572,6 +572,129 @@ def test_state_endpoint_reports_trading_enabled_flag():
     assert resp.json()["account"]["trading_enabled"] is False
 
 
+def _off_loop_spy(on_loop: dict, name: str, real):
+    """Same idiom as tests/test_observability_routes.py's `_spy` (#629) and
+    tests/test_quality_routes.py's off-loop test: checks whether
+    asyncio.get_running_loop() succeeds *inside* the real call, proving the
+    call actually left the event loop (ran on a worker thread) rather than
+    merely that asyncio.to_thread was invoked somewhere."""
+    def wrapper(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop[name] = True
+        except RuntimeError:
+            on_loop[name] = False
+        return real(*args, **kwargs)
+    return wrapper
+
+
+def test_state_endpoint_dispatches_json_encoding_off_the_event_loop(monkeypatch):
+    """Issue #634: GET /api/state's 200 path used to call
+    fastapi.encoders.jsonable_encoder inline (via FastAPI's own default
+    plain-dict response handling), synchronously, on the event loop, on
+    every single 200 response, regardless of size - a real, measured cost
+    (benchmarked separately at ~3-165ms depending on payload size across
+    the observed 33KB-3.45MB range) that directly blocked the trading
+    loop's one shared event loop, including WS trade/whale-signal
+    processing, for its whole duration. main.get_state now explicitly
+    routes it through asyncio.to_thread."""
+    _reset_trading_state()
+    on_loop: dict = {}
+    monkeypatch.setattr(main, "jsonable_encoder", _off_loop_spy(on_loop, "jsonable_encoder", main.jsonable_encoder))
+
+    resp = client.get("/api/state")
+
+    assert resp.status_code == 200
+    assert on_loop == {"jsonable_encoder": False}, f"jsonable_encoder ran on the event loop: {on_loop}"
+
+
+def test_state_endpoint_200_preserves_etag_and_cache_control_headers():
+    """Issue #634's fix makes get_state return a JSONResponse it constructs
+    itself instead of a plain dict FastAPI would otherwise wrap. Verified
+    directly by reading fastapi/routing.py's get_request_handler (pinned
+    fastapi==0.134.0): when an endpoint returns a Response instance itself,
+    FastAPI uses it completely as-is and does NOT merge headers set on the
+    `response: Response` parameter it injects - that merge only happens on
+    the plain-dict-return branch. A version of this fix that kept setting
+    `response.headers[...]` and relied on that merge would have silently
+    shipped a 200 with no ETag/Cache-Control at all - this test guards
+    against that regression."""
+    _reset_trading_state()
+    resp = client.get("/api/state")
+
+    assert resp.status_code == 200
+    assert resp.headers["ETag"] == f'"{main.state["generation"]}"'
+    assert resp.headers["Cache-Control"] == "no-cache"
+    # Also guards against a related pitfall found while fixing this (blindly
+    # copying the injected Response's own headers - which default to
+    # content-length: 0 for an empty body - onto the new JSONResponse would
+    # have shipped a wrong, stale Content-Length instead of the real body's).
+    assert int(resp.headers["content-length"]) == len(resp.content)
+
+
+def test_state_endpoint_304_path_unaffected_by_off_loop_change(monkeypatch):
+    """The conditional-GET fast path (_if_none_match_hits) must never reach
+    _build_state_body()/jsonable_encoder at all - confirmed here by
+    spying on _build_state_body itself and asserting it was never called."""
+    _reset_trading_state()
+    called = []
+    monkeypatch.setattr(main, "_build_state_body", lambda: called.append(True) or main._build_state_body())
+
+    etag = f'"{main.state["generation"]}"'
+    resp = client.get("/api/state", headers={"If-None-Match": etag})
+
+    assert resp.status_code == 304
+    assert resp.headers["ETag"] == etag
+    assert resp.headers["Cache-Control"] == "no-cache"
+    assert resp.content == b""
+    assert called == []
+
+
+def test_state_body_mutable_feed_fields_are_snapshotted_not_live_references():
+    """Adversarial review of PR #647 (issue #634): once GET /api/state's
+    jsonable_encoder call moved off the event loop (this same PR), the
+    trading loop's own coroutines are free to keep running - and mutating
+    state in place - concurrently with a worker thread still walking
+    _build_state_body()'s returned dict. Before that fix, jsonable_encoder
+    ran inline and monopolized the loop, so nothing else could run at the
+    same time; this race was structurally impossible pre-fix.
+
+    services/whale_stream/decision_bridge.py mutates state["signal_feed"]/
+    state["decision_feed"] in place (`.insert(0, ...)` on the existing list
+    object, one line before rebinding to a new sliced object) and
+    services/whale_stream/whale_stream_handlers.py mutates
+    state["latest_prices"] in place (new-ticker key insert, a size-changing
+    dict mutation). Reproduced live (throwaway script, not committed):
+    iterating a dict on one thread while another thread inserts a new key
+    into the SAME dict object raises `RuntimeError: dictionary changed size
+    during iteration` - exactly what jsonable_encoder's dict-recursion
+    branch does. A concurrent list `.insert()` during iteration doesn't
+    raise (lists have no iterator version check) but can silently duplicate
+    or drop an entry in the served JSON - a data-plane accuracy violation,
+    not just a crash.
+
+    _build_state_body() must hand the encoder its own snapshot, decoupled
+    from whatever state["signal_feed"]/state["decision_feed"]/
+    state["latest_prices"]/state["stats"] go on to do afterward - cheap,
+    since this happens once per generation bump (already-cached), not once
+    per request."""
+    main.broker.reset(starting_bankroll=10000.0)
+    main.bump_generation()
+
+    body = main._build_state_body()
+
+    assert body["signal_feed"] is not main.state["signal_feed"]
+    assert body["decision_feed"] is not main.state["decision_feed"]
+    assert body["latest_prices"] is not main.state["latest_prices"]
+    assert body["stats"] is not main.state["stats"]
+    # Decoupled, not just re-typed - the snapshot's content must still
+    # match what was live at snapshot time.
+    assert body["signal_feed"] == main.state["signal_feed"]
+    assert body["decision_feed"] == main.state["decision_feed"]
+    assert body["latest_prices"] == main.state["latest_prices"]
+    assert body["stats"] == main.state["stats"]
+
+
 def test_state_market_titles_includes_a_recently_closed_trades_ticker(monkeypatch):
     # Real, confirmed-live bug (2026-08-09, direct report: "i see only
     # ticker ids and such in the portfolio trade log, but when i click on
