@@ -118,6 +118,25 @@ stale citations outside the 14 already-known DEFER cases. Confirmed via
 `0d` said it will confirm green before merging — don't treat this as
 merged until `gh pr view 657 --json state,mergedAt` says so.
 
+**Confirmed real gap, 2026-09-07 ~05:56Z (coordinator `36`, independently
+double-checked by `ea` separately, identical result — not a labeling
+ambiguity):** `0d`'s fix-list-recheck comment (`issuecomment-5565722451`)
+references "the PR's existing adversarial review" as the source of the
+occurrence-dedup finding, but **no adversarial-review comment has ever
+been posted on #657** — `gh pr view 657 --json reviews` returns 0 review
+objects, and the PR body's own checklist still has `- [ ] Adversarial
+review (independent, memory-less) — pending.` unchecked (also `- [ ] CI
+... pending push.`). This is the exact `persist-code-pr-reviews-as-
+comments` compliance-drift shape (Lane 4/8, #637) — a review may have
+genuinely run (e.g. a dispatched subagent) but was never posted as its
+own artifact, only referenced later. Flagged to `0d` (post it now,
+labeled honestly, or say plainly it's unrecoverable); `49` and `c4`
+redirected to sweep against the new head (`c08ef9f`, not the stale
+`9f4e1ba`) and post their findings **directly as PR comments** on #657
+so the missing artifact gets filled by a genuinely independent check
+either way. A consolidation comment (explicit GO/no-go) still has to
+land before merge regardless of how the adversarial-review gap resolves.
+
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
 1. **Full-repo de-wrapping citation sweep**, not slug-substring or
