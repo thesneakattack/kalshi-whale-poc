@@ -323,8 +323,7 @@ def record_fault(component: str, operation: str, message: str,
     that couldn't be resolved. Same deduplication, same never-raises
     contract.
 
-    tb (2026-09-03, Task 1 of docs/superpowers/plans/2026-09-03-tier1-
-    backend-hygiene.md): stores a pre-formatted traceback/stack string into
+    tb (2026-09-03, Task 1 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): stores a pre-formatted traceback/stack string into
     the same first_traceback slot record() populates from a real
     exception - added for services/loop_watchdog.py's stall-attribution
     capture, a non-exception event (a captured stack, not a raised one)

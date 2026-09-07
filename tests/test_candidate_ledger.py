@@ -59,8 +59,7 @@ def test_connect_enables_wal_mode():
 
 
 def test_connect_closes_its_connection(monkeypatch):
-    """Task 8 of docs/superpowers/plans/2026-09-03-persistence-layer-db-
-    migration-implementation.md: candidate_ledger migrates onto services/
+    """Task 8 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md (moved there 2026-09-06, planning-lanes migration): candidate_ledger migrates onto services/
     db.py's closing connect(), same as every other module in this plan.
     _RecordingConnection wraps the real connection instead of mutating
     conn.close directly - that raises AttributeError on this container's

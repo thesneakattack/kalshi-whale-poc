@@ -633,8 +633,7 @@ def test_advisory_auto_apply_refuses_to_write_when_evidence_is_degraded(monkeypa
 
 
 def test_maybe_run_auto_apply_passes_declined_ids(monkeypatch):
-    """Task 3a of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md: this is the ONE unsupervised generate_recommendations()
+    """Task 3a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): this is the ONE unsupervised generate_recommendations()
     call site (no human in the loop between a suggestion and it being
     applied) - per advisory_engine.py's own declined_ids docstring
     (":926-929", "a suggestion a human already clicked 'no thanks' on

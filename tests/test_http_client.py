@@ -713,8 +713,7 @@ def test_per_endpoint_window_counts_are_exact_and_reset_with_the_window(monkeypa
 
 
 def test_get_client_pins_explicit_timeout_and_limits(monkeypatch):
-    """Task 8b of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - makes the shared client's timeout/connection-pool ceiling
+    """Task 8b of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - makes the shared client's timeout/connection-pool ceiling
     explicit, pinned to httpx 0.27.2's own already-measured defaults
     (Timeout(timeout=5.0), Limits(max_connections=100,
     max_keepalive_connections=20)) rather than an implicit, version-

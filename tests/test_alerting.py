@@ -58,8 +58,7 @@ def test_recent_returns_newest_first():
 
 
 def test_record_alert_retains_a_strong_reference_to_its_dispatch_task():
-    """Task 8a of docs/superpowers/plans/2026-09-03-tier1-backend-
-    hygiene.md - Python's own asyncio.create_task() docs: 'Save a
+    """Task 8a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration) - Python's own asyncio.create_task() docs: 'Save a
     reference to the result... a task that isn't referenced elsewhere may
     get garbage collected at any time, even before it's done.'
     task_supervisor.supervise() already returns a real Task; alerting.py's
