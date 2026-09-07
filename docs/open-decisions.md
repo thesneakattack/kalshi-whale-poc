@@ -47,25 +47,61 @@ artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
    full. Principle P4 as stated — outcomes are judged by defects per tier and
    size band, never by volume, and never by human hours (only David can supply
    that one) — holds either way.
-3. *Should the Tier A dependency scan go deeper than one level?* Found by PR
-   #664's own adversarial review and left open deliberately, because widening
-   it reclassifies an unmeasured set of PRs — a scope change, which CLAUDE.md's
-   recheck clause says needs its own cycle rather than a fix folded into one.
-   `lane3_direct_imports()` is depth-1 and Lane-3-only; re-running the same
-   `ast` scan over everything under `REVIEW_TIER_A_PATHS` finds 24 further
-   `services.*` modules imported by Tier A code that are themselves Tier B. The
-   ones that actually matter: `services/stats_power.py` (money/probability
-   arithmetic, the dimensional-analysis rule's own domain),
-   `services/diagnostics/_aio_db.py` (opens `paper_broker.DB_PATH` and
-   `signal_log.DB_PATH`; PR #627 changed it and classified Tier B),
-   `services/backup/backup.py` (retention `shutil.rmtree` over `data/backups/`;
-   PR #308), `services/candidate_ledger.py`, `services/ws_manager.py`,
-   `services/data_quarantine.py`, `services/latency_agg.py`,
-   `services/whale_pipeline_perf.py`. Test: has any Tier B PR since the merge
-   touched one of these in a way a Tier A review would have caught? Escalation
-   (`--tier A`) is the backstop meanwhile. Options are transitive closure,
-   depth-2, or naming these eight explicitly — measure the cost in reclassified
-   PRs before choosing, the way the first six were measured.
+3. ~~*Should the Tier A dependency scan go deeper than one level?*~~
+   **Decided 2026-09-07 (David): yes, depth 2.** Measured over the recorded
+   200-PR window before choosing — new Tier A paths / PRs reclassified / code
+   PRs left at Tier B out of 111: depth 1 → 0/0/16, **depth 2 → 8/4/12**,
+   depth 3 → 20/10/6, depth 4 → 27/10/6, closure → 27/10/6. Those are the
+   **scan-only** figures; what shipped is the scan *plus* four hand-named
+   modules, so the real total is **11 paths / 6 PRs reclassified / 10 left**.
+   Re-measured independently over #256–#664 while reviewing the PR, applying
+   the diff rule the gate actually runs (the study did not): 149/51 → 153/47
+   shipped → 156/44 at depth 3; code-typed 100/12 → 104/8 → 107/5. The
+   measurement script was never committed and the window is not a fixture, so
+   these are point-in-time observations reproducible only by re-running the
+   classification against live `gh` data — which the review did, matching
+   within the one-PR shift. Depth 3 is the
+   closure in everything but name (identical PRs, identical window; the seven
+   paths closure adds beyond it are mostly files inside directories depth 3
+   already covers as prefixes) and would leave 5% of code PRs on the light
+   path — roughly where the repo was before tiering existed. At the third hop
+   the traversal reaches `observability/`, `research/`, `storage_health/` and
+   `alerting/` through `app_state` and `fault_log`, which nearly everything
+   touches; that is the graph reaching, not the risk reaching.
+   `services/backup/`, `services/data_quarantine.py` and
+   `services/candidate_ledger.py` are named **explicitly** instead, because
+   they are dangerous for what they do rather than for who imports them — only
+   the rejected closure reaches them, and that is the same reason
+   `services/reset/`, `services/db.py` and `services/auth.py` were already
+   hand-listed. Shipped with `LANE3_SCAN_DEPTH = 2`; the constant's comment
+   carries the full curve. **What would retire it:** a Tier B PR that breaks
+   something a third hop would have caught — if one appears, re-measure rather
+   than assuming depth 3.
+
+   **Two corrections from the PR's own adversarial review, recorded rather than
+   quietly absorbed.** (a) The rejection rationale first shipped as "hop 3
+   reaches `observability/`, `research/`, `storage_health/` and `alerting/`
+   through `app_state` and `fault_log`". That was an artifact of the resolver
+   widening `from services.<pkg> import <sub>` to the whole package, not a real
+   fan-out; a file-precise resolver never reaches those three at all. The
+   outcome measurement stands, the mechanism claim did not, and both the
+   constant's comment and CLAUDE.md now say so. (b)
+   `services/whale_pipeline_perf.py` — named in this very question as one of
+   the eight that matter, and imported by `kalshi_trade_tape.py` and
+   `whale_stream_handlers.py` on the whale hot path — was dropped from the
+   answer without a word. It is now hand-listed.
+
+4. *Should `services/observability/` be Tier A?* Opened 2026-09-07 by the same
+   review, deliberately **not** folded into the depth-2 PR because adding it
+   reclassifies PRs that PR never measured. `observability/observability.py`'s
+   `prune()` runs `DELETE FROM metric_samples` on a retention cutoff, which is
+   the same "destroys recorded data" test that put `backup/` and
+   `data_quarantine` on the list — yet it is Tier B, and it is the *only*
+   module behind all four PRs depth 3 would have moved. Either the destructive
+   clause should name it, or the clause's boundary needs stating (retention
+   pruning of derived metrics is not the same asset as `data/*.db` history).
+   Test before deciding: does a defect in observability retention lose data any
+   sample-size-gated heuristic depends on?
 
 **Follow-up, not a decision** (same review, N9): `services/kalshi/` is in
 `guard_workflow.py`'s `KALSHI_PATHS` but not `HOT_PATHS`, so the
