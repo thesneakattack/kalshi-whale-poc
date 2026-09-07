@@ -34,9 +34,7 @@ db.register_schema("candidates", _init_candidates)
 def _connect():
     """Every existing `with _connect() as conn:` call site (claim,
     record_decision, decision_for, stats) keeps working unchanged - now
-    backed by services/db.py's closing connect() (Task 8 of docs/
-    superpowers/plans/2026-09-03-persistence-layer-db-migration-
-    implementation.md). WAL mode (2026-08-11, real live incident:
+    backed by services/db.py's closing connect() (Task 8 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md, moved there 2026-09-06, planning-lanes migration). WAL mode (2026-08-11, real live incident:
     rollback-journal mode serializes ALL writers and readers against each
     other for the whole transaction, and claim()/record_decision() sit on
     the exchange-wide hot path, a claim per whale-sized print - the same

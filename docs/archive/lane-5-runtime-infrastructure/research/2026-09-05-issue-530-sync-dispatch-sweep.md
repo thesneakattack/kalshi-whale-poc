@@ -223,7 +223,7 @@ instead of `services/whale_calibration/routes.py`) caused it to fall silently in
 an "unchanged" bucket. Caught by independent adversarial review re-deriving the
 attribution with `git show --stat` per SHA rather than trusting the first pass's
 table; corrected here rather than left standing. Full detail:
-`docs/superpowers/research/2026-09-05-issue-530-sync-dispatch-sweep-adversarial-review.md`.
+`docs/archive/lane-5-runtime-infrastructure/research/2026-09-05-issue-530-sync-dispatch-sweep-adversarial-review.md (moved there 2026-09-06, planning-lanes migration)`.
 
 ## Scope notes — what is and isn't this issue's track
 

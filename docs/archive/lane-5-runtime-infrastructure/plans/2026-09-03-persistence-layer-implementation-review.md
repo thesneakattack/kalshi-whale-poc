@@ -3,7 +3,7 @@
 ## Status
 
 Independent adversarial review per CLAUDE.md's "nothing advances on one pass" HARD RULE,
-applied to `docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md` (commit
+applied to `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md (moved there 2026-09-06, planning-lanes migration)` (commit
 `137d57d`, worktree `worktree-agent-ae61311892d35be18`). Fresh Agent call, no memory of the
 session that wrote the plan or its self-review. Per the HARD RULE's own definition of this
 stage: every load-bearing claim below was re-derived from primary sources (live source reads,

@@ -6,7 +6,7 @@ audit's §9.2 finding #5, re-verified fresh 2026-09-03) found: 16 routes in
 this app accept `limit`, only 8 clamped it before this file existed.
 
 This is the app's first use of FastAPI's Depends() mechanism (2026-09-03,
-Task 6a of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) -
+Task 6a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) -
 `grep -rln "Depends(" services/*.py services/**/*.py` returned zero hits
 before this file. Standard FastAPI machinery, not a hand-rolled
 abstraction the 2026-08-30 "prefer proven" rule would flag.
@@ -20,7 +20,7 @@ def paginate(max_limit: int = 200):
     Depends(paginate(max_limit=N)) for a route that needs a different one.
 
     Deviation from this plan's own literal code sample (2026-09-03, Task 6a
-    of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md): the
+    of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): the
     plan's sample wrapped the inner default in `Query(default=50)`, which
     breaks calling the returned dependency directly as a plain function
     (`dep()` resolves `limit` to the `Query` FieldInfo object itself, not

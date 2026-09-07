@@ -1,6 +1,6 @@
 # Issue #410 design: dedicated pool vs. aiosqlite for the two `tick_executor`-sharing diagnostic routes
 
-Design/spec stage. Written because `docs/superpowers/research/2026-09-04-issue-410-tick-executor-measurement.md`
+Design/spec stage. Written because `docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration)`
 (merged, PR #567) §5 explicitly refused to make this call inside a measurement note:
 
 > leaning toward option 2 (aiosqlite rewrite) as the better-fitted long-term pattern given this

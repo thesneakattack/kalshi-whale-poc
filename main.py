@@ -729,8 +729,7 @@ async def _maybe_run_auto_apply(cfg: dict) -> None:
                 last_applied_by_path=config_performance.all_last_applied_by_path(),
                 series_evaluator_rows=_series_evaluator_rows_for_advisory(cfg),
                 category_rows=regime_analytics.by_category(adv_all_rows),
-                # 2026-09-03, Task 3a of docs/superpowers/plans/2026-09-03-
-                # tier1-backend-hygiene.md: this is the one UNSUPERVISED
+                # 2026-09-03, Task 3a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): this is the one UNSUPERVISED
                 # call site (no human between a suggestion and applying it)
                 # - the one that most needs to honor a decline, and
                 # previously didn't (advisory_engine.py's declined_ids
@@ -1748,8 +1747,7 @@ class FlattenAllBody(BaseModel):
 
 _state_body_cache = {"generation": None, "body": None}  # see get_state()
 
-_last_event_live_data_sent_at = 0.0  # 2026-09-03, Task 7 of docs/
-# superpowers/plans/2026-09-03-tier1-backend-hygiene.md: event_live_data
+_last_event_live_data_sent_at = 0.0  # 2026-09-03, Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration): event_live_data
 # is 87.3% of /api/state's payload (live-measured) despite already being
 # event-scoped; the underlying data only refreshes once every
 # _EVENT_LIVE_DATA_REPOLL_SEC (60s, services/market_watch/event_metadata.py),

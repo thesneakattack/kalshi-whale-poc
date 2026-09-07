@@ -7,7 +7,7 @@ explicit requirement that each stage's self-review is its own instance, never re
 ## Scope of this PR
 
 Three files, all docs-only, no code/config/data changed:
-`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md` (the plan, 3,214+ lines),
+`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)` (the plan, 3,214+ lines),
 `...-review.md` (independent adversarial review of the plan, GO-AFTER-FIXES), and
 `...-consolidation.md` (reconciling both, verdict GO with all fixes applied). Commit history
 matches this exactly: plan → review → fix-pass-and-consolidation, three commits, no stray or

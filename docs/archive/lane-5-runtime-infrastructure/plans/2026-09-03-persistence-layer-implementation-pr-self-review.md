@@ -7,7 +7,7 @@ consolidation — run against the PR as submitted, before merge.
 
 ## What I checked
 
-- Read the full implementation plan (`docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md`,
+- Read the full implementation plan (`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md (moved there 2026-09-06, planning-lanes migration)`,
   1582 lines) end to end.
 - Read the plan-stage adversarial review (370 lines, verdict GO-AFTER-FIXES, 3 must-fix + 5
   should-fix) and confirmed every must-fix/should-fix item is actually present in the plan text
@@ -24,7 +24,7 @@ consolidation — run against the PR as submitted, before merge.
 ## Finding: real, confirmed drift since the plan's own review — not cosmetic
 
 **`0e90287` ("refactor: one canonical DDL string per table, owned by capture_writer.py",
-Task 3c of `docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md`, merged today as part of
+Task 3c of `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)`, merged today as part of
 PR #500) already centralized three of the exact tables this plan's Tasks 3 and 5 migrate.**
 
 Verified directly against `origin/main`'s current source (not assumed from the commit message):

@@ -262,7 +262,7 @@ chosen, since it's the actual reason costs keep climbing.
   recommendation needs to clear a higher evidence bar before a fix is scoped.
 
 Self-review of this note lives in its own document:
-`docs/superpowers/research/2026-09-04-issue-410-tick-executor-measurement-self-review.md`, per
+`docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement-self-review.md (moved there 2026-09-06, planning-lanes migration)`, per
 CLAUDE.md's "nothing advances on one pass" HARD RULE (self-review is its own artifact, never an
 edit folded into the one before it). No separate adversarial-review pass was run for this note —
 explicitly authorized to skip given time pressure; the coordinating session decides whether one

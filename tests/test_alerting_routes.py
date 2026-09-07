@@ -1,5 +1,5 @@
 """services/alerting/routes.py - GET /api/alerts/history's paginate()
-wiring (Task 6a of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md).
+wiring (Task 6a of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration).
 
 New file: no tests/test_alerting_routes.py existed before this task (only
 tests/test_alerting.py, which covers services/alerting/alerting.py's own

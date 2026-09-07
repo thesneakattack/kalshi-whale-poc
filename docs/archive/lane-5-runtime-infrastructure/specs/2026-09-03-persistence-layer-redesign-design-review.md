@@ -1,6 +1,6 @@
 # Persistence Layer Redesign — Adversarial Review
 
-Independent adversarial review of `docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`
+Independent adversarial review of `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`
 (commit `bb64a7c`, worktree `agent-ae61311892d35be18`, branch `worktree-agent-ae61311892d35be18`),
 per CLAUDE.md's "nothing advances on one pass" HARD RULE. This review has no memory of the
 session that wrote the artifact. Every load-bearing claim below was re-derived from primary

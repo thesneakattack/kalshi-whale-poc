@@ -40,8 +40,7 @@ let consecutiveRefreshFailures = 0;
 let lastRefreshError = null;
 let lastWhaleSource = null;  // set from each poll's state.whale_source - see loadConfig()'s real-provider status note
 
-// De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
-// tier1-backend-hygiene.md): loadSystemHealth() call site below, throttled
+// De-polled (2026-09-03, Task 2 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): loadSystemHealth() call site below, throttled
 // to 20s - see that call site's own comment for the full rationale.
 const SYSTEM_HEALTH_REFRESH_MS = 20000;
 let _lastSystemHealthLoadAt = 0;
@@ -123,8 +122,7 @@ async function refresh() {
       renderFunnel(state.stats);
       renderSignalDecisionFeed(state.signal_feed, state.decision_feed);
       renderHalted(state.risk);
-      // De-polled (2026-09-03, Task 2 of docs/superpowers/plans/2026-09-03-
-      // tier1-backend-hygiene.md): §3.3 of the architecture-audit-second-
+      // De-polled (2026-09-03, Task 2 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): §3.3 of the architecture-audit-second-
       // pass research found this route is the LEAST-fetched of the three
       // named for de-polling (35 browser rows in 13h - the Terminal tab is
       // rarely open) and the MOST important to keep responsive, since it's

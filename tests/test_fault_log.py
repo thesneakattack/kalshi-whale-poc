@@ -345,8 +345,7 @@ def test_connect_closes_on_setup_failure(monkeypatch):
 
 
 def test_record_fault_stores_an_explicit_traceback():
-    """record_fault's tb param (added by Task 1 of docs/superpowers/plans/
-    2026-09-03-tier1-backend-hygiene.md) stores a pre-formatted stack/
+    """record_fault's tb param (added by Task 1 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) stores a pre-formatted stack/
     traceback string into the same first_traceback slot record() populates
     from a real exception - for a captured stack (loop_watchdog's stall
     attribution), not a raised one."""

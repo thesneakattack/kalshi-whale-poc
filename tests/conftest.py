@@ -109,8 +109,7 @@ def _fresh_loop_watchdog_window(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_generation_bump_window(monkeypatch):
-    """services/app_state.py's bump_generation() (Task 7 of docs/
-    superpowers/plans/2026-09-03-tier1-backend-hygiene.md) coarsens
+    """services/app_state.py's bump_generation() (Task 7 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) coarsens
     state["generation"] bumps to at most one per real wall-clock second via
     the module-global `_last_bump_ts`, timestamped with the real time.time()
     - not a monkeypatched one, since every caller in production and most

@@ -151,8 +151,7 @@ class ConfigStore:
                 pass
             return dict(self._data)
 
-    # Full-replace-with-deletion paths (2026-09-03, Task 5 of docs/
-    # superpowers/plans/2026-09-03-tier1-backend-hygiene.md): the general
+    # Full-replace-with-deletion paths (2026-09-03, Task 5 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration): the general
     # merge below never deletes a key the incoming patch doesn't mention
     # (same safety property update() has always had, just extended past
     # one level - see this task's own experiment log in the plan for why a

@@ -826,7 +826,7 @@ async def resolved_signals_with_factors_async(since_ts: float | None = None) -> 
     """Async sibling of resolved_signals_with_factors() above, for callers
     already on the event loop (services/whale_calibration/routes.py). Same
     query, same output, same contract. Issue #410, implementing
-    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md.
+    docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration).
 
     BOTH halves are kept off the event loop, and that is the whole point:
     the SQL goes through aiosqlite (which yields natively rather than

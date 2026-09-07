@@ -173,7 +173,7 @@ def test_fetch_event_live_data_still_polls_an_unknown_category_event():
 
 
 # --- _build_state_body()'s own event_live_data SEND throttle (Task 7 of
-# docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md) - distinct
+# docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md, moved there 2026-09-06, planning-lanes migration) - distinct
 # from the repoll-cache tests above, which govern how often the *tick loop*
 # fetches event live data. event_live_data is 87.3% of /api/state's payload
 # (live-measured 2026-09-03) despite already being scoped to currently-

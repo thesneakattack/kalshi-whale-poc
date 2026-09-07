@@ -166,7 +166,7 @@ def test_process_stream_ticker_schedules_flush_via_tick_executor_when_told(monke
 
 
 def test_process_stream_ticker_schedules_snapshot_write_via_tick_executor(monkeypatch):
-    """Task 4 of docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md
+    """Task 4 of docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)
     (§4.5 of the architecture-audit-second-pass research): record_snapshot_
     from_ticker did a synchronous `with _connect(DB_PATH)` SQLite write per
     throttled ticker message, directly on the event loop, with no thread

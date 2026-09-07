@@ -1,8 +1,8 @@
 # Consolidation — Tier 1 Backend Hygiene Implementation Plan (2026-09-03)
 
-Reconciling `docs/superpowers/plans/2026-09-03-tier1-backend-hygiene.md` (commit `128caf2`),
+Reconciling `docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene.md (moved there 2026-09-06, planning-lanes migration)` (commit `128caf2`),
 its embedded Plan self-review, and the independent adversarial review
-(`docs/superpowers/plans/2026-09-03-tier1-backend-hygiene-review.md`, commit `bb0cba2`, a
+(`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-tier1-backend-hygiene-review.md (moved there 2026-09-06, planning-lanes migration)`, commit `bb0cba2`, a
 fresh Agent call with no memory of the authoring session) per CLAUDE.md's "nothing advances
 on one pass" HARD RULE. This plan was drafted directly from the second-pass audit's Tier 1
 items (7-14) without a separate design stage — a deliberate judgment call for this initiative

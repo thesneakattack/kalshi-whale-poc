@@ -1,8 +1,8 @@
 # Consolidation — Persistence Layer Redesign Design (2026-09-03)
 
-Reconciling `docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`
+Reconciling `docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`
 (commit `bb64a7c`), its embedded Design self-review, and the independent adversarial review
-(`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design-review.md`, commit
+(`docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design-review.md (moved there 2026-09-06, planning-lanes migration)`, commit
 `12ae40c`, a fresh Agent call with no memory of the authoring session) per CLAUDE.md's
 "nothing advances on one pass" HARD RULE.
 

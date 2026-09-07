@@ -2,7 +2,7 @@
 
 **Stage:** design/spec, per CLAUDE.md's "nothing advances on one pass" pipeline
 (research → design/spec → implementation plan). Input: the research doc
-(`docs/superpowers/research/2026-09-03-persistence-layer-db-migration.md`, PR #504,
+(`docs/archive/lane-5-runtime-infrastructure/research/2026-09-03-persistence-layer-db-migration.md (moved there 2026-09-06, planning-lanes migration)`, PR #504,
 merged, PR-stage review GO) plus two assigned feeder documents — originally cited as unmerged
 at drafting time, **now also merged** (PR-stage correction): `docs/persistence-layer-baseline-2026-09-03.md`
 (PR #509, merge commit `bbebbbe`) and `docs/db-foundation-audit-2026-09-03.md` (PR #507, merge
@@ -13,7 +13,7 @@ stage then turns into ordered, testable tasks.
 **PR-stage correction — a fourth input this document should have cited from the start, found by
 this PR's own required adversarial review reading the whole document end to end**: `main`
 already has a separate, merged, GO'd design-stage document,
-`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md`, whose §1.4 is the
+`docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)`, whose §1.4 is the
 actual origin of the `register_ddl(table, ddl)`/`_DDL_REGISTRY: dict[str, str]` API this
 document attributes only to "PR #484's Task 1" throughout — PR #484's Task 1 transcribes that
 design's code verbatim (its own text says so), rather than inventing it. This document's central
@@ -316,7 +316,7 @@ undercounts the true footprint slightly, but not the way the first draft claimed
 - **`services/backup/backup.py`** — split-pattern (its primary `_connect()` leaks; a separate
   `src_conn`/`dest_conn` pair used for the backup-copy operation already closes correctly).
   **Already in PR #484's Task 7 tracking list** — confirmed by reading that list directly
-  (`docs/superpowers/plans/2026-09-03-persistence-layer-implementation.md`, Task 7) — no scope
+  (`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation.md (moved there 2026-09-06, planning-lanes migration)`, Task 7) — no scope
   gap, just a partial (not full-file) migration when picked up.
 - **`services/capture_writer.py`, `services/storage_health/storage_health.py`,
   `tools/historical_data_backfill.py`, `tools/quality_ratchet.py`** — already close correctly.
@@ -528,7 +528,7 @@ scratch, and so choosing not to pool is a stated decision, not a silent default.
 **The API-shape decision is this spec's single highest-stakes call.** It does not merely
 supersede a plan-stage task — **it revises an API shape that was independently designed,
 reviewed, and cleared GO at the design stage already**, in
-`docs/superpowers/specs/2026-09-03-persistence-layer-redesign-design.md` §1.4 (see the
+`docs/archive/lane-5-runtime-infrastructure/specs/2026-09-03-persistence-layer-redesign-design.md (moved there 2026-09-06, planning-lanes migration)` §1.4 (see the
 provenance correction at the top of this document), which PR #484's Task 1 then transcribed
 verbatim. This document's own revision above diverges from *all three* — that GO'd design, PR
 #484's transcription of it, and the unmerged prototype — rather than adopting any of them

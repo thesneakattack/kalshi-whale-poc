@@ -1,7 +1,7 @@
 # PR-Stage Consolidation — Persistence Layer Implementation Plan (PR #484, 2026-09-03)
 
 Reconciling this PR-stage self-review
-(`docs/superpowers/plans/2026-09-03-persistence-layer-implementation-pr-self-review.md`)
+(`docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-implementation-pr-self-review.md`, moved there 2026-09-06, planning-lanes migration)
 and the independent adversarial review run against the PR as submitted (fresh Agent call,
 no memory of the authoring/self-review session, dispatched with explicit instruction to
 verify every claim from primary sources rather than trust either prior document) per

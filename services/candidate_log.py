@@ -488,7 +488,7 @@ async def population_gate_summary_banded_async(bands=DEFAULT_BANDS, min_samples:
 # diagnostics.diagnostics or candidate_log itself - checked directly).
 #
 # Stamped at completion, not at request receipt (issue #410's own lesson,
-# docs/superpowers/research/2026-09-04-issue-410-tick-executor-measurement.md
+# docs/archive/lane-5-runtime-infrastructure/research/2026-09-04-issue-410-tick-executor-measurement.md (moved there 2026-09-06, planning-lanes migration)
 # Sec 3.4, reapplied here rather than re-learned): a ~70s worst-case query
 # stamped with the instant it was REQUESTED would burn up to ~23% of this
 # cache's own 300s TTL before the entry was even written.
@@ -987,7 +987,7 @@ async def population_gate_summary_async(min_samples: int = 30) -> list[dict]:
     are already on the event loop (services/analytics/routes.py's GET
     /api/candidate-log/summary). Same query, same output, same contract -
     only the transport differs. Issue #410, implementing
-    docs/superpowers/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md.
+    docs/archive/lane-5-runtime-infrastructure/specs/2026-09-04-issue-410-pool-vs-aiosqlite-design.md (moved there 2026-09-06, planning-lanes migration).
 
     Why aiosqlite rather than the dedicated pool that design rejected: this
     function is ENTIRELY SQL-bound, so there is nothing here for a worker

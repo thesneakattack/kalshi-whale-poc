@@ -23,8 +23,7 @@ class _RecordingConnection:
     mutating the connection object itself.
 
     Deviation from the plan's literal Step 1 test text
-    (docs/superpowers/plans/2026-09-03-persistence-layer-db-migration-
-    implementation.md, Task 1): the plan's own text monkeypatches
+    (docs/archive/lane-5-runtime-infrastructure/plans/2026-09-03-persistence-layer-db-migration-implementation.md (moved there 2026-09-06, planning-lanes migration), Task 1): the plan's own text monkeypatches
     `conn.close` directly on a real sqlite3.Connection instance, but that
     raises `AttributeError: 'sqlite3.Connection' object attribute 'close'
     is read-only` on this container's Python (3.13, confirmed empirically
