@@ -154,6 +154,33 @@ of that (not a real defect, resolves on rebase), but the PR's own
 owns applying fixes; waiting on `c4`'s issue-citation check and then a
 consolidation comment before this is mergeable.
 
+**`c4`'s independent issue-citation sweep posted directly to #657**
+(`issuecomment-5565810132`, 2026-09-07T06:05:44Z — coordinator
+spot-checked 5 of the 27 fixed issues directly via `gh issue view`,
+confirmed corrected paths present, no stale paths in any): found **27
+closed issues, 31 occurrences, genuinely stale** — 100% missed by `0d`'s
+self-review, because that self-review's own text says "ran the broader
+all-**147**-open-issues sweep," explicitly covering only open issues
+despite methodology point 2 above already requiring all **335** (147
+open + 188 closed). Not a new blind-spot mechanism — a concrete instance
+of an already-documented methodology point not being applied literally.
+Root cause: all 27 are `kanban_sync`-generated Task/Plan-tracker issues
+predating `sources_plan.py`'s own 2026-09-06 fix, and `sync_pass_one`
+never re-renders an existing issue's body — these would have stayed
+broken **permanently**, not self-healed. Fixed directly via `gh issue
+edit --body-file` (same mechanical/trivial precedent as #54/#621/#613 —
+no review cycle required per CLAUDE.md's Scope carve-out), re-verified
+after the fix: 0 remaining stale hits across all 335. **CI is now green
+on all 12 required contexts** (`c08ef9f`) as of this check.
+
+**PR #657 status: still NOT GO.** 5 comments now exist (self-review,
+arithmetic correction, fix-list-recheck, `49`'s file-citation sweep,
+`c4`'s issue-citation sweep). Issue-citation side clean. Still
+outstanding before merge: `0d` fixes the 3 file misses + rebases onto
+current `main` + re-sweeps, then a **consolidation comment** (explicit
+GO/no-go reconciling self-review + both independent sweeps + the fixes)
+— nobody has written one yet.
+
 **Standing methodology, earned the hard way tonight — apply to every
 remaining lane (3, 2, 1, 9) without re-deriving:**
 1. **Full-repo de-wrapping citation sweep**, not slug-substring or
