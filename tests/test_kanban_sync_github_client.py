@@ -2,6 +2,8 @@ import json
 import logging
 import subprocess
 
+import pytest
+
 from tests.support.fake_gh_runner import FakeRunner
 from tools.kanban_sync.github_client import GithubCliError, GithubClient
 
@@ -772,3 +774,72 @@ def test_default_sleep_is_the_real_clock():
     import time
     client = GithubClient(REPO, runner=FakeRunner())
     assert client._sleep is time.sleep
+
+
+def test_get_pr_files_uses_rest_pagination_not_the_capped_json_field():
+    """`gh pr view --json files` caps at 100; PR #660 changed 124 files
+    (verified live 2026-09-07). A capped list silently under-reports the tier,
+    which is the one failure mode this reader must not have."""
+    runner = FakeRunner()
+    runner.queue("\n".join(f"services/file_{i}.py" for i in range(124)))
+    client = GithubClient(REPO, runner=runner)
+
+    files = client.get_pr_files(660)
+
+    assert len(files) == 124
+    call = runner.calls[0]
+    assert call[:2] == ["gh", "api"]
+    assert "repos/thesneakattack/kalshi-whale-poc/pulls/660/files" in call
+    assert "--paginate" in call
+    assert "--repo" not in call  # gh api rejects it
+
+
+def test_get_pr_files_raises_rather_than_returning_an_empty_list_on_failure():
+    """An empty file list classifies as Tier B. A fetch failure must never be
+    indistinguishable from a PR that changed nothing."""
+    runner = FakeRunner()
+    runner.queue("", returncode=1, stderr="HTTP 404: Not Found")
+    client = GithubClient(REPO, runner=runner)
+
+    with pytest.raises(GithubCliError):
+        client.get_pr_files(99999)
+
+
+def test_get_pr_diff_returns_the_raw_diff():
+    runner = FakeRunner()
+    runner.queue("diff --git a/x.py b/x.py\n+CREATE TABLE t (id INTEGER)\n")
+    client = GithubClient(REPO, runner=runner)
+
+    assert "CREATE TABLE" in client.get_pr_diff(1)
+    assert runner.calls[0][:3] == ["gh", "pr", "diff"]
+
+
+def test_get_pr_labels_includes_the_labels_of_a_closing_issue():
+    """Spec §3.1 rule 4: the PR *or an issue it closes* carrying
+    concern:hotpath makes it Tier A - a code PR often carries no label of its
+    own while the issue it closes carries the concern."""
+    runner = FakeRunner()
+    runner.queue(json.dumps({
+        "labels": [{"name": "lane:3"}],
+        "closingIssuesReferences": [{"number": 410}],
+    }))
+    runner.queue(json.dumps({
+        "number": 410, "state": "OPEN",
+        "labels": [{"name": "concern:hotpath"}],
+    }))
+    client = GithubClient(REPO, runner=runner)
+
+    assert client.get_pr_labels(1) == frozenset({"lane:3", "concern:hotpath"})
+
+
+def test_list_pr_comments_returns_bodies_in_order():
+    runner = FakeRunner()
+    runner.queue(json.dumps({"comments": [
+        {"body": "## Self-review\n..."},
+        {"body": "## Independent adversarial review\n..."},
+    ]}))
+    client = GithubClient(REPO, runner=runner)
+
+    assert client.list_pr_comments(1) == [
+        "## Self-review\n...", "## Independent adversarial review\n...",
+    ]

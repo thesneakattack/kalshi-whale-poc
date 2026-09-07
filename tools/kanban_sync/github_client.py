@@ -271,6 +271,53 @@ class GithubClient:
             return None
         return results[0]["state"]
 
+    # --- read-only PR readers for `review-tier` (the AI-assisted engineering
+    # principles design, §6.2). None of these writes anything.
+
+    def get_pr_files(self, number: int) -> list[str]:
+        """Every changed path in the PR.
+
+        REST plus --paginate, not `gh pr view --json files`: that field caps at
+        100 entries and PR #660 changed 124 (verified live 2026-09-07). A
+        truncated file list would silently classify a large PR as Tier B, which
+        is the one failure this reader must not have. `gh api` takes no --repo
+        flag, so this goes through _invoke rather than _run, exactly as
+        graphql_rate_limit does - the transient-retry policy still applies.
+        """
+        result = self._invoke([
+            "gh", "api", f"repos/{self._repo}/pulls/{number}/files",
+            "--paginate", "--jq", ".[].filename",
+        ])
+        if result.returncode != 0:
+            raise GithubCliError(
+                f"gh api pulls/{number}/files failed: {result.stderr or result.stdout}"
+            )
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
+    def get_pr_diff(self, number: int) -> str:
+        """The raw unified diff, for the data-model rule's line pattern."""
+        return self._run(["pr", "diff", str(number)])
+
+    def get_pr_labels(self, number: int) -> frozenset[str]:
+        """The PR's own labels plus those of every issue it closes: a code PR
+        often carries no label while the issue it closes carries the concern."""
+        stdout = self._run([
+            "pr", "view", str(number), "--json", "labels,closingIssuesReferences",
+        ])
+        data = json.loads(stdout)
+        names = {label["name"] for label in data.get("labels") or []}
+        for issue in data.get("closingIssuesReferences") or []:
+            state = self.get_issue(issue["number"])
+            if state is not None:
+                names |= set(state.labels)
+        return frozenset(names)
+
+    def list_pr_comments(self, number: int) -> list[str]:
+        """Comment bodies in posted order. Issue-style comments only - the
+        review artifacts this repo posts are all of that kind."""
+        stdout = self._run(["pr", "view", str(number), "--json", "comments"])
+        return [comment["body"] for comment in json.loads(stdout)["comments"]]
+
     def get_sub_issues_summary(self, issue_number: int) -> tuple[int, int]:
         """Returns (completed, total) sub-issue counts. Repo-scoped (unlike
         the project-object methods above), so uses _run's automatic --repo

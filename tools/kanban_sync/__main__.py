@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.kanban_sync import labels
-from tools.kanban_sync.github_client import GithubClient
+from tools.kanban_sync.github_client import GithubClient, GithubCliError
+from tools.kanban_sync.review_tier import count_review_artifacts, review_tier
 from tools.kanban_sync.live_status import resolve_project_status
 from tools.kanban_sync.markers import build_marker
 from tools.kanban_sync.models import SyncItem
@@ -225,6 +226,86 @@ def _cmd_plan_candidates(_args: argparse.Namespace) -> None:
         print(path)
 
 
+_REVIEW_TIER_REQUIREMENT = {"A": 3, "B": 1}
+
+
+def _cmd_review_tier(args: argparse.Namespace) -> None:
+    """The merge-time check (the AI-assisted engineering principles design §4).
+
+    Decides Tier A/B from the PR's paths, diff, and labels, counts its
+    persisted review artifacts, and prints PASS / FAIL / EXEMPT. The exit code
+    is the machine-readable answer: 0 pass or exempt, 1 fail, 2 could-not-read.
+    Never prints PASS on a fetch failure - a silent pass is worse than no
+    check. Touches nothing on the Projects board, so no project scope needed.
+    """
+    if args.exempt is not None:
+        reason = args.exempt.strip()
+        if not reason:
+            print("error: --exempt needs a non-empty reason", file=sys.stderr)
+            sys.exit(1)
+        _emit_review_tier(
+            args, tier="exempt", reasons=[f"mechanical/trivial: {reason}"],
+            artifacts=0, matched=[], required=0, verdict="EXEMPT",
+        )
+        return
+
+    client = GithubClient(REPO)
+    try:
+        files = client.get_pr_files(args.pr)
+        diff_text = client.get_pr_diff(args.pr)
+        pr_labels = sorted(client.get_pr_labels(args.pr))
+        comments = client.list_pr_comments(args.pr)
+    except GithubCliError as exc:
+        print(f"error: could not read PR #{args.pr}: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (ValueError, KeyError, TypeError) as exc:
+        # A malformed or unexpected gh payload is still "could not read", not
+        # "review missing": without this it would surface as a bare traceback
+        # and exit 1, the documented FAIL code (2026-09-07 PR-stage review, N4).
+        print(f"error: unreadable response for PR #{args.pr}: {exc!r}", file=sys.stderr)
+        sys.exit(2)
+    if not files:
+        print(f"error: PR #{args.pr} reported no changed files - refusing to "
+              f"classify it as Tier B on an empty list", file=sys.stderr)
+        sys.exit(2)
+
+    tier, reasons = review_tier(
+        files, diff_text=diff_text, pr_labels=pr_labels, escalate=args.tier == "A",
+    )
+    artifacts, matched = count_review_artifacts(comments)
+    required = _REVIEW_TIER_REQUIREMENT[tier]
+    verdict = "PASS" if artifacts >= required else "FAIL"
+    _emit_review_tier(
+        args, tier=tier, reasons=reasons, artifacts=artifacts,
+        matched=matched, required=required, verdict=verdict,
+    )
+    if verdict == "FAIL":
+        sys.exit(1)
+
+
+def _emit_review_tier(args, *, tier, reasons, artifacts, matched, required, verdict):
+    if args.json:
+        print(json.dumps({
+            "pr": args.pr, "tier": tier, "reasons": reasons,
+            "artifacts": artifacts, "matched": matched,
+            "required": required, "verdict": verdict,
+        }, indent=2))
+        return
+    label = "EXEMPT" if tier == "exempt" else f"Tier {tier}"
+    print(f"PR #{args.pr}: {label} — {verdict}")
+    for reason in reasons:
+        print(f"  why: {reason}")
+    if tier != "exempt":
+        print(f"  artifacts: {artifacts} of {required} required")
+        for item in matched:
+            print(f"    - {item}")
+        if verdict == "FAIL":
+            print(
+                "  do not merge. Supply what is missing: a fresh Agent for an "
+                "adversarial pass, the author for a Tier B self-review comment."
+            )
+
+
 def _cmd_decompose_plan(args: argparse.Namespace) -> None:
     _check_project_scope()
     client = GithubClient(REPO)
@@ -295,6 +376,24 @@ def main(argv: list[str] | None = None) -> int:
 
     candidates_parser = sub.add_parser("plan-candidates", help="list plan docs needing classification")
     candidates_parser.set_defaults(func=_cmd_plan_candidates)
+
+    review_tier_parser = sub.add_parser(
+        "review-tier",
+        help="decide a PR's review tier and count its persisted review artifacts",
+    )
+    review_tier_parser.add_argument("--pr", type=int, required=True)
+    review_tier_parser.add_argument(
+        "--exempt", default=None,
+        help="mechanical/trivial change (typo, CI re-trigger, a config value "
+             "edited exactly as dictated, a revert): records the reason, "
+             "requires no artifact",
+    )
+    review_tier_parser.add_argument(
+        "--tier", choices=["A"], default=None,
+        help="escalate to Tier A; there is no de-escalation flag by design",
+    )
+    review_tier_parser.add_argument("--json", action="store_true")
+    review_tier_parser.set_defaults(func=_cmd_review_tier)
 
     decompose_parser = sub.add_parser("decompose-plan", help="create milestone + task sub-issues for one plan")
     decompose_parser.add_argument("--plan", required=True, help="plan doc filename, e.g. 2026-08-27-x.md")

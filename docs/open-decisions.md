@@ -23,6 +23,57 @@ its issue closes.
 - `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 strategy-economics remediation) is docs-only, explicitly self-gated: "not approved for execution... explicit human review... not a Claude-side call" · sitting untouched 9+ days, surfaced by tonight's 2026-09-06 docs/plans audit · decide execute-or-park explicitly (silent dormancy isn't a decision) · you · 2026-09-06
 
 
+## Parked 2026-09-07 — two dated questions about the review tiering
+
+Review tiering shipped (PR #664): depth follows consequence, decided by the
+paths a PR touches, `review-tier` decides it and counts the persisted
+artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
+"measure first, decide later" when asked directly (session `autotrade-d9`,
+2026-09-07), resolving the 2026-09-03 conflict recorded in memory
+`scale-review-effort-to-blast-radius`.
+
+**Decide by 2026-10-05, both from evidence, not impression:**
+
+1. *Is `review-tier` earning its place?* It was enabled on day one rather than
+   proving itself first — the stated exception to the Toolchain section's
+   handspun-tool default. Test: has it ever printed `FAIL` on a PR that then
+   got its missing artifact supplied? If it has only ever rubber-stamped, it is
+   ceremony and should be retired.
+2. *Is a review-outcomes report worth building?* The design also specified
+   `python -m tools.kanban_sync outcomes` — defects per tier and size band over
+   a fixed window — cut before implementation because nothing had needed the
+   number. Test: has any decision since the merge wanted a defect-per-tier
+   figure? If yes, build it from the design's §6.3, which is written out in
+   full. Principle P4 as stated — outcomes are judged by defects per tier and
+   size band, never by volume, and never by human hours (only David can supply
+   that one) — holds either way.
+3. *Should the Tier A dependency scan go deeper than one level?* Found by PR
+   #664's own adversarial review and left open deliberately, because widening
+   it reclassifies an unmeasured set of PRs — a scope change, which CLAUDE.md's
+   recheck clause says needs its own cycle rather than a fix folded into one.
+   `lane3_direct_imports()` is depth-1 and Lane-3-only; re-running the same
+   `ast` scan over everything under `REVIEW_TIER_A_PATHS` finds 24 further
+   `services.*` modules imported by Tier A code that are themselves Tier B. The
+   ones that actually matter: `services/stats_power.py` (money/probability
+   arithmetic, the dimensional-analysis rule's own domain),
+   `services/diagnostics/_aio_db.py` (opens `paper_broker.DB_PATH` and
+   `signal_log.DB_PATH`; PR #627 changed it and classified Tier B),
+   `services/backup/backup.py` (retention `shutil.rmtree` over `data/backups/`;
+   PR #308), `services/candidate_ledger.py`, `services/ws_manager.py`,
+   `services/data_quarantine.py`, `services/latency_agg.py`,
+   `services/whale_pipeline_perf.py`. Test: has any Tier B PR since the merge
+   touched one of these in a way a Tier A review would have caught? Escalation
+   (`--tier A`) is the backstop meanwhile. Options are transitive closure,
+   depth-2, or naming these eight explicitly — measure the cost in reclassified
+   PRs before choosing, the way the first six were measured.
+
+**Follow-up, not a decision** (same review, N9): `services/kalshi/` is in
+`guard_workflow.py`'s `KALSHI_PATHS` but not `HOT_PATHS`, so the
+dimensional-analysis money nudge stopped firing on
+`services/kalshi/account_client.py` when the Phase A migration moved it. That
+gap predates PR #664 and changing when a guard fires did not belong in a PR
+about review process. One line in `HOT_PATHS` fixes it.
+
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
 - `yes_ask_dollars == "1.0000"` with `yes_ask_size_fp == "0.00"` is Kalshi's no-resting-ask sentinel (live-verified; 67 of 276 watched markets right now); spread/coverage/ask-based NO valuation must treat it as *absent* at the `services/kalshi/` boundary · #606 · me

@@ -60,6 +60,33 @@ commit → push → Woodpecker → PR → merge → delete branch
   PR touching `docs/superpowers/` merged on 2026-08-31 (7 of them) carried
   zero labels between them, confirmed via `gh pr view <n> --json labels`
   across the day's full merge history, not guessed.
+  Decide the exemption question first, then run
+  `python -m tools.kanban_sync review-tier --pr <n>` (`--exempt "<reason>"`
+  for a mechanical change, `--tier A` to escalate) and paste its output into
+  the final PR comment or the merge commit; merge only on `PASS` or `EXEMPT`.
+  It decides Tier A/B from the changed paths, data-model lines, and
+  `concern:hotpath`, and counts the persisted review artifacts (three for A,
+  one for B), reading only each comment's first line. A `FAIL` is not a
+  formality — supply the missing artifact (a fresh Agent for an adversarial
+  pass, the author for a Tier B self-review) or do not merge.
+  A counted artifact's first line begins with what it is: `## Self-review`,
+  `## Adversarial review`, `## Consolidation`, `Tier B self-review`,
+  optionally prefixed (`Independent`, `PR-stage`, `Tier B`, `stage 2 of 3`).
+  A comment that discusses a review — a correction, a recheck, a response to
+  a finding — is not one, however much it says about it. A Tier B PR's
+  single comment:
+
+  ```markdown
+  Tier B self-review
+
+  **Tier:** <changed paths>; none matches REVIEW_TIER_A_PATHS, no data-model
+  line, no concern:hotpath.
+  **What changed and why:** <the behaviour, not the diff>
+  **Evidence:** <checks that ran and what they showed; CI status URL>
+  **Falsifier:** <what observation after merge would show this was wrong>
+  **Left undone:** <anything noticed and not done, or "nothing">
+  ```
+
   Read the PR body before merging — run
   `gh pr view <n> --json body,commits --jq '.body, (.commits[].messageBody)' | grep -n '\[ \]\|\[x\]'`
   every time, plus the same grep over any `docs/superpowers/` document the
@@ -74,8 +101,9 @@ commit → push → Woodpecker → PR → merge → delete branch
   shows a live peer session, send it a one-line "about to merge PR #N" ping
   via `SendMessage` — courtesy to avoid a merge race or duplicated review
   effort, not a blocking gate and not a substitute for CLAUDE.md's "nothing
-  advances on one pass" adversarial-review requirement (that still needs its
-  own fresh, memory-less Agent call regardless of what a peer says): proceed
+  advances on one pass" requirement (a Tier A PR still needs
+  its own fresh, memory-less Agent call regardless of what a peer says; a
+  Tier B PR still needs its `Tier B self-review` comment): proceed
   on an ack or on no pushback within a few minutes, don't stall the merge
   indefinitely on a slow or unresponsive peer (2026-08-31, after two real
   near-misses in one session: a peer posted a redundant consolidation
@@ -89,31 +117,26 @@ commit → push → Woodpecker → PR → merge → delete branch
   guarantees — no routine work on `main`, no force-push, CI before
   integration, reviewable diffs, safe merges. This does not exempt an
   in-scope PR from CLAUDE.md's "nothing advances on one pass" HARD RULE:
-  no *human* approval step is needed here, but the AI-executed
-  self-review/adversarial-review/consolidation cycle still runs before
-  `gh pr merge` — that is rigor, not approval ceremony.
+  no *human* approval step is needed here, but the AI-executed review its
+  tier requires — the self-review/adversarial-review/consolidation cycle
+  for Tier A, the one self-review comment for Tier B — still runs before
+  `gh pr merge`, and `review-tier` records that it did — that is rigor,
+  not approval ceremony.
 
-**GitHub-side enforcement (configured 2026-08-25, contexts updated
-2026-09-03):**
-`gh api repos/thesneakattack/kalshi-whale-poc/branches/main/protection` —
-`enforce_admins: true`, `allow_force_pushes: false`, `allow_deletions: false`,
-`required_pull_request_reviews: null`, and `required_status_checks.contexts` =
-`ci/woodpecker/pr/tests-pytest-app`, `.../tests-pytest-tooling`,
-`.../tests-dependency-audit`,
+**GitHub-side enforcement (configured 2026-08-25; found off 2026-09-05,
+#615):** `gh api repos/thesneakattack/kalshi-whale-poc/branches/main` reports
+`protected: false`, `enforcement_level: off`; whether it lapsed via a plan
+change or the repo going private is not recoverable from the API. Until #615
+is decided (GitHub Pro, a public repo, or accepting this as permanent), the
+six contexts below are enforced by the merging session reading
+`commits/<sha>/status` and treating any state other than `success` on any of
+them as not merged: `ci/woodpecker/pr/tests-pytest-app`,
+`.../tests-pytest-tooling`, `.../tests-dependency-audit`,
 `.../quality-architecture-audit`, `.../quality-browser-e2e`,
-`.../kalshi-contract-fixtures`. `tests-pytest.yml` (one context, always ran
-the whole ~3070-test suite unscoped on every PR/main push) was retired and
-replaced by two required contexts, `tests-pytest-app.yml`/
-`tests-pytest-tooling.yml`, split along the one boundary
-`tools/classify_pytest_app_vs_tooling.py` and the CI pipeline audit's own
-pytest-profile doc already proved safe (app-code tests and tooling tests
-are non-interacting) - each half still runs fully unscoped on the merge
-gate, they just run as two parallel required checks instead of one serial
-one. Deliberately excludes
-`ci/woodpecker/pr/quality-frontend-build`: it is path-filtered to `frontend/**`
-and posts no status when skipped, so requiring it would block every
-non-frontend PR. Update with `gh api -X PUT .../protection --input <file>`
-when a required pipeline is added.
+`.../kalshi-contract-fixtures`. `quality-frontend-build` is path-filtered to
+`frontend/**` and posts no status when skipped, so it is read only when it
+ran. If protection is re-enabled, restore the 2026-09-03 contexts list with
+`gh api -X PUT .../protection --input <file>` and rewrite this paragraph.
 
 ## Git history
 

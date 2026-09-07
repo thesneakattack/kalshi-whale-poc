@@ -78,7 +78,9 @@ description: This skill should be used at natural breakpoints in a long working 
 
 9. **PR — only when this checkpoint completes the initiative.** `gh pr create`
    if none is open; read the body; when CI is green and the diff is reviewed,
-   `gh pr merge --merge`, then:
+   decide the exemption question, run
+   `python -m tools.kanban_sync review-tier --pr <n>`, merge only on `PASS` or
+   `EXEMPT`; `gh pr merge --merge`, then:
    ```bash
    scripts/cleanup-worktrees.sh                                        # removes provably merged worktrees + branches; reports everything else
    (cd <primary> && npx gitnexus@1.6.10 analyze --skip-agents-md)      # graph back at HEAD; restart the session if the MCP then errors

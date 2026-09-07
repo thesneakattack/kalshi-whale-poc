@@ -8,6 +8,8 @@ rather than represent claimable work.
 """
 from __future__ import annotations
 
+import re
+
 STATUS_CLAIMABLE = "status:claimable"
 STATUS_CLAIMED = "status:claimed"
 STATUS_IN_PROGRESS = "status:in-progress"
@@ -172,3 +174,130 @@ LANES = {
 }
 
 ALL_LANE_LABELS = frozenset(lane["label"] for lane in LANES.values())
+
+
+_ROOT_ANCHORED_PREFIXES = (
+    "services/", ".claude/", ".github/", ".woodpecker/", "scripts/",
+    "tests/", "bench/", "ui_samples/", "frontend/", "static/", "config/",
+    "tools/", "docs/",
+)
+
+
+def resolve_lane_package(pkg: str) -> str:
+    """A LANES entry as a repo-relative path prefix. Entries are written the
+    way the lanes design's §3 table writes them: a handful (`services/kalshi/`,
+    `config/settings.yaml`) already carry a root-anchored prefix, everything
+    else is a bare name implicitly under `services/`. Lives here rather than in
+    the test that used to own it, so REVIEW_TIER_A_PATHS below and
+    tests/test_kanban_sync_labels.py resolve lane entries identically."""
+    if pkg.startswith(_ROOT_ANCHORED_PREFIXES):
+        return pkg
+    return f"services/{pkg}"
+
+
+# review tiering (docs/archive/lane-9-tooling-ci-process-governance/specs/
+# 2026-09-07-ai-assisted-engineering-principles-design.md §3.1) - the
+# mechanical answer to "how much review does this PR owe", decided by the paths
+# it touches. Tier A owes CLAUDE.md's full self-review/adversarial-review/
+# consolidation cycle; Tier B owes one persisted self-review comment plus green
+# CI. Data only: the classifier is tools/kanban_sync/review_tier.py. Every
+# entry must exist on disk and every guard_workflow.py path entry must appear
+# here - both CI-enforced in tests/test_kanban_sync_labels.py.
+_REVIEW_TIER_A_LANES = (1, 2, 3, 7)
+
+_REVIEW_TIER_A_EXTRA_PATHS: tuple[str, ...] = (
+    # guard_workflow.py's own lists, beyond what LANES 1/2/3/7 already cover:
+    # the whole whale_stream package (LANES[1] names only two of its files),
+    # advisory/ (a Lane 4 package on HOT_PATHS), and the money UI.
+    "services/whale_stream/",
+    "services/advisory/",
+    "frontend/src/js/",
+    # money and decision inputs outside Lanes 1-3: projected_probability() is
+    # called from settlement_edge_entry.py:108, record_rejection() at eight
+    # sites in strategy_engine.py, history/ computes fees and realized P&L.
+    "services/settlement_edge.py",
+    "services/candidate_log.py",
+    "services/history/",
+    # every module a Lane 3 module imports directly that no other rule covers
+    # (review_tier.lane3_direct_imports() is the CI check that keeps this true).
+    # Derived with ast over all 16 Lane 3 sources, 2026-09-07: 27 direct
+    # services.* imports, of which these seven are covered by no other rule.
+    # fault_log is the data plane's own completeness evidence; http_client
+    # carries the REST backoff and rate limits; index_feed is Lane 1 ingestion
+    # (two of its files were already Tier A); market_analyst_agent and
+    # market_lookup feed exit and entry decisions; history_push pushes money
+    # figures to the dashboard.
+    "services/app_state.py",
+    "services/fault_log.py",
+    "services/history_push.py",
+    "services/http_client.py",
+    "services/index_feed/",
+    "services/market_analyst_agent/",
+    "services/market_lookup.py",
+    # the data-plane plumbing CLAUDE.md's six properties ride on, plus the
+    # paths that gate accounts or discard live data.
+    "main.py",
+    "services/db.py",
+    "services/capture_writer.py",
+    "services/task_supervisor.py",
+    "services/tick_executor.py",
+    "services/auth.py",
+    "services/accounts_store.py",
+    "services/reset/",
+    ".ddev/",
+    # process and CI, including this file: a change to the tier definition is
+    # always Tier A.
+    ".claude/hooks/",
+    ".claude/settings.json",
+    ".mcp.json",
+    ".woodpecker/",
+    ".github/workflows/",
+    "tools/quality_audit/",
+    "scripts/ci-",
+    "scripts/woodpecker-",
+    "tools/kanban_sync/labels.py",
+    # the tier definition's own tests, and the test-isolation layer. CLAUDE.md's
+    # Scope bullet says "the tier definition and tests of Tier A code" are Tier
+    # A, but the stem rule keys on a Tier A path's *basename*, so
+    # test_kanban_sync_labels.py never matched the stem `labels`. conftest.py is
+    # the autouse isolation that keeps a pytest run from writing into the live
+    # paper_broker.db - it did exactly that on 2026-08-23. Named explicitly
+    # rather than widening the stem rule (2026-09-07 PR-stage review, N1).
+    "tests/conftest.py",
+    "tests/support/",
+    "tests/test_kanban_sync_labels.py",
+    "tests/test_kanban_sync_review_tier.py",
+)
+
+REVIEW_TIER_A_PATHS: tuple[str, ...] = tuple(sorted(set(
+    [resolve_lane_package(pkg)
+     for lane in _REVIEW_TIER_A_LANES for pkg in LANES[lane]["packages"]]
+    + list(_REVIEW_TIER_A_EXTRA_PATHS)
+)))
+
+# A path under a Tier A prefix fires rule 1 only if it is code or config - a
+# README.md or CHEATSHEET.md inside services/kalshi/ does not. An extensionless
+# file (scripts/woodpecker-status) counts as code: the suffix list exists to
+# exclude prose, and an extensionless executable is not prose.
+REVIEW_TIER_A_CODE_SUFFIXES: tuple[str, ...] = (
+    ".py", ".js", ".ts", ".mjs", ".yaml", ".yml", ".json", ".toml", ".sh",
+    ".sql", ".html", ".css",
+)
+
+# Prose that is always Tier A whatever its suffix: the rule files themselves,
+# and any planning-pipeline stage document (which already owes a cycle).
+REVIEW_TIER_A_PROSE_ALWAYS: tuple[str, ...] = (
+    "CLAUDE.md", ".claude/rules/", ".claude/skills/", "docs/superpowers/",
+)
+REVIEW_TIER_A_PROSE_PATTERN = re.compile(
+    r"^docs/archive/lane-[^/]+/(research|specs|plans)/"
+)
+
+# The data model is Tier A wherever it changes - no path list catches a Lane 4
+# module altering its own table (spec D12: six Tier B PRs in the 200-PR window
+# carried one of these lines).
+REVIEW_TIER_A_DIFF_PATTERN = re.compile(
+    r"register_schema\(|CREATE TABLE|ALTER TABLE|PRAGMA user_version"
+)
+
+REVIEW_TIER_A_LABELS = frozenset({CONCERN_HOTPATH})
