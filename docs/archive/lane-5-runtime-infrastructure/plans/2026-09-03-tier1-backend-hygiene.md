@@ -23,8 +23,8 @@ subsections; the two DRY-fix citations actually needed,
 `docs/superpowers/research/2026-09-02-architecture-audit-and-rewrite-
 considerations.md` §9.1 and its own Tier-1 items #3/#4, are read directly
 below — see Task 3's and Task 6's own headers for why the citation moved).
-Tier 0 (`docs/superpowers/plans/2026-09-03-tier0-live-incident-
-remediation.md`, PR #441, **plan merged, its code not yet implemented** —
+Tier 0 (`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`,
+moved there 2026-09-06, planning-lanes migration, PR #441, **plan merged, its code not yet implemented** —
 verified by `grep -n '_connect' services/market_history.py`, `services/
 fault_log.py` etc. showing plain `def _connect() -> sqlite3.Connection:`,
 no `@contextlib.contextmanager`, immediately before drafting this plan,

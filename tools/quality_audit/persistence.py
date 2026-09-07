@@ -1,5 +1,5 @@
 """Persistence-isolation scanner for the Quality Control Plane's static
-audit CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task
+audit CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md (moved there 2026-09-06, planning-lanes migration), Task
 5). Cross-checks every module-level `DB_PATH = ...` assignment under
 services/ (and main.py) against tests/support/runtime_isolation.py's
 PERSISTENCE_MODULE_PATHS registry (Task 2) - a module with real persisted

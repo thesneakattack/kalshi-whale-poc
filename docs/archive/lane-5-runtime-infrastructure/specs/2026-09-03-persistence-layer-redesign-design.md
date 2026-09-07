@@ -11,7 +11,7 @@ persistence module, finishing the `aiosqlite` migration, the `raw_trades`/`index
 engine decision, `candidate_log.db` lock contention, and small-file consolidation. It does
 not cover Tier 0 (the live fd-exhaustion incident — separate, in-flight, tracked as GitHub
 milestone/issue #448 with sub-issues #449–458, plan doc
-`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`, merged as PR #441)
+`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`, merged as PR #441, moved there 2026-09-06, planning-lanes migration)
 or any other Tier 1/2/3 item.
 
 **Verified against live source at HEAD `fffe972` (branch
@@ -831,7 +831,7 @@ Tier 0 (separate, in-flight, PR #441 plan merged — code not yet landed)
 - §1: unit tests per migrated module verify (a) `_connect()`'s returned context manager
   actually calls `.close()` on exit (monkeypatch `sqlite3.connect`, assert `close` called —
   the same pattern Tier 0's own plan already uses for its five modules, per
-  `docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`'s Task 2 test
+  `docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md` (moved there 2026-09-06, planning-lanes migration)'s Task 2 test
   sketch), (b) DDL registration is idempotent across repeated `connect()` calls, (c) existing
   module-level tests (which already `monkeypatch` `DB_PATH` per `CLAUDE.md`'s manual-verification
   convention) keep passing unchanged, proving call-site transparency.

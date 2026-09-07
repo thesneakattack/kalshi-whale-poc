@@ -6,8 +6,9 @@ name: docs-drift-check
 # indefinitely. Separate from tests.yml on purpose: a broken doc URL or a
 # changed page isn't a code regression and shouldn't be read as one.
 #
-# Upgraded (QCP Task 12, docs/superpowers/plans/2026-08-24-quality-control-
-# plane.md) from a bare "does each URL still return 200" curl loop to real
+# Upgraded (QCP Task 12, docs/archive/lane-6-observability-quality-safety/plans/
+# 2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes
+# migration) from a bare "does each URL still return 200" curl loop to real
 # content-drift detection via tools/kalshi_docs_drift.py: every mirrored
 # page's freshly-fetched body is hashed (line-endings normalized only) and
 # compared against docs/kalshi/upstream-manifest.json, which was built

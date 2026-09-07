@@ -1,6 +1,6 @@
 """
 Fixture-based Kalshi contract tests (QCP Task 13,
-docs/superpowers/plans/2026-08-24-quality-control-plane.md) - feeds
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration) - feeds
 canonical, doc-sourced message/object shapes from tests/fixtures/kalshi/
 into the SAME functions production uses (never re-implements or
 re-derives a parser here), so a future Kalshi field rename is caught by a

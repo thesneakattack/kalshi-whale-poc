@@ -676,8 +676,9 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
     """Same fd-leak class as Tasks 2-4 - 21 call sites in this module
     share one non-closing _connect().
 
-    Deviation from the plan's literal Step 1 test (docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md, Task 5): the plan's own
+    Deviation from the plan's literal Step 1 test (docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration, Task 5): the plan's own
     text monkeypatches `conn.close` directly on a real sqlite3.Connection
     instance, but that raises `AttributeError: 'sqlite3.Connection' object
     attribute 'close' is read-only` on this container's Python (3.13.15,

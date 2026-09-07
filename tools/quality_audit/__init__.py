@@ -1,5 +1,5 @@
 """Quality Control Plane static audit framework (Tasks 3-5 of
-docs/superpowers/plans/2026-08-24-quality-control-plane.md). Run via
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration). Run via
 `python -m tools.quality_audit`.
 
 `run_audit()` and the `_SCANNERS` registry live in `__main__.py`, not here -

@@ -1,6 +1,7 @@
 """CLI entrypoint and scanner registry for the Quality Control Plane's
-static audit framework (docs/superpowers/plans/2026-08-24-quality-control-
-plane.md, Task 3). `python -m tools.quality_audit` runs every registered
+static audit framework
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md,
+moved there 2026-09-06, planning-lanes migration, Task 3). `python -m tools.quality_audit` runs every registered
 scanner over the current repo and reports new/existing/resolved findings
 against tools/quality_audit/baseline.json, exiting nonzero only for new
 high-confidence errors in default mode - an already-baselined error, and

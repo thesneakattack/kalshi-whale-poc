@@ -1,5 +1,5 @@
 """Baseline-ratchet comparison for the Quality Control Plane's static audit
-CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 3
+CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md (moved there 2026-09-06, planning-lanes migration), Task 3
 Step 4). The baseline stores stable finding IDs only, not full finding
 evidence, precisely so it stays reviewable in a PR diff and so a finding
 whose *evidence* changes (line numbers, wording) without a real fix doesn't

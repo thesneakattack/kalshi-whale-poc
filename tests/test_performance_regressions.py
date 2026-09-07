@@ -1,7 +1,8 @@
 """
 Synthetic performance regression checks for historically problematic code
-paths - Quality Control Plane Task 19 (docs/superpowers/plans/2026-08-24-
-quality-control-plane.md). Opt-in only (RUN_PERFORMANCE_REGRESSIONS=1),
+paths - Quality Control Plane Task 19
+(docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md,
+moved there 2026-09-06, planning-lanes migration). Opt-in only (RUN_PERFORMANCE_REGRESSIONS=1),
 same convention as tests/test_browser_e2e.py's RUN_BROWSER_E2E - an
 ordinary `pytest` run (Woodpecker's tests-pytest.yml, on every push/PR)
 must never pay for 50k/100k-row synthetic datasets on every edit.

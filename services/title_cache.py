@@ -58,8 +58,9 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, co
 def _connect():
     """Every existing `with _connect() as conn:` call site (five in this
     module) keeps working unchanged - this yields the same conn as before,
-    but now closes it on exit (2026-09-03, Task 3 of docs/superpowers/
-    plans/2026-09-03-tier0-live-incident-remediation.md): `with conn:`
+    but now closes it on exit (2026-09-03, Task 3 of docs/archive/
+    lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md,
+    moved there 2026-09-06, planning-lanes migration): `with conn:`
     alone commits/rolls back a transaction, it never closes the
     connection, and the live fd census (2026-09-02) measured this file's
     handle count growing fastest of any store (5 -> 148+ in under an

@@ -63,8 +63,9 @@ def _connect():
     """Every existing `with _connect() as conn:` call site (4 of them -
     services/fault_log.py:256, 292, 330, 342) keeps working unchanged -
     this yields the same conn as before, but now closes it on exit
-    (2026-09-03, Task 6 of docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md): `with conn:` alone
+    (2026-09-03, Task 6 of docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration): `with conn:` alone
     commits/rolls back a transaction, it never closes the connection. This
     module is one of Tier 0's two confirmed-stuck live routes
     (GET /api/health/faults) and, per CLAUDE.md, the store every other

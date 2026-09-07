@@ -31,7 +31,7 @@ actual findings — those stay in the investigation's own artifacts.
 - **Plan existence ≠ execution authorization.** Several plans below sit on
   `main`, fully written, with **zero** implementation started.
 - **A numbered plan's checkbox state is not a reliable completion
-  signal in this repo.** Verified directly: `docs/superpowers/plans/2026-08-24-quality-control-plane.md`
+  signal in this repo.** Verified directly: `docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md` (moved there 2026-09-06, planning-lanes migration)
   (180 items) and both Kalshi Integration phase plans (138 + 87 items) show
   **0** checked `- [x]` boxes despite being fully delivered and merged
   (QCP is cited as a live, in-production capability throughout `CLAUDE.md`;
@@ -78,7 +78,7 @@ actual findings — those stay in the investigation's own artifacts.
 
 | Name | Status | Branch / worktree | Canonical plan | Confidence |
 |---|---|---|---|---|
-| Quality Control Plane (QCP) | COMPLETED — MERGED | (folded into `main`) | `docs/superpowers/plans/2026-08-24-quality-control-plane.md` | High |
+| Quality Control Plane (QCP) | COMPLETED — MERGED | (folded into `main`) | `docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md` (moved there 2026-09-06, planning-lanes migration) | High |
 | Kalshi Integration Phase A (boundary) | COMPLETED — MERGED (PR #3) | (folded into `main`) | `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md` | High |
 | Kalshi Integration Phase C (facade-free boundary) | COMPLETED — MERGED (PR #9) | (folded into `main`) | `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md` | High |
 | Frontend Modularization — design | COMPLETED — MERGED (PR #11) | (folded into `main`) | `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md` (moved there 2026-09-06, planning-lanes migration) | High |
@@ -173,7 +173,7 @@ inside any plan file itself.
 
 | Investigation | Evidence it's complete | Downstream consumers |
 |---|---|---|
-| Quality Control Plane | `/api/quality/summary` etc. cited live throughout `CLAUDE.md`; `docs/superpowers/plans/2026-08-24-quality-control-plane.md` | P1/AQC (its entire I0–I10 investigation audited QCP's own finding/scanner surface) |
+| Quality Control Plane | `/api/quality/summary` etc. cited live throughout `CLAUDE.md`; `docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md` (moved there 2026-09-06, planning-lanes migration) | P1/AQC (its entire I0–I10 investigation audited QCP's own finding/scanner surface) |
 | Kalshi Integration Phase A + C | PR #3, PR #9 merged; `services/kalshi/CHEATSHEET.md` documents the now-permanent boundary | All Kalshi-touching work (`.claude/rules/kalshi-integration-authority.md`), Realtime Data-Plane investigation and remediation |
 | Realtime Kalshi Data-Plane Investigation (research phase) | PR #10, PR #12 merged; 9 research artifacts + root-cause report + design + plan now on `main` | Realtime Kalshi Data-Plane **Remediation** — now **ACTIVE — IMPLEMENTATION** (§3, §5), not merely queued |
 | Frontend Modularization (design phase) | PR #11 merged; spec on `main` | Frontend Modularization implementation plan (queued, confirmed not started) |

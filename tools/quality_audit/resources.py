@@ -1,5 +1,5 @@
 """Resource-lifecycle scanner for the Quality Control Plane's static audit
-CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 5).
+CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Task 5, moved there 2026-09-06, planning-lanes migration).
 Flags a Kalshi client (KalshiClient/KalshiAccountClient/
 KalshiTradeWebSocketClient - every class in this codebase with an async
 close()) constructed inside a function body and never closed within that

@@ -4,7 +4,7 @@ Owns: `storage_health.py` (inventory/growth/integrity logic, no I/O beyond
 sqlite reads and one `os.stat`-only sampler) + `routes.py`
 (`GET /api/health/storage`, `POST /api/health/storage/scan`,
 `POST /api/health/storage/integrity-check`). Quality Control Plane Task 11
-(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`).
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md`, moved there 2026-09-06, planning-lanes migration).
 
 Reference failure this module exists to make visible before a human
 notices disk usage by hand: `game_state.db` grew to 5.7GB from repeated

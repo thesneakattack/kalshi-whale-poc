@@ -1,6 +1,7 @@
 """Shared quality-finding contract used by both runtime diagnostics and CI
-audit tooling (Quality Control Plane, docs/superpowers/plans/2026-08-24-
-quality-control-plane.md, Task 1). Every quality-facing checker in the
+audit tooling (Quality Control Plane,
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md,
+moved there 2026-09-06, planning-lanes migration, Task 1). Every quality-facing checker in the
 codebase should produce `QualityFinding`s and roll them into a
 `QualityReport` rather than inventing its own ad-hoc shape, so runtime and CI
 consumers can share one severity/serialization contract.

@@ -21,7 +21,7 @@ from unbounded table growth, independent of any code change. Both routes still r
 Recommended fix family: **not** a bolted-on dedicated `ThreadPoolExecutor` (the `_scoring_pool.py`
 pattern issue #410's own text names) but the newer, better-precedented pattern this exact
 codebase already used the same day #410 was filed, ~7 hours after
-(`docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md` was
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md` (moved there 2026-09-06, planning-lanes migration) was
 committed 2026-09-01T22:47Z; #410 was filed 2026-09-01T15:41Z — corrected here after adversarial
 review falsified the original "three days before" claim, which was backwards) — rewrite the
 blocking synchronous `sqlite3` reads to native `aiosqlite`
@@ -208,7 +208,7 @@ compared on mechanism":
    codebase). Failure mode: still bounded by however slow the query itself is; does not address
    `rejection_events`' unbounded growth, so the isolated pool's own occupancy keeps climbing too.
 2. **Native `aiosqlite` rewrite** (`services/quality/routes.py`'s current `run_offline()`,
-   `docs/superpowers/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md` —
+   `docs/archive/lane-6-observability-quality-safety/plans/2026-09-01-event-loop-blocking-fix2-diagnostics-widening.md` (moved there 2026-09-06, planning-lanes migration) —
    superseded the dedicated-pool approach three days before #410 was filed, in this exact
    codebase, for this exact problem shape). Mechanism: removes the thread-pool dependency
    entirely — `run_offline()` now yields control ~1,100 times per call natively, needs no pool at

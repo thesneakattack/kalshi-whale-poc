@@ -1,5 +1,5 @@
 """API-usage inventory scanner for the Quality Control Plane's static audit
-CLI (docs/superpowers/plans/2026-08-24-quality-control-plane.md, Task 5).
+CLI (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, Task 5, moved there 2026-09-06, planning-lanes migration).
 Purely informational (severity=info) - never fails any gate, --strict
 included. Catalogs every `client.<method>(...)`/`account.<method>(...)`
 call site in the non-test codebase (the two variable names this codebase

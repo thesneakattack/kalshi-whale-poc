@@ -12,8 +12,9 @@ def test_connect_closes_its_connection(tmp_path, monkeypatch):
     census (2026-09-02) measured this file's handle count growing fastest
     of any store (5 -> 148+ in under an hour).
 
-    Deviation from the plan's literal test body (docs/superpowers/plans/
-    2026-09-03-tier0-live-incident-remediation.md, Task 3 Step 1): the
+    Deviation from the plan's literal test body (docs/archive/lane-6-observability-quality-safety/
+    plans/2026-09-03-tier0-live-incident-remediation.md, moved there
+    2026-09-06, planning-lanes migration, Task 3 Step 1): the
     plan's snippet monkeypatches the real connection's `.close` as an
     instance attribute (`conn.close = _close`), which raises
     `AttributeError: 'sqlite3.Connection' object attribute 'close' is

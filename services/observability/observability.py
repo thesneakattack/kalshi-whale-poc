@@ -3,8 +3,9 @@ Persists bounded, low-frequency snapshots of runtime metrics the app
 already computes in memory (tick timing/phase breakdown, rate-limit hits,
 trade-stream throughput, WS drop counters, ...) so a later question like
 "was it slow an hour ago" can be answered from data/observability.db
-instead of only from live state or logs. docs/superpowers/plans/2026-08-24-
-quality-control-plane.md Task 9; see this package's README.md.
+instead of only from live state or logs.
+docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md
+(moved there 2026-09-06, planning-lanes migration) Task 9; see this package's README.md.
 
 Deliberately reuses existing counters rather than adding new instrumentation
 (docs/superpowers/specs/2026-08-24-quality-control-plane-design.md section

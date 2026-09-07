@@ -1,6 +1,6 @@
 """
 Mechanical facts about the repo's current size/shape - Quality Control
-Plane Task 17 (docs/superpowers/plans/2026-08-24-quality-control-plane.md).
+Plane Task 17 (docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md, moved there 2026-09-06, planning-lanes migration).
 static/status.html's "headline status" header hardcoded file/line/route
 counts at whatever they were the day it was last hand-edited (found stale
 2026-08-24: "5,189 lines / 29 files / 20 API routes" against a real repo

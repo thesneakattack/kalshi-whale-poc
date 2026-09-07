@@ -4,7 +4,7 @@ Owns: `research.py` (evidence-triggered orchestration of seven existing
 read-only analyzers into one persisted snapshot, `data/research_reports.db`)
 + `routes.py` (`/api/research/status|latest|history|run`, the
 informativeness half). New 2026-08-24, Quality Control Plane Task 16
-(`docs/superpowers/plans/2026-08-24-quality-control-plane.md`).
+(`docs/archive/lane-6-observability-quality-safety/plans/2026-08-24-quality-control-plane.md`, moved there 2026-09-06, planning-lanes migration).
 
 ## What this is NOT
 
