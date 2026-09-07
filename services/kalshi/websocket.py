@@ -206,8 +206,9 @@ _HANDLER_TIMEOUT_SEC = 10.0
 # consumer's.
 _LIVENESS_STUCK_SAMPLES_THRESHOLD = 3
 
-# Option B (2026-09-03 live-incident fix - docs/superpowers/research/
-# 2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md, issue
+# Option B (2026-09-03 live-incident fix - docs/archive/lane-2-whale-signal-
+# calibration/research/2026-09-03-trade-resolve-consumer-blocking-solution-
+# comparison.md, moved there 2026-09-07, planning-lanes migration, issue
 # #542/#541): bounds how many trade items' full handling (on_trade -> ... ->
 # kalshi_trade_tape.py's fetch_signals, which can await a multi-second REST
 # resolve call for an off-watchlist/uncached print) may run concurrently off

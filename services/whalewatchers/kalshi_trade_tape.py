@@ -244,8 +244,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         self.stats = {"prescanned": 0, "whale_sized_offlist": 0, "markets_resolved": 0,
                       "resolve_failures": 0}
         # issue #546 (2026-09-03, live-incident fix alongside Option B -
-        # docs/superpowers/research/2026-09-03-trade-resolve-consumer-
-        # blocking-solution-comparison.md §3 F6): _process_trades_sync runs
+        # docs/archive/lane-2-whale-signal-calibration/research/2026-09-03-
+        # trade-resolve-consumer-blocking-solution-comparison.md, moved there
+        # 2026-09-07, planning-lanes migration, §3 F6): _process_trades_sync runs
         # on services/whalewatchers/_scoring_pool.py's worker threads, from
         # TWO independently-scheduled callers that can now genuinely
         # overlap - the WS stream's own consumer (Option B makes this MORE
@@ -413,8 +414,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         # when it read self._resolve_failed_tickers - see issue #542's
         # Option B research doc §3's Correctness section).
         # Runs on candidate-retry's OWN 1-worker pool, not _scoring_pool
-        # (issue #563, docs/superpowers/specs/2026-09-03-scoring-pool-
-        # candidate-retry-isolation-design.md): fetch_signals' WS-trade
+        # (issue #563, docs/archive/lane-2-whale-signal-calibration/specs/
+        # 2026-09-03-scoring-pool-candidate-retry-isolation-design.md, moved
+        # there 2026-09-07, planning-lanes migration): fetch_signals' WS-trade
         # path keeps _scoring_pool's 4 workers to itself, since PR #555
         # lets it dispatch up to 4 trades concurrently and it can want all
         # 4. See _candidate_retry_pool.py's own docstring for the sizing.
@@ -462,8 +464,9 @@ class KalshiTradeTapeProvider(WhaleWatcherProvider):
         NOT (batch-capacity-truncated, or a genuine REST failure) - every
         one a TRANSIENT miss, never a confirmed negative. Per-call-local
         (returned, not self._resolve_failed_tickers) since Option B
-        (2026-09-03, docs/superpowers/research/2026-09-03-trade-resolve-
-        consumer-blocking-solution-comparison.md §3) can now have more than
+        (2026-09-03, docs/archive/lane-2-whale-signal-calibration/research/
+        2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md,
+        moved there 2026-09-07, planning-lanes migration, §3) can now have more than
         one call in flight at once: the old `self._resolve_failed_tickers =
         set()` reset at the top of every call assumed exactly one call in
         flight at a time (true when the WS consumer was strictly serial) -

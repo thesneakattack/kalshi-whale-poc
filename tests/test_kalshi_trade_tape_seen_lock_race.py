@@ -1,6 +1,7 @@
 """issue #546 (2026-09-03, filed while researching the Option B trade-
-resolve consumer-blocking fix - docs/superpowers/research/2026-09-03-
-trade-resolve-consumer-blocking-solution-comparison.md §3 finding F6):
+resolve consumer-blocking fix - docs/archive/lane-2-whale-signal-
+calibration/research/2026-09-03-trade-resolve-consumer-blocking-solution-
+comparison.md, moved there 2026-09-07, planning-lanes migration, §3 finding F6):
 self._seen_trade_ids/_seen_order are touched by _process_trades_sync, which
 runs on worker threads, from TWO independently-scheduled callers - the WS
 stream's own consumer (fetch_signals -> _process_trades_timed) and
@@ -19,7 +20,9 @@ _scoring_pool.py's own addition put both paths on one shared pool).
 
 The actual hazard (confirmed by direct source tracing on branch
 fix/seen-trade-ids-concurrency-race-investigation, root-cause doc
-2026-09-03-seen-trade-ids-concurrency-race-root-cause.md, read for this
+docs/archive/lane-2-whale-signal-calibration/research/2026-09-03-seen-
+trade-ids-concurrency-race-root-cause.md (moved there 2026-09-07,
+planning-lanes migration), read for this
 fix): a check-then-act race on the "already seen?" gate for the SAME
 trade_id. Two threads can both read `trade_id not in self._seen_trade_ids`
 as True before either marks it, both proceed to score, both may emit a

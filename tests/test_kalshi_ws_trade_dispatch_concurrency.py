@@ -1,5 +1,6 @@
-"""Option B (2026-09-03 live-incident fix, docs/superpowers/research/
-2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md, issues
+"""Option B (2026-09-03 live-incident fix, docs/archive/lane-2-whale-signal-
+calibration/research/2026-09-03-trade-resolve-consumer-blocking-solution-
+comparison.md, moved there 2026-09-07, planning-lanes migration, issues
 #541/#542): _consume_market_from used to await each trade item's FULL
 on_trade handling (which can include a multi-second REST resolve call,
 kalshi_trade_tape.py's _resolve_unknown_markets) inline before it could
