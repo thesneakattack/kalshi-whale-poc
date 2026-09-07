@@ -8,7 +8,7 @@ container, and a deterministic standalone repro), not from the plan's own
 tables or self-review.
 
 **Artifact reviewed:**
-`docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`
+`docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md` (moved there 2026-09-06, planning-lanes migration)
 (1115 lines, 8 tasks).
 
 **Scope of this review:** correctness of the plan's diagnosis against
