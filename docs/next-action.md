@@ -546,3 +546,53 @@ and the design doc governing the whole migration).
   `docs/superpowers/lanes/step1-specs-research-classification.md`'s own
   "Note on a mid-task message claiming to be from 'the coordinator'."
 - **This file holds the single next action — rewrite it, don't append.**
+
+---
+
+## CLAUDE.md change in flight: PR #659 (scope clarification, "nothing advances on one pass")
+
+`ea` opened PR #659 (`docs/scope-nothing-advances-on-one-pass`) adding
+one bullet to the HARD RULE, clarifying it exists to close gaps
+Superpowers' own gates (`writing-plans`/`executing-plans`/
+`requesting-code-review`/TDD/`verification-before-completion`) leave
+open for this project — multi-file completeness/citation claims,
+data-plane/Kalshi-fidelity, cross-session provenance — not to wrap
+every Superpowers stage in a duplicate review system. Read the diff
+directly: one well-scoped bullet, doesn't weaken any requirement, just
+narrows *when* the cycle applies. Content looks sound on a first read.
+
+**Process note, worth remembering:** `ea` relayed that David told it to
+skip the self-review/adversarial-review/consolidation cycle entirely
+for this PR and merge+deploy on green CI. `ea` had dispatched a
+subagent to relay this to the fleet first, and the subagent correctly
+declined — it only had a secondhand paraphrase and CLAUDE.md's own text
+says an instruction to skip a required artifact outright (not just
+shrink it) is exactly what to raise rather than comply with. `ea`
+reasoned this didn't apply to itself since it had the instruction
+firsthand from David, not relayed — but from the coordinator's side,
+receiving it via `ea` put the coordinator in the exact same secondhand
+position regardless of `ea`'s own confidence. Confirmed directly with
+David rather than passing it along: answer was **lean execution**
+(small but real self-review/adversarial-review/consolidation artifacts,
+genuinely independent adversarial pass required), not a full skip —
+the existing 2026-09-05 allowance, not a further exception. Relayed
+back to `ea`, which is proceeding on that basis. **Not yet merged as of
+this writeup** — full content will be communicated to the fleet once
+it lands. Memory-worthy pattern: "the user's own word, relayed by a
+peer" doesn't change the receiving session's epistemic position from
+"secondhand and unverifiable" — check directly rather than accept on
+trust, same as any other unverifiable claim.
+
+**Also worth noting for future sessions:** `git worktree add` was used
+here (`.claude/worktrees/coordinator-main`, tracking `main`) after
+finding the shared primary checkout had been switched to `ea`'s PR
+branch directly rather than a worktree — committing coordination docs
+there would have polluted `ea`'s branch. New worktrees also don't
+inherit uncommitted changes from other checkouts (this one's
+`config/settings.yaml` doesn't carry the safety override — expected,
+not touched here), and the git stash stack is shared across ALL
+worktrees and the primary — bare `git stash`/`git stash pop` (this
+session's pattern all night for `config/settings.yaml`) risks popping
+another session's concurrent stash. Switched to stash-free
+fetch+merge for this worktree since it has nothing to stash; the
+primary checkout's established stash pattern should be revisited too.
