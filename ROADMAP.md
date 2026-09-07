@@ -428,10 +428,11 @@ which can run in parallel right now.
       `legacy/`), a schema-driven Config tab backed by a new
       `GET /api/config/schema` + validated `POST /api/config`, uPlot charts,
       and CI-owned import-graph/ownership/bundle-budget guards. Research:
-      `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`;
-      spec: `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`;
+      `docs/archive/lane-8-frontend-dashboard/research/2026-08-25-frontend-modularization-research.md`;
+      spec: `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md`;
       plan (T1a–T9, five PR groups):
-      `docs/superpowers/plans/2026-08-25-frontend-modularization.md`, executed
+      `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`
+      (all three moved there 2026-09-06, planning-lanes migration), executed
       with `superpowers:executing-plans`. The
       multi-page split stays a separate follow-up the panel contract enables.
 - [ ] **Per-module data-consumption audit + report.** Direct instruction

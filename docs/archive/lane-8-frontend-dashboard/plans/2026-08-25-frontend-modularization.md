@@ -10,7 +10,8 @@
 > done (no `legacy/`/`core/`/`lib/`/`charts/`/`panels/` directories exist yet;
 > `frontend/package.json` still has zero `preact`/`@preact/signals`/`htm`
 > deps). Full investigation:
-> `docs/superpowers/plans/2026-09-03-frontend-modularization-freshness-check.md`.
+> `docs/archive/lane-8-frontend-dashboard/plans/2026-09-03-frontend-modularization-freshness-check.md`
+> (moved there 2026-09-06, planning-lanes migration).
 
 > **Agentic execution — corrected 2026-08-31 catch-up review:** `.claude/skills/plan-task/`
 > (which this line previously pointed at, itself the successor to the bespoke
@@ -24,8 +25,8 @@
 panels on Preact + signals + htm behind a schema-driven Config tab and a real charts module —
 one strangler-safe commit at a time, with every guard CI-owned.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`
-**Research:** `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`
+**Spec:** `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md` (moved there 2026-09-06, planning-lanes migration)
+**Research:** `docs/archive/lane-8-frontend-dashboard/research/2026-08-25-frontend-modularization-research.md` (moved there 2026-09-06, planning-lanes migration)
 
 ## Global constraints
 
@@ -53,8 +54,8 @@ one strangler-safe commit at a time, with every guard CI-owned.
 
 ### Task 1: T0 — Research, spec, plan, orchestrator skill
 
-- [x] `docs/superpowers/research/2026-08-25-frontend-modularization-research.md`
-- [x] `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`
+- [x] `docs/archive/lane-8-frontend-dashboard/research/2026-08-25-frontend-modularization-research.md` (moved there 2026-09-06, planning-lanes migration)
+- [x] `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md` (moved there 2026-09-06, planning-lanes migration)
 - [x] this plan
 - [x] `.claude/skills/frontend-modularization-task/SKILL.md` + router entry in `.claude/rules/quality-capabilities.md`
 - [x] `ROADMAP.md` pointer under "Separate the frontend from the backend completely"
@@ -76,7 +77,8 @@ one strangler-safe commit at a time, with every guard CI-owned.
   freshness check** (`CLAUDE.md` was rewritten smaller again after 08-31 — 15+ further
   commits touched it; `ROADMAP.md`'s citation was already wrong at 08-31 review time from
   unrelated line-shifting edits, not from anything in scope here — see
-  `docs/superpowers/plans/2026-09-03-frontend-modularization-freshness-check.md`):
+  `docs/archive/lane-8-frontend-dashboard/plans/2026-09-03-frontend-modularization-freshness-check.md`
+  (moved there 2026-09-06, planning-lanes migration)):
   `CLAUDE.md:132` (not `:148` or `:292-294` — "no framework
   build" language now lives in the "Quick file map" line); `frontend/src/js/shared-utils.js:5-18`;
   `frontend/src/js/main.js:12-17`; `.github/workflows/quality.yml:42-43` (delete the

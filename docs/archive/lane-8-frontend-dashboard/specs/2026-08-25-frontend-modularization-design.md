@@ -3,8 +3,10 @@
 ## Status
 
 Approved design (2026-08-25). Evidence:
-`docs/superpowers/research/2026-08-25-frontend-modularization-research.md`. Execution plan:
-`docs/superpowers/plans/2026-08-25-frontend-modularization.md`, orchestrated by
+`docs/archive/lane-8-frontend-dashboard/research/2026-08-25-frontend-modularization-research.md`
+(moved there 2026-09-06, planning-lanes migration). Execution plan:
+`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`
+(moved there 2026-09-06, planning-lanes migration), orchestrated by
 `superpowers:executing-plans` (corrected 2026-08-31 catch-up review — the bespoke
 `frontend-modularization-task` skill this line named no longer exists; see the plan
 doc's own header for the full chain of what replaced it and when).

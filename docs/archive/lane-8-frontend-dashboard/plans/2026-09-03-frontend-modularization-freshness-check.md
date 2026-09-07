@@ -1,9 +1,10 @@
 # Frontend Modularization Plan — Freshness Check (2026-09-03)
 
-**Subject:** `docs/superpowers/plans/2026-08-25-frontend-modularization.md`
-(spec: `docs/superpowers/specs/2026-08-25-frontend-modularization-design.md`;
-prior review: `docs/superpowers/plans/2026-08-25-frontend-modularization-catchup-consolidation.md`,
-2026-08-31).
+**Subject:** `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`
+(spec: `docs/archive/lane-8-frontend-dashboard/specs/2026-08-25-frontend-modularization-design.md`;
+prior review: `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization-catchup-consolidation.md`,
+2026-08-31; all three moved to `docs/archive/lane-8-frontend-dashboard/` 2026-09-06,
+planning-lanes migration).
 
 **Why:** the plan was last touched 2026-08-31. It has never been decomposed
 into sub-issues or started (verified below: no `frontend/src/js/{legacy,core,
@@ -36,7 +37,8 @@ and the dependency/tooling status the plan assumes is unchanged. Five stale
 where the old code the new code replaces currently lives"), none change a
 task's Create/Modify/Delete file list, acceptance criteria, or commit
 message. All five have been corrected directly in
-`docs/superpowers/plans/2026-08-25-frontend-modularization.md` with a dated
+`docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md`
+(moved there 2026-09-06, planning-lanes migration) with a dated
 changelog note at its top, per this session's own investigation (this is a
 mechanical citation fix — verified line-for-line against current `HEAD`, not
 a design change), consistent with how the 2026-08-31 catch-up review already

@@ -377,7 +377,7 @@ Its investigation measured real busy-hour behavior, reproduced it deterministica
 
 ## 5.2 Frontend Modularization
 
-**Plan:** `docs/superpowers/plans/2026-08-25-frontend-modularization.md`  
+**Plan:** `docs/archive/lane-8-frontend-dashboard/plans/2026-08-25-frontend-modularization.md` (moved there 2026-09-06, planning-lanes migration)
 **State:** **PLAN REQUIRES REFRESH**, architecture still sound.
 
 T0 research/spec/plan/orchestrator is complete. The actual migration remains largely unexecuted:
