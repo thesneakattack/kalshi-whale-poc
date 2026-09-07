@@ -6,14 +6,15 @@ peers confirmed holding, nothing mid-merge. Resume on his signal, not on
 a timer. Verify identity by direct reply before trusting a name, in
 either direction.
 
-**Nothing is one step from a merge right now** (David asked explicitly):
-PR #654 (Lane 4/8 wrap-citation follow-up) failed its own adversarial
-review (body undercounted the fix scope 11/8 vs. real 23/11, plus 4 of
-16 fixes recreated the exact line-wrap defect being fixed) and is mid a
-narrow fix-list recheck, not done. PR #655 (Lane 6) has zero review-cycle
-comments yet, ~28 min into its own dispatch. Both in-flight subagents
-will finish their current step (can't be frozen mid-turn) but `49` is
-holding both short of `gh pr merge` until told to resume.
+**Update while paused: PR #654 is now genuinely one step from merge.**
+Its fix-list recheck finished (23/11 count corrected and independently
+re-verified a third time, all 16 wrap-vulnerable fixes corrected and
+re-checked intact, 3 distinct review comments confirmed, CI green on all
+6 required contexts) — but it is being **held anyway**, not merged, per
+explicit coordinator decision: David's pause instruction reads as "tell
+me, don't auto-merge on a condition maturing mid-pause." Merge it (or
+say to hold longer) is his call on resume. PR #655 (Lane 6) is still
+genuinely mid-review, held regardless.
 
 ---
 
