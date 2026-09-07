@@ -23,6 +23,10 @@ its issue closes.
 - `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 strategy-economics remediation) is docs-only, explicitly self-gated: "not approved for execution... explicit human review... not a Claude-side call" · sitting untouched 9+ days, surfaced by tonight's 2026-09-06 docs/plans audit · decide execute-or-park explicitly (silent dormancy isn't a decision) · you · 2026-09-06
 
 
+## Decided 2026-09-07 — spec in progress (remove when the spec's PR merges)
+
+- Review depth under CLAUDE.md's "nothing advances on one pass" HARD RULE is **tiered by consequence**: Tier A (Lane 3, `concern:hotpath`, money/probability paths, auth, data model, safety gates, Kalshi boundary, process rules, every planning-pipeline stage) keeps today's full cycle unchanged; everything else gets one persisted self-review artifact plus green CI; the boundary is a path list, not a judgment call. David chose "tier by consequence" over "keep the uniform cycle" and "measure first, decide later" when asked directly (session `autotrade-d9`, 2026-09-07), resolving the 2026-09-03 conflict recorded in memory `scale-review-effort-to-blast-radius`. Research: `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-07-ai-assisted-engineering-principles.md`; the spec defines the exact list and wording and coordinates with #613's pending edit to the same rule · spec PR from branch `docs/lane9-ai-assisted-engineering-principles` · David (decided) / me (spec) · 2026-09-07
+
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
 - `yes_ask_dollars == "1.0000"` with `yes_ask_size_fp == "0.00"` is Kalshi's no-resting-ask sentinel (live-verified; 67 of 276 watched markets right now); spread/coverage/ask-based NO valuation must treat it as *absent* at the `services/kalshi/` boundary · #606 · me
