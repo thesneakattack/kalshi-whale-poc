@@ -23,9 +23,30 @@ its issue closes.
 - `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md` (Program 2 strategy-economics remediation) is docs-only, explicitly self-gated: "not approved for execution... explicit human review... not a Claude-side call" · sitting untouched 9+ days, surfaced by tonight's 2026-09-06 docs/plans audit · decide execute-or-park explicitly (silent dormancy isn't a decision) · you · 2026-09-06
 
 
-## Decided 2026-09-07 — spec in progress (remove when the spec's PR merges)
+## Parked 2026-09-07 — two dated questions about the review tiering
 
-- Review depth under CLAUDE.md's "nothing advances on one pass" HARD RULE is **tiered by consequence**: Tier A (Lane 3, `concern:hotpath`, money/probability paths, auth, data model, safety gates, Kalshi boundary, process rules, every planning-pipeline stage) keeps today's full cycle unchanged; everything else gets one persisted self-review artifact plus green CI; the boundary is a path list, not a judgment call. David chose "tier by consequence" over "keep the uniform cycle" and "measure first, decide later" when asked directly (session `autotrade-d9`, 2026-09-07), resolving the 2026-09-03 conflict recorded in memory `scale-review-effort-to-blast-radius`. Research: `docs/archive/lane-9-tooling-ci-process-governance/research/2026-09-07-ai-assisted-engineering-principles.md`; the spec defines the exact list and wording and coordinates with #613's pending edit to the same rule · spec PR from branch `docs/lane9-ai-assisted-engineering-principles` · David (decided) / me (spec) · 2026-09-07
+Review tiering shipped (PR #__PR__): depth follows consequence, decided by the
+paths a PR touches, `review-tier` decides it and counts the persisted
+artifacts. David chose "tier by consequence" over "keep the uniform cycle" and
+"measure first, decide later" when asked directly (session `autotrade-d9`,
+2026-09-07), resolving the 2026-09-03 conflict recorded in memory
+`scale-review-effort-to-blast-radius`.
+
+**Decide by 2026-10-05, both from evidence, not impression:**
+
+1. *Is `review-tier` earning its place?* It was enabled on day one rather than
+   proving itself first — the stated exception to the Toolchain section's
+   handspun-tool default. Test: has it ever printed `FAIL` on a PR that then
+   got its missing artifact supplied? If it has only ever rubber-stamped, it is
+   ceremony and should be retired.
+2. *Is a review-outcomes report worth building?* The design also specified
+   `python -m tools.kanban_sync outcomes` — defects per tier and size band over
+   a fixed window — cut before implementation because nothing had needed the
+   number. Test: has any decision since the merge wanted a defect-per-tier
+   figure? If yes, build it from the design's §6.3, which is written out in
+   full. Principle P4 as stated — outcomes are judged by defects per tier and
+   size band, never by volume, and never by human hours (only David can supply
+   that one) — holds either way.
 
 ## Decided 2026-09-05 — implementation tracked on GitHub (remove when closed)
 
