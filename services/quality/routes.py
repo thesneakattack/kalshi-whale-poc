@@ -120,7 +120,7 @@ async def get_quality_summary():
         "counts": report.counts(),
         "findings": [f.to_dict() for f in findings],
         # No dedicated pool needed here (event-loop-blocking-fix2-diagnostics-
-        # widening, docs/superpowers/specs/2026-09-01-event-loop-blocking-
+        # widening, docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-
         # elimination-design.md) - run_offline()'s entire call graph
         # (services/diagnostics/diagnostics.py's own checks plus
         # series_watcher.check_series_funnel() -> funnel()'s raw_trades
@@ -128,7 +128,7 @@ async def get_quality_summary():
         # aiosqlite, so there's nothing left for a thread-pool offload to
         # protect against. Previously offloaded first via tick_executor
         # (2026-08-27 fix, subscription-churn investigation CH2 - see
-        # docs/superpowers/research/2026-08-25-realtime-data-plane-known-
+        # docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-
         # findings.md's H11 entry), then via a dedicated services/diagnostics/
         # _diagnostics_pool.py (write-path capacity fix Task 8, 2026-09-01,
         # deleted by this fix) once run_offline() grew expensive enough to

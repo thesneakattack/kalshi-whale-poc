@@ -255,7 +255,7 @@ the actual AQC design, not yet implemented, and Program 7 below for its updated 
 
 ## 5.1 Realtime Data-Plane Remediation
 
-**Plan:** `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`  
+**Plan:** `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`  
 **State:** **P0–P2 MERGED (2026-08-26, `main`@`22d1a79`) — all 9 code-review findings fixed and verified first.** P3 (Task 14 onward — writer thread, reader capture contract, flipping the reader gate live) has not started, but was **authorized** later the same day (see this section's own Verdict below) — it remains the next, materially bigger step, just no longer an unauthorized one.
 
 ### What actually happened (2026-08-26, updated from the "ready to execute" read above)
@@ -350,7 +350,7 @@ Its investigation measured real busy-hour behavior, reproduced it deterministica
 > actually need Program 2's economic semantics first. Direct instruction
 > was to run P3 *ahead of* Program 2R, not merely concurrently with it.
 > Authorization is scope-limited to Tasks 14-17 as specified in
-> `docs/superpowers/plans/2026-08-25-realtime-data-plane-remediation.md`
+> `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-25-realtime-data-plane-remediation.md`
 > (writer thread, reader capture contract, sub-threshold rejection
 > aggregation, then the live-gate flip itself) - it does not relax the
 > task-by-task TDD/verify/commit/stop discipline every other phase in

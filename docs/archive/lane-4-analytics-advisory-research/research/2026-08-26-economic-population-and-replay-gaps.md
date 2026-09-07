@@ -125,7 +125,7 @@ rather than silently blended:
   eliminated in this pass: (a) a real WS-capture degradation predating the realtime
   investigation's own measurement window, consistent in *shape* with that investigation's
   later-measured failure modes (event-loop stalls, reconnect-discards — see
-  `docs/superpowers/research/2026-08-25-realtime-root-cause-report.md` §2); (b) genuinely
+  `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-root-cause-report.md` §2); (b) genuinely
   low real BTC-market whale print volume that week, which this app's own capture would
   faithfully reflect as low counts without any capture fault at all. Distinguishing these
   needs either a REST-based capture-completeness check run against that specific historical

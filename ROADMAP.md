@@ -111,7 +111,7 @@ which can run in parallel right now.
       normal throughout) - narrows the mechanism to a stuck `await` inside
       the consumer's own task (a hung network call, a lock that never
       releases), not identified further before mitigating. Full writeup:
-      `docs/superpowers/research/2026-08-25-realtime-data-plane-known-
+      `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-
       findings.md`'s "Live incident (2026-08-27...)" section. **Real gap
       that's still open**: `task_supervisor.supervise(..., restart=True)`
       only restarts `trade_stream.run` on an unhandled exception - a hung

@@ -1,5 +1,5 @@
 """Tests for tools/kalshi_census.py (Kalshi Integration Phase A, Task A0 -
-docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md). Everything
+docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md). Everything
 here runs against a tiny synthetic fixture tree under tmp_path, never the
 real repository, so the census's detection logic can be proven
 deterministic and independent of how the real codebase happens to look on

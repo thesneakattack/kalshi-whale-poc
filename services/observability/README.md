@@ -119,7 +119,7 @@ these are Task 10/11 territory, not this module:
 Source: `services/kalshi/websocket.py`'s `KalshiStreamGateway.ingest_metrics()`
 (pure read), flattened by `_flatten_ingest_metrics` for both `trade_stream`
 and `index_stream`. Exists because the I0 baseline
-(`docs/superpowers/research/2026-08-25-realtime-data-plane-baseline.md` §4)
+(`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-baseline.md` §4)
 found the four failure points the investigation must tell apart — Kalshi
 server-side subscription overflow (error 25), the `websockets` receive
 buffer, the app queue overflowing (`QueueFull`), and downstream backlog —
@@ -488,7 +488,7 @@ gap found while live.** Task 15 has since shipped: `series_watcher.record_trade`
 row now does route through `capture_writer.submit()` for the `raw_trades` store,
 confirmed live (not from source alone) via `GET /api/health/faults` during Phase
 P3.5's stress-test session
-(`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s
+(`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md`'s
 "Phase P3.5 live-scale attempt" entry has the full detail) — `capture_writer`/
 `flush`/`OperationalError: database is locked`, 178 occurrences, first_seen
 2026-08-27 20:22:15 UTC, still accumulating. Root cause: `capture_writer.py:122`'s
@@ -749,7 +749,7 @@ value on a low-volume metric can still scan a wide row range.
 ## Reconnect gap duration + per-position ticker cadence (P8 Task 34, 2026-08-27)
 
 Two new metric families, both added because a benchmark planned for the
-realtime data-plane remediation (P8 Task 40, `docs/superpowers/plans/
+realtime data-plane remediation (P8 Task 40, `docs/archive/lane-1-kalshi-ingestion/plans/
 2026-08-25-realtime-data-plane-remediation.md`) needs *measured* input
 distributions rather than assumed ones - and a first research pass had
 wrongly claimed reconnect telemetry didn't exist at all (it did:

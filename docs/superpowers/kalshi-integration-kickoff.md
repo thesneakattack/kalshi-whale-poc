@@ -19,11 +19,11 @@ Read first:
 - .claude/rules/kalshi-integration-authority.md
 - .claude/skills/kalshi-integration-refactor/SKILL.md
 - .claude/skills/kalshi-contract-review/SKILL.md
-- docs/superpowers/research/2026-08-24-kalshi-integration-audit.md
-- docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md
-- docs/superpowers/plans/2026-08-24-kalshi-integration-dual-phase.md
-- docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md
-- docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md
+- docs/archive/lane-1-kalshi-ingestion/research/2026-08-24-kalshi-integration-audit.md
+- docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md
+- docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md
+- docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md
+- docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md
 - docs/kalshi/CHEATSHEET.md
 - current relevant module CHEATSHEET.md files
 - current CI definitions

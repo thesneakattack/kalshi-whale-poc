@@ -2,7 +2,7 @@
 per-message asyncio.wait_for (_HANDLER_TIMEOUT_SEC) doesn't structurally
 cover - e.g. a hang inside _sync_subscriptions, which runs on the reader's
 own task, not the consumer's. Live-observed incident: issue #145,
-docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md's
+docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md's
 "Live incident (2026-08-27...)" section.
 
 ensure_consumer_progressing() and force_reconnect() are tested directly

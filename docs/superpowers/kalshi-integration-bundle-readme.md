@@ -6,11 +6,11 @@ This bundle contains planning/orchestration files only. It does not implement th
 
 - `.claude/rules/kalshi-integration-authority.md`
 - `.claude/skills/kalshi-integration-refactor/SKILL.md`
-- `docs/superpowers/research/2026-08-24-kalshi-integration-audit.md`
-- `docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-dual-phase.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md`
+- `docs/archive/lane-1-kalshi-ingestion/research/2026-08-24-kalshi-integration-audit.md`
+- `docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md`
 - `docs/superpowers/kalshi-integration-kickoff.md`
 
 ## Install
@@ -29,11 +29,11 @@ Review the files, then:
 git add \
   .claude/rules/kalshi-integration-authority.md \
   .claude/skills/kalshi-integration-refactor/SKILL.md \
-  docs/superpowers/research/2026-08-24-kalshi-integration-audit.md \
-  docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md \
-  docs/superpowers/plans/2026-08-24-kalshi-integration-dual-phase.md \
-  docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md \
-  docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md \
+  docs/archive/lane-1-kalshi-ingestion/research/2026-08-24-kalshi-integration-audit.md \
+  docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md \
+  docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md \
+  docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md \
+  docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md \
   docs/superpowers/kalshi-integration-kickoff.md \
   docs/superpowers/kalshi-integration-bundle-readme.md
 

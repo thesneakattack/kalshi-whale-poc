@@ -972,7 +972,7 @@ class KalshiStreamGateway:
 
     # --- ingest queue health (realtime data-plane investigation, I1) --------
     #
-    # The four failure points docs/superpowers/research/2026-08-25-realtime-
+    # The four failure points docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-
     # data-plane-known-findings.md requires telling apart - Kalshi-side
     # subscription overflow (server error 25), the `websockets` receive
     # buffer, this application queue overflowing (QueueFull), and downstream

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, FastAPI, `aiosqlite` (new dependency, pinned `0.22.1` — the current latest stable, confirmed via `pip index versions aiosqlite` inside the `fastapi` container, 2026-09-01; not previously a dependency of this repo, confirmed via `requirements.txt` and a failed `import aiosqlite` inside the container).
 
-**Spec:** `docs/superpowers/specs/2026-09-01-event-loop-blocking-elimination-design.md` (Fix 2 section, "Diagnostics widening"). This plan also corrects/extends that spec in four places the spec itself didn't name — each verified against current source, not assumed:
+**Spec:** `docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-elimination-design.md` (Fix 2 section, "Diagnostics widening"). This plan also corrects/extends that spec in four places the spec itself didn't name — each verified against current source, not assumed:
 1. `services/diagnostics/routes.py` (a *second* route file, `GET /api/diagnostics` and `GET /api/diagnostics/series/{series}`) calls `diagnostics.run_offline()`/`series_watcher.funnel()`/`series_watcher.reconcile()` directly on the event loop — the spec's file list never mentions this file. Both routes are already `async def`, so this is an `await` addition, not a new file to convert.
 2. `series_watcher.book_context_at_entry()` and `series_watcher.capture_stats()` (both DB-touching, both reached only via the `GET /api/diagnostics/series/{series}` route above, not via `run_offline()`) are in the same file, same DB, same mechanical shape as the five functions the spec does name — left out of the spec's list, included here for consistency; leaving them out would leave that one route still blocking the event loop right next to the ones this plan fixes.
 3. `services/research/research.py`'s `build_report()` also calls `diagnostics.run_offline()` — but synchronously, from inside a plain `def` that already runs via `asyncio.to_thread(run_and_store, cfg)` (its own worker thread, no running event loop of its own). This is the reason the connection cache must be loop-scoped, not just path-scoped — see Task 1.
@@ -206,7 +206,7 @@ Create `services/diagnostics/_aio_db.py`:
 """Shared, loop-scoped aiosqlite connection cache for
 services/diagnostics/diagnostics.py and services/series_watcher.py's
 read-only functions (event-loop-blocking-elimination Fix 2,
-docs/superpowers/specs/2026-09-01-event-loop-blocking-elimination-design.md).
+docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-elimination-design.md).
 One persistent aiosqlite.Connection per (event loop, db_path) pair, opened
 on first use and reused.
 

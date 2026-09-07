@@ -398,7 +398,7 @@ flagged as legacy by its own doc page — only the single-item form is.
 `get-live-data-with-type.md` "the legacy endpoint").
 **Found:** 2026-08-24, Kalshi Integration Phase A Task A1, while replacing
 the old merged/curated `get-live-data.md` with verbatim per-source mirrors
-(`docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md`).
+(`docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md`).
 
 ---
 
@@ -520,7 +520,7 @@ solution comparison (I11); don't re-derive the 500-token reasoning.
 `list-non-default-endpoint-costs.md`, `get-account-api-limits.md`,
 `get-markets.md` (`TickersQuery`: "Comma-separated list", no cap).
 **Found:** 2026-08-25, realtime data-plane task I8
-(`tools/kalshi_rate_limit_probe.py`, `docs/superpowers/research/2026-08-25-rest-demand-study.md`).
+(`tools/kalshi_rate_limit_probe.py`, `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-rest-demand-study.md`).
 **Discrepancy (2026-08-25, I12 review):** `rate_limits.md` says Basic-tier
 Read buckets "hold up to two seconds of budget" (= 400 tokens / 40 requests
 at 200 tokens/s), but this account's live `GET /account/limits` reported a

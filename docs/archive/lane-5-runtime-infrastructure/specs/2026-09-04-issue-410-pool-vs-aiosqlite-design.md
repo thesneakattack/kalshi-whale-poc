@@ -101,7 +101,7 @@ Precedent: `services/quality/routes.py`'s `run_offline()`, backed by
   relocating it. (It does not make the query itself faster — see §4.)
 - **Correctness:** the read is a single `GROUP BY` returning rows; conversion is mechanical.
 - **Failure behavior:** two documented footguns, both already surfaced by this codebase's own prior
-  adversarial review (`docs/superpowers/specs/2026-09-01-event-loop-blocking-fix2-diagnostics-widening-pr-adversarial-review.md`)
+  adversarial review (`docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-fix2-diagnostics-widening-pr-adversarial-review.md`)
   — see §3. Both are **already mitigated in the shared `_aio_db` layer**, which a new consumer
   inherits for free, provided it also inherits the test hygiene.
 - **Complexity:** materially more invasive than option 1, but the invasiveness is confined to two

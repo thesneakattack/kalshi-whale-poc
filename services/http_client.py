@@ -28,7 +28,7 @@ _monotonic = time.monotonic
 #
 # Every REST call is attributed to one bounded caller class so the shared
 # read bucket's contention can be decomposed by WHO is spending it - the
-# I0 baseline (docs/superpowers/research/2026-08-25-realtime-data-plane-
+# I0 baseline (docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-
 # baseline.md section 3) enumerates the callers; this is that taxonomy made
 # measurable. Set with the caller_class() context manager or the classify()
 # decorator; propagates into asyncio.gather()/create_task() children because

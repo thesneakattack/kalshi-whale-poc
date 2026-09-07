@@ -1,7 +1,7 @@
 """Shared, loop-scoped aiosqlite connection cache for
 services/diagnostics/diagnostics.py and services/series_watcher.py's
 read-only functions (event-loop-blocking-elimination Fix 2,
-docs/superpowers/specs/2026-09-01-event-loop-blocking-elimination-design.md).
+docs/archive/lane-1-kalshi-ingestion/specs/2026-09-01-event-loop-blocking-elimination-design.md).
 One persistent aiosqlite.Connection per (event loop, db_path) pair, opened
 on first use and reused.
 

@@ -28,10 +28,10 @@ REST-vs-WS alias when the documentation can answer it.
 
 The dual-phase initiative is defined by:
 
-- `docs/superpowers/specs/2026-08-24-kalshi-integration-boundary-design.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-dual-phase.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-a.md`
-- `docs/superpowers/plans/2026-08-24-kalshi-integration-phase-c.md`
+- `docs/archive/lane-1-kalshi-ingestion/specs/2026-08-24-kalshi-integration-boundary-design.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-dual-phase.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-a.md`
+- `docs/archive/lane-1-kalshi-ingestion/plans/2026-08-24-kalshi-integration-phase-c.md`
 
 When implementing that initiative, drive its plans with `superpowers:executing-plans`
 and run `kalshi-contract-review` before every task that touches a Kalshi field.

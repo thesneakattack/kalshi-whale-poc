@@ -11,7 +11,7 @@ _EXTRACTORS or the fallback in extract())
 The design spec's §2.2 pseudocode for `extract()` returns `(None, None)`
 for any milestone `type` not in its dispatch table. Cross-checking that
 against the design's own cited evidence - the full-population live-data
-census in docs/superpowers/research/2026-08-30-kalshi-category-data-
+census in docs/archive/lane-1-kalshi-ingestion/research/2026-08-30-kalshi-category-data-
 shape-audit.md, rows S3/S4 - shows this would silently regress live-data
 coverage for roughly 21 of the census's 30 live-data-bearing milestone
 types, including `basketball_game` (15,564 milestones) and
@@ -389,7 +389,7 @@ def extract(milestone_type: str, details: dict) -> dict:
 # contract. Per spec §3.3, this is capture-ready plumbing for a future
 # consumer reading index_feed-style data (D3 work, not yet wired). The field
 # names below are sourced from the design spec's own P3 census
-# (docs/superpowers/specs/2026-08-30-kalshi-category-data-completeness-
+# (docs/archive/lane-1-kalshi-ingestion/specs/2026-08-30-kalshi-category-data-completeness-
 # design.md:589-601) and cross-checked against the test fixtures in this
 # module's tests (test_extract_index_series_returns_truflation_fields and
 # test_extract_index_series_returns_artist_streams_fields).

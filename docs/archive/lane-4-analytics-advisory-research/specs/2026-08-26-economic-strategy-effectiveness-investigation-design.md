@@ -1,7 +1,7 @@
 # Economic Strategy Effectiveness & Execution Realism — Investigation Design
 
 **Status:** design for the investigation itself (not the eventual remediation). Mirrors
-`docs/superpowers/specs/2026-08-25-realtime-data-plane-investigation-design.md` in shape;
+`docs/archive/lane-1-kalshi-ingestion/specs/2026-08-25-realtime-data-plane-investigation-design.md` in shape;
 scoped by `docs/kalshi-personal-production-execution-program-2026-08-26.md` §6.1
 ("Immediate 3 — parallel research worktree").
 
@@ -118,7 +118,7 @@ claims)
   survived which purge — rather than assuming continuity.
 - **Capture-health rule:** build an hourly KXBTC15M signal-density time series from
   `signal_log.db` (already-captured, zero new instrumentation) and cross-reference visible
-  troughs/regime-shifts against `docs/superpowers/research/2026-08-25-realtime-root-cause-
+  troughs/regime-shifts against `docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-root-cause-
   report.md`'s already-measured busy-hour capture-completeness figures (WS capture 100% at
   idle, 35% whale-sized during a saturated busy hour, 0% during an active drop episode) —
   reusing that investigation's measurements per §10's "do not rerun" instruction, not

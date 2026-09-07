@@ -21,9 +21,9 @@ same instruction and confirmed live/current below: `docs/woodpecker-ci.md`,
 
 **Also explicitly separate:** anything about application-wide REST-vs-
 WebSocket architecture belongs to a parallel investigation
-(`docs/superpowers/research/2026-08-25-realtime-data-plane-known-findings.md`'s
+(`docs/archive/lane-1-kalshi-ingestion/research/2026-08-25-realtime-data-plane-known-findings.md`'s
 Hypothesis H12, and a new inventory doc at
-`docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`
+`docs/archive/lane-1-kalshi-ingestion/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`
 — **did not exist at the time this doc was written**, confirmed via `ls`).
 Findings of that shape are pulled out into their own section below and
 explicitly **not** folded into the general consolidation or the draft
@@ -776,7 +776,7 @@ rather than a single doc being "wrong"):
    addendum to the existing Path-to-production sports-legal-risk bullet,
    not a new bullet.
 3. **Hand the 7-item REST-vs-WS list above to
-   `docs/superpowers/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`**
+   `docs/archive/lane-1-kalshi-ingestion/research/2026-08-27-application-wide-rest-vs-ws-inventory.md`**
    once that doc exists, or to whichever session picks up that
    investigation — do not action those items from this consolidation.
 4. **Leave the 3 confirmed-current files exactly where they are** —
