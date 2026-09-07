@@ -1,16 +1,21 @@
 # Next action
 
-## ⏸ FLEET PAUSED — do not resume active work before 2026-09-07T10:05Z
+## ▶ PAUSE ENDED 2026-09-07T10:05Z — fleet resuming, verify per-peer before assuming active
 
-David's direct URGENT instruction, issued 2026-09-07T07:05:27Z UTC
-(02:06 CDT local): checkpoint and pause, sleep 3 hours. Fleet-wide, not
-just the coordinator (established precedent from earlier tonight).
-**If you are reading this at session start/resume, check real current
-time (`date -u`) against the `2026-09-07T10:05Z` target before doing
-anything else** — do not trust a wakeup firing, a resumed conversation,
-or any internal counter as proof the window has passed; this file is
-the durable source of truth if any scheduling mechanism failed silently
-(see memory `chained-wakeups-silently-die`).
+3-hour URGENT pause (David, issued 07:05:27Z UTC) ended at the written
+target. **`49` independently verified real time (`date -u`, 10:12Z) and
+resumed first** — its assigned first-incomplete unit, an independent
+read-only sweep of PR #660 (Lane 9), confirmed correct by the
+coordinator against live PR state before green-lighting. `c4`, `0d`,
+`ea` had not yet messaged back as of this writeup — **don't assume any
+of them are still paused OR already resumed; check `ListAgents` plus a
+direct message before acting on an assumption either way**, same
+discipline as any other unverified claim. Each was told to verify real
+time against this target itself before resuming, not trust its own
+wakeup mechanism — if one hasn't surfaced in a while, a check-in is
+reasonable, but redundant status-pings aren't (memory
+`verify-status-before-reasking-peer-after-compaction` applies here too,
+substituting "post-pause" for "post-compaction").
 
 Coordinator's own wake mechanism: one-shot `CronCreate` job `73bde554`
 at local `05:07` (`7 5 7 9 *`), prompted to re-verify time and re-read
