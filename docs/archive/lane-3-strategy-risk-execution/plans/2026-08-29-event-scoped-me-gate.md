@@ -28,7 +28,7 @@
 >
 > Kept in the repository (not deleted) because the spec and research behind
 > it are sound and record real investigation work — see
-> `docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md` and
+> `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-29-event-scoped-me-gate-design.md` and
 > `docs/open-decisions.md`'s entry for this initiative.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -39,7 +39,7 @@
 
 **Tech Stack:** Python/FastAPI app, SQLite additive migrations, pytest (sync tests + `asyncio.run`, no pytest-asyncio).
 
-**Spec:** `docs/superpowers/specs/2026-08-29-event-scoped-me-gate-design.md`
+**Spec:** `docs/archive/lane-3-strategy-risk-execution/specs/2026-08-29-event-scoped-me-gate-design.md`
 
 ## Global Constraints
 
@@ -383,7 +383,7 @@ which is not optional.)
 **Files:**
 - Test: append to `tests/test_strategy_engine.py`, `tests/test_observability.py`
 - Modify: `services/observability/observability.py`, `services/strategy_engine.py` (the `me_gate_snapshot()` accessor), `main.py` (stash into `state`), `tests/conftest.py` (autouse reset fixture)
-- Modify: `docs/superpowers/research/2026-08-29-trade-performance-analysis.md` (§13 watch-items: add the gate), `docs/next-action.md` if stale
+- Modify: `docs/archive/lane-4-analytics-advisory-research/research/2026-08-29-trade-performance-analysis.md` (§13 watch-items: add the gate), `docs/next-action.md` if stale
 - **MERGE-ORDER DEPENDENCY:** that research doc does NOT exist on this branch.
   It lives on `docs/flag-position-netting-losses` (PR #201, commit `e20a60f`)
   and is not yet on `main`. The whole spec's evidence base cites it. Merge

@@ -1,5 +1,6 @@
-"""Issue #563 / docs/superpowers/specs/2026-09-03-scoring-pool-candidate-
-retry-isolation-design.md: candidate_retry's scoring work gets its own
+"""Issue #563 / docs/archive/lane-2-whale-signal-calibration/specs/2026-09-03-
+scoring-pool-candidate-retry-isolation-design.md (moved there 2026-09-07,
+planning-lanes migration): candidate_retry's scoring work gets its own
 1-worker pool so it no longer shares _scoring_pool.py's 4 workers with the
 WS-trade-scoring path. Mirrors tests/test_whalewatchers_scoring_pool.py's
 own shape for the sibling pool it was modeled on."""

@@ -134,8 +134,8 @@ def find_open_confirmed_conflict(
     market_titles/event_titles: the persisted, catalog-wide caches
     (services/title_cache.py) that decision_bridge.py already reads for
     every signal regardless of watchlist membership. Works for a candidate
-    ticker that has never been on the watchlist - see docs/superpowers/
-    specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
+    ticker that has never been on the watchlist - see docs/archive/
+    lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-remediation-design.md.
 
     Scoped to open_position_tickers (small - pass a live view of currently-
     open positions, e.g. broker.positions.keys(), never a periodically-
@@ -172,7 +172,7 @@ def find_open_confirmed_conflict(
     # already N-way in practice (a real subset of a larger field, e.g. a
     # golf tournament), which is out of scope for this entry-side gate -
     # position_netting.py already exists to manage N-way exposure
-    # post-entry. See docs/superpowers/specs/2026-08-30-entry-gate-me-
+    # post-entry. See docs/archive/lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-
     # pairing-and-netting-remediation-design.md's Part 1 scope boundary.
     if len(same_event_open) != 1:
         return None

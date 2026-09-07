@@ -10,10 +10,10 @@ the design's own success criteria (§9) require — in that order, because
 each later piece depends on data or plumbing the earlier ones create.
 
 **Design basis (GO, cleared for this stage):**
-`docs/superpowers/specs/2026-09-03-strategy-edge-gate-design.md` (design,
-post-fix), `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design-review.md`
+`docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design.md` (design,
+post-fix), `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design-review.md`
 (independent adversarial review, verdict GO-AFTER-FIXES, all must-fix items
-applied), `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design-consolidation.md`
+applied), `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design-consolidation.md`
 (verdict GO). Per CLAUDE.md's "nothing advances on one pass" HARD RULE,
 "implementation plan" is this pipeline's third, separate stage — this
 document, not the code it describes. **Zero code/config/data changed while
@@ -278,7 +278,7 @@ current.
 Insert, immediately before `risk:`:
 
 ```yaml
-  # Strategy edge gate (docs/superpowers/plans/2026-09-03-strategy-edge-
+  # Strategy edge gate (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-
   # gate-implementation.md) - compares this app's own belief about a
   # market (p_est) to the price it would actually pay (ask_now + fees),
   # instead of gating entry on confidence alone. Every field below
@@ -650,7 +650,7 @@ def test_close_ts_for_tickers_returns_persisted_close_times(tmp_path, monkeypatc
     async _close_ts_for_tickers - see its own docstring: 'the one store
     that persists a close time per market beyond the rotating watchlist.'
     This is the sync, public sibling the markout sweep needs (Task 4 of
-    docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md) -
+    docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md) -
     it did not exist before this task (confirmed: grep -n '^def '
     services/market_catalog/market_catalog.py before writing this plan)."""
     from services.market_catalog import market_catalog as mc
@@ -771,7 +771,7 @@ def close_ts_for_tickers(tickers: list[str]) -> dict[str, float]:
     private async _close_ts_for_tickers - same query, same docstring
     reasoning ('the one store that persists a close time per market
     beyond the rotating watchlist'), added for services/market_history.py's
-    markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    markout-capture sweep (Task 4, docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-
     strategy-edge-gate-implementation.md), which runs synchronously from
     main.py's tick-loop maintenance path, not from an async route."""
     if not tickers:
@@ -1250,7 +1250,7 @@ _delta_cache: dict[tuple[str, str], float] = {}
 
 def delta_calibrated_for(category: str | None, q_pre: float) -> float:
     """The gate's own lookup (services/strategy_engine.py's edge-gate
-    check, Task 8 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    check, Task 8 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md). 0.0 (design §2.4's stated neutral 'no measurable
     edge yet' default) whenever category is unknown or this exact
     (category, price_band) cell has never accumulated enough resolved
@@ -1406,7 +1406,7 @@ def _edge_gate_check(
     side: str, price: float, ticker: str, category: str | None,
     as_of: float | None, strat_cfg: dict,
 ) -> EntryValidation | None:
-    """The edge/EV gate (docs/superpowers/specs/2026-09-03-strategy-edge-
+    """The edge/EV gate (docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-
     gate-design.md §3.2), appended inside _validate_entry_price rather
     than called separately from evaluate() so a resting limit order's
     fill-time re-check is held to the same bar (validate_pending_fill's
@@ -1758,7 +1758,7 @@ that changed meaning, only new fields that default to `None`/absent.
 **Not a code task** — the empirical confirmation every prior task's
 claims hold together, and that `edge_gate_enabled: false` genuinely means
 zero behavior change end to end, matching every precedent plan's own
-final task (e.g. `docs/superpowers/plans/2026-09-03-tier0-live-incident-remediation.md`'s
+final task (e.g. `docs/archive/lane-6-observability-quality-safety/plans/2026-09-03-tier0-live-incident-remediation.md`'s
 Task 10).
 
 - [ ] **Step 1: Run the full local test suite**

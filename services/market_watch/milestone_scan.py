@@ -1,6 +1,6 @@
 """
 Broad, watchlist-independent event_ticker -> milestone_id discovery
-(docs/superpowers/specs/2026-08-30-entry-gate-me-pairing-and-netting-
+(docs/archive/lane-3-strategy-risk-execution/specs/2026-08-30-entry-gate-me-pairing-and-netting-
 remediation-design.md, Part 3). services/kalshi/public.py's
 get_milestones_bulk (category-scoped, batched - live-verified 2026-08-15:
 one call covered 1,483 distinct related_event_tickers) has been

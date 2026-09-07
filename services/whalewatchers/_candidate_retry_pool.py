@@ -1,7 +1,9 @@
 """Dedicated 1-worker pool for candidate_retry's scoring path
 (kalshi_trade_tape.score_recovered_trade -> _process_trades_sync), split
-out of services/whalewatchers/_scoring_pool.py per docs/superpowers/specs/
-2026-09-03-scoring-pool-candidate-retry-isolation-design.md (issue #563).
+out of services/whalewatchers/_scoring_pool.py per docs/archive/lane-2-
+whale-signal-calibration/specs/2026-09-03-scoring-pool-candidate-retry-
+isolation-design.md (moved there 2026-09-07, planning-lanes migration;
+issue #563).
 
 Why a separate pool rather than more workers on the shared one: the two
 callers are independently scheduled and have very different latency

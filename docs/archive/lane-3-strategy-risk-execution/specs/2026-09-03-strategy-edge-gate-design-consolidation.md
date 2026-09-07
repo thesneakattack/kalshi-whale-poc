@@ -1,8 +1,8 @@
 # Consolidation — Strategy Edge Gate Design (2026-09-03)
 
-Reconciling `docs/superpowers/specs/2026-09-03-strategy-edge-gate-design.md` (commit
+Reconciling `docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design.md` (commit
 `3733d73`), its embedded Design self-review, and the independent adversarial review
-(`docs/superpowers/specs/2026-09-03-strategy-edge-gate-design-review.md`, commit `bd953e7`,
+(`docs/archive/lane-3-strategy-risk-execution/specs/2026-09-03-strategy-edge-gate-design-review.md`, commit `bd953e7`,
 a fresh Agent call with no memory of the authoring session) per CLAUDE.md's "nothing
 advances on one pass" HARD RULE.
 

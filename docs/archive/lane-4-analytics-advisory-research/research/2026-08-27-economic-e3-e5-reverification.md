@@ -1,6 +1,6 @@
 # Economic Strategy Effectiveness — E3/E4/E5 Re-Verification Against Post-Program-1 Data
 
-Precondition run for `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md`'s
+Precondition run for `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md`'s
 (Program 2) "Explicit sequencing" section: *"Program 1 (realtime remediation) merges →
 Re-verify E3/E4/E5's provisional findings against a capture-health-controlled sample."*
 Program 1 P0-P2 merged into `main`@`22d1a79` on 2026-08-26T17:01:39Z (`main`'s
@@ -188,7 +188,7 @@ tension is correct.
 
 ## What this means for Program 2
 
-Not a redesign of `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md`'s
+Not a redesign of `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md`'s
 task list — flagged in prose per this document's own scope:
 
 - **P2-1** (banded, cost-aware, sample-size-gated EV diagnostic): re-verification gives it

@@ -1,6 +1,7 @@
-"""Option B precondition (2026-09-03 live-incident fix, docs/superpowers/
-research/2026-09-03-trade-resolve-consumer-blocking-solution-comparison.md
-§3): _resolve_unknown_markets used to reset
+"""Option B precondition (2026-09-03 live-incident fix, docs/archive/lane-2-
+whale-signal-calibration/research/2026-09-03-trade-resolve-consumer-
+blocking-solution-comparison.md, moved there 2026-09-07, planning-lanes
+migration, §3): _resolve_unknown_markets used to reset
 `self._resolve_failed_tickers = set()` unconditionally at the top of every
 call, on the assumption that exactly one call is ever in flight at a time -
 true while the WS consumer was strictly serial, false the moment bounded

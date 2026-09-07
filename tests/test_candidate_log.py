@@ -689,7 +689,7 @@ def test_connect_creates_rejected_candidates_with_unit_cost_from_ddl(tmp_path, m
 
 
 def test_population_gate_summary_includes_edge_gate_rejections(tmp_path, monkeypatch):
-    """Task 9 (docs/superpowers/plans/2026-09-03-strategy-edge-gate-
+    """Task 9 (docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-
     implementation.md): confirms design §3.3/§6's claim that
     candidate_log's existing counterfactual-tracking machinery picks up
     edge_gate rejections with zero new plumbing - a real test of that
@@ -1049,7 +1049,7 @@ def test_gate_summary_async_yields_to_the_event_loop():
 
 # --- population_gate_summary_banded (issue #616 D1) ------------------------
 #
-# docs/superpowers/specs/2026-08-26-economic-strategy-remediation-design.md's
+# docs/archive/lane-3-strategy-risk-execution/specs/2026-08-26-economic-strategy-remediation-design.md's
 # D1: population_gate_summary() above averages hypothetical_win_rate/
 # avg_unit_cost across every unit_cost a gate ever rejected, hiding the real
 # 0.60-0.95-band negative-EV pattern

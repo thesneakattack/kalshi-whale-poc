@@ -160,7 +160,7 @@ _MARKOUT_CAPTURE_INTERVAL_SEC = 300  # matches edge_gate_markout_offsets_sec's
 # implementation.md Task 4. Runs unconditionally (design SS5/SS8's stated
 # exception to the opt-in pattern - markout data has to exist before
 # there's anything to decide whether to turn edge_gate_enabled on with).
-_last_edge_gate_delta_recompute_at = 0.0  # Task 7 of docs/superpowers/plans/2026-09-03-strategy-edge-gate-implementation.md
+_last_edge_gate_delta_recompute_at = 0.0  # Task 7 of docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md
 
 # In-memory cache of series tags: {series_ticker: list[str]} — built from
 # state["series_cache"]["series"] each tick, invalidated when series_cache
@@ -210,7 +210,7 @@ def _maybe_prune_capture_stores(cfg: dict, now: float) -> None:
 
 
 def _maybe_capture_markouts(cfg: dict, now: float) -> None:
-    """Markout-capture sweep (Task 4, docs/superpowers/plans/2026-09-03-
+    """Markout-capture sweep (Task 4, docs/archive/lane-3-strategy-risk-execution/plans/2026-09-03-
     strategy-edge-gate-implementation.md): for every real entry trade,
     records the market price at each configured offset after entry
     (edge_gate_markout_offsets_sec) once that offset comes due, so the
@@ -280,8 +280,8 @@ def _maybe_capture_markouts(cfg: dict, now: float) -> None:
                 f"{_elapsed_ms:.1f}ms", severity="warn",
             )
 def _maybe_recompute_edge_gate_deltas(cfg: dict, now: float) -> None:
-    """Hourly Delta_calibrated recompute sweep (Task 7 of docs/superpowers/
-    plans/2026-09-03-strategy-edge-gate-implementation.md). Same interval-
+    """Hourly Delta_calibrated recompute sweep (Task 7 of docs/archive/
+    lane-3-strategy-risk-execution/plans/2026-09-03-strategy-edge-gate-implementation.md). Same interval-
     guard idiom as _maybe_prune_capture_stores above; interval from
     strategy.edge_gate_recompute_interval_sec (default 3600s, design §5).
     Deliberately NOT gated behind edge_gate_enabled - recomputing an

@@ -1,6 +1,6 @@
 # Economic Strategy Effectiveness — Advisory/Calibration Objective Audit & Execution Realism (E6-E7)
 
-Companion: `docs/superpowers/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
+Companion: `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-effectiveness-investigation.md`
 (tasks E6, E7).
 
 ## E6 — Advisory/calibration objective audit
@@ -114,7 +114,7 @@ entries_with_insufficient_depth: 12   (16% of matched entries, depth ratio < 1.0
   < 1, walk the resting book size at the crossed side to estimate what price would actually
   have been needed to fill the full position size, and compare that estimated cost against
   the signal-price cost paper mode used. This is a Program 2 design candidate (see
-  `docs/superpowers/plans/2026-08-26-economic-strategy-remediation.md`), not built here.
+  `docs/archive/lane-3-strategy-risk-execution/plans/2026-08-26-economic-strategy-remediation.md`), not built here.
 - **Fees**: `series_watcher.reconcile()`'s own output already includes real fee data
   (`fees_paid: $737.14` over the 90-trade post-cutover window, `fee_drag_pct_of_cost: 2.52%`)
   — this is not a gap, `services/kalshi_fees.py` computes real Kalshi fee schedules and
